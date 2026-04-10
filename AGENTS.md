@@ -17,6 +17,12 @@ No build/test pipeline is committed yet. Baseline checks:
 
 If you introduce a toolchain, add concrete commands (for example `npm test`, `make build`) in the same PR.
 
+## Dependency Management
+- Add dependencies using package manager commands, not manual `package.json` edits.
+- Runtime deps: use `npm add <pkg>` or `pnpm add <pkg>`.
+- Dev deps: use `npm add -D <pkg>` or `pnpm add --dev <pkg>`.
+- Never add/remove/update dependency entries directly in `package.json`.
+
 ## Coding Style & Naming Conventions
 - Reuse `SPEC.md` terminology (`Orchestrator`, `Workspace Manager`, `Run Attempt`).
 - Prefer descriptive names over abbreviations.
