@@ -268,12 +268,14 @@ describe('OrchestratorCore', () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-terminal' })]);
     await harness.orchestrator.tick('interval');
+    harness.now.value += 2500;
 
     harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
       makeIssue({ id: 'i-terminal', state: 'Done' })
     ]);
 
     await harness.orchestrator.reconcileRunningIssues();
+    const snapshot = harness.orchestrator.getStateSnapshot();
 
     expect(harness.terminated).toEqual([
       {
@@ -282,6 +284,7 @@ describe('OrchestratorCore', () => {
         reason: 'terminal_state_transition'
       }
     ]);
+    expect(snapshot.codex_totals.seconds_running).toBe(2);
   });
 
   it('is a no-op reconciliation when there are no running issues', async () => {
@@ -307,11 +310,12 @@ describe('OrchestratorCore', () => {
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stall' })]);
     await harness.orchestrator.tick('interval');
 
-    harness.now.value += 20;
+    harness.now.value += 3200;
     harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([]);
     await harness.orchestrator.reconcileRunningIssues();
 
-    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-stall');
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const retryEntry = snapshot.retry_attempts.get('i-stall');
     expect(harness.terminated).toEqual([
       {
         issue_id: 'i-stall',
@@ -321,5 +325,6 @@ describe('OrchestratorCore', () => {
     ]);
     expect(retryEntry?.attempt).toBe(1);
     expect(retryEntry?.error).toBe('worker stalled');
+    expect(snapshot.codex_totals.seconds_running).toBe(3);
   });
 });
