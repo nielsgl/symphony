@@ -18,7 +18,7 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P1 implementation in progress; workflow config pipeline implemented with tests.
+- Program status: P2 implementation completed for orchestrator core + Linear tracker adapter.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Blockers: None currently recorded.
@@ -41,7 +41,7 @@ Owner: orchestration planning
 
 ## Next Queue
 - [x] P1: Implement workflow loader/config resolver/validator/reload pipeline.
-- [ ] P2: Implement orchestrator loop and Linear adapter read operations.
+- [x] P2: Implement orchestrator loop and Linear adapter read operations.
 - [ ] P3: Implement workspace manager, hooks, and safety invariants.
 - [ ] P4: Implement Codex runner protocol lifecycle.
 - [ ] P5: Implement local HTTP API and embedded desktop UI integration.
@@ -67,6 +67,33 @@ Owner: orchestration planning
   - Validation checks + dispatch/reconciliation gating: `tests/workflow/validator.test.ts`
   - Strict template behavior: `tests/workflow/template-engine.test.ts`
   - Reload success/failure and last-known-good retention: `tests/workflow/watcher.test.ts`
+
+## Implementation Evidence (P2)
+- Date: 2026-04-10
+- Scope delivered:
+  - Tracker contracts in `src/tracker/types.ts` with required operations:
+    - `fetch_candidate_issues()`
+    - `fetch_issues_by_states(state_names)`
+    - `fetch_issue_states_by_ids(issue_ids)`
+  - Linear adapter implementation in `src/tracker/linear-adapter.ts`:
+    - GraphQL query isolation for candidate/state queries.
+    - Project filter via `project.slugId`, active-state filtering, and pagination.
+    - Normalization contract for labels, blockers, priority, and timestamps.
+    - Typed tracker error mapping (`linear_api_request`, `linear_api_status`, `linear_graphql_errors`, `linear_unknown_payload`, `linear_missing_end_cursor`).
+  - Tracker adapter config validation + construction in `src/tracker/factory.ts`.
+  - Orchestrator core state machine in `src/orchestrator/core.ts` + `src/orchestrator/decisions.ts`:
+    - Candidate eligibility + sorting.
+    - Claim/running/retry bookkeeping.
+    - Continuation retry (`1000` ms) and failure backoff with cap.
+    - Reconciliation semantics for terminal/non-active/active transitions.
+    - Stall detection and retry scheduling.
+- Test evidence:
+  - `npm test` -> pass (9 files, 52 tests).
+  - `npm run build` -> pass (`tsc --project tsconfig.json`).
+  - `git diff --check` -> pass.
+- SPEC coverage anchors:
+  - SPEC 17.3 (`Issue Tracker Client`): `tests/tracker/linear-adapter.test.ts`, `tests/tracker/factory.test.ts`
+  - SPEC 17.4 (`Orchestrator Dispatch, Reconciliation, and Retry`): `tests/orchestrator/core.test.ts`
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
