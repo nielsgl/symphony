@@ -9,6 +9,14 @@ Owner: orchestration planning
 3. Verify dependencies listed in `Phase Gates` are satisfied.
 4. Update this file in the same PR when work status changes.
 
+## Per-Task Requirements (Applies To Every Agent, Every Task)
+1. Restate the exact task scope before implementation.
+2. Map the task to the relevant PRD(s) and acceptance criteria.
+3. Define tests/verification steps before coding.
+4. Record what was validated in the PR/commit notes.
+5. Treat `Current Phase` checkboxes as program-level progress only; do not
+   skip task-level planning because a phase item is already checked.
+
 ## Overall State
 - Program status: Planning complete, implementation not started.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
