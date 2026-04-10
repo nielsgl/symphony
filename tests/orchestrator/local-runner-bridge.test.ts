@@ -95,6 +95,7 @@ describe('LocalRunnerBridge integration', () => {
       workspaceManager,
       codexRunner,
       config: makeConfig(),
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
       onWorkerExit: async ({ issue_id, reason }) => {
         await orchestrator.onWorkerExit(issue_id, reason);
       }
@@ -126,6 +127,11 @@ describe('LocalRunnerBridge integration', () => {
     expect(ensureWorkspace).toHaveBeenCalledWith('ABC-1');
     expect(prepareAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
     expect(startSessionAndRunTurn).toHaveBeenCalledTimes(1);
+    expect(startSessionAndRunTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('Issue ABC-1 attempt')
+      })
+    );
     expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
 
     const retry = orchestrator.getStateSnapshot().retry_attempts.get('i-1');
@@ -158,15 +164,16 @@ describe('LocalRunnerBridge integration', () => {
     const bridge = new LocalRunnerBridge({
       workspaceManager,
       codexRunner,
-      config: makeConfig()
+      config: makeConfig(),
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
     });
 
     const ports: OrchestratorPorts = {
       tracker,
       dispatchPreflight: () => ({ dispatch_allowed: true }),
       spawnWorker: (params) => bridge.spawnWorker(params),
-      terminateWorker: async ({ issue_id, cleanup_workspace }) => {
-        await bridge.terminateWorker({ issue_identifier: issue.identifier, cleanup_workspace });
+      terminateWorker: async ({ issue_id, worker_handle, cleanup_workspace }) => {
+        await bridge.terminateWorker({ issue_id, worker_handle, cleanup_workspace });
       },
       scheduleRetryTimer: ({ issue_id }) => ({ issue_id }),
       cancelRetryTimer: () => {}
@@ -212,6 +219,7 @@ describe('LocalRunnerBridge integration', () => {
       workspaceManager,
       codexRunner,
       config: makeConfig(),
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
       onWorkerExit: async ({ issue_id, reason }) => {
         await orchestrator.onWorkerExit(issue_id, reason);
       }

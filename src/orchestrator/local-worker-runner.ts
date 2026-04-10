@@ -5,10 +5,11 @@ import type { EffectiveConfig } from '../workflow';
 
 export interface LocalWorkerRunInput {
   issue: Issue;
-  attempt: number;
+  attempt: number | null;
   workspaceManager: WorkspaceManager;
   codexRunner: CodexRunner;
   config: EffectiveConfig;
+  renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
 }
 
 export interface LocalWorkerRunResult {
@@ -24,11 +25,15 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
     const workspace = await input.workspaceManager.ensureWorkspace(input.issue.identifier);
     workspacePath = workspace.path;
     await input.workspaceManager.prepareAttempt(workspace.path);
+    const prompt = await input.renderPrompt({
+      issue: input.issue,
+      attempt: input.attempt
+    });
 
     const turnResult = await input.codexRunner.startSessionAndRunTurn({
       command: input.config.codex.command,
       workspaceCwd: workspace.path,
-      prompt: input.issue.description ?? input.issue.title,
+      prompt,
       title: `${input.issue.identifier}: ${input.issue.title}`,
       approvalPolicy: input.config.codex.approval_policy,
       threadSandbox: input.config.codex.thread_sandbox,
