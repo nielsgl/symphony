@@ -20,7 +20,7 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: Program-level governance remains in P0; implementation evidence is recorded through P4.
+- Program status: Program-level governance remains in P0; implementation evidence is recorded through P5 groundwork.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (implementation delivery should follow this list while P0 governance items remain open).
@@ -173,6 +173,47 @@ Owner: orchestration planning
     - `extracts usage/rate-limit telemetry from compatible payload variants`
     - `handles a bounded high-volume stream deterministically`
   - Phase-gate artifact recorded in this section; P4 exit criteria satisfied.
+
+## Implementation Evidence (P5)
+- Date: 2026-04-10
+- Scope delivered (API groundwork slice):
+  - Local loopback HTTP API server in `src/api/server.ts` with required routes:
+    - `GET /api/v1/state`
+    - `GET /api/v1/:issue_identifier`
+    - `POST /api/v1/refresh`
+  - Stable response/error contracts in `src/api/types.ts` and `src/api/errors.ts`:
+    - Deterministic JSON response shapes for state, issue, and refresh accepted responses.
+    - Typed error envelope `{"error":{"code":"...","message":"..."}}`.
+    - Explicit `404` for unknown issue identifiers and `405` for unsupported methods on defined routes.
+  - Runtime projection layer in `src/api/snapshot-service.ts`:
+    - `/state` projection from orchestrator snapshot (`running`, `retrying`, aggregate `codex_totals`, `rate_limits`, `health`).
+    - `/api/v1/:issue_identifier` projection from in-memory running/retry state with typed not-found behavior.
+  - Refresh trigger/coalescing path in `src/api/refresh-coalescer.ts`:
+    - Best-effort manual refresh trigger via orchestrator `tick('manual_refresh')`.
+    - Burst request coalescing window with accepted response contract (`queued`, `coalesced`, `requested_at`, `operations`).
+  - Package export wiring in `src/index.ts` and `src/api/index.ts`.
+- Test evidence:
+  - `npm test` -> pass (15 files, 87 tests).
+  - `npm run build` -> pass (`tsc --project tsconfig.json`).
+  - `git diff --check` -> pass.
+- SPEC coverage anchors (P5 slice):
+  - SPEC 13.7 + 17.6 API contract/error semantics:
+    - `tests/api/server.test.ts`
+      - `serves GET /api/v1/state with required baseline fields`
+      - `serves GET /api/v1/:issue_identifier projection and returns 404 for unknown issue`
+      - `returns 405 for unsupported methods on defined routes`
+      - `accepts refresh requests and coalesces bursts`
+  - Coalescing deterministic behavior:
+    - `tests/api/refresh-coalescer.test.ts`
+      - `coalesces burst requests into one manual refresh tick`
+      - `schedules a later tick after the coalescing window has elapsed`
+  - Snapshot projection behavior:
+    - `tests/api/snapshot-service.test.ts`
+      - `projects orchestrator state into API state contract and includes active runtime seconds`
+      - `throws issue_not_found for unknown issue projection`
+- Scope deferred in this slice:
+  - Full embedded desktop UI implementation/polish remains deferred.
+  - P5 phase gate is still tracked at program level in `Next Queue` until full UI integration scope is completed.
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.

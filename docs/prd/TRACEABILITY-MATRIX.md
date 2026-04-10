@@ -26,7 +26,7 @@ Every Core Conformance item (SPEC 18.1) must map to:
 | Reconciliation stop on terminal/non-active states | PRD-001 | `tests/orchestrator/core.test.ts` (`stops running worker without cleanup when state becomes non-active and non-terminal`, `stops running worker with cleanup when state becomes terminal`) | reconcile action logs |
 | Workspace cleanup on terminal issues | PRD-003 + PRD-001 | `tests/orchestrator/local-runner-bridge.test.ts` (`invokes workspace cleanup helper when terminateWorker requests cleanup`) + `tests/orchestrator/core.test.ts` (`stops running worker with cleanup when state becomes terminal`) | cleanup outcome logs |
 | Structured logs with issue/session fields | PRD-005 | 17.6 | log schema checks |
-| Operator-visible observability | PRD-005 | 17.6 | local dashboard + `/api/v1/state` |
+| Local API state/issue/refresh contracts with stable error envelope | PRD-005 | `tests/api/server.test.ts` (`serves GET /api/v1/state with required baseline fields`, `serves GET /api/v1/:issue_identifier projection and returns 404 for unknown issue`, `returns 405 for unsupported methods on defined routes`, `accepts refresh requests and coalesces bursts`) + `tests/api/snapshot-service.test.ts` (`projects orchestrator state into API state contract and includes active runtime seconds`, `throws issue_not_found for unknown issue projection`) + `tests/api/refresh-coalescer.test.ts` (`coalesces burst requests into one manual refresh tick`, `schedules a later tick after the coalescing window has elapsed`) | loopback `/api/v1/state`, `/api/v1/:issue_identifier`, `/api/v1/refresh` runtime observability surface |
 
 ## Extension Tracking
 | Extension Area | Owning PRD | Status |
