@@ -20,7 +20,7 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: Program-level governance remains in P0; implementation evidence is recorded through P2.
+- Program status: Program-level governance remains in P0; implementation evidence is recorded through P4.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (implementation delivery should follow this list while P0 governance items remain open).
@@ -46,7 +46,7 @@ Owner: orchestration planning
 - [x] P1: Implement workflow loader/config resolver/validator/reload pipeline.
 - [x] P2: Implement orchestrator loop and Linear adapter read operations.
 - [x] P3: Implement workspace manager, hooks, and safety invariants.
-- [ ] P4: Implement Codex runner protocol lifecycle.
+- [x] P4: Implement Codex runner protocol lifecycle.
 - [ ] P5: Implement local HTTP API and embedded desktop UI integration.
 - [ ] P6: Implement security profiles and minimal persistence.
 - [ ] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
@@ -98,7 +98,7 @@ Owner: orchestration planning
   - SPEC 17.3 (`Issue Tracker Client`): `tests/tracker/linear-adapter.test.ts`, `tests/tracker/factory.test.ts`
   - SPEC 17.4 (`Orchestrator Dispatch, Reconciliation, and Retry`): `tests/orchestrator/core.test.ts`
 
-## Implementation Evidence (P3 + P4 Minimal Bridge Slice)
+## Implementation Evidence (P3)
 - Date: 2026-04-10
 - Scope delivered:
   - `WorkspaceManager` in `src/workspace/manager.ts`:
@@ -118,15 +118,52 @@ Owner: orchestration planning
     - Local runner wiring in `src/orchestrator/local-worker-runner.ts` + `src/orchestrator/local-runner-bridge.ts`.
     - Orchestrator-compatible `spawnWorker`/`terminateWorker` bridge for deterministic local execution tests.
 - Test evidence:
-  - `npm test` -> pass (12 files, 69 tests).
+  - `npm test` -> pass (12 files, 79 tests).
   - `npm run build` -> pass (`tsc --project tsconfig.json`).
   - `git diff --check` -> pass.
 - SPEC coverage anchors:
   - SPEC 17.2 (`Workspace Manager and Safety`): `tests/workspace/workspace-manager.test.ts`
-  - SPEC 17.5 (`Coding-Agent App-Server Client`, minimal one-turn slice): `tests/codex/runner.test.ts`
+  - SPEC 17.5 (`Coding-Agent App-Server Client`): `tests/codex/runner.test.ts`
   - Orchestrator bridge integration evidence: `tests/orchestrator/local-runner-bridge.test.ts`
-- Deferred for full P4 closure:
-  - Multi-turn continuation lifecycle and long-run soak coverage remain open.
+
+## Implementation Evidence (P4)
+- Date: 2026-04-10
+- Scope delivered:
+  - `CodexRunner` lifecycle completion in `src/codex/runner.ts`:
+    - Robust ordered startup handshake with strict request timeout enforcement.
+    - Continuation-turn loop on one live process and one `thread_id` for `maxTurns`.
+    - Protocol compatibility normalization for nested id and equivalent terminal/user-input payload shapes.
+    - Approval/tool/user-input policy behavior:
+      - auto-approve approval requests
+      - reject unsupported dynamic tool calls without stalling
+      - hard-fail user-input-required turns.
+    - Timeout/error mapping parity including `response_timeout`, `turn_timeout`, `response_error`, `turn_failed`, `turn_cancelled`, `turn_input_required`, `port_exit`, `codex_not_found`, `invalid_workspace_cwd`.
+    - Token/rate-limit extraction for compatible payload variants with absolute-total preference and delta-safe aggregation.
+  - Local worker lifecycle in `src/orchestrator/local-worker-runner.ts`:
+    - Worker-lifetime continuation turns via `agent.max_turns` with fixed continuation guidance.
+    - Preserved workspace `ensure`/`prepare`/`finalize` behavior and existing abnormal/normal exit mapping.
+  - Bridge non-regression in `tests/orchestrator/local-runner-bridge.test.ts`:
+    - Explicit assertion that runner invocation includes `maxTurns`.
+- Test evidence:
+  - `npm test` -> pass (12 files, 79 tests).
+  - `npm run build` -> pass (`tsc --project tsconfig.json`).
+  - `git diff --check` -> pass.
+- SPEC coverage anchors:
+  - SPEC 17.5 (`Coding-Agent App-Server Client`): `tests/codex/runner.test.ts`
+    - `launches with bash command/cwd and performs ordered startup handshake`
+    - `supports continuation turns on the same thread within one process`
+    - `accepts compatible payload variants for nested ids`
+    - `parses partial stdout lines until newline framing boundary`
+    - `keeps stderr isolated from stdout protocol parsing`
+    - `maps read timeout to response_timeout`
+    - `maps turn timeout to turn_timeout`
+    - `maps process exit to port_exit`
+    - `maps codex command-not-found stderr to codex_not_found`
+    - `maps invalid workspace cwd to invalid_workspace_cwd before launch`
+    - `auto-approves approval requests and rejects unsupported tool calls without stalling`
+    - `fails hard on user-input-required signals from compatible payload shapes`
+    - `extracts usage/rate-limit telemetry from compatible payload variants`
+    - `handles a bounded high-volume stream deterministically`
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
