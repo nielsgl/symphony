@@ -46,7 +46,7 @@ Owner: orchestration planning
 - [x] P1: Implement workflow loader/config resolver/validator/reload pipeline.
 - [x] P2: Implement orchestrator loop and Linear adapter read operations.
 - [x] P3: Implement workspace manager, hooks, and safety invariants.
-- [x] P4: Implement Codex runner protocol lifecycle.
+- [ ] P4: Implement Codex runner protocol lifecycle.
 - [ ] P5: Implement local HTTP API and embedded desktop UI integration.
 - [ ] P6: Implement security profiles and minimal persistence.
 - [ ] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
@@ -164,6 +164,9 @@ Owner: orchestration planning
     - `fails hard on user-input-required signals from compatible payload shapes`
     - `extracts usage/rate-limit telemetry from compatible payload variants`
     - `handles a bounded high-volume stream deterministically`
+- Open for gate closure:
+  - P4 remains unchecked until phase-gate soak evidence is recorded.
+  - Required artifact: session protocol soak run result (duration, command/setup, and outcome summary).
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
