@@ -5,7 +5,9 @@ Owner: orchestration planning
 
 ## How Agents Should Use This File
 1. Read this file first.
-2. Take the first unchecked item in `Current Phase`.
+2. Use the routing source in `Overall State`:
+   - If `Execution routing source` is `Next Queue`, take the first unchecked item in `Next Queue`.
+   - Otherwise, take the first unchecked item in `Current Phase`.
 3. Verify dependencies listed in `Phase Gates` are satisfied.
 4. Update this file in the same PR when work status changes.
 
@@ -21,6 +23,7 @@ Owner: orchestration planning
 - Program status: Program-level governance remains in P0; implementation evidence is recorded through P2.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
+- Execution routing source: `Next Queue` (implementation delivery should follow this list while P0 governance items remain open).
 - Blockers: None currently recorded.
 
 ## Done
