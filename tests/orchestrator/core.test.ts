@@ -1,0 +1,325 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { OrchestratorCore } from '../../src/orchestrator/core';
+import type { OrchestratorConfig, OrchestratorPorts } from '../../src/orchestrator/types';
+import type { Issue, TrackerAdapter } from '../../src/tracker/types';
+
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
+    id: 'i-1',
+    identifier: 'ABC-1',
+    title: 'Issue ABC-1',
+    description: null,
+    priority: 2,
+    state: 'Todo',
+    branch_name: null,
+    url: null,
+    labels: [],
+    blocked_by: [],
+    created_at: new Date('2026-01-01T00:00:00.000Z'),
+    updated_at: new Date('2026-01-01T00:00:00.000Z'),
+    ...overrides
+  };
+}
+
+function makeTracker(): TrackerAdapter & {
+  fetch_candidate_issues: ReturnType<typeof vi.fn>;
+  fetch_issues_by_states: ReturnType<typeof vi.fn>;
+  fetch_issue_states_by_ids: ReturnType<typeof vi.fn>;
+} {
+  return {
+    fetch_candidate_issues: vi.fn(async () => []),
+    fetch_issues_by_states: vi.fn(async () => []),
+    fetch_issue_states_by_ids: vi.fn(async () => [])
+  };
+}
+
+interface Harness {
+  orchestrator: OrchestratorCore;
+  tracker: ReturnType<typeof makeTracker>;
+  now: { value: number };
+  scheduled: Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>;
+  terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }>;
+  spawned: Array<{ issue_id: string; attempt: number | null }>;
+  notifyObservers: ReturnType<typeof vi.fn>;
+}
+
+function createHarness(options: {
+  configOverrides?: Partial<OrchestratorConfig>;
+  spawnWorker?: OrchestratorPorts['spawnWorker'];
+} = {}): Harness {
+  const tracker = makeTracker();
+  const now = { value: 1_000_000 };
+  const scheduled = new Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>();
+  const terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }> = [];
+  const spawned: Array<{ issue_id: string; attempt: number | null }> = [];
+  const notifyObservers = vi.fn();
+
+  const config: OrchestratorConfig = {
+    poll_interval_ms: 30_000,
+    max_concurrent_agents: 2,
+    max_concurrent_agents_by_state: {},
+    max_retry_backoff_ms: 300_000,
+    active_states: ['Todo', 'In Progress'],
+    terminal_states: ['Done', 'Canceled', 'Cancelled'],
+    stall_timeout_ms: 300_000,
+    ...options.configOverrides
+  };
+
+  const spawnWorker: OrchestratorPorts['spawnWorker'] =
+    options.spawnWorker ??
+    (async ({ issue, attempt }) => {
+      spawned.push({ issue_id: issue.id, attempt });
+      return {
+        ok: true,
+        worker_handle: { issue_id: issue.id },
+        monitor_handle: { issue_id: issue.id }
+      };
+    });
+
+  const orchestrator = new OrchestratorCore({
+    config,
+    ports: {
+      tracker,
+      dispatchPreflight: () => ({ dispatch_allowed: true }),
+      spawnWorker,
+      terminateWorker: async ({ issue_id, cleanup_workspace, reason }) => {
+        terminated.push({ issue_id, cleanup_workspace, reason });
+      },
+      scheduleRetryTimer: ({ issue_id, due_at_ms, callback }) => {
+        const handle = { issue_id };
+        scheduled.set(issue_id, { callback, due_at_ms, handle });
+        return handle;
+      },
+      cancelRetryTimer: (timer_handle) => {
+        for (const [issueId, scheduledEntry] of scheduled.entries()) {
+          if (scheduledEntry.handle === timer_handle) {
+            scheduled.delete(issueId);
+          }
+        }
+      },
+      notifyObservers
+    },
+    nowMs: () => now.value
+  });
+
+  return { orchestrator, tracker, now, scheduled, terminated, spawned, notifyObservers };
+}
+
+describe('OrchestratorCore', () => {
+  it('dispatches in priority->created_at->identifier order', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-c', identifier: 'ABC-3', priority: 2, created_at: new Date('2026-01-03T00:00:00.000Z') }),
+      makeIssue({ id: 'i-a', identifier: 'ABC-1', priority: 1, created_at: new Date('2026-01-03T00:00:00.000Z') }),
+      makeIssue({ id: 'i-b', identifier: 'ABC-2', priority: 1, created_at: new Date('2026-01-01T00:00:00.000Z') })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-b', 'i-a']);
+  });
+
+  it('does not dispatch Todo when blocker is non-terminal but dispatches when blocker is terminal', async () => {
+    const harness = createHarness({ configOverrides: { max_concurrent_agents: 3 } });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({
+        id: 'i-blocked',
+        blocked_by: [{ id: 'i-x', identifier: 'ABC-X', state: 'In Progress' }]
+      }),
+      makeIssue({
+        id: 'i-unblocked',
+        identifier: 'ABC-2',
+        blocked_by: [{ id: 'i-done', identifier: 'ABC-DONE', state: 'Done' }]
+      })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-unblocked']);
+  });
+
+  it('tracks running and claimed bookkeeping on dispatch', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-claim' })]);
+
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-claim')).toBe(true);
+    expect(snapshot.claimed.has('i-claim')).toBe(true);
+    expect(snapshot.retry_attempts.has('i-claim')).toBe(false);
+  });
+
+  it('schedules continuation retry with attempt=1 and 1000ms delay on normal exit', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-normal' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.now.value += 5000;
+    await harness.orchestrator.onWorkerExit('i-normal', 'normal');
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-normal');
+    expect(retryEntry?.attempt).toBe(1);
+    expect(retryEntry?.error).toBeNull();
+    expect(retryEntry?.due_at_ms).toBe(harness.now.value + 1000);
+  });
+
+  it('schedules exponential failure retries with cap on abnormal exits', async () => {
+    const harness = createHarness({ configOverrides: { max_retry_backoff_ms: 25_000 } });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.now.value += 1;
+    await harness.orchestrator.onWorkerExit('i-abnormal', 'abnormal');
+
+    const firstRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-abnormal');
+    expect(firstRetry?.attempt).toBe(1);
+    expect(firstRetry?.due_at_ms).toBe(harness.now.value + 10_000);
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
+    await harness.orchestrator.onRetryTimer('i-abnormal');
+    harness.now.value += 1;
+    await harness.orchestrator.onWorkerExit('i-abnormal', 'abnormal');
+
+    const secondRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-abnormal');
+    expect(secondRetry?.attempt).toBe(2);
+    expect(secondRetry?.due_at_ms).toBe(harness.now.value + 20_000);
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
+    await harness.orchestrator.onRetryTimer('i-abnormal');
+    harness.now.value += 1;
+    await harness.orchestrator.onWorkerExit('i-abnormal', 'abnormal');
+
+    const thirdRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-abnormal');
+    expect(thirdRetry?.attempt).toBe(3);
+    expect(thirdRetry?.due_at_ms).toBe(harness.now.value + 25_000);
+  });
+
+  it('requeues retry with explicit slot exhaustion reason when no slots are available', async () => {
+    const harness = createHarness({ configOverrides: { max_concurrent_agents: 1 } });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-busy' })]);
+    await harness.orchestrator.tick('interval');
+    harness.now.value += 1;
+    await harness.orchestrator.onWorkerExit('i-busy', 'normal');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-occupying-slot', identifier: 'ABC-2', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-busy' })]);
+    await harness.orchestrator.onRetryTimer('i-busy');
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-busy');
+    expect(retryEntry?.attempt).toBe(2);
+    expect(retryEntry?.error).toBe('no available orchestrator slots');
+  });
+
+  it('releases claim if retry issue is no longer in candidate set', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-release' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-release', 'normal');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([]);
+    await harness.orchestrator.onRetryTimer('i-release');
+
+    expect(harness.orchestrator.getStateSnapshot().claimed.has('i-release')).toBe(false);
+  });
+
+  it('updates running issue snapshots for active states during reconciliation', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-active', state: 'Todo' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-active', identifier: 'ABC-99', state: 'In Progress' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const updated = harness.orchestrator.getStateSnapshot().running.get('i-active');
+    expect(updated?.issue.state).toBe('In Progress');
+    expect(updated?.identifier).toBe('ABC-99');
+  });
+
+  it('stops running worker without cleanup when state becomes non-active and non-terminal', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-nonactive' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-nonactive', state: 'Backlog' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-nonactive',
+        cleanup_workspace: false,
+        reason: 'non_active_state_transition'
+      }
+    ]);
+  });
+
+  it('stops running worker with cleanup when state becomes terminal', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-terminal' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-terminal', state: 'Done' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-terminal',
+        cleanup_workspace: true,
+        reason: 'terminal_state_transition'
+      }
+    ]);
+  });
+
+  it('is a no-op reconciliation when there are no running issues', async () => {
+    const harness = createHarness();
+    await harness.orchestrator.reconcileRunningIssues();
+    expect(harness.tracker.fetch_issue_states_by_ids).not.toHaveBeenCalled();
+  });
+
+  it('keeps workers running when state refresh fails', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-refresh-fail' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_issue_states_by_ids.mockRejectedValue(new Error('unavailable'));
+    await harness.orchestrator.reconcileRunningIssues();
+
+    expect(harness.orchestrator.getStateSnapshot().running.has('i-refresh-fail')).toBe(true);
+    expect(harness.terminated).toHaveLength(0);
+  });
+
+  it('kills stalled sessions and schedules retry', async () => {
+    const harness = createHarness({ configOverrides: { stall_timeout_ms: 10 } });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stall' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.now.value += 20;
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([]);
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-stall');
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-stall',
+        cleanup_workspace: false,
+        reason: 'stall_timeout'
+      }
+    ]);
+    expect(retryEntry?.attempt).toBe(1);
+    expect(retryEntry?.error).toBe('worker stalled');
+  });
+});
