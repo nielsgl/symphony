@@ -7,8 +7,12 @@ import type { LocalApiErrorEnvelope, LocalApiServerOptions } from './types';
 
 interface Route {
   method: 'GET' | 'POST';
-  path: RegExp;
   handler: (req: IncomingMessage, res: ServerResponse, match: RegExpExecArray) => Promise<void>;
+}
+
+interface Endpoint {
+  path: RegExp;
+  routes: Route[];
 }
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -89,53 +93,65 @@ export class LocalApiServer {
     const method = req.method ?? 'GET';
     const urlPath = new URL(req.url ?? '/', 'http://localhost').pathname;
 
-    const routes: Route[] = [
+    const endpoints: Endpoint[] = [
       {
-        method: 'GET',
         path: /^\/api\/v1\/state$/,
-        handler: async (_request, response) => {
-          const state = this.snapshotSource.getStateSnapshot();
-          const payload = this.snapshotService.projectState(state);
-          sendJson(response, 200, payload);
-        }
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response) => {
+              const state = this.snapshotSource.getStateSnapshot();
+              const payload = this.snapshotService.projectState(state);
+              sendJson(response, 200, payload);
+            }
+          }
+        ]
       },
       {
-        method: 'GET',
-        path: /^\/api\/v1\/([^/]+)$/,
-        handler: async (_request, response, match) => {
-          const issueIdentifier = decodeURIComponent(match[1]);
-          const state = this.snapshotSource.getStateSnapshot();
-          const payload = this.snapshotService.projectIssue(state, issueIdentifier);
-          sendJson(response, 200, payload);
-        }
-      },
-      {
-        method: 'POST',
         path: /^\/api\/v1\/refresh$/,
-        handler: async (_request, response) => {
-          const payload = this.refreshCoalescer.requestRefresh();
-          sendJson(response, 202, payload);
-        }
+        routes: [
+          {
+            method: 'POST',
+            handler: async (_request, response) => {
+              const payload = this.refreshCoalescer.requestRefresh();
+              sendJson(response, 202, payload);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/([^/]+)$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response, match) => {
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const state = this.snapshotSource.getStateSnapshot();
+              const payload = this.snapshotService.projectIssue(state, issueIdentifier);
+              sendJson(response, 200, payload);
+            }
+          }
+        ]
       }
     ];
 
-    const routeMatches = routes
-      .map((route) => ({ route, match: route.path.exec(urlPath) }))
-      .filter((entry) => entry.match !== null) as Array<{ route: Route; match: RegExpExecArray }>;
+    const endpointMatch = endpoints
+      .map((endpoint) => ({ endpoint, match: endpoint.path.exec(urlPath) }))
+      .find((entry) => entry.match !== null) as { endpoint: Endpoint; match: RegExpExecArray } | undefined;
 
-    if (routeMatches.length === 0) {
+    if (!endpointMatch) {
       sendError(res, 404, 'route_not_found', `Route ${urlPath} was not found`);
       return;
     }
 
-    const matchingMethodRoute = routeMatches.find((entry) => entry.route.method === method);
+    const matchingMethodRoute = endpointMatch.endpoint.routes.find((route) => route.method === method);
     if (!matchingMethodRoute) {
       sendError(res, 405, 'method_not_allowed', `Method ${method} is not supported for ${urlPath}`);
       return;
     }
 
     try {
-      await matchingMethodRoute.route.handler(req, res, matchingMethodRoute.match);
+      await matchingMethodRoute.handler(req, res, endpointMatch.match);
     } catch (error) {
       if (error instanceof LocalApiError) {
         sendError(res, error.http_status, error.code, error.message);

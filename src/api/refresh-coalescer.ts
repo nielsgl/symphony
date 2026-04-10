@@ -13,6 +13,7 @@ export class RefreshCoalescer {
 
   private scheduled: ReturnType<typeof setTimeout> | null;
   private running: boolean;
+  private followupRequested: boolean;
 
   constructor(options: RefreshCoalescerOptions) {
     this.refreshSource = options.refreshSource;
@@ -20,15 +21,17 @@ export class RefreshCoalescer {
     this.coalesceWindowMs = options.coalesceWindowMs ?? 25;
     this.scheduled = null;
     this.running = false;
+    this.followupRequested = false;
   }
 
   requestRefresh(): ApiRefreshAcceptedResponse {
-    const coalesced = this.scheduled !== null || this.running;
+    const coalesced = this.scheduled !== null || this.running || this.followupRequested;
 
-    if (!this.scheduled && !this.running) {
-      this.scheduled = setTimeout(() => {
-        void this.flush();
-      }, this.coalesceWindowMs);
+    if (this.running) {
+      // Ensure at least one additional tick after this accepted request.
+      this.followupRequested = true;
+    } else {
+      this.scheduleFlush();
     }
 
     return {
@@ -37,6 +40,24 @@ export class RefreshCoalescer {
       requested_at: new Date(this.nowMs()).toISOString(),
       operations: ['poll', 'reconcile']
     };
+  }
+
+  private scheduleFlush(): void {
+    if (this.scheduled) {
+      return;
+    }
+
+    this.scheduled = setTimeout(() => {
+      void this.flushSafely();
+    }, this.coalesceWindowMs);
+  }
+
+  private async flushSafely(): Promise<void> {
+    try {
+      await this.flush();
+    } catch {
+      // Keep refresh path resilient: callers already received 202 accepted.
+    }
   }
 
   private async flush(): Promise<void> {
@@ -50,6 +71,10 @@ export class RefreshCoalescer {
       await this.refreshSource.tick('manual_refresh');
     } finally {
       this.running = false;
+      if (this.followupRequested) {
+        this.followupRequested = false;
+        this.scheduleFlush();
+      }
     }
   }
 }

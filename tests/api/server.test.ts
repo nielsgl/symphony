@@ -173,6 +173,14 @@ describe('LocalApiServer', () => {
 
     expect(response.status).toBe(405);
     expect(payload.error.code).toBe('method_not_allowed');
+
+    const refreshGetResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, {
+      method: 'GET'
+    });
+    const refreshGetPayload = (await refreshGetResponse.json()) as { error: { code: string } };
+
+    expect(refreshGetResponse.status).toBe(405);
+    expect(refreshGetPayload.error.code).toBe('method_not_allowed');
   });
 
   it('accepts refresh requests and coalesces bursts', async () => {
