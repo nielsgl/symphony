@@ -18,7 +18,7 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P2 implementation completed for orchestrator core + Linear tracker adapter.
+- Program status: Program-level governance remains in P0; implementation evidence is recorded through P2.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Blockers: None currently recorded.
