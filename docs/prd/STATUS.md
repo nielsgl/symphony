@@ -46,7 +46,7 @@ Owner: orchestration planning
 - [x] P1: Implement workflow loader/config resolver/validator/reload pipeline.
 - [x] P2: Implement orchestrator loop and Linear adapter read operations.
 - [x] P3: Implement workspace manager, hooks, and safety invariants.
-- [ ] P4: Implement Codex runner protocol lifecycle.
+- [x] P4: Implement Codex runner protocol lifecycle.
 - [ ] P5: Implement local HTTP API and embedded desktop UI integration.
 - [ ] P6: Implement security profiles and minimal persistence.
 - [ ] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
@@ -148,6 +148,14 @@ Owner: orchestration planning
   - `npm test` -> pass (12 files, 79 tests).
   - `npm run build` -> pass (`tsc --project tsconfig.json`).
   - `git diff --check` -> pass.
+  - Session protocol soak (gate artifact):
+    - Start: `2026-04-10T18:49:19Z`
+    - End: `2026-04-10T18:50:52Z`
+    - Duration: `93s`
+    - Command/setup:
+      - Baseline suite: `npm test -- tests/codex/runner.test.ts`
+      - Soak loop (120 iterations): `npm test -- tests/codex/runner.test.ts -t "handles a bounded high-volume stream deterministically"`
+    - Outcome: `120/120` iterations passed with no protocol parser stalls or process-exit failures.
 - SPEC coverage anchors:
   - SPEC 17.5 (`Coding-Agent App-Server Client`): `tests/codex/runner.test.ts`
     - `launches with bash command/cwd and performs ordered startup handshake`
@@ -164,9 +172,7 @@ Owner: orchestration planning
     - `fails hard on user-input-required signals from compatible payload shapes`
     - `extracts usage/rate-limit telemetry from compatible payload variants`
     - `handles a bounded high-volume stream deterministically`
-- Open for gate closure:
-  - P4 remains unchecked until phase-gate soak evidence is recorded.
-  - Required artifact: session protocol soak run result (duration, command/setup, and outcome summary).
+  - Phase-gate artifact recorded in this section; P4 exit criteria satisfied.
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
