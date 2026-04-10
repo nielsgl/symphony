@@ -202,4 +202,50 @@ describe('WorkspaceManager', () => {
 
     expect(runShell).toHaveBeenCalledTimes(1);
   });
+
+  it('runs before_remove only for existing workspace directories', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+
+    const runShell = vi.fn(async () => ({ timedOut: false }));
+    const manager = new WorkspaceManager({
+      root,
+      hooks: {
+        before_remove: 'echo remove',
+        timeout_ms: 1000
+      },
+      runShell
+    });
+
+    await expect(manager.cleanupWorkspace('MISSING-1')).resolves.toBe(true);
+    expect(runShell).not.toHaveBeenCalled();
+
+    const dirWorkspace = await manager.ensureWorkspace('ABC-1');
+    await expect(manager.cleanupWorkspace('ABC-1')).resolves.toBe(true);
+    expect(runShell).toHaveBeenCalledTimes(1);
+    expect(runShell).toHaveBeenLastCalledWith({
+      cwd: dirWorkspace.path,
+      script: 'echo remove',
+      timeoutMs: 1000
+    });
+  });
+
+  it('returns false for non-directory entry at cleanup path and skips before_remove', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+
+    const runShell = vi.fn(async () => ({ timedOut: false }));
+    const manager = new WorkspaceManager({
+      root,
+      hooks: {
+        before_remove: 'echo remove',
+        timeout_ms: 1000
+      },
+      runShell
+    });
+
+    await fs.writeFile(path.join(root, 'ABC-1'), 'collision');
+    await expect(manager.cleanupWorkspace('ABC-1')).resolves.toBe(false);
+    expect(runShell).not.toHaveBeenCalled();
+  });
 });

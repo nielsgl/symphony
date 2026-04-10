@@ -141,6 +141,14 @@ export class WorkspaceManager {
     const workspacePath = path.resolve(this.root, this.deriveWorkspaceKey(identifier));
     this.assertContained(workspacePath);
 
+    const stat = await this.statIfExists(workspacePath);
+    if (!stat) {
+      return true;
+    }
+    if (!stat.isDirectory()) {
+      return false;
+    }
+
     await this.runHookBestEffort('before_remove', workspacePath);
 
     try {

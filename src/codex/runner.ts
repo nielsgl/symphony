@@ -349,6 +349,7 @@ class ProtocolClient {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       const method = message.method ?? '';
+      const normalizedMethod = method.toLowerCase();
       if (method === 'turn/completed') {
         return 'turn/completed';
       }
@@ -358,7 +359,10 @@ class ProtocolClient {
       if (method === 'turn/cancelled') {
         return 'turn/cancelled';
       }
-      if (method.includes('input') && method.includes('required')) {
+      const isInputRequiredSignal =
+        (normalizedMethod.includes('input') && normalizedMethod.includes('required')) ||
+        normalizedMethod.includes('requestuserinput');
+      if (isInputRequiredSignal) {
         return 'turn/input_required';
       }
     }

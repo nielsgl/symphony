@@ -219,5 +219,21 @@ describe('CodexRunner', () => {
     fakeInput.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
     fakeInput.emitStdout('{"method":"turn/input_required"}\n');
     await expect(inputPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+
+    const fakeCamelInput = new FakeProcess();
+    const runnerCamelInput = new CodexRunner({ spawnProcess: () => fakeCamelInput });
+    const camelInputPromise = runnerCamelInput.startSessionAndRunTurn({
+      command: 'codex app-server',
+      workspaceCwd: '/tmp/ws',
+      prompt: 'hello',
+      title: 'ABC-1: Title',
+      readTimeoutMs: 1000,
+      turnTimeoutMs: 1000
+    });
+    fakeCamelInput.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fakeCamelInput.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fakeCamelInput.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fakeCamelInput.emitStdout('{"method":"item/tool/requestUserInput"}\n');
+    await expect(camelInputPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
   });
 });
