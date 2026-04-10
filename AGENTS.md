@@ -4,7 +4,7 @@
 This repo is currently specification-first.
 - `README.md`: project overview.
 - `SPEC.md`: canonical Symphony service spec (architecture, domain model, runtime behavior).
-- `.codex/skills/linear_graphql/SKILL.md`: raw Linear GraphQL helper.
+- `.codex/skills/linear-graphql/SKILL.md`: raw Linear GraphQL helper.
 - `.codex/skills/commit/SKILL.md`: required commit workflow.
 
 There is no `src/` or `tests/` tree yet. When adding implementation code, use clear top-level folders (for example `src/`, `tests/`, `scripts/`) and keep module boundaries aligned with `SPEC.md` components.
