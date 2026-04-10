@@ -22,9 +22,10 @@ Owner: orchestration planning
 - [x] Phase 2 GitHub Issues PRD defined (`PRD-007`).
 - [x] Delivery roadmap/gates defined (`PRD-008`).
 - [x] Traceability matrix scaffold created (`TRACEABILITY-MATRIX.md`).
+- [x] PRD-000 through PRD-008 reviewed and signed off for P0 planning baseline.
 
 ## Current Phase (P0)
-- [ ] Review and sign off PRD-000 through PRD-008.
+- [x] Review and sign off PRD-000 through PRD-008.
 - [ ] Confirm interface ownership per subsystem.
 - [ ] Lock initial implementation repo structure (`src/`, `tests/`, `scripts/`).
 - [ ] Convert traceability checklist placeholders into concrete owner/test references.
@@ -51,6 +52,14 @@ Owner: orchestration planning
 
 ## Active Blockers
 - None.
+
+## Sign-off Evidence (P0 Item 1)
+- Date: 2026-04-10
+- Scope reviewed:
+  - `PRD-000` through `PRD-008` in `docs/prd/`
+  - `INDEX.md` package ordering and completeness contract
+  - `TRACEABILITY-MATRIX.md` owner/test/observability linkage scaffold
+- Outcome: Accepted as planning baseline for remaining P0 checklist items.
 
 ## References
 - Index: `/Users/niels.van.Galen.last/code/symphony/docs/prd/INDEX.md`
