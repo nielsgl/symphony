@@ -13,6 +13,7 @@ import type {
   OrchestratorState,
   RetryDelayType,
   RetryEntry,
+  RunningEntry,
   TickReason,
   WorkerExitReason
 } from './types';
@@ -23,6 +24,27 @@ interface ScheduleRetryParams {
   attempt: number;
   delay_type: RetryDelayType;
   error?: string | null;
+}
+
+function cloneIssue(issue: Issue): Issue {
+  return {
+    ...issue,
+    labels: [...issue.labels],
+    blocked_by: issue.blocked_by.map((blocker) => ({
+      id: blocker.id,
+      identifier: blocker.identifier,
+      state: blocker.state
+    })),
+    created_at: issue.created_at ? new Date(issue.created_at.getTime()) : null,
+    updated_at: issue.updated_at ? new Date(issue.updated_at.getTime()) : null
+  };
+}
+
+function cloneRunningEntry(entry: RunningEntry): RunningEntry {
+  return {
+    ...entry,
+    issue: cloneIssue(entry.issue)
+  };
 }
 
 function cloneRetryEntry(entry: RetryEntry): RetryEntry {
@@ -68,7 +90,9 @@ export class OrchestratorCore {
   getStateSnapshot(): OrchestratorState {
     return {
       ...this.state,
-      running: new Map(this.state.running.entries()),
+      running: new Map(
+        Array.from(this.state.running.entries()).map(([issueId, entry]) => [issueId, cloneRunningEntry(entry)])
+      ),
       claimed: new Set(this.state.claimed.values()),
       retry_attempts: new Map(
         Array.from(this.state.retry_attempts.entries()).map(([issueId, entry]) => [issueId, cloneRetryEntry(entry)])
@@ -121,7 +145,7 @@ export class OrchestratorCore {
     }
 
     this.state.running.delete(issue_id);
-    this.state.codex_totals.seconds_running += Math.max(0, Math.floor((this.nowMs() - running.started_at_ms) / 1000));
+    this.addRuntimeSecondsFromEntry(running);
 
     if (reason === 'normal') {
       this.state.completed.add(issue_id);
@@ -267,6 +291,7 @@ export class OrchestratorCore {
         reason: 'stall_timeout'
       });
 
+      this.addRuntimeSecondsFromEntry(runningEntry);
       this.state.running.delete(issueId);
 
       await this.scheduleRetry({
@@ -325,6 +350,7 @@ export class OrchestratorCore {
       reason
     });
 
+    this.addRuntimeSecondsFromEntry(runningEntry);
     this.state.running.delete(issue_id);
     this.state.claimed.delete(issue_id);
 
@@ -367,5 +393,9 @@ export class OrchestratorCore {
     });
 
     this.state.claimed.add(params.issue_id);
+  }
+
+  private addRuntimeSecondsFromEntry(runningEntry: RunningEntry): void {
+    this.state.codex_totals.seconds_running += Math.max(0, Math.floor((this.nowMs() - runningEntry.started_at_ms) / 1000));
   }
 }
