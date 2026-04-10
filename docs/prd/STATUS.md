@@ -18,7 +18,7 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: Planning complete, implementation not started.
+- Program status: P1 implementation in progress; workflow config pipeline implemented with tests.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Blockers: None currently recorded.
@@ -40,13 +40,33 @@ Owner: orchestration planning
 - [ ] Approve entry into P1.
 
 ## Next Queue
-- [ ] P1: Implement workflow loader/config resolver/validator/reload pipeline.
+- [x] P1: Implement workflow loader/config resolver/validator/reload pipeline.
 - [ ] P2: Implement orchestrator loop and Linear adapter read operations.
 - [ ] P3: Implement workspace manager, hooks, and safety invariants.
 - [ ] P4: Implement Codex runner protocol lifecycle.
 - [ ] P5: Implement local HTTP API and embedded desktop UI integration.
 - [ ] P6: Implement security profiles and minimal persistence.
 - [ ] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
+
+## Implementation Evidence (P1)
+- Date: 2026-04-10
+- Scope delivered:
+  - `WorkflowLoader` (`src/workflow/loader.ts`): path precedence + YAML front matter/prompt split + typed loader errors.
+  - `ConfigResolver` (`src/workflow/resolver.ts`): typed config defaults, `$VAR` resolution, `~`/path handling, per-state concurrency normalization.
+  - `ConfigValidator` (`src/workflow/validator.ts`): startup/per-tick preflight validation contract with typed failures.
+  - `TemplateEngine` (`src/workflow/template-engine.ts`): strict parse/render behavior for `issue`/`attempt`.
+  - `EffectiveConfigStore` (`src/workflow/store.ts`): atomic last-known-good snapshot + version hash.
+  - `WorkflowWatcher` (`src/workflow/watcher.ts`): debounced hot-reload transaction with retain-on-invalid semantics.
+- Test evidence:
+  - `npm test` -> pass (6 files, 30 tests).
+  - `npm run build` -> pass (`tsc --project tsconfig.json`).
+  - `git diff --check` -> pass.
+- SPEC 17.1 coverage anchors:
+  - Loader path precedence + parse/error behaviors: `tests/workflow/loader.test.ts`
+  - Typed defaults + env/path semantics: `tests/workflow/resolver.test.ts`
+  - Validation checks + dispatch/reconciliation gating: `tests/workflow/validator.test.ts`
+  - Strict template behavior: `tests/workflow/template-engine.test.ts`
+  - Reload success/failure and last-known-good retention: `tests/workflow/watcher.test.ts`
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
