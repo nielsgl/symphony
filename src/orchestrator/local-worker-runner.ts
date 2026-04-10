@@ -3,6 +3,9 @@ import type { WorkspaceManager } from '../workspace';
 import type { CodexRunner } from '../codex';
 import type { EffectiveConfig } from '../workflow';
 
+const DEFAULT_CONTINUATION_PROMPT =
+  'Continue on the same thread for this issue. Focus on incremental progress and report outcomes clearly.';
+
 export interface LocalWorkerRunInput {
   issue: Issue;
   attempt: number | null;
@@ -34,7 +37,9 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       command: input.config.codex.command,
       workspaceCwd: workspace.path,
       prompt,
+      continuationPrompt: DEFAULT_CONTINUATION_PROMPT,
       title: `${input.issue.identifier}: ${input.issue.title}`,
+      maxTurns: input.config.agent.max_turns,
       approvalPolicy: input.config.codex.approval_policy,
       threadSandbox: input.config.codex.thread_sandbox,
       turnSandboxPolicy: input.config.codex.turn_sandbox_policy

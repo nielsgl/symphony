@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { CodexRunnerError } from './errors';
-import type { CodexRunnerStartInput, CodexTurnResult } from './types';
+import type { CodexRunnerEvent, CodexRunnerStartInput, CodexTurnResult, CodexUsageTotals } from './types';
 
 interface ProtocolMessage {
   id?: number;
@@ -23,24 +25,118 @@ interface RunnerProcess {
 
 type SpawnProcess = (params: { command: string; cwd: string }) => RunnerProcess;
 
+interface WaitForTerminalResult {
+  terminal: 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required';
+  usage: CodexUsageTotals;
+  rate_limits: Record<string, unknown> | null;
+}
+
+const CONTINUATION_GUIDANCE = 'Continue working on the same issue thread. Provide concise progress and next actions.';
+
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function readNestedString(payload: Record<string, unknown> | null, path: string[]): string | undefined {
-  let current: unknown = payload;
-  for (const segment of path) {
-    const record = asRecord(current);
-    if (!record) {
-      return undefined;
+function isProtocolResponse(message: ProtocolMessage): boolean {
+  return (
+    typeof message.id === 'number' &&
+    (Object.prototype.hasOwnProperty.call(message, 'result') || Object.prototype.hasOwnProperty.call(message, 'error'))
+  );
+}
+
+function readNestedString(payload: Record<string, unknown> | null, paths: string[][]): string | undefined {
+  for (const pathParts of paths) {
+    let current: unknown = payload;
+    let valid = true;
+    for (const segment of pathParts) {
+      const record = asRecord(current);
+      if (!record) {
+        valid = false;
+        break;
+      }
+      current = record[segment];
     }
-    current = record[segment];
+    if (!valid) {
+      continue;
+    }
+    const parsed = readString(current);
+    if (parsed) {
+      return parsed;
+    }
   }
-  return readString(current);
+
+  return undefined;
+}
+
+function parseTokenTotals(payload: Record<string, unknown> | null): CodexUsageTotals | null {
+  if (!payload) {
+    return null;
+  }
+
+  const input = payload.input_tokens;
+  const output = payload.output_tokens;
+  const total = payload.total_tokens;
+  if (typeof input === 'number' && typeof output === 'number' && typeof total === 'number') {
+    return {
+      input_tokens: input,
+      output_tokens: output,
+      total_tokens: total
+    };
+  }
+
+  return null;
+}
+
+class UsageTracker {
+  private lastAbsolute: CodexUsageTotals | null = null;
+  private aggregate: CodexUsageTotals = {
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0
+  };
+
+  observe(message: ProtocolMessage): void {
+    const method = (message.method ?? '').toLowerCase();
+    const params = asRecord(message.params);
+    if (!params) {
+      return;
+    }
+
+    let absolute: CodexUsageTotals | null = null;
+
+    const totalTokenUsage = asRecord(params.total_token_usage) ?? asRecord(params.totalTokenUsage);
+    absolute = parseTokenTotals(totalTokenUsage);
+
+    if (!absolute && method.includes('tokenusage') && method.includes('updated')) {
+      absolute =
+        parseTokenTotals(asRecord(params.usage)) ??
+        parseTokenTotals(asRecord(params.token_usage)) ??
+        parseTokenTotals(asRecord(params.tokenUsage));
+    }
+
+    if (!absolute) {
+      return;
+    }
+
+    if (!this.lastAbsolute) {
+      this.aggregate = { ...absolute };
+      this.lastAbsolute = { ...absolute };
+      return;
+    }
+
+    this.aggregate.input_tokens += Math.max(0, absolute.input_tokens - this.lastAbsolute.input_tokens);
+    this.aggregate.output_tokens += Math.max(0, absolute.output_tokens - this.lastAbsolute.output_tokens);
+    this.aggregate.total_tokens += Math.max(0, absolute.total_tokens - this.lastAbsolute.total_tokens);
+    this.lastAbsolute = { ...absolute };
+  }
+
+  snapshot(): CodexUsageTotals {
+    return { ...this.aggregate };
+  }
 }
 
 function defaultSpawnProcess(params: { command: string; cwd: string }): RunnerProcess {
@@ -52,6 +148,23 @@ function defaultSpawnProcess(params: { command: string; cwd: string }): RunnerPr
   return child;
 }
 
+function assertWorkspaceCwd(workspaceCwd: string): void {
+  if (!path.isAbsolute(workspaceCwd)) {
+    throw new CodexRunnerError('invalid_workspace_cwd', 'Workspace cwd must be an absolute path');
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(workspaceCwd);
+  } catch {
+    throw new CodexRunnerError('invalid_workspace_cwd', `Workspace cwd does not exist: ${workspaceCwd}`);
+  }
+
+  if (!stat.isDirectory()) {
+    throw new CodexRunnerError('invalid_workspace_cwd', `Workspace cwd is not a directory: ${workspaceCwd}`);
+  }
+}
+
 export class CodexRunner {
   private readonly spawnProcess: SpawnProcess;
 
@@ -60,8 +173,17 @@ export class CodexRunner {
   }
 
   async startSessionAndRunTurn(input: CodexRunnerStartInput): Promise<CodexTurnResult> {
-    const processHandle = this.spawnProcess({ command: input.command, cwd: input.workspaceCwd });
+    assertWorkspaceCwd(input.workspaceCwd);
+
+    let processHandle: RunnerProcess;
+    try {
+      processHandle = this.spawnProcess({ command: input.command, cwd: input.workspaceCwd });
+    } catch {
+      throw new CodexRunnerError('invalid_workspace_cwd', `Failed to launch codex process in cwd: ${input.workspaceCwd}`);
+    }
+
     const protocol = new ProtocolClient(processHandle);
+    const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
 
     try {
       await protocol.request(
@@ -72,6 +194,7 @@ export class CodexRunner {
         },
         input.readTimeoutMs
       );
+
       protocol.notify('initialized', {});
 
       const threadResponse = await protocol.request(
@@ -84,83 +207,132 @@ export class CodexRunner {
         input.readTimeoutMs
       );
 
-      const thread_id =
-        readNestedString(threadResponse, ['thread', 'id']) ??
-        readNestedString(threadResponse, ['threadId']) ??
-        readNestedString(threadResponse, ['id']);
+      const thread_id = readNestedString(threadResponse, [
+        ['thread', 'id'],
+        ['thread', 'threadId'],
+        ['threadId'],
+        ['thread_id'],
+        ['id']
+      ]);
       if (!thread_id) {
         throw new CodexRunnerError('response_error', 'Missing thread id in thread/start response');
       }
 
-      const turnResponse = await protocol.request(
-        'turn/start',
-        {
-          threadId: thread_id,
-          input: [{ type: 'text', text: input.prompt }],
-          cwd: input.workspaceCwd,
-          title: input.title,
-          approvalPolicy: input.approvalPolicy ?? 'never',
-          sandboxPolicy: input.turnSandboxPolicy ?? { type: 'workspace-write' }
-        },
-        input.readTimeoutMs
-      );
+      emit({ event: 'session_started', thread_id });
 
-      const turn_id =
-        readNestedString(turnResponse, ['turn', 'id']) ??
-        readNestedString(turnResponse, ['turnId']) ??
-        readNestedString(turnResponse, ['id']);
-      if (!turn_id) {
-        throw new CodexRunnerError('response_error', 'Missing turn id in turn/start response');
-      }
+      const maxTurns = Math.max(1, input.maxTurns ?? 1);
+      let turnsCompleted = 0;
 
-      const terminal = await protocol.waitForTurnTerminal(input.turnTimeoutMs);
-      const session_id = `${thread_id}-${turn_id}`;
+      for (let turnIndex = 0; turnIndex < maxTurns; turnIndex += 1) {
+        const promptText = turnIndex === 0 ? input.prompt : input.continuationPrompt ?? CONTINUATION_GUIDANCE;
+        const turnResponse = await protocol.request(
+          'turn/start',
+          {
+            threadId: thread_id,
+            input: [{ type: 'text', text: promptText }],
+            cwd: input.workspaceCwd,
+            title: input.title,
+            approvalPolicy: input.approvalPolicy ?? 'never',
+            sandboxPolicy: input.turnSandboxPolicy ?? { type: 'workspace-write' }
+          },
+          input.readTimeoutMs
+        );
 
-      if (terminal === 'turn/completed') {
-        return {
-          status: 'completed',
-          thread_id,
-          turn_id,
-          session_id,
-          last_event: 'turn_completed'
-        };
-      }
+        const turn_id = readNestedString(turnResponse, [
+          ['turn', 'id'],
+          ['turn', 'turnId'],
+          ['turnId'],
+          ['turn_id'],
+          ['id']
+        ]);
+        if (!turn_id) {
+          throw new CodexRunnerError('response_error', 'Missing turn id in turn/start response');
+        }
 
-      if (terminal === 'turn/failed') {
+        const waitResult = await protocol.waitForTurnTerminal(input.turnTimeoutMs, emit);
+        const session_id = `${thread_id}-${turn_id}`;
+        const usage = waitResult.usage;
+        const rate_limits = waitResult.rate_limits;
+
+        if (waitResult.terminal === 'turn/completed') {
+          turnsCompleted += 1;
+
+          emit({
+            event: 'turn_completed',
+            thread_id,
+            turn_id,
+            session_id,
+            usage,
+            rate_limits
+          });
+
+          if (turnIndex < maxTurns - 1) {
+            continue;
+          }
+
+          return {
+            status: 'completed',
+            thread_id,
+            turn_id,
+            session_id,
+            last_event: 'turn_completed',
+            turns_completed: turnsCompleted,
+            usage,
+            rate_limits
+          };
+        }
+
+        if (waitResult.terminal === 'turn/failed') {
+          emit({ event: 'turn_failed', thread_id, turn_id, session_id, usage, rate_limits });
+          return {
+            status: 'failed',
+            thread_id,
+            turn_id,
+            session_id,
+            last_event: 'turn_failed',
+            error_code: 'turn_failed',
+            turns_completed: turnsCompleted,
+            usage,
+            rate_limits
+          };
+        }
+
+        if (waitResult.terminal === 'turn/cancelled') {
+          emit({ event: 'turn_cancelled', thread_id, turn_id, session_id, usage, rate_limits });
+          return {
+            status: 'failed',
+            thread_id,
+            turn_id,
+            session_id,
+            last_event: 'turn_cancelled',
+            error_code: 'turn_cancelled',
+            turns_completed: turnsCompleted,
+            usage,
+            rate_limits
+          };
+        }
+
+        emit({ event: 'turn_input_required', thread_id, turn_id, session_id, usage, rate_limits });
         return {
           status: 'failed',
           thread_id,
           turn_id,
           session_id,
-          last_event: 'turn_failed',
-          error_code: 'turn_failed'
+          last_event: 'turn_input_required',
+          error_code: 'turn_input_required',
+          turns_completed: turnsCompleted,
+          usage,
+          rate_limits
         };
       }
 
-      if (terminal === 'turn/cancelled') {
-        return {
-          status: 'failed',
-          thread_id,
-          turn_id,
-          session_id,
-          last_event: 'turn_cancelled',
-          error_code: 'turn_cancelled'
-        };
-      }
-
-      return {
-        status: 'failed',
-        thread_id,
-        turn_id,
-        session_id,
-        last_event: 'turn_input_required',
-        error_code: 'turn_input_required'
-      };
+      throw new CodexRunnerError('response_error', 'Reached unexpected end of turn loop');
     } catch (error) {
       if (error instanceof CodexRunnerError) {
-        if (error.code === 'turn_timeout') {
-          throw error;
+        if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
+          throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
         }
+        emit({ event: 'startup_failed', detail: error.message });
         throw error;
       }
 
@@ -169,6 +341,16 @@ export class CodexRunner {
       processHandle.kill('SIGKILL');
     }
   }
+
+  private makeEmitter(onEvent: ((event: CodexRunnerEvent) => void) | undefined, pid: number | null) {
+    return (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>): void => {
+      onEvent?.({
+        ...event,
+        timestamp: new Date().toISOString(),
+        codex_app_server_pid: pid
+      });
+    };
+  }
 }
 
 class ProtocolClient {
@@ -176,11 +358,14 @@ class ProtocolClient {
   private readonly pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
   private readonly earlyResponses = new Map<number, ProtocolMessage>();
   private readonly notifications: ProtocolMessage[] = [];
-  private readonly stderrLines: string[] = [];
   private readonly messageEmitter = new EventEmitter();
+  private readonly usageTracker = new UsageTracker();
+
+  private latestRateLimits: Record<string, unknown> | null = null;
   private stdoutBuffer = '';
   private stderrBuffer = '';
   private nextId = 1;
+  private stderrLines: string[] = [];
 
   constructor(processHandle: RunnerProcess) {
     this.processHandle = processHandle;
@@ -195,11 +380,15 @@ class ProtocolClient {
 
     this.processHandle.once('exit', () => {
       for (const pending of this.pending.values()) {
-        pending.reject(new CodexRunnerError('response_error', 'Codex process exited before response'));
+        pending.reject(new CodexRunnerError('port_exit', 'Codex process exited before response'));
       }
       this.pending.clear();
       this.messageEmitter.emit('exit');
     });
+  }
+
+  sawCodexNotFound(): boolean {
+    return this.stderrLines.some((line) => /\bcodex\b.*(command not found|not found)/i.test(line));
   }
 
   notify(method: string, params: Record<string, unknown>): void {
@@ -244,8 +433,48 @@ class ProtocolClient {
     });
   }
 
-  waitForTurnTerminal(timeoutMs: number): Promise<'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required'> {
-    const existing = this.findTerminal(this.notifications);
+  waitForTurnTerminal(
+    timeoutMs: number,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): Promise<WaitForTerminalResult> {
+    let nextNotificationIndex = 0;
+
+    const consume = (): WaitForTerminalResult | null => {
+      while (nextNotificationIndex < this.notifications.length) {
+        const message = this.notifications[nextNotificationIndex++];
+        this.usageTracker.observe(message);
+
+        const rateLimits = this.extractRateLimits(message);
+        if (rateLimits) {
+          this.latestRateLimits = rateLimits;
+        }
+
+        if (this.isApprovalRequest(message)) {
+          this.write({ id: message.id, result: { approved: true } });
+          emit({ event: 'approval_auto_approved' });
+          continue;
+        }
+
+        if (this.isUnsupportedToolRequest(message)) {
+          this.write({ id: message.id, result: { success: false, error: 'unsupported_tool_call' } });
+          emit({ event: 'unsupported_tool_call' });
+          continue;
+        }
+
+        const terminal = this.readTerminal(message);
+        if (terminal) {
+          return {
+            terminal,
+            usage: this.usageTracker.snapshot(),
+            rate_limits: this.latestRateLimits
+          };
+        }
+      }
+
+      return null;
+    };
+
+    const existing = consume();
     if (existing) {
       return Promise.resolve(existing);
     }
@@ -260,11 +489,11 @@ class ProtocolClient {
       const onExit = () => {
         clearTimeout(timer);
         this.messageEmitter.off('message', onMessage);
-        reject(new CodexRunnerError('turn_failed', 'Codex process exited before turn completed'));
+        reject(new CodexRunnerError('port_exit', 'Codex process exited before turn completed'));
       };
 
       const onMessage = () => {
-        const terminal = this.findTerminal(this.notifications);
+        const terminal = consume();
         if (!terminal) {
           return;
         }
@@ -306,7 +535,7 @@ class ProtocolClient {
         continue;
       }
 
-      if (typeof parsed.id === 'number') {
+      if (isProtocolResponse(parsed) && typeof parsed.id === 'number') {
         const pending = this.pending.get(parsed.id);
         if (!pending) {
           this.earlyResponses.set(parsed.id, parsed);
@@ -345,27 +574,80 @@ class ProtocolClient {
     }
   }
 
-  private findTerminal(messages: ProtocolMessage[]): 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required' | null {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      const method = message.method ?? '';
-      const normalizedMethod = method.toLowerCase();
-      if (method === 'turn/completed') {
-        return 'turn/completed';
-      }
-      if (method === 'turn/failed') {
-        return 'turn/failed';
-      }
-      if (method === 'turn/cancelled') {
-        return 'turn/cancelled';
-      }
-      const isInputRequiredSignal =
-        (normalizedMethod.includes('input') && normalizedMethod.includes('required')) ||
-        normalizedMethod.includes('requestuserinput');
-      if (isInputRequiredSignal) {
-        return 'turn/input_required';
-      }
+  private extractRateLimits(message: ProtocolMessage): Record<string, unknown> | null {
+    const params = asRecord(message.params);
+    if (!params) {
+      return null;
     }
+
+    const direct = asRecord(params.rate_limits) ?? asRecord(params.rateLimits);
+    if (direct) {
+      return direct;
+    }
+
+    const nestedUsage = asRecord(params.usage);
+    if (!nestedUsage) {
+      return null;
+    }
+
+    return asRecord(nestedUsage.rate_limits) ?? asRecord(nestedUsage.rateLimits) ?? null;
+  }
+
+  private isApprovalRequest(message: ProtocolMessage): boolean {
+    if (typeof message.id !== 'number') {
+      return false;
+    }
+
+    const method = (message.method ?? '').toLowerCase();
+    return method.includes('approval') && (method.includes('request') || method.includes('required'));
+  }
+
+  private isUnsupportedToolRequest(message: ProtocolMessage): boolean {
+    if (typeof message.id !== 'number') {
+      return false;
+    }
+
+    const method = (message.method ?? '').toLowerCase();
+    return method.includes('tool') && method.includes('call');
+  }
+
+  private readTerminal(
+    message: ProtocolMessage
+  ): 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required' | null {
+    const method = message.method ?? '';
+    const normalizedMethod = method.toLowerCase();
+
+    if (method === 'turn/completed' || normalizedMethod === 'turn.completed') {
+      return 'turn/completed';
+    }
+
+    if (method === 'turn/failed' || normalizedMethod === 'turn.failed') {
+      return 'turn/failed';
+    }
+
+    if (method === 'turn/cancelled' || normalizedMethod === 'turn.cancelled') {
+      return 'turn/cancelled';
+    }
+
+    if (
+      (normalizedMethod.includes('input') && normalizedMethod.includes('required')) ||
+      normalizedMethod.includes('requestuserinput')
+    ) {
+      return 'turn/input_required';
+    }
+
+    const params = asRecord(message.params);
+    if (!params) {
+      return null;
+    }
+
+    const inputRequired = params.input_required ?? params.inputRequired;
+    if (inputRequired === true) {
+      return 'turn/input_required';
+    }
+
     return null;
   }
 }
+
+export { CONTINUATION_GUIDANCE };
