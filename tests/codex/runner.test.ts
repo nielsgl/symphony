@@ -1,8 +1,12 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 
 import { describe, expect, it } from 'vitest';
 
-import { CodexRunner } from '../../src/codex';
+import { CodexRunner, CONTINUATION_GUIDANCE } from '../../src/codex';
+import type { CodexRunnerStartInput } from '../../src/codex';
 
 class FakeProcess {
   pid: number | null = 4242;
@@ -38,9 +42,30 @@ class FakeProcess {
   }
 }
 
+function makeWorkspace(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-runner-'));
+}
+
+function makeStartInput(workspaceCwd: string, overrides: Partial<CodexRunnerStartInput> = {}): CodexRunnerStartInput {
+  return {
+    command: 'codex app-server',
+    workspaceCwd,
+    prompt: 'hello',
+    title: 'ABC-1: Title',
+    readTimeoutMs: 1000,
+    turnTimeoutMs: 1000,
+    ...overrides
+  };
+}
+
+function parseWrittenMessages(fake: FakeProcess): Array<Record<string, unknown>> {
+  return fake.writes.map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 describe('CodexRunner', () => {
   it('launches with bash command/cwd and performs ordered startup handshake', async () => {
     const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
     const spawnCalls: Array<{ command: string; cwd: string }> = [];
     const runner = new CodexRunner({
       spawnProcess: ({ command, cwd }) => {
@@ -49,14 +74,7 @@ describe('CodexRunner', () => {
       }
     });
 
-    const promise = runner.startSessionAndRunTurn({
-      command: 'codex app-server',
-      workspaceCwd: '/tmp/ws',
-      prompt: 'hello',
-      title: 'ABC-1: Title',
-      readTimeoutMs: 1000,
-      turnTimeoutMs: 1000
-    });
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
 
     fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
@@ -65,33 +83,97 @@ describe('CodexRunner', () => {
 
     const result = await promise;
 
-    expect(spawnCalls).toEqual([{ command: 'codex app-server', cwd: '/tmp/ws' }]);
+    expect(spawnCalls).toEqual([{ command: 'codex app-server', cwd: workspaceCwd }]);
     expect(result).toEqual({
       status: 'completed',
       thread_id: 'thread-1',
       turn_id: 'turn-1',
       session_id: 'thread-1-turn-1',
-      last_event: 'turn_completed'
+      last_event: 'turn_completed',
+      turns_completed: 1,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0
+      },
+      rate_limits: null
     });
 
-    const writtenMethods = fake.writes.map((line) => JSON.parse(line).method).filter(Boolean);
+    const writtenMethods = parseWrittenMessages(fake)
+      .map((line) => (typeof line.method === 'string' ? line.method : null))
+      .filter((method): method is string => Boolean(method));
     expect(writtenMethods).toEqual(['initialize', 'initialized', 'thread/start', 'turn/start']);
   });
 
-  it('parses partial stdout lines until newline framing boundary', async () => {
+  it('supports continuation turns on the same thread within one process', async () => {
     const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
     const runner = new CodexRunner({
       spawnProcess: () => fake
     });
 
-    const promise = runner.startSessionAndRunTurn({
-      command: 'codex app-server',
-      workspaceCwd: '/tmp/ws',
-      prompt: 'hello',
-      title: 'ABC-1: Title',
-      readTimeoutMs: 1000,
-      turnTimeoutMs: 1000
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        maxTurns: 3
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+    fake.emitStdout('{"id":4,"result":{"turn":{"id":"turn-2"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+    fake.emitStdout('{"id":5,"result":{"turn":{"id":"turn-3"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    const result = await promise;
+    expect(result).toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-1',
+      turn_id: 'turn-3',
+      session_id: 'thread-1-turn-3',
+      turns_completed: 3
     });
+
+    const turnStarts = parseWrittenMessages(fake).filter((message) => message.method === 'turn/start');
+    expect(turnStarts).toHaveLength(3);
+    expect(turnStarts[0].params).toMatchObject({ threadId: 'thread-1' });
+    expect(turnStarts[1].params).toMatchObject({ threadId: 'thread-1' });
+    expect(turnStarts[2].params).toMatchObject({ threadId: 'thread-1' });
+
+    const secondTurnText = ((turnStarts[1].params as Record<string, unknown>).input as Array<Record<string, unknown>>)[0].text;
+    expect(secondTurnText).toBe(CONTINUATION_GUIDANCE);
+  });
+
+  it('accepts compatible payload variants for nested ids', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"threadId":"thread-alt"}}\n');
+    fake.emitStdout('{"id":3,"result":{"turnId":"turn-alt"}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      thread_id: 'thread-alt',
+      turn_id: 'turn-alt',
+      session_id: 'thread-alt-turn-alt'
+    });
+  });
+
+  it('parses partial stdout lines until newline framing boundary', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
 
     fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
@@ -104,18 +186,12 @@ describe('CodexRunner', () => {
 
   it('keeps stderr isolated from stdout protocol parsing', async () => {
     const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
     const runner = new CodexRunner({
       spawnProcess: () => fake
     });
 
-    const promise = runner.startSessionAndRunTurn({
-      command: 'codex app-server',
-      workspaceCwd: '/tmp/ws',
-      prompt: 'hello',
-      title: 'ABC-1: Title',
-      readTimeoutMs: 1000,
-      turnTimeoutMs: 1000
-    });
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
 
     fake.emitStderr('not-json stderr line\n');
     fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
@@ -129,19 +205,18 @@ describe('CodexRunner', () => {
 
   it('maps read timeout to response_timeout', async () => {
     const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
     const runner = new CodexRunner({
       spawnProcess: () => fake
     });
 
     await expect(
-      runner.startSessionAndRunTurn({
-        command: 'codex app-server',
-        workspaceCwd: '/tmp/ws',
-        prompt: 'hello',
-        title: 'ABC-1: Title',
-        readTimeoutMs: 10,
-        turnTimeoutMs: 1000
-      })
+      runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          readTimeoutMs: 10,
+          turnTimeoutMs: 1000
+        })
+      )
     ).rejects.toMatchObject({
       code: 'response_timeout'
     });
@@ -149,18 +224,16 @@ describe('CodexRunner', () => {
 
   it('maps turn timeout to turn_timeout', async () => {
     const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
     const runner = new CodexRunner({
       spawnProcess: () => fake
     });
 
-    const promise = runner.startSessionAndRunTurn({
-      command: 'codex app-server',
-      workspaceCwd: '/tmp/ws',
-      prompt: 'hello',
-      title: 'ABC-1: Title',
-      readTimeoutMs: 1000,
-      turnTimeoutMs: 10
-    });
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        turnTimeoutMs: 10
+      })
+    );
 
     fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
@@ -171,69 +244,147 @@ describe('CodexRunner', () => {
     });
   });
 
-  it('maps failed/cancelled/input-required terminal events', async () => {
-    const fakeFailed = new FakeProcess();
-    const runnerFailed = new CodexRunner({ spawnProcess: () => fakeFailed });
-    const failedPromise = runnerFailed.startSessionAndRunTurn({
-      command: 'codex app-server',
-      workspaceCwd: '/tmp/ws',
-      prompt: 'hello',
-      title: 'ABC-1: Title',
-      readTimeoutMs: 1000,
-      turnTimeoutMs: 1000
-    });
-    fakeFailed.emitStdout('{"id":1,"result":{"ok":true}}\n');
-    fakeFailed.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
-    fakeFailed.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
-    fakeFailed.emitStdout('{"method":"turn/failed"}\n');
-    await expect(failedPromise).resolves.toMatchObject({ error_code: 'turn_failed' });
+  it('maps process exit to port_exit', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
 
-    const fakeCancelled = new FakeProcess();
-    const runnerCancelled = new CodexRunner({ spawnProcess: () => fakeCancelled });
-    const cancelledPromise = runnerCancelled.startSessionAndRunTurn({
-      command: 'codex app-server',
-      workspaceCwd: '/tmp/ws',
-      prompt: 'hello',
-      title: 'ABC-1: Title',
-      readTimeoutMs: 1000,
-      turnTimeoutMs: 1000
-    });
-    fakeCancelled.emitStdout('{"id":1,"result":{"ok":true}}\n');
-    fakeCancelled.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
-    fakeCancelled.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
-    fakeCancelled.emitStdout('{"method":"turn/cancelled"}\n');
-    await expect(cancelledPromise).resolves.toMatchObject({ error_code: 'turn_cancelled' });
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+    fake.emitExit();
 
-    const fakeInput = new FakeProcess();
-    const runnerInput = new CodexRunner({ spawnProcess: () => fakeInput });
-    const inputPromise = runnerInput.startSessionAndRunTurn({
-      command: 'codex app-server',
-      workspaceCwd: '/tmp/ws',
-      prompt: 'hello',
-      title: 'ABC-1: Title',
-      readTimeoutMs: 1000,
-      turnTimeoutMs: 1000
-    });
-    fakeInput.emitStdout('{"id":1,"result":{"ok":true}}\n');
-    fakeInput.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
-    fakeInput.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
-    fakeInput.emitStdout('{"method":"turn/input_required"}\n');
-    await expect(inputPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+    await expect(promise).rejects.toMatchObject({ code: 'port_exit' });
+  });
 
-    const fakeCamelInput = new FakeProcess();
-    const runnerCamelInput = new CodexRunner({ spawnProcess: () => fakeCamelInput });
-    const camelInputPromise = runnerCamelInput.startSessionAndRunTurn({
-      command: 'codex app-server',
-      workspaceCwd: '/tmp/ws',
-      prompt: 'hello',
-      title: 'ABC-1: Title',
-      readTimeoutMs: 1000,
-      turnTimeoutMs: 1000
+  it('maps codex command-not-found stderr to codex_not_found', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+    fake.emitStderr('codex: command not found\n');
+    fake.emitExit(127);
+
+    await expect(promise).rejects.toMatchObject({ code: 'codex_not_found' });
+  });
+
+  it('maps invalid workspace cwd to invalid_workspace_cwd before launch', async () => {
+    const runner = new CodexRunner({
+      spawnProcess: () => {
+        throw new Error('should not be called');
+      }
     });
-    fakeCamelInput.emitStdout('{"id":1,"result":{"ok":true}}\n');
-    fakeCamelInput.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
-    fakeCamelInput.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
-    fakeCamelInput.emitStdout('{"method":"item/tool/requestUserInput"}\n');
-    await expect(camelInputPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+
+    await expect(
+      runner.startSessionAndRunTurn(
+        makeStartInput('/tmp/symphony-does-not-exist-123456789')
+      )
+    ).rejects.toMatchObject({ code: 'invalid_workspace_cwd' });
+  });
+
+  it('auto-approves approval requests and rejects unsupported tool calls without stalling', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":91,"method":"approval/request","params":{"kind":"command"}}\n');
+    fake.emitStdout('{"id":92,"method":"item/tool/call","params":{"name":"unknown"}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => typeof message.id === 'number' && 'result' in message);
+    expect(responses).toContainEqual({ id: 91, result: { approved: true } });
+    expect(responses).toContainEqual({ id: 92, result: { success: false, error: 'unsupported_tool_call' } });
+  });
+
+  it('fails hard on user-input-required signals from compatible payload shapes', async () => {
+    const fakeMethod = new FakeProcess();
+    const workspaceCwdMethod = makeWorkspace();
+    const runnerMethod = new CodexRunner({ spawnProcess: () => fakeMethod });
+
+    const methodPromise = runnerMethod.startSessionAndRunTurn(makeStartInput(workspaceCwdMethod));
+    fakeMethod.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fakeMethod.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fakeMethod.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fakeMethod.emitStdout('{"method":"item/tool/requestUserInput"}\n');
+    await expect(methodPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+
+    const fakeParams = new FakeProcess();
+    const workspaceCwdParams = makeWorkspace();
+    const runnerParams = new CodexRunner({ spawnProcess: () => fakeParams });
+
+    const paramsPromise = runnerParams.startSessionAndRunTurn(makeStartInput(workspaceCwdParams));
+    fakeParams.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fakeParams.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fakeParams.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fakeParams.emitStdout('{"method":"turn/update","params":{"inputRequired":true}}\n');
+    await expect(paramsPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+  });
+
+  it('extracts usage/rate-limit telemetry from compatible payload variants', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"thread/tokenUsage/updated","params":{"total_token_usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14},"last_token_usage":{"input_tokens":9,"output_tokens":9,"total_tokens":18}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"thread/tokenUsage/updated","params":{"usage":{"input_tokens":17,"output_tokens":6,"total_tokens":23}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"some/other","params":{"usage":{"last_token_usage":{"input_tokens":999,"output_tokens":999,"total_tokens":999}}}}\n'
+    );
+    fake.emitStdout('{"method":"limits/update","params":{"rateLimits":{"remaining":42,"limit":100}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 17,
+        output_tokens: 6,
+        total_tokens: 23
+      },
+      rate_limits: {
+        remaining: 42,
+        limit: 100
+      }
+    });
+  });
+
+  it('handles a bounded high-volume stream deterministically', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+
+    for (let index = 0; index < 400; index += 1) {
+      if (index % 40 === 0) {
+        fake.emitStdout(`{"id":${1000 + index},"method":"approval/request","params":{"kind":"command"}}\n`);
+      } else if (index % 55 === 0) {
+        fake.emitStdout(`{"id":${2000 + index},"method":"item/tool/call","params":{"name":"x"}}\n`);
+      } else {
+        fake.emitStdout('{"method":"notification","params":{"kind":"tick"}}\n');
+      }
+    }
+
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+    expect(fake.killed).toBe(true);
   });
 });

@@ -129,7 +129,8 @@ describe('LocalRunnerBridge integration', () => {
     expect(startSessionAndRunTurn).toHaveBeenCalledTimes(1);
     expect(startSessionAndRunTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        prompt: expect.stringContaining('Issue ABC-1 attempt')
+        prompt: expect.stringContaining('Issue ABC-1 attempt'),
+        maxTurns: 1
       })
     );
     expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
