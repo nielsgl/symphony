@@ -1,0 +1,205 @@
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { WorkspaceError, WorkspaceManager } from '../../src/workspace';
+
+async function makeTempRoot(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), 'symphony-workspace-test-'));
+}
+
+async function exists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.stat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe('WorkspaceManager', () => {
+  const cleanupPaths: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      cleanupPaths.splice(0).map(async (targetPath) => {
+        await fs.rm(targetPath, { recursive: true, force: true });
+      })
+    );
+  });
+
+  it('derives deterministic workspace key and path from issue identifier', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 }
+    });
+
+    expect(manager.deriveWorkspaceKey('ABC-123')).toBe('ABC-123');
+    expect(manager.deriveWorkspaceKey('a/b:c?d')).toBe('a_b_c_d');
+
+    const workspace = await manager.ensureWorkspace('a/b:c?d');
+    expect(workspace.workspace_key).toBe('a_b_c_d');
+    expect(workspace.path).toBe(path.resolve(root, 'a_b_c_d'));
+  });
+
+  it('creates missing workspace and reuses existing directory with created_now flag', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 }
+    });
+
+    const first = await manager.ensureWorkspace('ABC-1');
+    const second = await manager.ensureWorkspace('ABC-1');
+
+    expect(first.created_now).toBe(true);
+    expect(second.created_now).toBe(false);
+    expect(first.path).toBe(second.path);
+  });
+
+  it('replaces non-allowed identifier characters with underscore', () => {
+    const manager = new WorkspaceManager({
+      root: '/tmp/symphony',
+      hooks: { timeout_ms: 1000 }
+    });
+
+    expect(manager.deriveWorkspaceKey('../ABC/é$*')).toBe('.._ABC____');
+  });
+
+  it('fails fast when workspace path collides with non-directory entry', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    await fs.writeFile(path.join(root, 'ABC-1'), 'collision');
+
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 }
+    });
+
+    await expect(manager.ensureWorkspace('ABC-1')).rejects.toMatchObject({
+      code: 'workspace_non_directory_collision'
+    });
+  });
+
+  it('enforces root containment and cwd equality launch invariants', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 }
+    });
+
+    expect(() =>
+      manager.assertLaunchSafety({
+        workspacePath: path.resolve(root, '..', 'escape'),
+        cwd: path.resolve(root, '..', 'escape')
+      })
+    ).toThrowError(WorkspaceError);
+
+    expect(() =>
+      manager.assertLaunchSafety({
+        workspacePath: path.resolve(root, 'ABC-1'),
+        cwd: path.resolve(root, 'ABC-2')
+      })
+    ).toThrowError(WorkspaceError);
+  });
+
+  it('removes temporary artifacts during prepareAttempt', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 }
+    });
+
+    const workspace = await manager.ensureWorkspace('ABC-1');
+    await fs.mkdir(path.join(workspace.path, 'tmp'), { recursive: true });
+    await fs.mkdir(path.join(workspace.path, '.elixir_ls'), { recursive: true });
+
+    await manager.prepareAttempt(workspace.path);
+
+    expect(await exists(path.join(workspace.path, 'tmp'))).toBe(false);
+    expect(await exists(path.join(workspace.path, '.elixir_ls'))).toBe(false);
+  });
+
+  it('enforces per-hook failure and timeout semantics', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const calls: string[] = [];
+    const manager = new WorkspaceManager({
+      root,
+      hooks: {
+        after_create: 'create',
+        before_run: 'before',
+        after_run: 'after',
+        before_remove: 'remove',
+        timeout_ms: 1000
+      },
+      runShell: async ({ script }) => {
+        calls.push(script);
+        if (script === 'create') {
+          return { timedOut: true, error: 'timeout' };
+        }
+        if (script === 'before') {
+          return { timedOut: false, error: 'failed' };
+        }
+        return { timedOut: false };
+      }
+    });
+
+    await expect(manager.ensureWorkspace('ABC-1')).rejects.toMatchObject({ code: 'workspace_hook_timeout' });
+
+    const manager2 = new WorkspaceManager({
+      root,
+      hooks: {
+        before_run: 'before',
+        after_run: 'after',
+        before_remove: 'remove',
+        timeout_ms: 1000
+      },
+      runShell: async ({ script }) => {
+        if (script === 'before') {
+          return { timedOut: false, error: 'failed' };
+        }
+        if (script === 'after') {
+          return { timedOut: true, error: 'timeout' };
+        }
+        if (script === 'remove') {
+          return { timedOut: true, error: 'timeout' };
+        }
+        return { timedOut: false };
+      }
+    });
+
+    const workspace = await manager2.ensureWorkspace('ABC-2');
+    await expect(manager2.prepareAttempt(workspace.path)).rejects.toMatchObject({ code: 'workspace_hook_failed' });
+    await expect(manager2.finalizeAttempt(workspace.path)).resolves.toBeUndefined();
+    await expect(manager2.cleanupWorkspace('ABC-2')).resolves.toBe(true);
+
+    expect(calls).toContain('create');
+  });
+
+  it('runs after_create hook only on new workspace creation', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const runShell = vi.fn(async () => ({ timedOut: false }));
+    const manager = new WorkspaceManager({
+      root,
+      hooks: {
+        after_create: 'echo create',
+        timeout_ms: 1000
+      },
+      runShell
+    });
+
+    await manager.ensureWorkspace('ABC-1');
+    await manager.ensureWorkspace('ABC-1');
+
+    expect(runShell).toHaveBeenCalledTimes(1);
+  });
+});
