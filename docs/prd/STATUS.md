@@ -42,7 +42,7 @@ Owner: orchestration planning
 ## Next Queue
 - [x] P1: Implement workflow loader/config resolver/validator/reload pipeline.
 - [x] P2: Implement orchestrator loop and Linear adapter read operations.
-- [ ] P3: Implement workspace manager, hooks, and safety invariants.
+- [x] P3: Implement workspace manager, hooks, and safety invariants.
 - [ ] P4: Implement Codex runner protocol lifecycle.
 - [ ] P5: Implement local HTTP API and embedded desktop UI integration.
 - [ ] P6: Implement security profiles and minimal persistence.
@@ -94,6 +94,36 @@ Owner: orchestration planning
 - SPEC coverage anchors:
   - SPEC 17.3 (`Issue Tracker Client`): `tests/tracker/linear-adapter.test.ts`, `tests/tracker/factory.test.ts`
   - SPEC 17.4 (`Orchestrator Dispatch, Reconciliation, and Retry`): `tests/orchestrator/core.test.ts`
+
+## Implementation Evidence (P3 + P4 Minimal Bridge Slice)
+- Date: 2026-04-10
+- Scope delivered:
+  - `WorkspaceManager` in `src/workspace/manager.ts`:
+    - Deterministic per-issue workspace derivation with sanitization rule `[A-Za-z0-9._-]` and replacement to `_`.
+    - Safe create/reuse behavior with `created_now` and fail-fast non-directory collision handling.
+    - Root-containment and launch-cwd equality invariants.
+    - Hook lifecycle support for `after_create`, `before_run`, `after_run`, `before_remove` with timeout support (`hooks.timeout_ms`) and SPEC 9.4 failure semantics.
+    - Attempt prep cleanup helpers for `tmp` and `.elixir_ls`, plus terminal cleanup helpers (`cleanupWorkspace`, `cleanupWorkspaces`).
+  - Minimal Codex runner in `src/codex/runner.ts`:
+    - Launch via `bash -lc <codex.command>` in workspace cwd.
+    - Startup handshake support (`initialize`, `initialized`, `thread/start`, `turn/start`).
+    - Nested thread/turn id parsing and `session_id` composition.
+    - One-turn streaming outcome mapping (`turn_completed`, `turn_failed`, `turn_cancelled`, input-required).
+    - `read_timeout_ms` and `turn_timeout_ms` enforcement.
+    - Stdout protocol parsing with partial-line buffering; stderr isolation as diagnostics.
+  - Integration bridge:
+    - Local runner wiring in `src/orchestrator/local-worker-runner.ts` + `src/orchestrator/local-runner-bridge.ts`.
+    - Orchestrator-compatible `spawnWorker`/`terminateWorker` bridge for deterministic local execution tests.
+- Test evidence:
+  - `npm test` -> pass (12 files, 69 tests).
+  - `npm run build` -> pass (`tsc --project tsconfig.json`).
+  - `git diff --check` -> pass.
+- SPEC coverage anchors:
+  - SPEC 17.2 (`Workspace Manager and Safety`): `tests/workspace/workspace-manager.test.ts`
+  - SPEC 17.5 (`Coding-Agent App-Server Client`, minimal one-turn slice): `tests/codex/runner.test.ts`
+  - Orchestrator bridge integration evidence: `tests/orchestrator/local-runner-bridge.test.ts`
+- Deferred for full P4 closure:
+  - Multi-turn continuation lifecycle and long-run soak coverage remain open.
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
