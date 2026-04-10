@@ -37,11 +37,22 @@ No test framework is configured yet.
 
 ## Commit, Merge & Pull Request Guidelines
 Follow `.codex/skills/commit/SKILL.md` for every commit.
+- The commit skill workflow is mandatory whenever creating commits.
+- Very small, atomic commits are a hard repository rule and override vague prompts like
+  `commit everything` or `commit all changes`.
 - Make very small, atomic commits: one logical change per commit.
 - Use fine-grained scopes (for example `orchestrator-loop`, `workspace-manager`).
 - Use Commitizen + gitmoji format: `<gitmoji> <type>(<scope>): <subject>`.
 - Example: `✨ feat(orchestrator-loop): add retry jitter`.
 - Include commit body sections for summary, rationale, and tests.
+- Before committing, list a commit plan (intended commit message + file/hunk scope) and then
+  stage only that atomic unit.
+- Do not use broad staging (`git add -A`) for mixed logical changes.
+- If changes span multiple concerns, split into multiple commits by default.
+- `commit everything` / `commit all` means commit all pending work as multiple atomic commits, not
+  one combined commit.
+- Only create a single combined commit when the user explicitly says `single commit`, `one commit`,
+  or `squash into one`.
 
 Merge policy:
 - Always merge with `--no-ff` to preserve branch history.
