@@ -74,22 +74,34 @@ These aliases intentionally launch the same local API/dashboard surface:
 
 ## Run Standalone Desktop App (macOS)
 
-`start:desktop` launches an Electron host that starts the same runtime-backed
-dashboard backend on an ephemeral loopback port and renders it in a native
-desktop window.
+`start:desktop` launches a Tauri host that starts the same runtime-backed
+dashboard backend and opens it in a native desktop window.
 
 ```bash
 npm run start:desktop
 ```
 
+Build desktop bundle:
+
+```bash
+npm run build:desktop
+```
+
+Desktop QA checklist:
+
+- `docs/DESKTOP-QA.md`
+
 Notes:
 
-- The backend startup is managed by the desktop host and shut down when the app exits.
+- The backend startup/shutdown is managed natively by the Tauri Rust host.
+- The desktop shell targets local runtime URL `http://127.0.0.1:3000/`.
 - Default workflow path is repository root `WORKFLOW.md`.
 - Set `SYMPHONY_WORKFLOW_PATH` to point at a non-default workflow file if needed.
+- Set `SYMPHONY_DESKTOP_PORT` (or `SYMPHONY_PORT`) to override desktop backend port.
 - Export `LINEAR_API_KEY` before startup so tracker validation passes.
 - For local UI-only startup without Linear credentials, set `SYMPHONY_OFFLINE=1`.
 - `.env` is loaded automatically for startup scripts (or `SYMPHONY_ENV_FILE` for a custom file path).
+- If backend startup fails, the desktop window now stays open and displays an actionable boot error instead of exiting hard.
 
 ## API Endpoints
 
