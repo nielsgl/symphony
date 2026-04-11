@@ -138,4 +138,13 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+# Tauri artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# Playwright artifacts
+test-results/
+playwright-report/
+output/playwright/
+
 .worktrees

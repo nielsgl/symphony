@@ -263,8 +263,36 @@ describe('LocalApiServer', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
     expect(payload).toContain('Symphony Local Control');
-    expect(payload).toContain('/api/v1/state');
-    expect(payload).toContain('/api/v1/refresh');
+    expect(payload).toContain('/dashboard/client.js');
+    expect(payload).toContain('/dashboard/styles.css');
+  });
+
+  it('serves shared dashboard script and styles assets', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const scriptResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/client.js`);
+    const scriptPayload = await scriptResponse.text();
+    expect(scriptResponse.status).toBe(200);
+    expect(scriptResponse.headers.get('content-type')).toContain('application/javascript');
+    expect(scriptPayload).toContain('/api/v1/state');
+    expect(scriptPayload).toContain('/api/v1/refresh');
+
+    const cssResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/styles.css`);
+    const cssPayload = await cssResponse.text();
+    expect(cssResponse.status).toBe(200);
+    expect(cssResponse.headers.get('content-type')).toContain('text/css');
+    expect(cssPayload).toContain('.layout');
+    expect(cssPayload).toContain('.panel');
   });
 
   it('returns 500 envelope when snapshot source throws', async () => {

@@ -6,20 +6,26 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "test": "vitest run",
+    "test:e2e:web": "playwright test --config=playwright.web.config.ts",
+    "test:e2e:desktop": "playwright test --config=playwright.desktop.config.ts",
+    "test:e2e": "npm run test:e2e:web && npm run test:e2e:desktop",
     "start:dashboard": "npm run build && node scripts/start-dashboard.js",
     "start:api": "npm run start:dashboard",
     "start:web": "npm run start:dashboard",
-    "start:desktop": "npm run build && electron desktop/main.js"
+    "start:desktop": "tauri dev",
+    "build:desktop": "tauri build"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
     "dotenv": "^17.4.1",
     "js-yaml": "^4.1.1",
     "liquidjs": "^10.25.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@tauri-apps/cli": "^2.8.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.17",
-    "electron": "^41.2.0",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   }
