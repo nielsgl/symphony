@@ -27,6 +27,11 @@ function baseConfig(): EffectiveConfig {
       turn_timeout_ms: 3600000,
       read_timeout_ms: 5000,
       stall_timeout_ms: 300000
+    },
+    persistence: {
+      enabled: true,
+      db_path: '/tmp/symphony/runtime.sqlite',
+      retention_days: 14
     }
   };
 }
@@ -94,5 +99,17 @@ describe('ConfigValidator', () => {
     expect(outcome.dispatch_allowed).toBe(false);
     expect(outcome.reconciliation_allowed).toBe(true);
     expect(outcome.validation.ok).toBe(false);
+  });
+
+  it('rejects unsupported codex approval policy values', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.codex.approval_policy = 'always';
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_codex_approval_policy');
+    }
   });
 });

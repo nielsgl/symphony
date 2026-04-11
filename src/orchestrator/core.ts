@@ -68,6 +68,7 @@ export class OrchestratorCore {
   private readonly ports: OrchestratorOptions['ports'];
   private readonly nowMs: () => number;
   private readonly logger?: StructuredLogger;
+  private readonly persistence?: OrchestratorOptions['persistence'];
 
   private readonly state: OrchestratorState;
 
@@ -76,6 +77,7 @@ export class OrchestratorCore {
     this.ports = options.ports;
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.logger = options.logger;
+    this.persistence = options.persistence;
 
     this.state = {
       poll_interval_ms: this.config.poll_interval_ms,
@@ -179,7 +181,22 @@ export class OrchestratorCore {
     runningEntry.last_message = workerEvent.detail ?? null;
 
     if (workerEvent.session_id) {
+      const hadSessionId = runningEntry.session_id;
       runningEntry.session_id = workerEvent.session_id;
+      if (runningEntry.run_id && hadSessionId !== workerEvent.session_id) {
+        void this.persistence
+          ?.recordSession({
+            run_id: runningEntry.run_id,
+            session_id: workerEvent.session_id
+          })
+          .catch(() => {
+            this.logger?.log({
+              level: 'warn',
+              event: 'persistence_record_session_failed',
+              message: `failed to persist session for ${runningEntry.identifier}`
+            });
+          });
+      }
     }
 
     if (workerEvent.event === 'turn_started') {
@@ -208,6 +225,23 @@ export class OrchestratorCore {
       runningEntry.recent_events.splice(0, runningEntry.recent_events.length - 20);
     }
 
+    if (runningEntry.run_id) {
+      void this.persistence
+        ?.recordEvent({
+          run_id: runningEntry.run_id,
+          timestamp_ms: workerEvent.timestamp_ms,
+          event: workerEvent.event,
+          message: workerEvent.detail ?? null
+        })
+        .catch(() => {
+          this.logger?.log({
+            level: 'warn',
+            event: 'persistence_record_event_failed',
+            message: `failed to persist worker event for ${runningEntry.identifier}`
+          });
+        });
+    }
+
     this.logger?.log({
       level: 'info',
       event: 'worker_event',
@@ -221,7 +255,7 @@ export class OrchestratorCore {
     });
   }
 
-  async onWorkerExit(issue_id: string, reason: WorkerExitReason): Promise<void> {
+  async onWorkerExit(issue_id: string, reason: WorkerExitReason, error?: string): Promise<void> {
     const running = this.state.running.get(issue_id);
     if (!running) {
       return;
@@ -231,6 +265,7 @@ export class OrchestratorCore {
     this.addRuntimeSecondsFromEntry(running);
 
     if (reason === 'normal') {
+      await this.completeRunRecord(running, 'succeeded', null);
       this.state.completed.add(issue_id);
       await this.scheduleRetry({
         issue_id,
@@ -240,13 +275,14 @@ export class OrchestratorCore {
         error: null
       });
     } else {
+      await this.completeRunRecord(running, 'failed', error ?? `worker exited: ${reason}`);
       this.state.health.last_error = `worker exited for ${running.identifier}`;
       await this.scheduleRetry({
         issue_id,
         identifier: running.identifier,
         attempt: running.retry_attempt + 1,
         delay_type: 'failure',
-        error: `worker exited: ${reason}`
+        error: error ?? `worker exited: ${reason}`
       });
     }
 
@@ -378,6 +414,8 @@ export class OrchestratorCore {
       this.addRuntimeSecondsFromEntry(runningEntry);
       this.state.running.delete(issueId);
 
+      await this.completeRunRecord(runningEntry, 'stalled', 'worker stalled');
+
       await this.scheduleRetry({
         issue_id: issueId,
         identifier: runningEntry.identifier,
@@ -407,6 +445,7 @@ export class OrchestratorCore {
     this.state.running.set(issue.id, {
       issue,
       identifier: issue.identifier,
+      run_id: null,
       worker_handle: spawned.worker_handle,
       monitor_handle: spawned.monitor_handle,
       retry_attempt: attempt ?? 0,
@@ -429,6 +468,22 @@ export class OrchestratorCore {
       started_at_ms: this.nowMs(),
       last_codex_timestamp_ms: null
     });
+
+    const runningEntry = this.state.running.get(issue.id);
+    if (runningEntry && this.persistence) {
+      try {
+        runningEntry.run_id = await this.persistence.startRun({
+          issue_id: issue.id,
+          issue_identifier: issue.identifier
+        });
+      } catch {
+        this.logger?.log({
+          level: 'warn',
+          event: 'persistence_start_run_failed',
+          message: `failed to start durable run record for ${issue.identifier}`
+        });
+      }
+    }
 
     this.state.claimed.add(issue.id);
 
@@ -453,6 +508,7 @@ export class OrchestratorCore {
     });
 
     this.addRuntimeSecondsFromEntry(runningEntry);
+    await this.completeRunRecord(runningEntry, 'cancelled', reason);
     this.state.running.delete(issue_id);
     this.state.claimed.delete(issue_id);
 
@@ -499,5 +555,29 @@ export class OrchestratorCore {
 
   private addRuntimeSecondsFromEntry(runningEntry: RunningEntry): void {
     this.state.codex_totals.seconds_running += Math.max(0, Math.floor((this.nowMs() - runningEntry.started_at_ms) / 1000));
+  }
+
+  private async completeRunRecord(
+    runningEntry: RunningEntry,
+    terminal_status: 'succeeded' | 'failed' | 'timed_out' | 'stalled' | 'cancelled',
+    error_code: string | null
+  ): Promise<void> {
+    if (!runningEntry.run_id || !this.persistence) {
+      return;
+    }
+
+    try {
+      await this.persistence.completeRun({
+        run_id: runningEntry.run_id,
+        terminal_status,
+        error_code
+      });
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: 'persistence_complete_run_failed',
+        message: `failed to complete durable run record for ${runningEntry.identifier}`
+      });
+    }
   }
 }

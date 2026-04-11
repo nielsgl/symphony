@@ -31,6 +31,11 @@ function makeSnapshotInputs() {
         turn_timeout_ms: 3600000,
         read_timeout_ms: 5000,
         stall_timeout_ms: 300000
+      },
+      persistence: {
+        enabled: true,
+        db_path: '/tmp/symphony/runtime.sqlite',
+        retention_days: 14
       }
     },
     promptTemplate: 'Prompt',

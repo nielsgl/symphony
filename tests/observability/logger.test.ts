@@ -60,4 +60,22 @@ describe('MultiSinkLogger', () => {
 
     expect(healthySink.entries.some((entry) => entry.includes('event=api_internal_error'))).toBe(true);
   });
+
+  it('redacts secrets in message and context', () => {
+    const sink = new MemorySink();
+    const logger = new MultiSinkLogger({ sinks: [sink], nowIso: () => '2026-04-11T12:00:00.000Z' });
+
+    logger.log({
+      level: 'info',
+      event: 'tracker_auth',
+      message: 'request failed token=abcd1234',
+      context: {
+        api_key: 'shh',
+        issue_id: 'i-1'
+      }
+    });
+
+    expect(sink.entries[0]).toContain('api_key="***REDACTED***"');
+    expect(sink.entries[0]).not.toContain('abcd1234');
+  });
 });

@@ -8,6 +8,7 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
   return {
     issue: makeIssue(),
     identifier: 'ABC-1',
+    run_id: 'run-1',
     worker_handle: {},
     monitor_handle: {},
     retry_attempt: 0,

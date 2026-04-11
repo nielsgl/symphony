@@ -1,6 +1,7 @@
 import type { Issue, TrackerAdapter } from '../tracker';
 import type { CodexUsageTotals } from '../codex';
 import type { StructuredLogger } from '../observability';
+import type { RunTerminalStatus } from '../persistence';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
 export type WorkerExitReason = 'normal' | 'abnormal';
@@ -9,6 +10,7 @@ export type RetryDelayType = 'continuation' | 'failure';
 export interface RunningEntry {
   issue: Issue;
   identifier: string;
+  run_id: string | null;
   worker_handle: unknown;
   monitor_handle: unknown;
   retry_attempt: number;
@@ -95,6 +97,18 @@ export interface OrchestratorPorts {
   notifyObservers?: () => void;
 }
 
+export interface OrchestratorPersistencePort {
+  startRun: (params: { issue_id: string; issue_identifier: string }) => Promise<string>;
+  recordSession: (params: { run_id: string; session_id: string }) => Promise<void>;
+  recordEvent: (params: {
+    run_id: string;
+    timestamp_ms: number;
+    event: string;
+    message: string | null;
+  }) => Promise<void>;
+  completeRun: (params: { run_id: string; terminal_status: RunTerminalStatus; error_code?: string | null }) => Promise<void>;
+}
+
 export interface WorkerObservabilityEvent {
   timestamp_ms: number;
   event: string;
@@ -117,6 +131,7 @@ export interface OrchestratorConfig {
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
   ports: OrchestratorPorts;
+  persistence?: OrchestratorPersistencePort;
   nowMs?: () => number;
   logger?: StructuredLogger;
 }
