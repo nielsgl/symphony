@@ -109,8 +109,25 @@ describe('ConfigValidator', () => {
     config.tracker.project_slug = '';
     config.tracker.owner = 'nielsgl';
     config.tracker.repo = 'symphony';
+    config.tracker.active_states = ['Open'];
 
     expect(validator.validate(config)).toEqual({ ok: true, at: expect.any(String) });
+  });
+
+  it('rejects github tracker config when active_states cannot map to open/closed', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.kind = 'github';
+    config.tracker.project_slug = '';
+    config.tracker.owner = 'nielsgl';
+    config.tracker.repo = 'symphony';
+    config.tracker.active_states = ['Todo', 'In Progress'];
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_tracker_active_states_for_github');
+    }
   });
 
   it('enforces non-empty codex command', () => {

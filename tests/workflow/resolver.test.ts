@@ -73,6 +73,8 @@ describe('ConfigResolver', () => {
     expect(config.tracker.api_key).toBe('gh-token');
     expect(config.tracker.owner).toBe('nielsgl');
     expect(config.tracker.repo).toBe('symphony');
+    expect(config.tracker.active_states).toEqual(['Open']);
+    expect(config.tracker.terminal_states).toEqual(['Closed']);
   });
 
   it('treats empty resolved $VAR as missing value', () => {

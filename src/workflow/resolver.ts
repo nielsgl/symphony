@@ -9,8 +9,26 @@ interface ResolverOptions {
   tmpdir?: () => string;
 }
 
-const DEFAULT_ACTIVE_STATES = ['Todo', 'In Progress'];
-const DEFAULT_TERMINAL_STATES = ['Closed', 'Cancelled', 'Canceled', 'Duplicate', 'Done'];
+const DEFAULT_LINEAR_ACTIVE_STATES = ['Todo', 'In Progress'];
+const DEFAULT_LINEAR_TERMINAL_STATES = ['Closed', 'Cancelled', 'Canceled', 'Duplicate', 'Done'];
+const DEFAULT_GITHUB_ACTIVE_STATES = ['Open'];
+const DEFAULT_GITHUB_TERMINAL_STATES = ['Closed'];
+
+function getDefaultActiveStates(trackerKind: string): string[] {
+  if (trackerKind === 'github') {
+    return DEFAULT_GITHUB_ACTIVE_STATES;
+  }
+
+  return DEFAULT_LINEAR_ACTIVE_STATES;
+}
+
+function getDefaultTerminalStates(trackerKind: string): string[] {
+  if (trackerKind === 'github') {
+    return DEFAULT_GITHUB_TERMINAL_STATES;
+  }
+
+  return DEFAULT_LINEAR_TERMINAL_STATES;
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -193,8 +211,8 @@ export class ConfigResolver {
         project_slug: trackerProjectSlug,
         owner: trackerOwner,
         repo: trackerRepo,
-        active_states: readStringList(tracker.active_states, DEFAULT_ACTIVE_STATES),
-        terminal_states: readStringList(tracker.terminal_states, DEFAULT_TERMINAL_STATES)
+        active_states: readStringList(tracker.active_states, getDefaultActiveStates(trackerKind)),
+        terminal_states: readStringList(tracker.terminal_states, getDefaultTerminalStates(trackerKind))
       },
       polling: {
         interval_ms: readInt(polling.interval_ms, 30000)

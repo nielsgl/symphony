@@ -287,7 +287,10 @@ export class GitHubIssuesAdapter implements TrackerAdapter {
   private async fetchIssuesByStateFilter(stateNames: string[]): Promise<Issue[]> {
     const stateEnums = mapStateNamesToEnums(stateNames);
     if (stateEnums.length === 0) {
-      return [];
+      throw new TrackerAdapterError(
+        'github_invalid_state_filter',
+        'GitHub state filter resolved to no supported values. Use Open and/or Closed.'
+      );
     }
 
     const issues: Issue[] = [];

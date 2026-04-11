@@ -54,7 +54,8 @@ export type TrackerErrorCode =
   | 'github_api_status'
   | 'github_graphql_errors'
   | 'github_unknown_payload'
-  | 'github_missing_end_cursor';
+  | 'github_missing_end_cursor'
+  | 'github_invalid_state_filter';
 
 export interface TrackerRuntimeConfig {
   kind: string;

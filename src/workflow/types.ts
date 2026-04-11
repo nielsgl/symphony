@@ -12,6 +12,7 @@ export type ValidationErrorCode =
   | 'missing_tracker_project_slug'
   | 'missing_tracker_owner'
   | 'missing_tracker_repo'
+  | 'invalid_tracker_active_states_for_github'
   | 'missing_codex_command'
   | 'invalid_codex_approval_policy'
   | 'invalid_codex_thread_sandbox'

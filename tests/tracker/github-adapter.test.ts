@@ -135,6 +135,16 @@ describe('GitHubIssuesAdapter', () => {
     expect(requests).toHaveLength(0);
   });
 
+  it('fails fast for non-empty unsupported state filters', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses([], requests);
+
+    await expect(adapter.fetch_issues_by_states(['Todo'])).rejects.toMatchObject({
+      code: 'github_invalid_state_filter'
+    });
+    expect(requests).toHaveLength(0);
+  });
+
   it('normalizes identifier, labels, dates, and pr_links metadata', async () => {
     const requests: FakeRequest[] = [];
     const adapter = createAdapterWithQueuedResponses(

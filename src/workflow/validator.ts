@@ -10,6 +10,24 @@ export interface ConfigValidatorOptions {
   clock?: () => Date;
 }
 
+function mapGitHubStateNamesToEnums(stateNames: string[]): string[] {
+  const mapped = new Set<string>();
+
+  for (const stateName of stateNames) {
+    const normalized = stateName.trim().toLowerCase();
+    if (normalized === 'open') {
+      mapped.add('OPEN');
+      continue;
+    }
+
+    if (normalized === 'closed') {
+      mapped.add('CLOSED');
+    }
+  }
+
+  return Array.from(mapped);
+}
+
 export class ConfigValidator {
   private readonly clock: () => Date;
 
@@ -72,6 +90,18 @@ export class ConfigValidator {
         message: 'tracker.repo is required for tracker.kind=github',
         at
       };
+    }
+
+    if (effectiveConfig.tracker.kind === 'github') {
+      const mappedActiveStates = mapGitHubStateNamesToEnums(effectiveConfig.tracker.active_states);
+      if (mappedActiveStates.length === 0) {
+        return {
+          ok: false,
+          error_code: 'invalid_tracker_active_states_for_github',
+          message: 'tracker.active_states must include at least one of: Open, Closed for tracker.kind=github',
+          at
+        };
+      }
     }
 
     if (!effectiveConfig.codex.command.trim()) {
