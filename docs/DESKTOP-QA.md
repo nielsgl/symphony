@@ -19,7 +19,8 @@ Use this one-liner to run the full scripted suite:
 SYMPHONY_OFFLINE=1 npm run build && \
 SYMPHONY_OFFLINE=1 npm test && \
 SYMPHONY_OFFLINE=1 npm run test:e2e:web && \
-SYMPHONY_OFFLINE=1 npm run test:e2e:desktop-runtime
+SYMPHONY_OFFLINE=1 npm run test:e2e:desktop-runtime && \
+SYMPHONY_OFFLINE=1 npm run test:desktop:native-smoke
 ```
 
 Expected result:
@@ -28,6 +29,7 @@ Expected result:
 - unit/integration tests pass
 - web e2e tests pass
 - desktop-runtime e2e tests pass
+- native desktop smoke automation passes
 
 ## Native Host Validation
 
@@ -56,10 +58,10 @@ Expected result:
 - dashboard loads
 - no hard exit on startup failure paths
 
-Packaging note:
+Packaging check:
 
-- `npm run build:desktop` is currently blocked because standalone bundling is
-  not implemented yet (desktop host still depends on local repo + Node runtime).
+- `npm run build:desktop` succeeds and includes bundled `symphony-backend`
+  sidecar in desktop app resources.
 
 3. Verify runtime endpoint from another terminal:
 
