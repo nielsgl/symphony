@@ -114,9 +114,21 @@ export function renderDashboardClientJs(): string {
       { label: 'Runtime seconds', value: payload.codex_totals.seconds_running }
     ];
 
-    elements.overviewMetrics.innerHTML = metrics
-      .map((metric) => '<article class="metric"><h3>' + metric.label + '</h3><p>' + formatNumber(metric.value) + '</p></article>')
-      .join('');
+    elements.overviewMetrics.replaceChildren(
+      ...metrics.map((metric) => {
+        const article = document.createElement('article');
+        article.className = 'metric';
+
+        const heading = document.createElement('h3');
+        heading.textContent = metric.label;
+
+        const value = document.createElement('p');
+        value.textContent = formatNumber(metric.value);
+
+        article.append(heading, value);
+        return article;
+      })
+    );
 
     const healthFailed = payload.health.dispatch_validation === 'failed';
     elements.health.className = healthFailed ? 'health-failed' : 'health-ok';
@@ -134,37 +146,70 @@ export function renderDashboardClientJs(): string {
     });
 
     if (rows.length === 0) {
-      elements.runningRows.innerHTML = '<tr><td colspan="5" class="muted">No matching running issues.</td></tr>';
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 5;
+      cell.className = 'muted';
+      cell.textContent = 'No matching running issues.';
+      row.appendChild(cell);
+      elements.runningRows.replaceChildren(row);
       return;
     }
 
-    elements.runningRows.innerHTML = rows
-      .map((entry) => {
+    elements.runningRows.replaceChildren(
+      ...rows.map((entry) => {
         const issue = entry.issue_identifier;
-        const selectedClass = state.selectedIssue === issue ? ' selected-row' : '';
-        return '<tr data-issue="' + issue + '" class="running-row' + selectedClass + '">' +
-          '<td>' + issue + '</td>' +
-          '<td>' + (entry.session_id || 'n/a') + '</td>' +
-          '<td>' + entry.state + '</td>' +
-          '<td>' + formatNumber(entry.turn_count) + '</td>' +
-          '<td>' + formatNumber(entry.tokens.total_tokens) + '</td>' +
-        '</tr>';
+        const row = document.createElement('tr');
+        row.setAttribute('data-issue', issue);
+        row.className = 'running-row' + (state.selectedIssue === issue ? ' selected-row' : '');
+
+        const issueCell = document.createElement('td');
+        issueCell.textContent = issue;
+
+        const sessionCell = document.createElement('td');
+        sessionCell.textContent = entry.session_id || 'n/a';
+
+        const stateCell = document.createElement('td');
+        stateCell.textContent = entry.state;
+
+        const turnsCell = document.createElement('td');
+        turnsCell.textContent = formatNumber(entry.turn_count);
+
+        const tokensCell = document.createElement('td');
+        tokensCell.textContent = formatNumber(entry.tokens.total_tokens);
+
+        row.append(issueCell, sessionCell, stateCell, turnsCell, tokensCell);
+        return row;
       })
-      .join('');
+    );
   }
 
   function renderRetry(payload) {
     if (!payload.retrying.length) {
-      elements.retryList.innerHTML = '<li class="muted">No issues are waiting for retry.</li>';
+      const item = document.createElement('li');
+      item.className = 'muted';
+      item.textContent = 'No issues are waiting for retry.';
+      elements.retryList.replaceChildren(item);
       return;
     }
 
-    elements.retryList.innerHTML = payload.retrying
-      .map((entry) => {
-        const errorText = entry.error ? ' - ' + entry.error : '';
-        return '<li><strong>' + entry.issue_identifier + '</strong> attempt ' + entry.attempt + ' due ' + entry.due_at + errorText + '</li>';
+    elements.retryList.replaceChildren(
+      ...payload.retrying.map((entry) => {
+        const item = document.createElement('li');
+
+        const issue = document.createElement('strong');
+        issue.textContent = entry.issue_identifier;
+
+        const detail = document.createTextNode(' attempt ' + entry.attempt + ' due ' + entry.due_at);
+        item.append(issue, detail);
+
+        if (entry.error) {
+          item.append(document.createTextNode(' - ' + entry.error));
+        }
+
+        return item;
       })
-      .join('');
+    );
   }
 
   async function loadIssue(identifier) {
