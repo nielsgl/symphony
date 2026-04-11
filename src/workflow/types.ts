@@ -10,6 +10,8 @@ export type ValidationErrorCode =
   | 'unsupported_tracker_kind'
   | 'missing_tracker_api_key'
   | 'missing_tracker_project_slug'
+  | 'missing_tracker_owner'
+  | 'missing_tracker_repo'
   | 'missing_codex_command'
   | 'invalid_codex_approval_policy'
   | 'invalid_codex_thread_sandbox'
@@ -26,6 +28,8 @@ export interface TrackerConfig {
   endpoint: string;
   api_key: string;
   project_slug: string;
+  owner?: string;
+  repo?: string;
   active_states: string[];
   terminal_states: string[];
 }

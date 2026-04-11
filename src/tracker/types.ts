@@ -4,6 +4,19 @@ export interface IssueBlockerRef {
   state: string | null;
 }
 
+export interface IssuePullRequestLink {
+  number: number;
+  url: string;
+  state: string;
+  merged: boolean;
+}
+
+export interface IssueTrackerMeta {
+  tracker_kind: 'github';
+  repository: string;
+  pr_links: IssuePullRequestLink[];
+}
+
 export interface Issue {
   id: string;
   identifier: string;
@@ -15,6 +28,7 @@ export interface Issue {
   url: string | null;
   labels: string[];
   blocked_by: IssueBlockerRef[];
+  tracker_meta?: IssueTrackerMeta;
   created_at: Date | null;
   updated_at: Date | null;
 }
@@ -29,17 +43,26 @@ export type TrackerErrorCode =
   | 'unsupported_tracker_kind'
   | 'missing_tracker_api_key'
   | 'missing_tracker_project_slug'
+  | 'missing_tracker_owner'
+  | 'missing_tracker_repo'
   | 'linear_api_request'
   | 'linear_api_status'
   | 'linear_graphql_errors'
   | 'linear_unknown_payload'
-  | 'linear_missing_end_cursor';
+  | 'linear_missing_end_cursor'
+  | 'github_api_request'
+  | 'github_api_status'
+  | 'github_graphql_errors'
+  | 'github_unknown_payload'
+  | 'github_missing_end_cursor';
 
 export interface TrackerRuntimeConfig {
   kind: string;
   endpoint: string;
   api_key: string;
   project_slug: string;
+  owner?: string;
+  repo?: string;
   active_states: string[];
   page_size?: number;
   timeout_ms?: number;
