@@ -1,6 +1,6 @@
 # Symphony PRD Execution Status
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 Owner: orchestration planning
 
 ## How Agents Should Use This File
@@ -24,6 +24,7 @@ Owner: orchestration planning
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (implementation delivery should follow this list while P0 governance items remain open).
+- P0 governance remaining after this update: lock initial repo structure, convert traceability placeholders to concrete owner/test references, and approve entry into P1.
 - Blockers: None currently recorded.
 
 ## Done
@@ -37,10 +38,33 @@ Owner: orchestration planning
 
 ## Current Phase (P0)
 - [x] Review and sign off PRD-000 through PRD-008.
-- [ ] Confirm interface ownership per subsystem.
+- [x] Confirm interface ownership per subsystem.
 - [ ] Lock initial implementation repo structure (`src/`, `tests/`, `scripts/`).
 - [ ] Convert traceability checklist placeholders into concrete owner/test references.
 - [ ] Approve entry into P1.
+
+## Interface Ownership (P0 Governance Evidence)
+
+All interfaces below are accountable to owner role `orchestration planning`.
+Each ownership entry is scoped to interface contract and routing correctness,
+not implementation staffing by named individual.
+
+| Interface / Component | Accountable owner role | Boundaries (owns) | Boundaries (does not own) | Upstream dependencies | Downstream dependencies | Required acceptance-test anchors |
+|---|---|---|---|---|---|---|
+| TrackerAdapter (`fetch_candidate_issues`, `fetch_issues_by_states`, `fetch_issue_states_by_ids`) | orchestration planning | Tracker query contract, adapter normalization parity, typed tracker error mapping | Orchestrator scheduling policy, workspace lifecycle semantics, API/UI projection logic | `WorkflowConfig` tracker settings, tracker credentials/env resolution | `Orchestrator` candidate selection/reconciliation inputs | `tests/tracker/linear-adapter.test.ts`, `tests/tracker/github-adapter.test.ts`, `tests/tracker/factory.test.ts` |
+| WorkflowConfig resolver/validator/reload (`load`, `resolve`, `validate_for_dispatch`, `watch_and_reload`) | orchestration planning | Workflow parsing, typed defaults, env/path resolution, validation errors, hot-reload atomic swap | Orchestrator runtime dispatch loop decisions, tracker transport behavior | Workflow file path selection, environment variables, schema/type contract | Tracker factory config, orchestrator preflight dispatch gates, startup diagnostics | `tests/workflow/loader.test.ts`, `tests/workflow/resolver.test.ts`, `tests/workflow/validator.test.ts`, `tests/workflow/watcher.test.ts` |
+| OrchestratorState + dispatch/reconciliation (`tick`, `dispatch`, `snapshot`) | orchestration planning | Single-authority scheduling state (`claimed`, `running`, `retry_attempts`), retry/reconciliation policy, worker lifecycle coordination | Tracker API normalization internals, workspace path sanitization internals, Codex protocol framing | Tracker snapshots/state refresh, effective workflow config, worker bridge events | Local API state projection, observability logs, persistence history writer events | `tests/orchestrator/core.test.ts`, `tests/orchestrator/local-runner-bridge.test.ts` |
+| WorkspaceManager (`create_for_issue`, hook execution, cleanup) | orchestration planning | Workspace path derivation/containment, create-reuse safety, hooks timeout/failure semantics, cleanup helpers | Scheduling decisions, tracker state fetch, Codex protocol policy | Resolved workspace root config, issue identifiers, hook configuration | Worker launch cwd guarantees, terminal/cleanup behavior used by orchestrator bridge | `tests/workspace/workspace-manager.test.ts`, `tests/orchestrator/local-runner-bridge.test.ts` |
+| CodexRunner protocol (`start_session`, `run_turn`, `stop_session`) | orchestration planning | App-server startup handshake, turn lifecycle and continuation semantics, protocol parsing, timeout/error mapping, usage extraction | Orchestrator scheduling ownership, workspace derivation, API response schema ownership | WorkspaceManager cwd contract, workflow codex policy settings, orchestrator turn requests | Orchestrator worker-event stream, API/observability token/session surfaces | `tests/codex/runner.test.ts`, `tests/orchestrator/local-runner-bridge.test.ts` |
+| Local HTTP API + desktop integration (`/api/v1/state`, `/api/v1/:issue_identifier`, `/api/v1/refresh`, dashboard integration) | orchestration planning | API contract stability, error envelope behavior, refresh coalescing, embedded dashboard integration contract | Core scheduler state transition rules, tracker adapter internals, security-profile selection logic | Orchestrator snapshots/events, bootstrap runtime wiring, desktop launcher process config | Operator UI views, diagnostics consumers, external local clients | `tests/api/server.test.ts`, `tests/api/snapshot-service.test.ts`, `tests/api/refresh-coalescer.test.ts`, `tests/runtime/bootstrap.test.ts`, `tests/runtime/desktop-launcher.test.ts` |
+| Security profiles + redaction | orchestration planning | Profile precedence/default contract, redaction rules for logs/API/persistence, diagnostics visibility | Tracker query semantics, orchestrator dispatch ordering, workspace cleanup sequencing | Workflow codex policy fields, startup environment/settings | Logger sinks, API projections, persistence storage outputs | `tests/security/profiles.test.ts`, `tests/security/redaction.test.ts`, `tests/observability/logger.test.ts`, `tests/api/server.test.ts` |
+| Persistence (history + ui-state) | orchestration planning | Durable history/ui-state schema, retention and integrity checks, restart continuity contract boundaries | Durable restoration of active claims/running/retry state, tracker adapter logic, dispatch rules | Runtime event stream, redacted API/log payload contracts, local storage location config | `/api/v1/history`, `/api/v1/ui-state`, `/api/v1/diagnostics`, operator continuity behavior | `tests/persistence/store.test.ts`, `tests/runtime/bootstrap.test.ts`, `tests/api/server.test.ts` |
+
+Ownership evidence links:
+- Subsystem boundary source: `docs/prd/PRD-000-master.md` (Architecture and Ownership Boundaries).
+- Delivery gate source: `docs/prd/PRD-008-delivery-roadmap-gates.md` (Phase gates and ownership sequencing).
+- Requirement mapping source with explicit owner-role references:
+  `docs/prd/TRACEABILITY-MATRIX.md`.
 
 ## Next Queue
 - [x] P1: Implement workflow loader/config resolver/validator/reload pipeline.
@@ -318,6 +342,16 @@ Owner: orchestration planning
   - `INDEX.md` package ordering and completeness contract
   - `TRACEABILITY-MATRIX.md` owner/test/observability linkage scaffold
 - Outcome: Accepted as planning baseline for remaining P0 checklist items.
+
+## Sign-off Evidence (P0 Interface Ownership)
+- Date: 2026-04-12
+- Scope reviewed:
+  - `Interface Ownership (P0 Governance Evidence)` section in this file.
+  - Subsystem boundaries in `docs/prd/PRD-000-master.md`.
+  - Requirement-level owner role references in
+    `docs/prd/TRACEABILITY-MATRIX.md`.
+- Outcome: Ownership per subsystem is explicitly assigned with boundaries,
+  dependency routing, and acceptance-test anchors.
 
 ## References
 - Index: `/Users/niels.van.Galen.last/code/symphony/docs/prd/INDEX.md`
