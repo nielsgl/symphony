@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 // This suite validates dashboard/runtime behavior while the desktop host is running.
-// Native Tauri window lifecycle assertions are tracked separately as manual smoke checks.
+// Native Tauri lifecycle and handoff checks run via `npm run test:desktop:native-smoke`.
 export default defineConfig({
   testDir: './e2e',
   timeout: 90_000,

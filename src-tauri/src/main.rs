@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::Manager;
+use tauri::{Manager, path::BaseDirectory};
 
 struct BackendState(Mutex<Option<Child>>);
 
@@ -38,11 +38,58 @@ fn resolve_repo_root() -> PathBuf {
     .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."))
 }
 
-fn spawn_backend_process(repo_root: &PathBuf, port: u16) -> Result<Child, String> {
+fn resolve_sidecar_path(app: &tauri::App) -> Option<PathBuf> {
+  let direct = app
+    .path()
+    .resolve("symphony-backend", BaseDirectory::Resource)
+    .ok();
+  if let Some(path) = direct {
+    if path.exists() {
+      return Some(path);
+    }
+  }
+
+  let windows = app
+    .path()
+    .resolve("symphony-backend.exe", BaseDirectory::Resource)
+    .ok();
+  if let Some(path) = windows {
+    if path.exists() {
+      return Some(path);
+    }
+  }
+
+  None
+}
+
+fn spawn_backend_process(app: &tauri::App, repo_root: &PathBuf, port: u16) -> Result<Child, String> {
+  if let Some(sidecar_path) = resolve_sidecar_path(app) {
+    let mut sidecar = Command::new(&sidecar_path);
+    sidecar
+      .arg(format!("--port={}", port))
+      .stdin(Stdio::null())
+      .stdout(Stdio::inherit())
+      .stderr(Stdio::inherit());
+
+    if let Ok(workflow_path) = std::env::var("SYMPHONY_WORKFLOW_PATH") {
+      sidecar.arg(format!("--workflow={}", workflow_path));
+    }
+
+    if let Ok(off) = std::env::var("SYMPHONY_OFFLINE") {
+      if off == "1" || off.eq_ignore_ascii_case("true") {
+        sidecar.arg("--offline");
+      }
+    }
+
+    return sidecar
+      .spawn()
+      .map_err(|error| format!("failed to spawn bundled backend sidecar: {}", error));
+  }
+
   let launcher = repo_root.join("scripts").join("start-dashboard.js");
   if !launcher.exists() {
     return Err(format!(
-      "backend launcher not found at {} (desktop host currently requires a local Symphony repo checkout and Node runtime)",
+      "no bundled backend sidecar found and fallback launcher missing at {}",
       launcher.display()
     ));
   }
@@ -116,6 +163,7 @@ fn show_boot_error(app: &tauri::App, message: &str) {
 fn open_runtime_window(app: &tauri::App, port: u16) {
   if let Some(window) = app.get_webview_window("main") {
     let runtime_url = format!("http://127.0.0.1:{}/", port);
+    println!("desktop_window_handoff_url={}", runtime_url);
     let script = format!("window.location.replace('{}');", runtime_url);
     let _ = window.eval(&script);
     let _ = window.show();
@@ -129,11 +177,11 @@ fn main() {
 
       let port = parse_desktop_port();
       let repo_root = resolve_repo_root();
-      let mut child = match spawn_backend_process(&repo_root, port) {
+      let mut child = match spawn_backend_process(app, &repo_root, port) {
         Ok(process) => process,
         Err(error) => {
           show_boot_error(app, &format!(
-            "Failed to start local runtime: {}. Set SYMPHONY_OFFLINE=1 for local mode or provide LINEAR_API_KEY.",
+            "Failed to start local runtime: {}. Ensure desktop sidecar build completed or run from a local repository with Node runtime available.",
             error
           ));
           return Ok(());

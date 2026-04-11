@@ -141,6 +141,7 @@ vite.config.ts.timestamp-*
 # Tauri artifacts
 src-tauri/target/
 src-tauri/gen/
+src-tauri/resources/symphony-backend*
 
 # Playwright artifacts
 test-results/

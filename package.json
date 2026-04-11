@@ -5,16 +5,18 @@
   "description": "Symphony workflow config pipeline",
   "scripts": {
     "build": "tsc --project tsconfig.json",
+    "build:desktop:prepare": "npm run build && node scripts/build-desktop-backend-sidecar.js",
     "test": "vitest run",
     "test:e2e:web": "playwright test --config=playwright.web.config.ts",
     "test:e2e:desktop-runtime": "playwright test --config=playwright.desktop.config.ts",
     "test:e2e:desktop": "npm run test:e2e:desktop-runtime",
     "test:e2e": "npm run test:e2e:web && npm run test:e2e:desktop-runtime",
+    "test:desktop:native-smoke": "node scripts/test-desktop-native-smoke.js",
     "start:dashboard": "npm run build && node scripts/start-dashboard.js",
     "start:api": "npm run start:dashboard",
     "start:web": "npm run start:dashboard",
-    "start:desktop": "tauri dev",
-    "build:desktop": "node -e \"console.error('Desktop packaging is not supported yet: the current Tauri host requires a local Symphony repo checkout and Node runtime.'); process.exit(1)\""
+    "start:desktop": "npm run build:desktop:prepare && tauri dev",
+    "build:desktop": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -27,6 +29,7 @@
     "@tauri-apps/cli": "^2.8.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.17",
+    "pkg": "^5.8.1",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   }

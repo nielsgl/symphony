@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "app.symphony.desktop",
   "build": {
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:desktop:prepare",
     "frontendDist": "../desktop-static"
   },
   "app": {
@@ -26,6 +26,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "resources/symphony-backend"
+    ],
     "icon": [
       "icons/icon.png"
     ]
