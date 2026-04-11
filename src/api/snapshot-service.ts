@@ -11,16 +11,16 @@ function toStateRunningRow(issueId: string, entry: RunningEntry): ApiStateRespon
     issue_id: issueId,
     issue_identifier: entry.identifier,
     state: entry.issue.state,
-    session_id: null,
-    turn_count: 0,
-    last_event: null,
-    last_message: null,
+    session_id: entry.session_id,
+    turn_count: entry.turn_count,
+    last_event: entry.last_event,
+    last_message: entry.last_message,
     started_at: asIsoDate(entry.started_at_ms),
     last_event_at: entry.last_codex_timestamp_ms !== null ? asIsoDate(entry.last_codex_timestamp_ms) : null,
     tokens: {
-      input_tokens: 0,
-      output_tokens: 0,
-      total_tokens: 0
+      input_tokens: entry.tokens.input_tokens,
+      output_tokens: entry.tokens.output_tokens,
+      total_tokens: entry.tokens.total_tokens
     }
   };
 }
@@ -68,8 +68,8 @@ export class SnapshotService {
       },
       rate_limits: state.codex_rate_limits,
       health: {
-        dispatch_validation: 'ok',
-        last_error: null
+        dispatch_validation: state.health.dispatch_validation,
+        last_error: state.health.last_error
       }
     };
   }
@@ -94,24 +94,24 @@ export class SnapshotService {
         issue_id: issueId,
         status: 'running',
         workspace: {
-          path: null
+          path: entry.workspace_path
         },
         attempts: {
           restart_count: entry.retry_attempt,
           current_retry_attempt: currentRetryAttempt
         },
         running: {
-          session_id: null,
-          turn_count: 0,
+          session_id: entry.session_id,
+          turn_count: entry.turn_count,
           state: entry.issue.state,
           started_at: asIsoDate(entry.started_at_ms),
-          last_event: null,
-          last_message: null,
+          last_event: entry.last_event,
+          last_message: entry.last_message,
           last_event_at: entry.last_codex_timestamp_ms !== null ? asIsoDate(entry.last_codex_timestamp_ms) : null,
           tokens: {
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0
+            input_tokens: entry.tokens.input_tokens,
+            output_tokens: entry.tokens.output_tokens,
+            total_tokens: entry.tokens.total_tokens
           }
         },
         retry: retryEntry
@@ -121,8 +121,12 @@ export class SnapshotService {
               error: retryEntry.error
             }
           : null,
-        recent_events: [],
-        last_error: retryEntry?.error ?? null
+        recent_events: entry.recent_events.map((event) => ({
+          at: asIsoDate(event.at_ms),
+          event: event.event,
+          message: event.message
+        })),
+        last_error: retryEntry?.error ?? state.health.last_error
       };
     }
 
