@@ -31,6 +31,14 @@ Expected result:
 - desktop-runtime e2e tests pass
 - native desktop smoke automation passes
 
+Native visibility policy:
+
+- On macOS, `npm run test:desktop:native-smoke` now requires the Symphony
+  window to become visible by default.
+- If a CI or remote environment cannot expose desktop windows, set
+  `SYMPHONY_ALLOW_WINDOW_VISIBILITY_SKIP=1` explicitly to bypass only that
+  visibility assertion.
+
 ## Native Host Validation
 
 1. Validate Rust host compilation:
