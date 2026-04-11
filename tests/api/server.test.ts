@@ -466,4 +466,48 @@ describe('LocalApiServer', () => {
     expect(saveResponse.status).toBe(202);
     expect(setUiState).toHaveBeenCalled();
   });
+
+  it('returns invalid_ui_state when ui-state JSON body is malformed', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        getActiveProfile: () => ({
+          name: 'balanced',
+          approval_policy: 'on-request',
+          thread_sandbox: 'workspace-write',
+          turn_sandbox_policy: { type: 'workspace' },
+          user_input_policy: 'fail_attempt'
+        }),
+        getPersistenceHealth: () => ({
+          enabled: true,
+          db_path: '/tmp/runtime.sqlite',
+          retention_days: 14,
+          run_count: 0,
+          last_pruned_at: null,
+          integrity_ok: true
+        }),
+        listRunHistory: () => [],
+        getUiState: () => null,
+        setUiState: () => undefined
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/ui-state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"state":'
+    });
+
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+    expect(response.status).toBe(400);
+    expect(payload.error.code).toBe('invalid_ui_state');
+  });
 });

@@ -33,4 +33,22 @@ describe('secret redaction', () => {
     expect(redacted.tracker.authorization).toBe(REDACTED);
     expect(redacted.runs[0].error_code).toContain(REDACTED);
   });
+
+  it('preserves telemetry token counters that are not secrets', () => {
+    const payload = {
+      tokens: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15
+      }
+    };
+
+    const redacted = redactUnknown(payload) as {
+      tokens: { input_tokens: number; output_tokens: number; total_tokens: number };
+    };
+
+    expect(redacted.tokens.input_tokens).toBe(10);
+    expect(redacted.tokens.output_tokens).toBe(5);
+    expect(redacted.tokens.total_tokens).toBe(15);
+  });
 });

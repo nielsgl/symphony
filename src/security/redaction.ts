@@ -1,5 +1,6 @@
 const REDACTED = '***REDACTED***';
-const SECRET_KEY_PATTERN = /(token|secret|api[_-]?key|authorization|password)/i;
+const SECRET_KEY_PATTERN =
+  /^(authorization|proxy-authorization|x-api-key|api[_-]?key|secret|password|passphrase|access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token)$/i;
 const INLINE_SECRET_PATTERN = /(token|secret|api[_-]?key|authorization|password)\s*[:=]\s*([^\s,;]+)/gi;
 
 function redactStringValue(input: string): string {

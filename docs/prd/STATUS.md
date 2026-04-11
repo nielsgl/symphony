@@ -20,7 +20,7 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: Program-level governance remains in P0; implementation evidence is recorded through P5 groundwork.
+- Program status: Program-level governance remains in P0; implementation evidence is recorded through P6 closure.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (implementation delivery should follow this list while P0 governance items remain open).

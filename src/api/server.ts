@@ -266,13 +266,24 @@ export class LocalApiServer {
                 throw new LocalApiError('invalid_ui_state', 'Request body is required', 400);
               }
 
-              const parsed = JSON.parse(payloadText) as {
+              let parsed: {
                 state?: {
                   selected_issue?: string | null;
                   filters?: { status?: 'all' | 'running' | 'retrying'; query?: string };
                   panel_state?: { issue_detail_open?: boolean };
                 };
               };
+              try {
+                parsed = JSON.parse(payloadText) as {
+                  state?: {
+                    selected_issue?: string | null;
+                    filters?: { status?: 'all' | 'running' | 'retrying'; query?: string };
+                    panel_state?: { issue_detail_open?: boolean };
+                  };
+                };
+              } catch {
+                throw new LocalApiError('invalid_ui_state', 'Request body must be valid JSON', 400);
+              }
 
               const state = parsed.state;
               if (!state) {
