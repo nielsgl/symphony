@@ -7,13 +7,14 @@
     "build": "tsc --project tsconfig.json",
     "test": "vitest run",
     "test:e2e:web": "playwright test --config=playwright.web.config.ts",
-    "test:e2e:desktop": "playwright test --config=playwright.desktop.config.ts",
-    "test:e2e": "npm run test:e2e:web && npm run test:e2e:desktop",
+    "test:e2e:desktop-runtime": "playwright test --config=playwright.desktop.config.ts",
+    "test:e2e:desktop": "npm run test:e2e:desktop-runtime",
+    "test:e2e": "npm run test:e2e:web && npm run test:e2e:desktop-runtime",
     "start:dashboard": "npm run build && node scripts/start-dashboard.js",
     "start:api": "npm run start:dashboard",
     "start:web": "npm run start:dashboard",
     "start:desktop": "tauri dev",
-    "build:desktop": "tauri build"
+    "build:desktop": "node -e \"console.error('Desktop packaging is not supported yet: the current Tauri host requires a local Symphony repo checkout and Node runtime.'); process.exit(1)\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

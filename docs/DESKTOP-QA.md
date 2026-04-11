@@ -19,7 +19,7 @@ Use this one-liner to run the full scripted suite:
 SYMPHONY_OFFLINE=1 npm run build && \
 SYMPHONY_OFFLINE=1 npm test && \
 SYMPHONY_OFFLINE=1 npm run test:e2e:web && \
-SYMPHONY_OFFLINE=1 npm run test:e2e:desktop
+SYMPHONY_OFFLINE=1 npm run test:e2e:desktop-runtime
 ```
 
 Expected result:
@@ -27,7 +27,7 @@ Expected result:
 - build succeeds
 - unit/integration tests pass
 - web e2e tests pass
-- desktop e2e tests pass
+- desktop-runtime e2e tests pass
 
 ## Native Host Validation
 
@@ -55,6 +55,11 @@ Expected result:
 - local runtime starts
 - dashboard loads
 - no hard exit on startup failure paths
+
+Packaging note:
+
+- `npm run build:desktop` is currently blocked because standalone bundling is
+  not implemented yet (desktop host still depends on local repo + Node runtime).
 
 3. Verify runtime endpoint from another terminal:
 

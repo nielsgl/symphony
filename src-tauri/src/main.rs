@@ -42,7 +42,7 @@ fn spawn_backend_process(repo_root: &PathBuf, port: u16) -> Result<Child, String
   let launcher = repo_root.join("scripts").join("start-dashboard.js");
   if !launcher.exists() {
     return Err(format!(
-      "backend launcher not found at {}",
+      "backend launcher not found at {} (desktop host currently requires a local Symphony repo checkout and Node runtime)",
       launcher.display()
     ));
   }

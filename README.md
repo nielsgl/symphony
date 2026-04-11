@@ -72,7 +72,7 @@ These aliases intentionally launch the same local API/dashboard surface:
 - `npm run start:api`
 - `npm run start:web`
 
-## Run Standalone Desktop App (macOS)
+## Run Desktop App (macOS Dev Host)
 
 `start:desktop` launches a Tauri host that starts the same runtime-backed
 dashboard backend and opens it in a native desktop window.
@@ -81,11 +81,15 @@ dashboard backend and opens it in a native desktop window.
 npm run start:desktop
 ```
 
-Build desktop bundle:
+Desktop packaging status:
 
 ```bash
 npm run build:desktop
 ```
+
+Current behavior: packaging is intentionally blocked because the desktop host
+still launches the local Node-based backend (`scripts/start-dashboard.js`) from
+the repository checkout. Standalone bundling is tracked as follow-up work.
 
 Desktop QA checklist:
 
@@ -94,6 +98,7 @@ Desktop QA checklist:
 Notes:
 
 - The backend startup/shutdown is managed natively by the Tauri Rust host.
+- Desktop host currently requires a local Symphony repo checkout and Node runtime.
 - The desktop shell targets local runtime URL `http://127.0.0.1:3000/`.
 - Default workflow path is repository root `WORKFLOW.md`.
 - Set `SYMPHONY_WORKFLOW_PATH` to point at a non-default workflow file if needed.

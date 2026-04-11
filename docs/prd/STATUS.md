@@ -192,8 +192,9 @@ Owner: orchestration planning
     - Dashboard/API launcher now composes the live orchestrator runtime (`WorkflowLoader` + tracker + workspace manager + runner bridge + orchestrator + API server), not an in-memory static snapshot.
     - Startup performs terminal workspace cleanup, initial `startup` reconciliation tick, and periodic `interval` polling ticks.
     - Graceful shutdown path closes API listener and clears retry/poll timers.
-  - Standalone desktop host in `desktop/main.js`:
-    - `npm run start:desktop` now launches Electron and manages backend lifecycle directly (spawn, startup readiness detection, teardown).
+  - Tauri desktop dev host in `src-tauri/src/main.rs`:
+    - `npm run start:desktop` launches Tauri and manages backend lifecycle directly (spawn, startup readiness detection, teardown).
+    - Desktop backend launch currently requires local repo checkout + Node runtime (packaging is not yet standalone).
     - Desktop backend launch contract is shared via typed helpers in `src/runtime/desktop-launcher.ts`.
   - API projection completion in `src/api/snapshot-service.ts` and `src/api/types.ts`:
     - `health` reflects live orchestrator validation/error state.
