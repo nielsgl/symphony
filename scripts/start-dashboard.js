@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
-const { LocalApiServer } = require('../dist/src/api');
+const path = require('node:path');
+
+const { createRuntimeEnvironment } = require('../dist/src/runtime');
 const { MultiSinkLogger } = require('../dist/src/observability');
 
 function parsePort(argv) {
@@ -23,57 +25,53 @@ function parsePort(argv) {
   return 3000;
 }
 
-function createSnapshotState() {
+function parseWorkflowPath(argv) {
+  const workflowFlag = argv.find((arg) => arg.startsWith('--workflow='));
+  if (workflowFlag) {
+    return workflowFlag.split('=')[1];
+  }
+
+  return process.env.SYMPHONY_WORKFLOW_PATH || path.join(process.cwd(), 'WORKFLOW.md');
+}
+
+function parseOfflineMode(argv) {
+  if (argv.includes('--offline')) {
+    return true;
+  }
+
+  const value = process.env.SYMPHONY_OFFLINE;
+  return value === '1' || value === 'true';
+}
+
+function createNoopTrackerAdapter() {
   return {
-    poll_interval_ms: 30000,
-    max_concurrent_agents: 1,
-    running: new Map(),
-    claimed: new Set(),
-    retry_attempts: new Map(),
-    completed: new Set(),
-    codex_totals: {
-      input_tokens: 0,
-      output_tokens: 0,
-      total_tokens: 0,
-      seconds_running: 0
-    },
-    codex_rate_limits: null,
-    health: {
-      dispatch_validation: 'ok',
-      last_error: null
-    }
+    fetch_candidate_issues: async () => [],
+    fetch_issues_by_states: async () => [],
+    fetch_issue_states_by_ids: async () => []
   };
 }
 
 async function main() {
+  const argv = process.argv.slice(2);
   const logger = new MultiSinkLogger();
-  const state = createSnapshotState();
-
-  const server = new LocalApiServer({
+  const offlineMode = parseOfflineMode(argv);
+  const runtime = createRuntimeEnvironment({
     host: '127.0.0.1',
-    port: parsePort(process.argv.slice(2)),
-    snapshotSource: {
-      getStateSnapshot: () => state
-    },
-    refreshSource: {
-      tick: async () => {
-        logger.log({
-          level: 'info',
-          event: 'manual_refresh_tick',
-          message: 'manual refresh tick requested from dashboard'
-        });
-      }
-    },
-    logger
+    port: parsePort(argv),
+    workflowPath: parseWorkflowPath(argv),
+    logger,
+    trackerAdapter: offlineMode ? createNoopTrackerAdapter() : undefined
   });
 
-  await server.listen();
-  const address = server.address();
+  await runtime.start();
+  const address = runtime.apiServer.address();
   process.stdout.write(`Symphony dashboard running at http://127.0.0.1:${address.port}/\n`);
+  process.stdout.write(`Workflow: ${parseWorkflowPath(argv)}\n`);
+  process.stdout.write(`Offline mode: ${offlineMode ? 'enabled' : 'disabled'}\n`);
   process.stdout.write('Press Ctrl+C to stop.\n');
 
   const shutdown = async () => {
-    await server.close();
+    await runtime.stop();
     process.exit(0);
   };
 
