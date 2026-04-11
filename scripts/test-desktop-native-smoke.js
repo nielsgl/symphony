@@ -81,8 +81,8 @@ async function verifyMacWindowVisible() {
   throw new Error('Timed out waiting for Symphony native window visibility');
 }
 
-function shouldRequireNativeWindow() {
-  const value = process.env.SYMPHONY_REQUIRE_NATIVE_WINDOW;
+function shouldSkipNativeWindowVisibilityCheck() {
+  const value = process.env.SYMPHONY_ALLOW_WINDOW_VISIBILITY_SKIP;
   return value === '1' || value === 'true';
 }
 
@@ -126,16 +126,11 @@ async function main() {
     await waitForRuntimeReady(startupTimeoutMs);
 
     if (process.platform === 'darwin') {
-      try {
+      if (shouldSkipNativeWindowVisibilityCheck()) {
+        process.stdout.write('Native window visibility check skipped by SYMPHONY_ALLOW_WINDOW_VISIBILITY_SKIP.\n');
+      } else {
         const title = await verifyMacWindowVisible();
         process.stdout.write(`Native window visible: ${title}\n`);
-      } catch (error) {
-        if (shouldRequireNativeWindow()) {
-          throw error;
-        }
-        process.stdout.write(
-          `Native window visibility check skipped: ${error instanceof Error ? error.message : String(error)}\n`
-        );
       }
     }
 
