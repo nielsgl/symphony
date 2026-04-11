@@ -1,6 +1,6 @@
 # Symphony PRD Execution Status
 
-Last updated: 2026-04-10
+Last updated: 2026-04-11
 Owner: orchestration planning
 
 ## How Agents Should Use This File
@@ -48,7 +48,7 @@ Owner: orchestration planning
 - [x] P3: Implement workspace manager, hooks, and safety invariants.
 - [x] P4: Implement Codex runner protocol lifecycle.
 - [x] P5: Implement local HTTP API and embedded desktop UI integration.
-- [ ] P6: Implement security profiles and minimal persistence.
+- [x] P6: Implement security profiles and minimal persistence.
 - [ ] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
 
 ## Implementation Evidence (P1)
@@ -233,7 +233,41 @@ Owner: orchestration planning
       - `defaults workflow file to repository WORKFLOW.md`
 - Gate outcome:
   - P5 exit criteria satisfied (SPEC 17.6 and required `/api/v1/*` endpoints stable for embedded UI).
-  - P6 remains open and not started.
+
+## Implementation Evidence (P6)
+- Date: 2026-04-11
+- Scope delivered (security profiles + redaction + minimal persistence):
+  - Security profile contract and precedence in `src/security/profiles.ts`:
+    - Balanced safe default profile (`approval_policy=on-request`, `thread_sandbox=workspace-write`, `turn_sandbox_policy.type=workspace`, `user_input_policy=fail_attempt`).
+    - Deterministic precedence from defaults with workflow codex overrides for allowed fields.
+    - Operator-visible startup diagnostics (`security_profile_active`) emitted from `src/runtime/bootstrap.ts`.
+  - Secret redaction in `src/security/redaction.ts` integrated across:
+    - Logs: `src/observability/logger.ts`
+    - API payloads: `src/api/server.ts`, `src/api/snapshot-service.ts`
+    - Persistence writes/reads: `src/persistence/store.ts`
+  - Minimal durable local persistence with SQLite in `src/persistence/store.ts`:
+    - Append-only run/session history records (`run_id`, `issue_id`, `issue_identifier`, `started_at`, `ended_at`, `terminal_status`, `error_code`, `session_ids`).
+    - UI continuity state persistence (`selected_issue`, `filters`, `panel_state`).
+    - Retention pruning and integrity diagnostics (`pruneExpiredRuns`, `health`).
+  - Runtime restart continuity behavior in `src/runtime/bootstrap.ts` and `src/orchestrator/core.ts`:
+    - Durable history restored via `/api/v1/history` after restart.
+    - Active running sessions and retry timers remain ephemeral and are not restored.
+  - Operator diagnostics API in `src/api/server.ts`:
+    - `GET /api/v1/diagnostics` (active profile + persistence health)
+    - `GET /api/v1/history`
+    - `GET/POST /api/v1/ui-state`
+- Test evidence:
+  - `npm test` -> pass (21 files, 118 tests).
+  - `npm run build` -> pass (`tsc --project tsconfig.json`).
+  - `git diff --check` -> pass.
+- SPEC coverage anchors (P6 closure):
+  - Profile precedence/contract: `tests/security/profiles.test.ts`, `tests/workflow/validator.test.ts`, `tests/workflow/resolver.test.ts`
+  - Secret redaction in logs/API/persistence outputs: `tests/security/redaction.test.ts`, `tests/observability/logger.test.ts`, `tests/api/server.test.ts`
+  - Durable history + UI continuity + retention/integrity: `tests/persistence/store.test.ts`
+  - Restart continuity semantics: `tests/runtime/bootstrap.test.ts` (`restores durable history on restart without restoring running or retry state`)
+- Gate outcome:
+  - P6 exit criteria satisfied (security profile and redaction checks passing; minimal persistence continuity verified across restart).
+  - P7 remains open and not started.
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.

@@ -108,3 +108,45 @@ Suggested naming:
 - If startup fails due to tracker credentials, use `SYMPHONY_OFFLINE=1`.
 - If startup appears stalled, check `tauri dev` output for compile activity.
 - If API requests fail, verify `SYMPHONY_DESKTOP_PORT` and `SYMPHONY_PORT` are aligned.
+
+## P6 Security and Persistence Validation
+
+1. Verify active profile diagnostics:
+
+```bash
+curl -s http://127.0.0.1:3000/api/v1/diagnostics
+```
+
+Expected result:
+
+- `active_profile.name` is present (default `balanced`)
+- `active_profile.approval_policy` is present
+- `persistence.integrity_ok` is `true`
+
+2. Verify durable history and restart continuity:
+
+```bash
+curl -s http://127.0.0.1:3000/api/v1/history
+```
+
+Expected result:
+
+- Historical runs remain available after process restart
+- `api/v1/state` still reports no restored running/retrying entries after restart unless newly dispatched
+
+3. Verify UI continuity state persistence:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/api/v1/ui-state \
+  -H 'content-type: application/json' \
+  -d '{"state":{"selected_issue":"ABC-1","filters":{"status":"running","query":"ABC"},"panel_state":{"issue_detail_open":true}}}'
+curl -s http://127.0.0.1:3000/api/v1/ui-state
+```
+
+Expected result:
+
+- Saved state is returned by `GET /api/v1/ui-state`
+
+4. Verify redaction behavior in diagnostics/logs:
+
+- Secret-like values (for example `token=...`, `api_key=...`) are masked as `***REDACTED***` in logs and API payloads.
