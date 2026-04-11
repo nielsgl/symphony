@@ -327,4 +327,65 @@ describe('OrchestratorCore', () => {
     expect(retryEntry?.error).toBe('worker stalled');
     expect(snapshot.codex_totals.seconds_running).toBe(3);
   });
+
+  it('tracks failed dispatch validation in health state', async () => {
+    const harness = createHarness();
+    const dispatchDenied = new OrchestratorCore({
+      config: {
+        poll_interval_ms: 30_000,
+        max_concurrent_agents: 2,
+        max_concurrent_agents_by_state: {},
+        max_retry_backoff_ms: 300_000,
+        active_states: ['Todo', 'In Progress'],
+        terminal_states: ['Done'],
+        stall_timeout_ms: 300_000
+      },
+      ports: {
+        tracker: harness.tracker,
+        dispatchPreflight: () => ({ dispatch_allowed: false, reason: 'missing runtime token' }),
+        spawnWorker: async () => ({ ok: false, error: 'blocked' }),
+        terminateWorker: async () => undefined,
+        scheduleRetryTimer: () => ({}),
+        cancelRetryTimer: () => undefined,
+        notifyObservers: harness.notifyObservers
+      },
+      nowMs: () => harness.now.value
+    });
+
+    await dispatchDenied.tick('interval');
+    const snapshot = dispatchDenied.getStateSnapshot();
+    expect(snapshot.health.dispatch_validation).toBe('failed');
+    expect(snapshot.health.last_error).toContain('missing runtime token');
+  });
+
+  it('aggregates worker event usage and turn counts deterministically', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-usage' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-usage', {
+      timestamp_ms: harness.now.value,
+      event: 'turn_started',
+      session_id: 'thread-1-turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-usage', {
+      timestamp_ms: harness.now.value + 100,
+      event: 'turn_completed',
+      session_id: 'thread-1-turn-1',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 4,
+        total_tokens: 14
+      },
+      detail: 'done'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-usage');
+    expect(running?.turn_count).toBe(1);
+    expect(running?.session_id).toBe('thread-1-turn-1');
+    expect(running?.tokens.total_tokens).toBe(14);
+    expect(running?.recent_events).toHaveLength(2);
+    expect(snapshot.codex_totals.total_tokens).toBe(14);
+  });
 });
