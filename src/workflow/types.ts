@@ -10,7 +10,11 @@ export type ValidationErrorCode =
   | 'unsupported_tracker_kind'
   | 'missing_tracker_api_key'
   | 'missing_tracker_project_slug'
-  | 'missing_codex_command';
+  | 'missing_codex_command'
+  | 'invalid_codex_approval_policy'
+  | 'invalid_codex_thread_sandbox'
+  | 'invalid_codex_turn_sandbox_policy'
+  | 'invalid_codex_user_input_policy';
 
 export interface WorkflowDefinition {
   config: Record<string, unknown>;
@@ -43,12 +47,20 @@ export interface AgentConfig {
 
 export interface CodexConfig {
   command: string;
+  security_profile?: string;
   approval_policy?: string;
   thread_sandbox?: string;
   turn_sandbox_policy?: string;
+  user_input_policy?: string;
   turn_timeout_ms: number;
   read_timeout_ms: number;
   stall_timeout_ms: number;
+}
+
+export interface PersistenceConfig {
+  enabled: boolean;
+  db_path: string;
+  retention_days: number;
 }
 
 export interface EffectiveConfig {
@@ -58,6 +70,7 @@ export interface EffectiveConfig {
   hooks: HooksConfig;
   agent: AgentConfig;
   codex: CodexConfig;
+  persistence: PersistenceConfig;
   server?: { port: number };
 }
 

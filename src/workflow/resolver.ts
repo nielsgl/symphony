@@ -40,6 +40,24 @@ function readString(value: unknown, fallback = ''): string {
   return fallback;
 }
 
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') {
+      return true;
+    }
+    if (normalized === 'false') {
+      return false;
+    }
+  }
+
+  return fallback;
+}
+
 function readStringList(value: unknown, fallback: string[]): string[] {
   if (!Array.isArray(value)) {
     return [...fallback];
@@ -123,6 +141,7 @@ export class ConfigResolver {
     const hooks = asRecord(config.hooks);
     const agent = asRecord(config.agent);
     const codex = asRecord(config.codex);
+    const persistence = asRecord(config.persistence);
     const server = asRecord(config.server);
 
     const trackerKind = readString(tracker.kind, '');
@@ -151,6 +170,12 @@ export class ConfigResolver {
     const hooksTimeoutMs = hooksTimeoutCandidate > 0 ? hooksTimeoutCandidate : 60000;
 
     const codexCommand = readString(codex.command, 'codex app-server');
+    const persistenceDbPath = resolvePathLikeValue(
+      persistence.db_path,
+      this.env,
+      this.homedir(),
+      path.join(this.homedir(), '.symphony', 'runtime.sqlite')
+    );
 
     const resolved: EffectiveConfig = {
       tracker: {
@@ -182,12 +207,19 @@ export class ConfigResolver {
       },
       codex: {
         command: codexCommand,
+        security_profile: readString(codex.security_profile, '') || undefined,
         approval_policy: readString(codex.approval_policy, '') || undefined,
         thread_sandbox: readString(codex.thread_sandbox, '') || undefined,
         turn_sandbox_policy: readString(codex.turn_sandbox_policy, '') || undefined,
+        user_input_policy: readString(codex.user_input_policy, '') || undefined,
         turn_timeout_ms: readInt(codex.turn_timeout_ms, 3600000),
         read_timeout_ms: readInt(codex.read_timeout_ms, 5000),
         stall_timeout_ms: readInt(codex.stall_timeout_ms, 300000)
+      },
+      persistence: {
+        enabled: readBoolean(persistence.enabled, true),
+        db_path: persistenceDbPath,
+        retention_days: Math.max(1, readInt(persistence.retention_days, 14))
       }
     };
 

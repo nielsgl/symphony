@@ -1,4 +1,9 @@
 import { nowIso } from './errors';
+import {
+  isSupportedApprovalPolicy,
+  isSupportedThreadSandbox,
+  isSupportedTurnSandbox
+} from '../security/profiles';
 import type { DispatchPreflightOutcome, EffectiveConfig, ValidationResult } from './types';
 
 export interface ConfigValidatorOptions {
@@ -56,6 +61,45 @@ export class ConfigValidator {
         ok: false,
         error_code: 'missing_codex_command',
         message: 'codex.command is required and must be non-empty',
+        at
+      };
+    }
+
+    if (!isSupportedApprovalPolicy(effectiveConfig.codex.approval_policy)) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_approval_policy',
+        message: `codex.approval_policy '${effectiveConfig.codex.approval_policy}' is not supported`,
+        at
+      };
+    }
+
+    if (!isSupportedThreadSandbox(effectiveConfig.codex.thread_sandbox)) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_thread_sandbox',
+        message: `codex.thread_sandbox '${effectiveConfig.codex.thread_sandbox}' is not supported`,
+        at
+      };
+    }
+
+    if (!isSupportedTurnSandbox(effectiveConfig.codex.turn_sandbox_policy)) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_turn_sandbox_policy',
+        message: `codex.turn_sandbox_policy '${effectiveConfig.codex.turn_sandbox_policy}' is not supported`,
+        at
+      };
+    }
+
+    if (
+      effectiveConfig.codex.user_input_policy !== undefined &&
+      effectiveConfig.codex.user_input_policy !== 'fail_attempt'
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_user_input_policy',
+        message: `codex.user_input_policy '${effectiveConfig.codex.user_input_policy}' is not supported`,
         at
       };
     }

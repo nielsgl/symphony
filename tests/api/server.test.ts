@@ -8,6 +8,7 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
   return {
     issue: makeIssue(),
     identifier: 'ABC-1',
+    run_id: 'run-1',
     worker_handle: {},
     monitor_handle: {},
     retry_attempt: 0,
@@ -166,6 +167,41 @@ describe('LocalApiServer', () => {
       },
       refreshSource: {
         tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        getActiveProfile: () => ({
+          name: 'balanced',
+          approval_policy: 'on-request',
+          thread_sandbox: 'workspace-write',
+          turn_sandbox_policy: { type: 'workspace' },
+          user_input_policy: 'fail_attempt'
+        }),
+        getPersistenceHealth: () => ({
+          enabled: true,
+          db_path: '/tmp/test.sqlite',
+          retention_days: 14,
+          run_count: 1,
+          last_pruned_at: null,
+          integrity_ok: true
+        }),
+        listRunHistory: () => [
+          {
+            run_id: 'run-1',
+            issue_id: 'issue-1',
+            issue_identifier: 'ABC-1',
+            started_at: '2026-04-10T10:00:00.000Z',
+            ended_at: '2026-04-10T10:01:00.000Z',
+            terminal_status: 'succeeded',
+            error_code: null,
+            session_ids: ['thread-1-turn-1']
+          }
+        ],
+        getUiState: () => ({
+          selected_issue: 'ABC-1',
+          filters: { status: 'all', query: '' },
+          panel_state: { issue_detail_open: true }
+        }),
+        setUiState: () => undefined
       }
     });
 
@@ -342,5 +378,136 @@ describe('LocalApiServer', () => {
 
     expect(payload.health.dispatch_validation).toBe('failed');
     expect(payload.health.last_error).toContain('dispatch preflight');
+  });
+
+  it('serves diagnostics, durable history, and ui continuity endpoints', async () => {
+    const setUiState = vi.fn();
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        getActiveProfile: () => ({
+          name: 'balanced',
+          approval_policy: 'on-request',
+          thread_sandbox: 'workspace-write',
+          turn_sandbox_policy: { type: 'workspace' },
+          user_input_policy: 'fail_attempt'
+        }),
+        getPersistenceHealth: () => ({
+          enabled: true,
+          db_path: '/tmp/runtime.sqlite',
+          retention_days: 14,
+          run_count: 3,
+          last_pruned_at: '2026-04-11T00:00:00.000Z',
+          integrity_ok: true
+        }),
+        listRunHistory: () => [
+          {
+            run_id: 'run-1',
+            issue_id: 'issue-1',
+            issue_identifier: 'ABC-1',
+            started_at: '2026-04-10T10:00:00.000Z',
+            ended_at: '2026-04-10T10:01:00.000Z',
+            terminal_status: 'succeeded',
+            error_code: null,
+            session_ids: ['thread-1-turn-1']
+          }
+        ],
+        getUiState: () => ({
+          selected_issue: 'ABC-1',
+          filters: { status: 'all', query: 'ABC' },
+          panel_state: { issue_detail_open: false }
+        }),
+        setUiState
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      active_profile: { name: string };
+      persistence: { retention_days: number };
+    };
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.active_profile.name).toBe('balanced');
+    expect(diagnosticsPayload.persistence.retention_days).toBe(14);
+
+    const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history?limit=1`);
+    const historyPayload = (await historyResponse.json()) as { runs: Array<{ run_id: string }> };
+    expect(historyResponse.status).toBe(200);
+    expect(historyPayload.runs[0].run_id).toBe('run-1');
+
+    const uiStateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ui-state`);
+    const uiStatePayload = (await uiStateResponse.json()) as {
+      state: { selected_issue: string | null; filters: { query: string } };
+    };
+    expect(uiStateResponse.status).toBe(200);
+    expect(uiStatePayload.state.selected_issue).toBe('ABC-1');
+
+    const saveResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ui-state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        state: {
+          selected_issue: 'ABC-2',
+          filters: { status: 'running', query: 'token=secret123' },
+          panel_state: { issue_detail_open: true }
+        }
+      })
+    });
+
+    expect(saveResponse.status).toBe(202);
+    expect(setUiState).toHaveBeenCalled();
+  });
+
+  it('returns invalid_ui_state when ui-state JSON body is malformed', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        getActiveProfile: () => ({
+          name: 'balanced',
+          approval_policy: 'on-request',
+          thread_sandbox: 'workspace-write',
+          turn_sandbox_policy: { type: 'workspace' },
+          user_input_policy: 'fail_attempt'
+        }),
+        getPersistenceHealth: () => ({
+          enabled: true,
+          db_path: '/tmp/runtime.sqlite',
+          retention_days: 14,
+          run_count: 0,
+          last_pruned_at: null,
+          integrity_ok: true
+        }),
+        listRunHistory: () => [],
+        getUiState: () => null,
+        setUiState: () => undefined
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/ui-state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"state":'
+    });
+
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+    expect(response.status).toBe(400);
+    expect(payload.error.code).toBe('invalid_ui_state');
   });
 });

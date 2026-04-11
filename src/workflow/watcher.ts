@@ -62,10 +62,13 @@ export class WorkflowWatcher {
     const watchedDir = path.dirname(watchedPath);
     const watchedFile = path.basename(watchedPath);
 
-    this.watcher = fs.watch(watchedDir, (_eventType, filename) => {
+    this.watcher = fs.watch(watchedDir, (eventType, filename) => {
       if (filename != null) {
         const changedName = filename.toString();
-        if (changedName !== watchedFile) {
+        // Atomic-save flows can report rename with transient filenames. Accept all
+        // rename events in the watched directory and keep strict filtering for
+        // non-rename updates.
+        if (eventType !== 'rename' && changedName !== watchedFile) {
           return;
         }
       }

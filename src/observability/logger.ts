@@ -1,3 +1,5 @@
+import { redactLogInput } from '../security/redaction';
+
 export type LogLevel = 'info' | 'warn' | 'error';
 
 export interface LogEntry {
@@ -71,12 +73,17 @@ export class MultiSinkLogger implements StructuredLogger {
     message: string;
     context?: Record<string, string | number | boolean | null | undefined>;
   }): void {
+    const safe = redactLogInput({
+      message: params.message,
+      context: asContext(params.context ?? {})
+    });
+
     const entry: LogEntry = {
       level: params.level,
       event: params.event,
-      message: params.message,
+      message: safe.message,
       timestamp: this.nowIso(),
-      context: asContext(params.context ?? {})
+      context: safe.context
     };
 
     const rendered = renderEntry(entry);

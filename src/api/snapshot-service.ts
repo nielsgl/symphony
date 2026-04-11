@@ -1,4 +1,5 @@
 import type { OrchestratorState, RunningEntry } from '../orchestrator';
+import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
 import type { ApiIssueResponse, ApiStateResponse } from './types';
 
@@ -52,7 +53,7 @@ export class SnapshotService {
       return total + seconds;
     }, 0);
 
-    return {
+    return redactUnknown({
       generated_at: asIsoDate(nowMs),
       counts: {
         running: running.length,
@@ -71,7 +72,7 @@ export class SnapshotService {
         dispatch_validation: state.health.dispatch_validation,
         last_error: state.health.last_error
       }
-    };
+    }) as ApiStateResponse;
   }
 
   projectIssue(state: OrchestratorState, issueIdentifier: string): ApiIssueResponse {
@@ -89,7 +90,7 @@ export class SnapshotService {
     if (runningEntry) {
       const [issueId, entry] = runningEntry;
       const currentRetryAttempt = retryEntry?.attempt ?? 0;
-      return {
+      return redactUnknown({
         issue_identifier: issueIdentifier,
         issue_id: issueId,
         status: 'running',
@@ -127,7 +128,7 @@ export class SnapshotService {
           message: event.message
         })),
         last_error: retryEntry?.error ?? state.health.last_error
-      };
+      }) as ApiIssueResponse;
     }
 
     const retryOnlyEntry = retryEntry;
@@ -140,7 +141,7 @@ export class SnapshotService {
     }
 
     const issueId = retryOnlyEntry.issue_id;
-    return {
+    return redactUnknown({
       issue_identifier: issueIdentifier,
       issue_id: issueId,
       status: 'retrying',
@@ -159,6 +160,6 @@ export class SnapshotService {
       },
       recent_events: [],
       last_error: retryOnlyEntry.error
-    };
+    }) as ApiIssueResponse;
   }
 }

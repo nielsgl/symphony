@@ -1,8 +1,10 @@
 import { LocalApiServer } from '../api';
 import { CodexRunner, type CodexRunnerEvent } from '../codex';
 import { MultiSinkLogger, type StructuredLogger } from '../observability';
+import { SqlitePersistenceStore } from '../persistence';
 import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult } from '../orchestrator';
 import type { WorkerObservabilityEvent } from '../orchestrator';
+import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
 import { WorkflowLoader, ConfigResolver, ConfigValidator, type EffectiveConfig } from '../workflow';
 import { WorkspaceManager } from '../workspace';
@@ -86,6 +88,33 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     hooks: effectiveConfig.hooks
   });
 
+  const activeProfile = resolveSecurityProfile(effectiveConfig.codex);
+  effectiveConfig.codex.security_profile = activeProfile.name;
+  effectiveConfig.codex.approval_policy = activeProfile.approval_policy;
+  effectiveConfig.codex.thread_sandbox = activeProfile.thread_sandbox;
+  effectiveConfig.codex.turn_sandbox_policy = activeProfile.turn_sandbox_policy.type;
+  effectiveConfig.codex.user_input_policy = activeProfile.user_input_policy;
+
+  logger.log({
+    level: 'info',
+    event: 'security_profile_active',
+    message: securityProfileSummary(activeProfile),
+    context: {
+      profile_name: activeProfile.name,
+      approval_policy: activeProfile.approval_policy,
+      thread_sandbox: activeProfile.thread_sandbox,
+      turn_sandbox_policy: activeProfile.turn_sandbox_policy.type
+    }
+  });
+
+  const persistenceStore = effectiveConfig.persistence.enabled
+    ? new SqlitePersistenceStore({
+        dbPath: effectiveConfig.persistence.db_path,
+        retentionDays: effectiveConfig.persistence.retention_days,
+        nowMs
+      })
+    : null;
+
   const codexRunner = new CodexRunner();
   let orchestrator: OrchestratorCore;
 
@@ -94,8 +123,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     codexRunner,
     config: effectiveConfig,
     promptTemplate: workflowDefinition.prompt_template,
-    onWorkerExit: async ({ issue_id, reason }) => {
-      await orchestrator.onWorkerExit(issue_id, reason);
+    onWorkerExit: async ({ issue_id, reason, error }) => {
+      await orchestrator.onWorkerExit(issue_id, reason, error);
     },
     onWorkerEvent: ({ issue_id, event }) => {
       orchestrator.onWorkerEvent(issue_id, toWorkerEvent(event, nowMs()));
@@ -148,6 +177,20 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       }
     },
     nowMs,
+    persistence: persistenceStore
+      ? {
+          startRun: async (params) => persistenceStore.startRun(params),
+          recordSession: async (params) => {
+            persistenceStore.recordSession(params.run_id, params.session_id);
+          },
+          recordEvent: async (params) => {
+            persistenceStore.recordEvent(params);
+          },
+          completeRun: async (params) => {
+            persistenceStore.completeRun(params);
+          }
+        }
+      : undefined,
     logger
   });
 
@@ -160,12 +203,44 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     refreshSource: {
       tick: (reason) => orchestrator.tick(reason)
     },
+    diagnosticsSource: {
+      getActiveProfile: () => activeProfile,
+      getPersistenceHealth: () =>
+        persistenceStore
+          ? persistenceStore.health()
+          : {
+              enabled: false,
+              db_path: null,
+              retention_days: effectiveConfig.persistence.retention_days,
+              run_count: 0,
+              last_pruned_at: null,
+              integrity_ok: true
+            },
+      listRunHistory: (limit) => (persistenceStore ? persistenceStore.listRunHistory(limit) : []),
+      getUiState: () => (persistenceStore ? persistenceStore.loadUiState() : null),
+      setUiState: (state) => {
+        persistenceStore?.saveUiState(state);
+      }
+    },
     logger,
     nowMs
   });
 
   const start = async (): Promise<void> => {
     await apiServer.listen();
+
+    if (persistenceStore) {
+      const pruned = persistenceStore.pruneExpiredRuns();
+      logger.log({
+        level: 'info',
+        event: 'persistence_pruned',
+        message: `pruned ${pruned} expired run records`,
+        context: {
+          pruned,
+          retention_days: effectiveConfig.persistence.retention_days
+        }
+      });
+    }
 
     try {
       const terminalIssues = await tracker.fetch_issues_by_states(effectiveConfig.tracker.terminal_states);
@@ -205,6 +280,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     retryTimers.clear();
 
     await apiServer.close();
+
+    persistenceStore?.close();
 
     logger.log({
       level: 'info',

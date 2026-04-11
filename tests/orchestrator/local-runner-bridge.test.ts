@@ -50,6 +50,11 @@ function makeConfig(): EffectiveConfig {
       turn_timeout_ms: 1000,
       read_timeout_ms: 1000,
       stall_timeout_ms: 300000
+    },
+    persistence: {
+      enabled: true,
+      db_path: '/tmp/symphony/runtime.sqlite',
+      retention_days: 14
     }
   };
 }

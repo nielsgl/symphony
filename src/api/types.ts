@@ -1,5 +1,7 @@
 import type { OrchestratorState, TickReason } from '../orchestrator';
 import type { StructuredLogger } from '../observability';
+import type { DurableRunHistoryRecord, PersistenceHealth, UiContinuityState } from '../persistence';
+import type { SecurityProfile } from '../security';
 
 export interface RuntimeSnapshotSource {
   getStateSnapshot(): OrchestratorState;
@@ -7,6 +9,14 @@ export interface RuntimeSnapshotSource {
 
 export interface RefreshTickSource {
   tick(reason: TickReason): Promise<void>;
+}
+
+export interface DiagnosticsSource {
+  getActiveProfile(): SecurityProfile;
+  getPersistenceHealth(): PersistenceHealth;
+  listRunHistory(limit?: number): DurableRunHistoryRecord[];
+  getUiState(): UiContinuityState | null;
+  setUiState(state: UiContinuityState): void;
 }
 
 export interface LocalApiErrorEnvelope {
@@ -108,6 +118,12 @@ export interface LocalApiServerOptions {
   port?: number;
   snapshotSource: RuntimeSnapshotSource;
   refreshSource: RefreshTickSource;
+  diagnosticsSource?: DiagnosticsSource;
   nowMs?: () => number;
   logger?: StructuredLogger;
+}
+
+export interface ApiDiagnosticsResponse {
+  active_profile: SecurityProfile;
+  persistence: PersistenceHealth;
 }

@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRuntimeEnvironment } from '../../src/runtime';
+import { SqlitePersistenceStore } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
 
 async function makeWorkflowFile(options?: { includeTrackerCredentials?: boolean }): Promise<string> {
@@ -39,6 +40,10 @@ codex:
   turn_timeout_ms: 1000
   read_timeout_ms: 1000
   stall_timeout_ms: 1000
+persistence:
+  enabled: true
+  db_path: ${JSON.stringify(path.join(dir, 'runtime.sqlite'))}
+  retention_days: 14
 server:
   port: 0
 ---
@@ -153,5 +158,86 @@ describe('createRuntimeEnvironment', () => {
     expect(response.status).toBe(200);
     expect(payload.health.dispatch_validation).toBe('failed');
     expect(payload.health.last_error).toContain('tracker.api_key is required');
+  });
+
+  it('exposes diagnostics profile and persistence status endpoints', async () => {
+    const workflowPath = await makeWorkflowFile();
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [])
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = runtime.apiServer.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      active_profile: { name: string; approval_policy: string };
+      persistence: { enabled: boolean; integrity_ok: boolean };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.active_profile.name).toBe('balanced');
+    expect(payload.active_profile.approval_policy).toBe('on-request');
+    expect(payload.persistence.enabled).toBe(true);
+    expect(payload.persistence.integrity_ok).toBe(true);
+  });
+
+  it('restores durable history on restart without restoring running or retry state', async () => {
+    const workflowPath = await makeWorkflowFile();
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    const dbPath = path.join(workflowDir, 'runtime.sqlite');
+
+    const seedStore = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
+    });
+    const runId = seedStore.startRun({ issue_id: 'issue-1', issue_identifier: 'ABC-1' });
+    seedStore.recordSession(runId, 'thread-1-turn-1');
+    seedStore.completeRun({ run_id: runId, terminal_status: 'succeeded' });
+    seedStore.close();
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [])
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = runtime.apiServer.address();
+
+    const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history`);
+    const historyPayload = (await historyResponse.json()) as {
+      runs: Array<{ run_id: string; issue_identifier: string; terminal_status: string | null }>;
+    };
+    expect(historyResponse.status).toBe(200);
+    expect(historyPayload.runs.some((entry) => entry.run_id === runId)).toBe(true);
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as {
+      counts: { running: number; retrying: number };
+    };
+    expect(stateResponse.status).toBe(200);
+    expect(statePayload.counts.running).toBe(0);
+    expect(statePayload.counts.retrying).toBe(0);
   });
 });

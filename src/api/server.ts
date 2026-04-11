@@ -1,6 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 
 import type { StructuredLogger } from '../observability';
+import { redactUnknown } from '../security/redaction';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
 import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
@@ -20,7 +21,7 @@ interface Endpoint {
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode;
   res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(redactUnknown(payload)));
 }
 
 function sendHtml(res: ServerResponse, statusCode: number, html: string): void {
@@ -57,6 +58,7 @@ export class LocalApiServer {
   private readonly snapshotService: SnapshotService;
   private readonly snapshotSource: LocalApiServerOptions['snapshotSource'];
   private readonly refreshCoalescer: RefreshCoalescer;
+  private readonly diagnosticsSource?: LocalApiServerOptions['diagnosticsSource'];
   private readonly logger?: StructuredLogger;
 
   private readonly server: http.Server;
@@ -66,6 +68,7 @@ export class LocalApiServer {
     this.port = options.port ?? 0;
     this.snapshotService = new SnapshotService({ nowMs: options.nowMs });
     this.snapshotSource = options.snapshotSource;
+    this.diagnosticsSource = options.diagnosticsSource;
     this.logger = options.logger;
     this.refreshCoalescer = new RefreshCoalescer({
       refreshSource: options.refreshSource,
@@ -188,6 +191,117 @@ export class LocalApiServer {
                 }
               });
               sendJson(response, 202, payload);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/diagnostics$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response) => {
+              if (!this.diagnosticsSource) {
+                throw new LocalApiError('diagnostics_unavailable', 'Diagnostics source is not configured', 503);
+              }
+
+              sendJson(response, 200, {
+                active_profile: this.diagnosticsSource.getActiveProfile(),
+                persistence: this.diagnosticsSource.getPersistenceHealth()
+              });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/history$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (request, response) => {
+              if (!this.diagnosticsSource) {
+                throw new LocalApiError('history_unavailable', 'Run history source is not configured', 503);
+              }
+
+              const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+              const limitRaw = requestUrl.searchParams.get('limit');
+              const parsedLimit = limitRaw ? Number.parseInt(limitRaw, 10) : NaN;
+              const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 50;
+              sendJson(response, 200, {
+                runs: this.diagnosticsSource.listRunHistory(limit)
+              });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/ui-state$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response) => {
+              if (!this.diagnosticsSource) {
+                throw new LocalApiError('ui_state_unavailable', 'UI state source is not configured', 503);
+              }
+
+              sendJson(response, 200, {
+                state: this.diagnosticsSource.getUiState()
+              });
+            }
+          },
+          {
+            method: 'POST',
+            handler: async (request, response) => {
+              if (!this.diagnosticsSource) {
+                throw new LocalApiError('ui_state_unavailable', 'UI state source is not configured', 503);
+              }
+
+              const chunks: Buffer[] = [];
+              for await (const chunk of request) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+              }
+
+              const payloadText = Buffer.concat(chunks).toString('utf8').trim();
+              if (!payloadText) {
+                throw new LocalApiError('invalid_ui_state', 'Request body is required', 400);
+              }
+
+              let parsed: {
+                state?: {
+                  selected_issue?: string | null;
+                  filters?: { status?: 'all' | 'running' | 'retrying'; query?: string };
+                  panel_state?: { issue_detail_open?: boolean };
+                };
+              };
+              try {
+                parsed = JSON.parse(payloadText) as {
+                  state?: {
+                    selected_issue?: string | null;
+                    filters?: { status?: 'all' | 'running' | 'retrying'; query?: string };
+                    panel_state?: { issue_detail_open?: boolean };
+                  };
+                };
+              } catch {
+                throw new LocalApiError('invalid_ui_state', 'Request body must be valid JSON', 400);
+              }
+
+              const state = parsed.state;
+              if (!state) {
+                throw new LocalApiError('invalid_ui_state', 'state object is required', 400);
+              }
+
+              this.diagnosticsSource.setUiState({
+                selected_issue: state.selected_issue ?? null,
+                filters: {
+                  status: state.filters?.status ?? 'all',
+                  query: state.filters?.query ?? ''
+                },
+                panel_state: {
+                  issue_detail_open: state.panel_state?.issue_detail_open ?? false
+                }
+              });
+
+              sendJson(response, 202, { saved: true });
             }
           }
         ]

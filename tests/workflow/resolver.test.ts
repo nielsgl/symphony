@@ -23,6 +23,8 @@ describe('ConfigResolver', () => {
     expect(config.tracker.active_states).toEqual(['Todo', 'In Progress']);
     expect(config.workspace.root).toBe('/tmp/symphony_workspaces');
     expect(config.codex.command).toBe('codex app-server');
+    expect(config.persistence.enabled).toBe(true);
+    expect(config.persistence.retention_days).toBe(14);
   });
 
   it('resolves $VAR for tracker.api_key and workspace.root', () => {
@@ -132,5 +134,32 @@ describe('ConfigResolver', () => {
     });
 
     expect(config.hooks.timeout_ms).toBe(60000);
+  });
+
+  it('resolves codex profile overrides and persistence path', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        codex: {
+          security_profile: 'balanced',
+          approval_policy: 'on-request',
+          thread_sandbox: 'workspace-write',
+          turn_sandbox_policy: 'workspace',
+          user_input_policy: 'fail_attempt'
+        },
+        persistence: {
+          enabled: true,
+          db_path: '~/symphony/runtime.sqlite',
+          retention_days: 30
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.codex.security_profile).toBe('balanced');
+    expect(config.codex.approval_policy).toBe('on-request');
+    expect(config.persistence.db_path).toBe(path.normalize('/home/tester/symphony/runtime.sqlite'));
+    expect(config.persistence.retention_days).toBe(30);
   });
 });
