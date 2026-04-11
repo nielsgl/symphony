@@ -12,6 +12,7 @@
     "start:desktop": "npm run build && electron desktop/main.js"
   },
   "dependencies": {
+    "dotenv": "^17.4.1",
     "js-yaml": "^4.1.1",
     "liquidjs": "^10.25.5"
   },

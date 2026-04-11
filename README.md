@@ -89,6 +89,7 @@ Notes:
 - Set `SYMPHONY_WORKFLOW_PATH` to point at a non-default workflow file if needed.
 - Export `LINEAR_API_KEY` before startup so tracker validation passes.
 - For local UI-only startup without Linear credentials, set `SYMPHONY_OFFLINE=1`.
+- `.env` is loaded automatically for startup scripts (or `SYMPHONY_ENV_FILE` for a custom file path).
 
 ## API Endpoints
 

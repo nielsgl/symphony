@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 
 const path = require('node:path');
+const dotenv = require('dotenv');
+
+dotenv.config({
+  path: process.env.SYMPHONY_ENV_FILE || path.join(process.cwd(), '.env')
+});
 
 const { createRuntimeEnvironment } = require('../dist/src/runtime');
 const { MultiSinkLogger } = require('../dist/src/observability');

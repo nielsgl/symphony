@@ -1,9 +1,15 @@
 const { app, BrowserWindow, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const dotenv = require('dotenv');
 const { createBackendLaunchConfig, parseDashboardUrl } = require('../dist/src/runtime');
 
 const STARTUP_TIMEOUT_MS = 45_000;
+const REPO_ROOT = path.resolve(__dirname, '..');
+
+dotenv.config({
+  path: process.env.SYMPHONY_ENV_FILE || path.join(REPO_ROOT, '.env')
+});
 
 function createWindow() {
   return new BrowserWindow({
@@ -72,9 +78,8 @@ async function waitForDashboardUrl(backendProcess) {
 }
 
 function startBackend() {
-  const repoRoot = path.resolve(__dirname, '..');
   const launchConfig = createBackendLaunchConfig({
-    repoRoot,
+    repoRoot: REPO_ROOT,
     workflowPath: process.env.SYMPHONY_WORKFLOW_PATH,
     nodeBinary: process.execPath,
     offlineMode: process.env.SYMPHONY_OFFLINE === '1' || process.env.SYMPHONY_OFFLINE === 'true'
