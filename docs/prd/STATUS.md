@@ -47,7 +47,7 @@ Owner: orchestration planning
 - [x] P2: Implement orchestrator loop and Linear adapter read operations.
 - [x] P3: Implement workspace manager, hooks, and safety invariants.
 - [x] P4: Implement Codex runner protocol lifecycle.
-- [ ] P5: Implement local HTTP API and embedded desktop UI integration.
+- [x] P5: Implement local HTTP API and embedded desktop UI integration.
 - [ ] P6: Implement security profiles and minimal persistence.
 - [ ] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
 
@@ -175,45 +175,49 @@ Owner: orchestration planning
   - Phase-gate artifact recorded in this section; P4 exit criteria satisfied.
 
 ## Implementation Evidence (P5)
-- Date: 2026-04-10
-- Scope delivered (API groundwork slice):
-  - Local loopback HTTP API server in `src/api/server.ts` with required routes:
-    - `GET /api/v1/state`
-    - `GET /api/v1/:issue_identifier`
-    - `POST /api/v1/refresh`
-  - Stable response/error contracts in `src/api/types.ts` and `src/api/errors.ts`:
-    - Deterministic JSON response shapes for state, issue, and refresh accepted responses.
-    - Typed error envelope `{"error":{"code":"...","message":"..."}}`.
-    - Explicit `404` for unknown issue identifiers and `405` for unsupported methods on defined routes.
-  - Runtime projection layer in `src/api/snapshot-service.ts`:
-    - `/state` projection from orchestrator snapshot (`running`, `retrying`, aggregate `codex_totals`, `rate_limits`, `health`).
-    - `/api/v1/:issue_identifier` projection from in-memory running/retry state with typed not-found behavior.
-  - Refresh trigger/coalescing path in `src/api/refresh-coalescer.ts`:
-    - Best-effort manual refresh trigger via orchestrator `tick('manual_refresh')`.
-    - Burst request coalescing window with accepted response contract (`queued`, `coalesced`, `requested_at`, `operations`).
-  - Package export wiring in `src/index.ts` and `src/api/index.ts`.
+- Date: 2026-04-11
+- Scope delivered (observability + local API + embedded UI):
+  - Structured logging and sink-failure resilience in `src/observability/logger.ts`:
+    - Stable key=value logs with issue/session context fields (`issue_id`, `issue_identifier`, `session_id`).
+    - Sink failures emit `log_sink_failure` warning and do not crash service orchestration paths.
+  - Orchestrator observability state in `src/orchestrator/types.ts` and `src/orchestrator/core.ts`:
+    - Health model (`dispatch_validation`, `last_error`) maintained from preflight and runtime failures.
+    - Running-entry observability metadata (`session_id`, `turn_count`, `last_event`, `tokens`, `recent_events`).
+    - Deterministic token/rate-limit aggregation from worker events into `codex_totals` / `codex_rate_limits`.
+  - Embedded desktop UI integration in `src/api/server.ts`:
+    - Human-readable dashboard served at `GET /`.
+    - Dashboard is API-driven only via `GET /api/v1/state`, `GET /api/v1/:issue_identifier`, and `POST /api/v1/refresh`.
+    - No direct orchestrator mutation from UI; refresh remains the only control trigger.
+  - API projection completion in `src/api/snapshot-service.ts` and `src/api/types.ts`:
+    - `health` reflects live orchestrator validation/error state.
+    - Running and issue detail projections expose session counters/events/tokens and workspace path.
+    - Stable error envelope semantics preserved for 404/405/500 paths.
 - Test evidence:
-  - `npm test` -> pass (15 files, 87 tests).
+  - `npm test` -> pass (16 files, 97 tests).
   - `npm run build` -> pass (`tsc --project tsconfig.json`).
-  - `git diff --check` -> pass.
-- SPEC coverage anchors (P5 slice):
-  - SPEC 13.7 + 17.6 API contract/error semantics:
+  - `git diff --check` -> pass (`DIFF_CHECK_EXIT:0`).
+- SPEC coverage anchors (P5 closure):
+  - SPEC 13.1-13.2 + 17.6 logging/observability semantics:
+    - `tests/observability/logger.test.ts`
+      - `renders stable key=value logs with context fields`
+      - `continues logging when one sink fails and emits a sink warning`
+    - `tests/orchestrator/core.test.ts`
+      - `tracks failed dispatch validation in health state`
+      - `aggregates worker event usage and turn counts deterministically`
+  - SPEC 13.7 + 17.6 API and UI integration semantics:
     - `tests/api/server.test.ts`
-      - `serves GET /api/v1/state with required baseline fields`
-      - `serves GET /api/v1/:issue_identifier projection and returns 404 for unknown issue`
-      - `returns 405 for unsupported methods on defined routes`
-      - `accepts refresh requests and coalesces bursts`
-  - Coalescing deterministic behavior:
+      - `serves embedded dashboard HTML at root path`
+      - `returns failed health semantics for UI health banner rendering`
+      - `returns 500 envelope when snapshot source throws`
+      - existing state/issue/refresh and method/error tests
+    - `tests/api/snapshot-service.test.ts`
+      - `projects failed health state and issue recent events for diagnostics`
     - `tests/api/refresh-coalescer.test.ts`
       - `coalesces burst requests into one manual refresh tick`
       - `schedules a later tick after the coalescing window has elapsed`
-  - Snapshot projection behavior:
-    - `tests/api/snapshot-service.test.ts`
-      - `projects orchestrator state into API state contract and includes active runtime seconds`
-      - `throws issue_not_found for unknown issue projection`
-- Scope deferred in this slice:
-  - Full embedded desktop UI implementation/polish remains deferred.
-  - P5 phase gate is still tracked at program level in `Next Queue` until full UI integration scope is completed.
+- Gate outcome:
+  - P5 exit criteria satisfied (SPEC 17.6 and required `/api/v1/*` endpoints stable for embedded UI).
+  - P6 remains open and not started.
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
