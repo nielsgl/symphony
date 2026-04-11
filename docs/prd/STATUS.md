@@ -283,6 +283,10 @@ Owner: orchestration planning
     - `src/workflow/resolver.ts` adds GitHub endpoint default and `$GITHUB_TOKEN` fallback resolution.
     - `src/workflow/validator.ts` supports `tracker.kind=github` with owner/repo required-field validation.
     - `src/tracker/factory.ts` now selects Linear or GitHub adapters by kind with typed missing-field failures.
+  - Post-review hardening for first-run GitHub dispatch safety:
+    - GitHub defaults now use dispatch-capable states (`active_states=['Open']`, `terminal_states=['Closed']`).
+    - Validator rejects unmappable GitHub `active_states` with typed failure (`invalid_tracker_active_states_for_github`).
+    - Adapter fails fast on non-empty unsupported state filters (`github_invalid_state_filter`) instead of silent no-op.
 - Test evidence:
   - `npm test` -> pass (22 files, 133 tests).
   - `npm run build` -> pass (`tsc --project tsconfig.json`).
@@ -290,7 +294,7 @@ Owner: orchestration planning
 - SPEC/PRD coverage anchors (P7 closure):
   - SPEC 17.3 (`Issue Tracker Client`): `tests/tracker/github-adapter.test.ts`, `tests/tracker/factory.test.ts`, `tests/tracker/linear-adapter.test.ts`
   - Config parity and kind-specific validation: `tests/workflow/resolver.test.ts`, `tests/workflow/validator.test.ts`
-  - PRD-007 acceptance points covered: normalized parity, pagination, PR metadata null-safe enrichment, typed error mapping, deterministic kind switch.
+  - PRD-007 acceptance points covered: normalized parity, pagination, PR metadata null-safe enrichment, typed error mapping, deterministic kind switch, and dispatch-capable defaults.
 - Gate outcome:
   - P7 exit criteria satisfied (GitHub adapter contract tests passing; Linear regression suite remains green).
 
