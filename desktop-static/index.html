@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Symphony Desktop</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top right, #b9d8cb, #eef6ef 55%);
+      color: #14261b;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    main {
+      max-width: 580px;
+      width: 100%;
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid #cfe0d1;
+      border-radius: 14px;
+      padding: 24px;
+      box-shadow: 0 16px 32px rgba(20, 38, 27, 0.12);
+    }
+
+    h1 {
+      margin: 0;
+      font-family: "IBM Plex Serif", "Palatino", serif;
+      font-size: 28px;
+    }
+
+    p {
+      margin: 12px 0 0;
+      line-height: 1.5;
+      color: #2f4a37;
+    }
+
+    .status {
+      margin-top: 16px;
+      font-weight: 600;
+      color: #1d6250;
+    }
+
+    .error {
+      color: #982f20;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Starting Symphony desktop...</h1>
+    <p>
+      The desktop shell is waiting for the local runtime on
+      <strong>http://127.0.0.1:3000/</strong>.
+    </p>
+    <p id="status" class="status">Checking runtime availability...</p>
+  </main>
+  <script>
+    const status = document.getElementById('status');
+    const startedAt = Date.now();
+    const timeoutMs = 45000;
+
+    window.renderBootError = function renderBootError() {
+      if (!window.__SYMPHONY_BOOT_ERROR__) {
+        return;
+      }
+
+      status.textContent = window.__SYMPHONY_BOOT_ERROR__;
+      status.classList.add('error');
+    };
+
+    async function waitForRuntime() {
+      if (window.__SYMPHONY_BOOT_ERROR__) {
+        window.renderBootError();
+        return;
+      }
+
+      if (Date.now() - startedAt > timeoutMs) {
+        status.textContent = 'Runtime startup timed out. Set SYMPHONY_OFFLINE=1 for local mode or configure LINEAR_API_KEY in .env.';
+        status.classList.add('error');
+        return;
+      }
+
+      try {
+        const response = await fetch('http://127.0.0.1:3000/api/v1/state', {
+          cache: 'no-store'
+        });
+        if (response.ok) {
+          status.textContent = 'Runtime ready. Redirecting...';
+          window.location.replace('http://127.0.0.1:3000/');
+          return;
+        }
+      } catch (error) {
+        // Keep polling until runtime is ready.
+      }
+
+      status.textContent = 'Waiting for runtime to become available...';
+      setTimeout(waitForRuntime, 1000);
+    }
+
+    waitForRuntime().catch((error) => {
+      status.textContent = 'Unable to connect to runtime: ' + String(error);
+      status.classList.add('error');
+    });
+  </script>
+</body>
+</html>

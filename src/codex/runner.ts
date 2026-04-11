@@ -249,6 +249,13 @@ export class CodexRunner {
           throw new CodexRunnerError('response_error', 'Missing turn id in turn/start response');
         }
 
+        emit({
+          event: 'turn_started',
+          thread_id,
+          turn_id,
+          session_id: `${thread_id}-${turn_id}`
+        });
+
         const waitResult = await protocol.waitForTurnTerminal(input.turnTimeoutMs, emit);
         const session_id = `${thread_id}-${turn_id}`;
         const usage = waitResult.usage;

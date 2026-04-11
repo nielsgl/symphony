@@ -1,4 +1,5 @@
 import type { Issue } from '../tracker';
+import type { StructuredLogger } from '../observability';
 import {
   availableGlobalSlots,
   computeFailureBackoffMs,
@@ -15,6 +16,7 @@ import type {
   RetryEntry,
   RunningEntry,
   TickReason,
+  WorkerObservabilityEvent,
   WorkerExitReason
 } from './types';
 
@@ -43,7 +45,10 @@ function cloneIssue(issue: Issue): Issue {
 function cloneRunningEntry(entry: RunningEntry): RunningEntry {
   return {
     ...entry,
-    issue: cloneIssue(entry.issue)
+    issue: cloneIssue(entry.issue),
+    tokens: { ...entry.tokens },
+    last_reported_tokens: { ...entry.last_reported_tokens },
+    recent_events: entry.recent_events.map((event) => ({ ...event }))
   };
 }
 
@@ -62,6 +67,7 @@ export class OrchestratorCore {
   private readonly config: OrchestratorOptions['config'];
   private readonly ports: OrchestratorOptions['ports'];
   private readonly nowMs: () => number;
+  private readonly logger?: StructuredLogger;
 
   private readonly state: OrchestratorState;
 
@@ -69,6 +75,7 @@ export class OrchestratorCore {
     this.config = options.config;
     this.ports = options.ports;
     this.nowMs = options.nowMs ?? (() => Date.now());
+    this.logger = options.logger;
 
     this.state = {
       poll_interval_ms: this.config.poll_interval_ms,
@@ -83,7 +90,11 @@ export class OrchestratorCore {
         total_tokens: 0,
         seconds_running: 0
       },
-      codex_rate_limits: null
+      codex_rate_limits: null,
+      health: {
+        dispatch_validation: 'ok',
+        last_error: null
+      }
     };
   }
 
@@ -99,7 +110,8 @@ export class OrchestratorCore {
       ),
       completed: new Set(this.state.completed.values()),
       codex_totals: { ...this.state.codex_totals },
-      codex_rate_limits: this.state.codex_rate_limits ? { ...this.state.codex_rate_limits } : null
+      codex_rate_limits: this.state.codex_rate_limits ? { ...this.state.codex_rate_limits } : null,
+      health: { ...this.state.health }
     };
   }
 
@@ -108,14 +120,32 @@ export class OrchestratorCore {
 
     const preflight = this.ports.dispatchPreflight();
     if (!preflight.dispatch_allowed) {
+      this.state.health.dispatch_validation = 'failed';
+      this.state.health.last_error = preflight.reason ?? 'dispatch preflight rejected dispatch';
+      this.logger?.log({
+        level: 'warn',
+        event: 'dispatch_validation_failed',
+        message: this.state.health.last_error,
+        context: {
+          reason: this.state.health.last_error
+        }
+      });
       this.ports.notifyObservers?.();
       return;
     }
+
+    this.state.health.dispatch_validation = 'ok';
 
     let candidates: Issue[];
     try {
       candidates = await this.ports.tracker.fetch_candidate_issues();
     } catch {
+      this.state.health.last_error = 'failed to fetch candidate issues';
+      this.logger?.log({
+        level: 'error',
+        event: 'tracker_candidate_fetch_failed',
+        message: 'failed to fetch candidate issues'
+      });
       this.ports.notifyObservers?.();
       return;
     }
@@ -138,6 +168,59 @@ export class OrchestratorCore {
     this.ports.notifyObservers?.();
   }
 
+  onWorkerEvent(issue_id: string, workerEvent: WorkerObservabilityEvent): void {
+    const runningEntry = this.state.running.get(issue_id);
+    if (!runningEntry) {
+      return;
+    }
+
+    runningEntry.last_codex_timestamp_ms = workerEvent.timestamp_ms;
+    runningEntry.last_event = workerEvent.event;
+    runningEntry.last_message = workerEvent.detail ?? null;
+
+    if (workerEvent.session_id) {
+      runningEntry.session_id = workerEvent.session_id;
+    }
+
+    if (workerEvent.event === 'turn_started') {
+      runningEntry.turn_count += 1;
+    }
+
+    if (workerEvent.usage) {
+      const usage = workerEvent.usage;
+      this.state.codex_totals.input_tokens += Math.max(0, usage.input_tokens - runningEntry.last_reported_tokens.input_tokens);
+      this.state.codex_totals.output_tokens += Math.max(0, usage.output_tokens - runningEntry.last_reported_tokens.output_tokens);
+      this.state.codex_totals.total_tokens += Math.max(0, usage.total_tokens - runningEntry.last_reported_tokens.total_tokens);
+      runningEntry.tokens = { ...usage };
+      runningEntry.last_reported_tokens = { ...usage };
+    }
+
+    if (workerEvent.rate_limits) {
+      this.state.codex_rate_limits = { ...workerEvent.rate_limits };
+    }
+
+    runningEntry.recent_events.push({
+      at_ms: workerEvent.timestamp_ms,
+      event: workerEvent.event,
+      message: workerEvent.detail ?? null
+    });
+    if (runningEntry.recent_events.length > 20) {
+      runningEntry.recent_events.splice(0, runningEntry.recent_events.length - 20);
+    }
+
+    this.logger?.log({
+      level: 'info',
+      event: 'worker_event',
+      message: workerEvent.event,
+      context: {
+        issue_id,
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id,
+        event: workerEvent.event
+      }
+    });
+  }
+
   async onWorkerExit(issue_id: string, reason: WorkerExitReason): Promise<void> {
     const running = this.state.running.get(issue_id);
     if (!running) {
@@ -157,6 +240,7 @@ export class OrchestratorCore {
         error: null
       });
     } else {
+      this.state.health.last_error = `worker exited for ${running.identifier}`;
       await this.scheduleRetry({
         issue_id,
         identifier: running.identifier,
@@ -301,6 +385,7 @@ export class OrchestratorCore {
         delay_type: 'failure',
         error: 'worker stalled'
       });
+      this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
     }
   }
 
@@ -308,6 +393,7 @@ export class OrchestratorCore {
     const spawned = await this.ports.spawnWorker({ issue, attempt });
 
     if (!spawned.ok) {
+      this.state.health.last_error = `failed to spawn agent for ${issue.identifier}`;
       await this.scheduleRetry({
         issue_id: issue.id,
         identifier: issue.identifier,
@@ -324,6 +410,22 @@ export class OrchestratorCore {
       worker_handle: spawned.worker_handle,
       monitor_handle: spawned.monitor_handle,
       retry_attempt: attempt ?? 0,
+      workspace_path: spawned.workspace_path ?? null,
+      session_id: null,
+      turn_count: 0,
+      last_event: null,
+      last_message: null,
+      tokens: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0
+      },
+      last_reported_tokens: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0
+      },
+      recent_events: [],
       started_at_ms: this.nowMs(),
       last_codex_timestamp_ms: null
     });

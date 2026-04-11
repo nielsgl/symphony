@@ -1,6 +1,7 @@
 import type { Issue } from '../tracker';
 import type { WorkspaceManager } from '../workspace';
 import type { CodexRunner } from '../codex';
+import type { CodexRunnerEvent } from '../codex';
 import type { EffectiveConfig } from '../workflow';
 
 const DEFAULT_CONTINUATION_PROMPT =
@@ -13,6 +14,7 @@ export interface LocalWorkerRunInput {
   codexRunner: CodexRunner;
   config: EffectiveConfig;
   renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
+  onCodexEvent?: (event: CodexRunnerEvent) => void;
 }
 
 export interface LocalWorkerRunResult {
@@ -45,6 +47,7 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       turnSandboxPolicy: input.config.codex.turn_sandbox_policy
         ? { type: input.config.codex.turn_sandbox_policy }
         : undefined,
+      onEvent: input.onCodexEvent,
       readTimeoutMs: input.config.codex.read_timeout_ms,
       turnTimeoutMs: input.config.codex.turn_timeout_ms
     });

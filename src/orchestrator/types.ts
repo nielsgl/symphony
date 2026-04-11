@@ -1,4 +1,6 @@
 import type { Issue, TrackerAdapter } from '../tracker';
+import type { CodexUsageTotals } from '../codex';
+import type { StructuredLogger } from '../observability';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
 export type WorkerExitReason = 'normal' | 'abnormal';
@@ -10,6 +12,18 @@ export interface RunningEntry {
   worker_handle: unknown;
   monitor_handle: unknown;
   retry_attempt: number;
+  workspace_path: string | null;
+  session_id: string | null;
+  turn_count: number;
+  last_event: string | null;
+  last_message: string | null;
+  tokens: CodexUsageTotals;
+  last_reported_tokens: CodexUsageTotals;
+  recent_events: Array<{
+    at_ms: number;
+    event: string;
+    message: string | null;
+  }>;
   started_at_ms: number;
   last_codex_timestamp_ms: number | null;
 }
@@ -37,16 +51,22 @@ export interface OrchestratorState {
     seconds_running: number;
   };
   codex_rate_limits: Record<string, unknown> | null;
+  health: {
+    dispatch_validation: 'ok' | 'failed';
+    last_error: string | null;
+  };
 }
 
 export interface DispatchPreflightResult {
   dispatch_allowed: boolean;
+  reason?: string;
 }
 
 export interface SpawnWorkerResultSuccess {
   ok: true;
   worker_handle: unknown;
   monitor_handle: unknown;
+  workspace_path?: string | null;
 }
 
 export interface SpawnWorkerResultFailure {
@@ -75,6 +95,15 @@ export interface OrchestratorPorts {
   notifyObservers?: () => void;
 }
 
+export interface WorkerObservabilityEvent {
+  timestamp_ms: number;
+  event: string;
+  session_id?: string;
+  detail?: string;
+  usage?: CodexUsageTotals;
+  rate_limits?: Record<string, unknown> | null;
+}
+
 export interface OrchestratorConfig {
   poll_interval_ms: number;
   max_concurrent_agents: number;
@@ -89,4 +118,5 @@ export interface OrchestratorOptions {
   config: OrchestratorConfig;
   ports: OrchestratorPorts;
   nowMs?: () => number;
+  logger?: StructuredLogger;
 }

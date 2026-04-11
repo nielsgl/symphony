@@ -1,4 +1,5 @@
 import type { OrchestratorState, TickReason } from '../orchestrator';
+import type { StructuredLogger } from '../observability';
 
 export interface RuntimeSnapshotSource {
   getStateSnapshot(): OrchestratorState;
@@ -52,7 +53,7 @@ export interface ApiStateResponse {
   };
   rate_limits: Record<string, unknown> | null;
   health: {
-    dispatch_validation: 'ok';
+    dispatch_validation: 'ok' | 'failed';
     last_error: string | null;
   };
 }
@@ -108,4 +109,5 @@ export interface LocalApiServerOptions {
   snapshotSource: RuntimeSnapshotSource;
   refreshSource: RefreshTickSource;
   nowMs?: () => number;
+  logger?: StructuredLogger;
 }

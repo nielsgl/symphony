@@ -1,4 +1,5 @@
 import type { CodexRunner } from '../codex';
+import type { CodexRunnerEvent } from '../codex';
 import type { Issue } from '../tracker';
 import { TemplateEngine, type Template } from '../workflow';
 import type { EffectiveConfig } from '../workflow';
@@ -19,6 +20,7 @@ export interface LocalRunnerBridgeOptions {
   promptTemplate: string;
   renderPrompt?: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
   onWorkerExit?: (params: { issue_id: string; reason: 'normal' | 'abnormal'; error?: string }) => Promise<void> | void;
+  onWorkerEvent?: (params: { issue_id: string; event: CodexRunnerEvent }) => void;
 }
 
 export class LocalRunnerBridge {
@@ -27,6 +29,7 @@ export class LocalRunnerBridge {
   private readonly config: EffectiveConfig;
   private readonly renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
   private readonly onWorkerExit?: LocalRunnerBridgeOptions['onWorkerExit'];
+  private readonly onWorkerEvent?: LocalRunnerBridgeOptions['onWorkerEvent'];
 
   constructor(options: LocalRunnerBridgeOptions) {
     this.workspaceManager = options.workspaceManager;
@@ -41,6 +44,7 @@ export class LocalRunnerBridge {
       };
     }
     this.onWorkerExit = options.onWorkerExit;
+    this.onWorkerEvent = options.onWorkerEvent;
   }
 
   async spawnWorker(params: { issue: Issue; attempt: number | null }): Promise<SpawnWorkerResult> {
@@ -78,7 +82,10 @@ export class LocalRunnerBridge {
       workspaceManager: this.workspaceManager,
       codexRunner: this.codexRunner,
       config: this.config,
-      renderPrompt: this.renderPrompt
+      renderPrompt: this.renderPrompt,
+      onCodexEvent: (event) => {
+        this.onWorkerEvent?.({ issue_id: issue.id, event });
+      }
     });
 
     await this.onWorkerExit?.({
