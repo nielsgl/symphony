@@ -5,7 +5,11 @@
   "description": "Symphony workflow config pipeline",
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "start:dashboard": "npm run build && node scripts/start-dashboard.js",
+    "start:api": "npm run start:dashboard",
+    "start:web": "npm run start:dashboard",
+    "start:desktop": "npm run start:dashboard"
   },
   "dependencies": {
     "js-yaml": "^4.1.1",
