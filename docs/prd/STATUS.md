@@ -188,12 +188,19 @@ Owner: orchestration planning
     - Human-readable dashboard served at `GET /`.
     - Dashboard is API-driven only via `GET /api/v1/state`, `GET /api/v1/:issue_identifier`, and `POST /api/v1/refresh`.
     - No direct orchestrator mutation from UI; refresh remains the only control trigger.
+  - Runtime bootstrap wiring in `src/runtime/bootstrap.ts` and `scripts/start-dashboard.js`:
+    - Dashboard/API launcher now composes the live orchestrator runtime (`WorkflowLoader` + tracker + workspace manager + runner bridge + orchestrator + API server), not an in-memory static snapshot.
+    - Startup performs terminal workspace cleanup, initial `startup` reconciliation tick, and periodic `interval` polling ticks.
+    - Graceful shutdown path closes API listener and clears retry/poll timers.
+  - Standalone desktop host in `desktop/main.js`:
+    - `npm run start:desktop` now launches Electron and manages backend lifecycle directly (spawn, startup readiness detection, teardown).
+    - Desktop backend launch contract is shared via typed helpers in `src/runtime/desktop-launcher.ts`.
   - API projection completion in `src/api/snapshot-service.ts` and `src/api/types.ts`:
     - `health` reflects live orchestrator validation/error state.
     - Running and issue detail projections expose session counters/events/tokens and workspace path.
     - Stable error envelope semantics preserved for 404/405/500 paths.
 - Test evidence:
-  - `npm test` -> pass (16 files, 97 tests).
+  - `npm test` -> pass (18 files, 102 tests).
   - `npm run build` -> pass (`tsc --project tsconfig.json`).
   - `git diff --check` -> pass (`DIFF_CHECK_EXIT:0`).
 - SPEC coverage anchors (P5 closure):
@@ -215,6 +222,13 @@ Owner: orchestration planning
     - `tests/api/refresh-coalescer.test.ts`
       - `coalesces burst requests into one manual refresh tick`
       - `schedules a later tick after the coalescing window has elapsed`
+    - `tests/runtime/bootstrap.test.ts`
+      - `starts live runtime and serves orchestrator-backed state endpoint`
+      - `maps refresh endpoint to orchestrator manual refresh tick`
+    - `tests/runtime/desktop-launcher.test.ts`
+      - `parses dashboard startup URL from launcher output`
+      - `builds backend launch config with explicit workflow path`
+      - `defaults workflow file to repository WORKFLOW.md`
 - Gate outcome:
   - P5 exit criteria satisfied (SPEC 17.6 and required `/api/v1/*` endpoints stable for embedded UI).
   - P6 remains open and not started.

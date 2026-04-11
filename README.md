@@ -67,11 +67,28 @@ SYMPHONY_PORT=5050 npm run start:dashboard
 
 ### Script Aliases
 
-These aliases intentionally launch the same local surface:
+These aliases intentionally launch the same local API/dashboard surface:
 
 - `npm run start:api`
 - `npm run start:web`
-- `npm run start:desktop`
+
+## Run Standalone Desktop App (macOS)
+
+`start:desktop` launches an Electron host that starts the same runtime-backed
+dashboard backend on an ephemeral loopback port and renders it in a native
+desktop window.
+
+```bash
+npm run start:desktop
+```
+
+Notes:
+
+- The backend startup is managed by the desktop host and shut down when the app exits.
+- Default workflow path is repository root `WORKFLOW.md`.
+- Set `SYMPHONY_WORKFLOW_PATH` to point at a non-default workflow file if needed.
+- Export `LINEAR_API_KEY` before startup so tracker validation passes.
+- For local UI-only startup without Linear credentials, set `SYMPHONY_OFFLINE=1`.
 
 ## API Endpoints
 
