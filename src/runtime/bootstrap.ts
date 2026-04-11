@@ -59,7 +59,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     const canBypassTrackerCredentialValidation =
       Boolean(options.trackerAdapter) &&
       (startupValidation.error_code === 'missing_tracker_api_key' ||
-        startupValidation.error_code === 'missing_tracker_project_slug');
+        startupValidation.error_code === 'missing_tracker_project_slug' ||
+        startupValidation.error_code === 'missing_tracker_owner' ||
+        startupValidation.error_code === 'missing_tracker_repo');
 
     if (!canBypassTrackerCredentialValidation) {
       throw new Error(startupValidation.message);

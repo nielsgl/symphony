@@ -78,6 +78,58 @@ describe('ConfigValidator', () => {
     }
   });
 
+  it('requires owner and repo for github tracker', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.kind = 'github';
+    config.tracker.project_slug = '';
+    config.tracker.owner = ' ';
+    config.tracker.repo = 'symphony';
+
+    const missingOwner = validator.validate(config);
+    expect(missingOwner.ok).toBe(false);
+    if (!missingOwner.ok) {
+      expect(missingOwner.error_code).toBe('missing_tracker_owner');
+    }
+
+    config.tracker.owner = 'nielsgl';
+    config.tracker.repo = '';
+
+    const missingRepo = validator.validate(config);
+    expect(missingRepo.ok).toBe(false);
+    if (!missingRepo.ok) {
+      expect(missingRepo.error_code).toBe('missing_tracker_repo');
+    }
+  });
+
+  it('accepts valid github tracker config', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.kind = 'github';
+    config.tracker.project_slug = '';
+    config.tracker.owner = 'nielsgl';
+    config.tracker.repo = 'symphony';
+    config.tracker.active_states = ['Open'];
+
+    expect(validator.validate(config)).toEqual({ ok: true, at: expect.any(String) });
+  });
+
+  it('rejects github tracker config when active_states cannot map to open/closed', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.kind = 'github';
+    config.tracker.project_slug = '';
+    config.tracker.owner = 'nielsgl';
+    config.tracker.repo = 'symphony';
+    config.tracker.active_states = ['Todo', 'In Progress'];
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_tracker_active_states_for_github');
+    }
+  });
+
   it('enforces non-empty codex command', () => {
     const validator = new ConfigValidator();
     const config = baseConfig();

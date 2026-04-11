@@ -49,6 +49,34 @@ describe('ConfigResolver', () => {
     expect(config.workspace.root).toBe('/srv/workspaces');
   });
 
+  it('uses github defaults for endpoint and token fallback', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        GITHUB_TOKEN: 'gh-token'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve({
+      config: {
+        tracker: {
+          kind: 'github',
+          owner: 'nielsgl',
+          repo: 'symphony'
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.tracker.endpoint).toBe('https://api.github.com/graphql');
+    expect(config.tracker.api_key).toBe('gh-token');
+    expect(config.tracker.owner).toBe('nielsgl');
+    expect(config.tracker.repo).toBe('symphony');
+    expect(config.tracker.active_states).toEqual(['Open']);
+    expect(config.tracker.terminal_states).toEqual(['Closed']);
+  });
+
   it('treats empty resolved $VAR as missing value', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 

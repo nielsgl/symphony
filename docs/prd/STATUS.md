@@ -20,7 +20,7 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: Program-level governance remains in P0; implementation evidence is recorded through P6 closure.
+- Program status: Program-level governance remains in P0; implementation evidence is recorded through P7 closure.
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (implementation delivery should follow this list while P0 governance items remain open).
@@ -49,7 +49,7 @@ Owner: orchestration planning
 - [x] P4: Implement Codex runner protocol lifecycle.
 - [x] P5: Implement local HTTP API and embedded desktop UI integration.
 - [x] P6: Implement security profiles and minimal persistence.
-- [ ] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
+- [x] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
 
 ## Implementation Evidence (P1)
 - Date: 2026-04-10
@@ -267,7 +267,36 @@ Owner: orchestration planning
   - Restart continuity semantics: `tests/runtime/bootstrap.test.ts` (`restores durable history on restart without restoring running or retry state`)
 - Gate outcome:
   - P6 exit criteria satisfied (security profile and redaction checks passing; minimal persistence continuity verified across restart).
-  - P7 remains open and not started.
+
+## Implementation Evidence (P7)
+- Date: 2026-04-11
+- Scope delivered (GitHub adapter + PR metadata parity):
+  - GitHub tracker adapter in `src/tracker/github-adapter.ts`:
+    - Repository-scoped candidate/state-refresh queries with pagination and deterministic ordering.
+    - Normalized issue parity mapping with lowercased labels, null-safe timestamps, and strict minimal-issue filtering.
+    - PR linkage enrichment via optional `tracker_meta.pr_links` metadata for prompt/API diagnostics.
+    - Typed error mapping (`github_api_request`, `github_api_status`, `github_graphql_errors`, `github_unknown_payload`, `github_missing_end_cursor`).
+  - Shared tracker/workflow contract extensions:
+    - `src/tracker/types.ts` adds optional `Issue.tracker_meta` and GitHub-specific error/config support.
+    - `src/workflow/types.ts` adds GitHub validation codes and optional tracker owner/repo config fields.
+  - Config/factory wiring for deterministic backend selection:
+    - `src/workflow/resolver.ts` adds GitHub endpoint default and `$GITHUB_TOKEN` fallback resolution.
+    - `src/workflow/validator.ts` supports `tracker.kind=github` with owner/repo required-field validation.
+    - `src/tracker/factory.ts` now selects Linear or GitHub adapters by kind with typed missing-field failures.
+  - Post-review hardening for first-run GitHub dispatch safety:
+    - GitHub defaults now use dispatch-capable states (`active_states=['Open']`, `terminal_states=['Closed']`).
+    - Validator rejects unmappable GitHub `active_states` with typed failure (`invalid_tracker_active_states_for_github`).
+    - Adapter fails fast on non-empty unsupported state filters (`github_invalid_state_filter`) instead of silent no-op.
+- Test evidence:
+  - `npm test` -> pass (22 files, 133 tests).
+  - `npm run build` -> pass (`tsc --project tsconfig.json`).
+  - `git diff --check` -> pass (`DIFF_CHECK_EXIT:0`).
+- SPEC/PRD coverage anchors (P7 closure):
+  - SPEC 17.3 (`Issue Tracker Client`): `tests/tracker/github-adapter.test.ts`, `tests/tracker/factory.test.ts`, `tests/tracker/linear-adapter.test.ts`
+  - Config parity and kind-specific validation: `tests/workflow/resolver.test.ts`, `tests/workflow/validator.test.ts`
+  - PRD-007 acceptance points covered: normalized parity, pagination, PR metadata null-safe enrichment, typed error mapping, deterministic kind switch, and dispatch-capable defaults.
+- Gate outcome:
+  - P7 exit criteria satisfied (GitHub adapter contract tests passing; Linear regression suite remains green).
 
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
