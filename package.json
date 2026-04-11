@@ -15,7 +15,7 @@
     "start:dashboard": "npm run build && node scripts/start-dashboard.js",
     "start:api": "npm run start:dashboard",
     "start:web": "npm run start:dashboard",
-    "start:desktop": "npm run build:desktop:prepare && tauri dev",
+    "start:desktop": "npm run build && tauri dev",
     "build:desktop": "tauri build"
   },
   "dependencies": {
