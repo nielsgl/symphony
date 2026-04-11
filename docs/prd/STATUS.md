@@ -39,9 +39,46 @@ Owner: orchestration planning
 ## Current Phase (P0)
 - [x] Review and sign off PRD-000 through PRD-008.
 - [x] Confirm interface ownership per subsystem.
-- [ ] Lock initial implementation repo structure (`src/`, `tests/`, `scripts/`).
+- [x] Lock initial implementation repo structure (`src/`, `tests/`, `scripts/`).
 - [ ] Convert traceability checklist placeholders into concrete owner/test references.
 - [ ] Approve entry into P1.
+
+## Repository Structure Baseline (P0 Governance Evidence)
+
+Decision: Initial implementation repository structure is locked as:
+- `src/` for runtime subsystem implementations.
+- `tests/` for mirrored subsystem test coverage.
+- `scripts/` for build, launch, and developer automation tooling.
+
+Ownership and decision authority:
+- Accountable owner role: `orchestration planning`.
+- Structural governance authority is maintained via this status tracker and
+  aligned repository guidance in `AGENTS.md`.
+
+Rules for adding new top-level directories:
+- Add only when required by a new subsystem boundary or toolchain/runtime
+  requirement that cannot fit existing top-level structure.
+- Document rationale and ownership impact in `docs/prd/STATUS.md` (and linked
+  PRD docs when contract changes are involved) in the same change.
+- Validate with `npm test`, `npm run build`, and `git diff --check` in the same
+  change set.
+
+Subsystem mapping baseline:
+- Orchestrator: `src/orchestrator/` and `tests/orchestrator/`.
+- Workflow/config: `src/workflow/` and `tests/workflow/`.
+- Workspace lifecycle: `src/workspace/` and `tests/workspace/`.
+- Codex runner: `src/codex/` and `tests/codex/`.
+- Tracker adapters: `src/tracker/` and `tests/tracker/`.
+- Security/redaction: `src/security/` and `tests/security/`.
+- Persistence: `src/persistence/` and `tests/persistence/`.
+- Observability: `src/observability/` and `tests/observability/`.
+- Runtime/bootstrap: `src/runtime/` and `tests/runtime/`.
+- Local API/dashboard projection: `src/api/` and `tests/api/`.
+
+Evidence:
+- P1 through P7 implementation evidence in this file demonstrates the baseline
+  structure remained stable across staged delivery while validation gates stayed
+  green (`npm test`, `npm run build`, `git diff --check`).
 
 ## Interface Ownership (P0 Governance Evidence)
 

@@ -7,15 +7,25 @@ This repo is currently specification-first.
 - `.codex/skills/linear-graphql/SKILL.md`: raw Linear GraphQL helper.
 - `.codex/skills/commit/SKILL.md`: required commit workflow.
 
-There is no `src/` or `tests/` tree yet. When adding implementation code, use clear top-level folders (for example `src/`, `tests/`, `scripts/`) and keep module boundaries aligned with `SPEC.md` components.
+The initial implementation structure is locked at top level as `src/`, `tests/`, and `scripts/`.
+Keep module boundaries aligned with `SPEC.md` components and mirror test coverage by subsystem.
+
+Repository structure baseline mapping:
+- `src/orchestrator/`, `src/workflow/`, `src/workspace/`, `src/codex/`, `src/tracker/`, `src/security/`, `src/persistence/`, `src/observability/`, `src/runtime/`, `src/api/`
+- `tests/` mirrors major `src/` subsystem areas.
+- `scripts/` contains build, launch, and smoke-test automation.
+
+Structural changes to top-level directories require governance updates in `docs/prd/STATUS.md` and aligned PRD references in the same change.
 
 ## Build, Test, and Development Commands
-No build/test pipeline is committed yet. Baseline checks:
+Primary validation commands:
+- `npm test` - run the automated test suite.
+- `npm run build` - validate TypeScript build output.
+
+Baseline hygiene checks:
 - `git status` - confirm intended changes.
 - `rg --files` - inspect repository structure quickly.
 - `git diff --check` - catch whitespace/merge-marker issues.
-
-If you introduce a toolchain, add concrete commands (for example `npm test`, `make build`) in the same PR.
 
 ## Dependency Management
 - Add dependencies using package manager commands, not manual `package.json` edits.
@@ -30,10 +40,10 @@ If you introduce a toolchain, add concrete commands (for example `npm test`, `ma
 - Prefer ASCII unless the file already requires Unicode.
 
 ## Testing Guidelines
-No test framework is configured yet.
+- Run `npm test` and `npm run build` for every change unless explicitly scoped otherwise.
 - Validate behavior against relevant `SPEC.md` sections.
 - Document manual verification steps and outputs in PRs.
-- Add automated tests alongside new runtime code once a harness exists.
+- Add or update automated tests alongside runtime code changes.
 
 ## Commit, Merge & Pull Request Guidelines
 Follow `.codex/skills/commit/SKILL.md` for every commit.
