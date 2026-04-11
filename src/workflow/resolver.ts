@@ -147,17 +147,25 @@ export class ConfigResolver {
     const trackerKind = readString(tracker.kind, '');
     const trackerEndpoint =
       readString(tracker.endpoint, '') ||
-      (trackerKind === 'linear' ? 'https://api.linear.app/graphql' : '');
+      (trackerKind === 'linear'
+        ? 'https://api.linear.app/graphql'
+        : trackerKind === 'github'
+          ? 'https://api.github.com/graphql'
+          : '');
 
     const trackerApiKeySource =
       typeof tracker.api_key === 'string'
         ? tracker.api_key
         : trackerKind === 'linear'
           ? '$LINEAR_API_KEY'
+          : trackerKind === 'github'
+            ? '$GITHUB_TOKEN'
           : '';
     const trackerApiKey = resolveEnvToken(trackerApiKeySource, this.env);
 
     const trackerProjectSlug = readString(tracker.project_slug, '');
+    const trackerOwner = readString(tracker.owner, '');
+    const trackerRepo = readString(tracker.repo, '');
 
     const workspaceRoot = resolvePathLikeValue(
       workspace.root,
@@ -183,6 +191,8 @@ export class ConfigResolver {
         endpoint: trackerEndpoint,
         api_key: trackerApiKey,
         project_slug: trackerProjectSlug,
+        owner: trackerOwner,
+        repo: trackerRepo,
         active_states: readStringList(tracker.active_states, DEFAULT_ACTIVE_STATES),
         terminal_states: readStringList(tracker.terminal_states, DEFAULT_TERMINAL_STATES)
       },

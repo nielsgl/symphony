@@ -29,7 +29,7 @@ export class ConfigValidator {
       };
     }
 
-    if (effectiveConfig.tracker.kind !== 'linear') {
+    if (effectiveConfig.tracker.kind !== 'linear' && effectiveConfig.tracker.kind !== 'github') {
       return {
         ok: false,
         error_code: 'unsupported_tracker_kind',
@@ -47,11 +47,29 @@ export class ConfigValidator {
       };
     }
 
-    if (!effectiveConfig.tracker.project_slug.trim()) {
+    if (effectiveConfig.tracker.kind === 'linear' && !effectiveConfig.tracker.project_slug.trim()) {
       return {
         ok: false,
         error_code: 'missing_tracker_project_slug',
         message: 'tracker.project_slug is required for tracker.kind=linear',
+        at
+      };
+    }
+
+    if (effectiveConfig.tracker.kind === 'github' && !effectiveConfig.tracker.owner?.trim()) {
+      return {
+        ok: false,
+        error_code: 'missing_tracker_owner',
+        message: 'tracker.owner is required for tracker.kind=github',
+        at
+      };
+    }
+
+    if (effectiveConfig.tracker.kind === 'github' && !effectiveConfig.tracker.repo?.trim()) {
+      return {
+        ok: false,
+        error_code: 'missing_tracker_repo',
+        message: 'tracker.repo is required for tracker.kind=github',
         at
       };
     }
