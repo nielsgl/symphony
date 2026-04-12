@@ -24,7 +24,7 @@ Owner: orchestration planning
 - Current phase: P0 (Architecture freeze and PRD sign-off).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (implementation delivery should follow this list while P0 governance items remain open).
-- P0 governance remaining after this update: lock initial repo structure, convert traceability placeholders to concrete owner/test references, and approve entry into P1.
+- P0 governance remaining after this update: approve entry into P1.
 - Blockers: None currently recorded.
 
 ## Done
@@ -40,8 +40,23 @@ Owner: orchestration planning
 - [x] Review and sign off PRD-000 through PRD-008.
 - [x] Confirm interface ownership per subsystem.
 - [x] Lock initial implementation repo structure (`src/`, `tests/`, `scripts/`).
-- [ ] Convert traceability checklist placeholders into concrete owner/test references.
+- [x] Convert traceability checklist placeholders into concrete owner/test references.
 - [ ] Approve entry into P1.
+
+## P0 Sign-off Evidence (Traceability Placeholder Conversion)
+
+- Date: 2026-04-12
+- Scope: Converted core conformance traceability placeholders to concrete
+  references in `docs/prd/TRACEABILITY-MATRIX.md`.
+- Evidence captured:
+  - Accountable owner role is explicit per matrix row.
+  - Test anchors are concrete file and test-case references for core
+    conformance rows.
+  - Observability signals are concrete runtime/API outputs per row.
+- Validation commands for this governance change:
+  - `npm test`
+  - `npm run build`
+  - `git diff --check`
 
 ## Repository Structure Baseline (P0 Governance Evidence)
 
