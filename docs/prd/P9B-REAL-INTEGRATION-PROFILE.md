@@ -22,6 +22,7 @@ Required markers:
 - `P9B_PROFILE=REAL_INTEGRATION`
 - `P9B_MODE=DRY_RUN|LIVE`
 - `P9B_REAL_INTEGRATION_REQUIRED=0|1`
+- `P9B_EVIDENCE_REQUIRED_MODE=FAIL_DRY_RUN_NOT_ALLOWED` (required mode guardrail)
 - `P9B_EVIDENCE_OPERATIONAL_CHECKS=PASS|SKIPPED|FAIL`
 - `P9B_EVIDENCE_WORKSPACE_ISOLATION=PASS`
 - `P9B_EVIDENCE_REAL_TRACKER=PASS|PASS_DRY_RUN_WITH_KEY|SKIPPED_MISSING_LINEAR_API_KEY|FAIL_*`
@@ -42,6 +43,7 @@ Skipped criteria (allowed in non-required mode only):
 Fail criteria:
 - Any operational check fails.
 - Required mode is enabled and `LINEAR_API_KEY` is missing.
+- Required mode is combined with dry-run.
 - Live tracker query returns non-OK status or invalid payload.
 
 ## SPEC Mapping
@@ -70,3 +72,25 @@ These checks intentionally stay narrow to P9b evidence and avoid P9c/P9d scope.
 
 ## Conservative Completion Rule
 P9b is complete only when at least one reproducible profile invocation is captured with concrete `P9B_*` markers and references from STATUS/parity/traceability docs.
+
+## Captured Invocation Evidence (2026-04-12)
+Command:
+- `npm run validate:integration-profile`
+
+Output excerpt:
+```text
+P9B_PROFILE=REAL_INTEGRATION
+P9B_MODE=LIVE
+P9B_REAL_INTEGRATION_REQUIRED=0
+P9B_COMMAND=npm test -- --run tests/cli/cli-args.test.ts
+P9B_COMMAND=npm test -- --run tests/workspace/workspace-manager.test.ts
+P9B_COMMAND=npm test -- --run tests/runtime/bootstrap.test.ts tests/api/server.test.ts
+P9B_EVIDENCE_OPERATIONAL_CHECKS=PASS
+P9B_EVIDENCE_WORKSPACE_ISOLATION=PASS
+P9B_EVIDENCE_REAL_TRACKER=SKIPPED_MISSING_LINEAR_API_KEY
+P9B_PROFILE_RESULT=SKIPPED
+```
+
+Artifact interpretation:
+- This invocation is audit-valid for reproducibility and explicit skip semantics.
+- Required-mode release jobs must use `npm run validate:integration-profile:required`, where dry-run is rejected and missing credentials fail the job.

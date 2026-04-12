@@ -168,7 +168,8 @@ Ownership evidence links:
   - Added deterministic script tests in `tests/cli/integration-profile-script.test.ts` for conservative skip/fail/pass semantics:
     - missing `LINEAR_API_KEY` in non-required mode reports `SKIPPED`
     - missing `LINEAR_API_KEY` in required mode fails
-    - dry-run mode with key reports `PASS`
+    - required mode rejects dry-run
+    - live required-mode path validates operational command markers and tracker smoke pass via mock endpoint
   - Added executable runbook in `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md` with command set, expected markers, and pass/fail criteria.
   - Extended `docs/prd/TRACEABILITY-MATRIX.md` with explicit SPEC 17.8 + 18.3 mapping rows linked to the harness/test anchors.
 - SPEC closure intent:
@@ -181,6 +182,20 @@ Ownership evidence links:
   - `docs/prd/TRACEABILITY-MATRIX.md`
   - `docs/prd/SPEC-LINE-PARITY-AUDIT.md`
   - `docs/prd/STATUS.md`
+- Captured invocation evidence (audit artifact):
+  - Command: `npm run validate:integration-profile`
+  - Output excerpt:
+    - `P9B_PROFILE=REAL_INTEGRATION`
+    - `P9B_MODE=LIVE`
+    - `P9B_REAL_INTEGRATION_REQUIRED=0`
+    - `P9B_COMMAND=npm test -- --run tests/cli/cli-args.test.ts`
+    - `P9B_COMMAND=npm test -- --run tests/workspace/workspace-manager.test.ts`
+    - `P9B_COMMAND=npm test -- --run tests/runtime/bootstrap.test.ts tests/api/server.test.ts`
+    - `P9B_EVIDENCE_OPERATIONAL_CHECKS=PASS`
+    - `P9B_EVIDENCE_WORKSPACE_ISOLATION=PASS`
+    - `P9B_EVIDENCE_REAL_TRACKER=SKIPPED_MISSING_LINEAR_API_KEY`
+    - `P9B_PROFILE_RESULT=SKIPPED`
+  - Canonical evidence reference: `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md` (`Captured Invocation Evidence (2026-04-12)` section).
 - Validation commands:
   - `npm test`
   - `npm run build`
