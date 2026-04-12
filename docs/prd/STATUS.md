@@ -24,7 +24,7 @@ Owner: orchestration planning
 - Current phase: P1 (entry approved; implementation already delivered through P7 closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: start `P9a` (CLI/host lifecycle + HTTP control parity), then continue in queue order.
+- Next-agent routing: start `P9b` (real integration + operational validation profile), then continue in queue order.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -150,10 +150,33 @@ Ownership evidence links:
 - [x] P6: Implement security profiles and minimal persistence.
 - [x] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
 - [x] P8: Perform full SPEC line parity audit and extract backlog stories (docs-only).
-- [ ] P9a: Close CLI/host lifecycle + HTTP control parity gaps.
+- [x] P9a: Close CLI/host lifecycle + HTTP control parity gaps.
 - [ ] P9b: Implement real integration + operational validation profile evidence.
 - [ ] P9c: Close failure-model/security-hardening parity gaps.
 - [ ] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
+
+## Implementation Evidence (P9a)
+- Date: 2026-04-12
+- Scope delivered (CLI/host lifecycle + HTTP extension parity):
+  - Added deterministic CLI argument resolution with required positional workflow path semantics in `src/runtime/cli.ts` and wired `scripts/start-dashboard.js` to use it.
+  - Implemented lifecycle-compatible workflow path precedence: positional argument, then `--workflow=` compatibility alias, then `SYMPHONY_WORKFLOW_PATH`, then default `./WORKFLOW.md`.
+  - Removed implicit always-on HTTP behavior in runtime bootstrap and gated HTTP extension startup to explicit port sources only (`--port` via runtime option or `server.port` from workflow).
+  - Added explicit HTTP bind/startup diagnostics (`runtime_args_resolved`, `api_server_listening`, `runtime_http_enabled`, `runtime_http_disabled`) to satisfy P9a observability evidence.
+  - Added deterministic lifecycle tests under `tests/cli/` that verify startup-failure surfacing, success exit on normal signal shutdown, and nonzero exit on abnormal host/fatal paths, plus runtime and API coverage updates.
+- Outputs:
+  - `scripts/start-dashboard.js`
+  - `src/runtime/cli.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/api/server.ts`
+  - `tests/cli/cli-args.test.ts`
+  - `tests/cli/lifecycle.test.ts`
+  - `tests/runtime/bootstrap.test.ts`
+  - `tests/api/server.test.ts`
+  - `docs/prd/SPEC-LINE-PARITY-AUDIT.md`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `git diff --check`
 
 ## Implementation Evidence (P8)
 - Date: 2026-04-12

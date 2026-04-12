@@ -13,9 +13,9 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 ## Coverage Summary
 - Total units classified: **1240**
 - Section ranges classified: **81**
-- Implemented ranges: **60**
-- Partially implemented ranges: **13**
-- Missing ranges: **3**
+- Implemented ranges: **62**
+- Partially implemented ranges: **12**
+- Missing ranges: **2**
 - Not applicable ranges: **5**
 
 ## Evidence Profiles (Triad Anchors)
@@ -36,7 +36,6 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 | EP-HTTP-PARITY | `src/api/server.ts`, `src/runtime/bootstrap.ts`, `scripts/start-dashboard.js` | `tests/api/server.test.ts`, `tests/runtime/bootstrap.test.ts`, `tests/runtime/desktop-launcher.test.ts` | root dashboard + `/api/v1/state` + `/api/v1/refresh` + diagnostics endpoints |
 | EP-FAILURE-PARITY | `src/workflow/*`, `src/orchestrator/core.ts`, `src/runtime/bootstrap.ts` | `tests/workflow/*.test.ts`, `tests/orchestrator/core.test.ts`, `tests/runtime/bootstrap.test.ts` | failed-dispatch health, retry logs, and startup/runtime warning logs |
 | EP-SECURITY-HARDENING | `src/security/redaction.ts`, `src-tauri/src/main.rs`, `src/api/dashboard-assets.ts` | `tests/security/redaction.test.ts`, desktop smoke tests | CSP/sanitization/host-hardening observability currently incomplete for full spec guidance |
-| EP-CLI-GAP | N/A | N/A | N/A |
 | EP-INTEGRATION-GAP | N/A | N/A | N/A |
 | EP-CONFORMANCE | Cross-cutting Section 18 claims over core modules | Cross-cutting Section 17 profile tests | Cross-cutting API/log/state signals in Section 13 |
 
@@ -100,7 +99,7 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 | 13.4 | SPEC-13.4-1..SPEC-13.4-4 | 4 | implemented | EP-OBS | Triad satisfied via mapped evidence profile. | N/A |
 | 13.5 | SPEC-13.5-1..SPEC-13.5-23 | 23 | partially_implemented | EP-TELEMETRY-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
 | 13.6 | SPEC-13.6-1..SPEC-13.6-4 | 4 | partially_implemented | EP-TELEMETRY-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
-| 13.7 | SPEC-13.7-1..SPEC-13.7-48 | 48 | partially_implemented | EP-HTTP-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9a |
+| 13.7 | SPEC-13.7-1..SPEC-13.7-48 | 48 | implemented | EP-HTTP-PARITY | Triad satisfied via CLI/runtime HTTP control updates and deterministic tests/logging evidence. | N/A |
 | 14.1 | SPEC-14.1-1..SPEC-14.1-26 | 26 | partially_implemented | EP-FAILURE-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9c |
 | 14.2 | SPEC-14.2-1..SPEC-14.2-14 | 14 | partially_implemented | EP-FAILURE-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9c |
 | 14.3 | SPEC-14.3-1..SPEC-14.3-8 | 8 | partially_implemented | EP-FAILURE-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9c |
@@ -117,7 +116,7 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 | 17.4 | SPEC-17.4-1..SPEC-17.4-16 | 16 | implemented | EP-TESTMATRIX | Triad satisfied via mapped evidence profile. | N/A |
 | 17.5 | SPEC-17.5-1..SPEC-17.5-26 | 26 | implemented | EP-TESTMATRIX | Triad satisfied via mapped evidence profile. | N/A |
 | 17.6 | SPEC-17.6-1..SPEC-17.6-8 | 8 | implemented | EP-TESTMATRIX | Triad satisfied via mapped evidence profile. | N/A |
-| 17.7 | SPEC-17.7-1..SPEC-17.7-6 | 6 | missing | EP-CLI-GAP | No acceptable triad currently exists for this unit range. | P9a |
+| 17.7 | SPEC-17.7-1..SPEC-17.7-6 | 6 | implemented | EP-TESTMATRIX | Triad satisfied via positional workflow-path support, lifecycle semantics coverage, and startup diagnostics evidence. | N/A |
 | 17.8 | SPEC-17.8-1..SPEC-17.8-9 | 9 | missing | EP-INTEGRATION-GAP | No acceptable triad currently exists for this unit range. | P9b |
 | 18 | SPEC-18-1..SPEC-18-4 | 4 | partially_implemented | EP-CONFORMANCE | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
 | 18.1 | SPEC-18.1-1..SPEC-18.1-18 | 18 | partially_implemented | EP-CONFORMANCE | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
