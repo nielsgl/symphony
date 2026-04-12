@@ -233,6 +233,18 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         });
 
   const start = async (): Promise<void> => {
+    const startupSnapshot = orchestrator.getStateSnapshot();
+    logger.log({
+      level: 'info',
+      event: 'startup_orchestrator_state_initialized',
+      message: 'startup initialized orchestrator state from cold process memory',
+      context: {
+        state_source: 'cold_start',
+        running_cleared: startupSnapshot.running.size,
+        retry_cleared: startupSnapshot.retry_attempts.size
+      }
+    });
+
     if (apiServer) {
       await apiServer.listen();
       const address = apiServer.address();
@@ -272,7 +284,18 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
     try {
       const terminalIssues = await tracker.fetch_issues_by_states(effectiveConfig.tracker.terminal_states);
-      await workspaceManager.cleanupWorkspaces(terminalIssues.map((issue) => issue.identifier));
+      const cleanupResults = await workspaceManager.cleanupWorkspaces(terminalIssues.map((issue) => issue.identifier));
+      const cleanedCount = cleanupResults.filter((result) => result.cleaned).length;
+      logger.log({
+        level: 'info',
+        event: 'startup_terminal_cleanup_completed',
+        message: 'completed startup terminal workspace cleanup sweep',
+        context: {
+          terminal_issue_count: terminalIssues.length,
+          cleaned_count: cleanedCount,
+          failed_count: cleanupResults.length - cleanedCount
+        }
+      });
     } catch (error) {
       logger.log({
         level: 'warn',
