@@ -160,6 +160,7 @@ export class ConfigResolver {
     const agent = asRecord(config.agent);
     const codex = asRecord(config.codex);
     const persistence = asRecord(config.persistence);
+    const worker = asRecord(config.worker);
     const server = asRecord(config.server);
 
     const trackerKind = readString(tracker.kind, '');
@@ -250,6 +251,17 @@ export class ConfigResolver {
         retention_days: Math.max(1, readInt(persistence.retention_days, 14))
       }
     };
+
+    const sshHosts = readStringList(worker.ssh_hosts, []).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+    const maxConcurrentAgentsPerHost = readInt(worker.max_concurrent_agents_per_host, NaN);
+    if (sshHosts.length > 0 || Number.isFinite(maxConcurrentAgentsPerHost)) {
+      resolved.worker = {
+        ...(sshHosts.length > 0 ? { ssh_hosts: sshHosts } : {}),
+        ...(Number.isFinite(maxConcurrentAgentsPerHost)
+          ? { max_concurrent_agents_per_host: maxConcurrentAgentsPerHost }
+          : {})
+      };
+    }
 
     const serverPort = readInt(server.port, NaN);
     if (Number.isFinite(serverPort)) {

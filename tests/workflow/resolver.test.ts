@@ -190,4 +190,23 @@ describe('ConfigResolver', () => {
     expect(config.persistence.db_path).toBe(path.normalize('/home/tester/symphony/runtime.sqlite'));
     expect(config.persistence.retention_days).toBe(30);
   });
+
+  it('parses optional worker extension fields', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        worker: {
+          ssh_hosts: [' build-1 ', '', 'build-2'],
+          max_concurrent_agents_per_host: '2'
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.worker).toEqual({
+      ssh_hosts: ['build-1', 'build-2'],
+      max_concurrent_agents_per_host: 2
+    });
+  });
 });

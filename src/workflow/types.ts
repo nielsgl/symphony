@@ -17,7 +17,8 @@ export type ValidationErrorCode =
   | 'invalid_codex_approval_policy'
   | 'invalid_codex_thread_sandbox'
   | 'invalid_codex_turn_sandbox_policy'
-  | 'invalid_codex_user_input_policy';
+  | 'invalid_codex_user_input_policy'
+  | 'invalid_worker_max_concurrent_agents_per_host';
 
 export interface WorkflowDefinition {
   config: Record<string, unknown>;
@@ -68,6 +69,11 @@ export interface PersistenceConfig {
   retention_days: number;
 }
 
+export interface WorkerConfig {
+  ssh_hosts?: string[];
+  max_concurrent_agents_per_host?: number;
+}
+
 export interface EffectiveConfig {
   tracker: TrackerConfig;
   polling: { interval_ms: number };
@@ -76,6 +82,7 @@ export interface EffectiveConfig {
   agent: AgentConfig;
   codex: CodexConfig;
   persistence: PersistenceConfig;
+  worker?: WorkerConfig;
   server?: { port: number };
 }
 
