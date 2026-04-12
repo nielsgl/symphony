@@ -13,9 +13,9 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 ## Coverage Summary
 - Total units classified: **1240**
 - Section ranges classified: **81**
-- Implemented ranges: **62**
+- Implemented ranges: **64**
 - Partially implemented ranges: **12**
-- Missing ranges: **2**
+- Missing ranges: **0**
 - Not applicable ranges: **5**
 
 ## Evidence Profiles (Triad Anchors)
@@ -36,7 +36,7 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 | EP-HTTP-PARITY | `src/api/server.ts`, `src/runtime/bootstrap.ts`, `scripts/start-dashboard.js` | `tests/api/server.test.ts`, `tests/runtime/bootstrap.test.ts`, `tests/runtime/desktop-launcher.test.ts` | root dashboard + `/api/v1/state` + `/api/v1/refresh` + diagnostics endpoints |
 | EP-FAILURE-PARITY | `src/workflow/*`, `src/orchestrator/core.ts`, `src/runtime/bootstrap.ts` | `tests/workflow/*.test.ts`, `tests/orchestrator/core.test.ts`, `tests/runtime/bootstrap.test.ts` | failed-dispatch health, retry logs, and startup/runtime warning logs |
 | EP-SECURITY-HARDENING | `src/security/redaction.ts`, `src-tauri/src/main.rs`, `src/api/dashboard-assets.ts` | `tests/security/redaction.test.ts`, desktop smoke tests | CSP/sanitization/host-hardening observability currently incomplete for full spec guidance |
-| EP-INTEGRATION-GAP | N/A | N/A | N/A |
+| EP-REAL-INTEGRATION | `scripts/validate-real-integration-profile.js`, `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md` | `tests/cli/integration-profile-script.test.ts` | deterministic `P9B_*` evidence markers and required-mode pass/fail semantics |
 | EP-CONFORMANCE | Cross-cutting Section 18 claims over core modules | Cross-cutting Section 17 profile tests | Cross-cutting API/log/state signals in Section 13 |
 
 ## Section Range Classification
@@ -117,18 +117,17 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 | 17.5 | SPEC-17.5-1..SPEC-17.5-26 | 26 | implemented | EP-TESTMATRIX | Triad satisfied via mapped evidence profile. | N/A |
 | 17.6 | SPEC-17.6-1..SPEC-17.6-8 | 8 | implemented | EP-TESTMATRIX | Triad satisfied via mapped evidence profile. | N/A |
 | 17.7 | SPEC-17.7-1..SPEC-17.7-6 | 6 | implemented | EP-TESTMATRIX | Triad satisfied via positional workflow-path support, lifecycle semantics coverage, and startup diagnostics evidence. | N/A |
-| 17.8 | SPEC-17.8-1..SPEC-17.8-9 | 9 | missing | EP-INTEGRATION-GAP | No acceptable triad currently exists for this unit range. | P9b |
+| 17.8 | SPEC-17.8-1..SPEC-17.8-9 | 9 | implemented | EP-REAL-INTEGRATION | Triad satisfied via explicit real-integration profile commands, deterministic skip/fail markers, and required-mode gating behavior. | N/A |
 | 18 | SPEC-18-1..SPEC-18-4 | 4 | partially_implemented | EP-CONFORMANCE | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
 | 18.1 | SPEC-18.1-1..SPEC-18.1-18 | 18 | partially_implemented | EP-CONFORMANCE | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
 | 18.2 | SPEC-18.2-1..SPEC-18.2-10 | 10 | partially_implemented | EP-CONFORMANCE | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
-| 18.3 | SPEC-18.3-1..SPEC-18.3-4 | 4 | missing | EP-INTEGRATION-GAP | No acceptable triad currently exists for this unit range. | P9b |
+| 18.3 | SPEC-18.3-1..SPEC-18.3-4 | 4 | implemented | EP-REAL-INTEGRATION | Triad satisfied via operational validation command set and evidence markers covering hooks, workflow path resolution, and optional HTTP checks. | N/A |
 | A.A | SPEC-A.A-1..SPEC-A.A-43 | 43 | not_applicable | N/A | Optional SSH extension appendix; explicitly outside core conformance scope. | N/A |
 
 ## Backlog Extraction (All Missing/Partial Units Mapped)
 | Story ID | Subsystem bundle | SPEC unit ranges | Gap statement | Acceptance criteria | Required test anchors | Required observability signals |
 |---|---|---|---|---|---|---|
 | P9a | CLI/host lifecycle + HTTP control parity | SPEC-13.7-1..SPEC-13.7-48, SPEC-17.7-1..SPEC-17.7-6 | CLI workflow-path and server-port precedence/lifecycle expectations are not fully covered end-to-end. | Implement and validate CLI lifecycle semantics from Section 17.7 and HTTP extension precedence behaviors required by Section 13.7 contracts. | `tests/runtime/bootstrap.test.ts`, new `tests/cli/*.test.ts`, `tests/api/server.test.ts` | startup argument resolution logs, bind/port diagnostics, `/api/v1/state` health consistency |
-| P9b | Real integration and operational validation profile | SPEC-17.8-1..SPEC-17.8-9, SPEC-18.3-1..SPEC-18.3-4 | Production-recommended real integration profile is not codified as executable validation artifacts. | Add documented repeatable integration profile evidence and gate artifacts for tracker+agent credentials, networked runs, and restart/cleanup verification. | integration profile harness (new), smoke/e2e scripts | runbook-linked evidence logs, soak summary artifacts, integration gate report |
 | P9c | Failure-model/security hardening closure | SPEC-14.1-1..SPEC-14.1-26, SPEC-14.2-1..SPEC-14.2-14, SPEC-14.3-1..SPEC-14.3-8, SPEC-14.4-1..SPEC-14.4-8, SPEC-15.5-1..SPEC-15.5-21 | Failure-class and hardening guidance are only partially represented in deterministic checks and operator controls. | Close explicit failure-injection coverage and hardening controls per sections 14.x/15.5 without regressing current runtime behavior. | `tests/orchestrator/core.test.ts`, `tests/runtime/bootstrap.test.ts`, new failure-injection tests | failure-class specific logs, hardened-mode diagnostics, policy-violation counters |
 | P9d | Domain/config/telemetry conformance closure | SPEC-4.1-1..SPEC-4.1-87, SPEC-6.4-1..SPEC-6.4-31, SPEC-13.5-1..SPEC-13.5-23, SPEC-13.6-1..SPEC-13.6-4, SPEC-18-1..SPEC-18-4, SPEC-18.1-1..SPEC-18.1-18, SPEC-18.2-1..SPEC-18.2-10 | Some domain-model fields, config cheat-sheet claims, token/session summary details, and checklist-level conformance statements still require strict parity closure. | Provide explicit parity matrix updates and targeted implementation/test deltas to satisfy all Section 18 core conformance assertions at sentence-level fidelity. | `tests/api/snapshot-service.test.ts`, `tests/codex/runner.test.ts`, `tests/workflow/resolver.test.ts`, `tests/workflow/validator.test.ts` | API schema parity snapshots, token/session telemetry parity output, conformance gate report |
 

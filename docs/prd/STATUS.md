@@ -24,7 +24,7 @@ Owner: orchestration planning
 - Current phase: P1 (entry approved; implementation already delivered through P7 closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: start `P9b` (real integration + operational validation profile), then continue in queue order.
+- Next-agent routing: start `P9c` (failure-model/security-hardening parity), then continue in queue order.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -151,9 +151,55 @@ Ownership evidence links:
 - [x] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
 - [x] P8: Perform full SPEC line parity audit and extract backlog stories (docs-only).
 - [x] P9a: Close CLI/host lifecycle + HTTP control parity gaps.
-- [ ] P9b: Implement real integration + operational validation profile evidence.
+- [x] P9b: Implement real integration + operational validation profile evidence.
 - [ ] P9c: Close failure-model/security-hardening parity gaps.
 - [ ] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
+
+## Implementation Evidence (P9b)
+- Date: 2026-04-12
+- Scope delivered (real integration + operational validation profile evidence):
+  - Added deterministic profile harness in `scripts/validate-real-integration-profile.js` with explicit evidence markers:
+    - `P9B_PROFILE`, `P9B_MODE`, `P9B_REAL_INTEGRATION_REQUIRED`
+    - `P9B_EVIDENCE_OPERATIONAL_CHECKS`, `P9B_EVIDENCE_WORKSPACE_ISOLATION`, `P9B_EVIDENCE_REAL_TRACKER`
+    - `P9B_PROFILE_RESULT` (`PASS|SKIPPED|FAIL`)
+  - Added required-mode command wiring in `package.json`:
+    - `npm run validate:integration-profile`
+    - `npm run validate:integration-profile:required`
+  - Added deterministic script tests in `tests/cli/integration-profile-script.test.ts` for conservative skip/fail/pass semantics:
+    - missing `LINEAR_API_KEY` in non-required mode reports `SKIPPED`
+    - missing `LINEAR_API_KEY` in required mode fails
+    - required mode rejects dry-run
+    - live required-mode path validates operational command markers and tracker smoke pass via mock endpoint
+  - Added executable runbook in `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md` with command set, expected markers, and pass/fail criteria.
+  - Extended `docs/prd/TRACEABILITY-MATRIX.md` with explicit SPEC 17.8 + 18.3 mapping rows linked to the harness/test anchors.
+- SPEC closure intent:
+  - SPEC 17.8 (`Real Integration Profile`): covered by real tracker credential checks, explicit skipped-state reporting, and required-mode failure behavior.
+  - SPEC 18.3 (`Operational Validation Before Production`): covered by profile command set validating hook behavior, workflow path resolution, and optional HTTP server operational checks.
+- Outputs:
+  - `scripts/validate-real-integration-profile.js`
+  - `tests/cli/integration-profile-script.test.ts`
+  - `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md`
+  - `docs/prd/TRACEABILITY-MATRIX.md`
+  - `docs/prd/SPEC-LINE-PARITY-AUDIT.md`
+  - `docs/prd/STATUS.md`
+- Captured invocation evidence (audit artifact):
+  - Command: `npm run validate:integration-profile`
+  - Output excerpt:
+    - `P9B_PROFILE=REAL_INTEGRATION`
+    - `P9B_MODE=LIVE`
+    - `P9B_REAL_INTEGRATION_REQUIRED=0`
+    - `P9B_COMMAND=npm test -- --run tests/cli/cli-args.test.ts`
+    - `P9B_COMMAND=npm test -- --run tests/workspace/workspace-manager.test.ts`
+    - `P9B_COMMAND=npm test -- --run tests/runtime/bootstrap.test.ts tests/api/server.test.ts`
+    - `P9B_EVIDENCE_OPERATIONAL_CHECKS=PASS`
+    - `P9B_EVIDENCE_WORKSPACE_ISOLATION=PASS`
+    - `P9B_EVIDENCE_REAL_TRACKER=SKIPPED_MISSING_LINEAR_API_KEY`
+    - `P9B_PROFILE_RESULT=SKIPPED`
+  - Canonical evidence reference: `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md` (`Captured Invocation Evidence (2026-04-12)` section).
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `git diff --check`
 
 ## Implementation Evidence (P9a)
 - Date: 2026-04-12
