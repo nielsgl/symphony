@@ -96,12 +96,21 @@ async function checkRealTrackerCredential(dryRun) {
 }
 
 async function main() {
-  const dryRun = isTruthy(process.env.SYMPHONY_P9B_DRY_RUN);
-  const skipOperational = dryRun || isTruthy(process.env.SYMPHONY_P9B_SKIP_OPERATIONAL_CHECKS);
+  const required = isTruthy(process.env.SYMPHONY_REAL_INTEGRATION_REQUIRED);
+  const requestedDryRun = isTruthy(process.env.SYMPHONY_P9B_DRY_RUN);
+
+  if (required && requestedDryRun) {
+    printEvidence('EVIDENCE_REQUIRED_MODE', 'FAIL_DRY_RUN_NOT_ALLOWED');
+    printEvidence('PROFILE_RESULT', 'FAIL');
+    process.exit(1);
+  }
+
+  const dryRun = requestedDryRun;
+  const skipOperational = !required && (dryRun || isTruthy(process.env.SYMPHONY_P9B_SKIP_OPERATIONAL_CHECKS));
 
   printEvidence('PROFILE', 'REAL_INTEGRATION');
   printEvidence('MODE', dryRun ? 'DRY_RUN' : 'LIVE');
-  printEvidence('REAL_INTEGRATION_REQUIRED', isTruthy(process.env.SYMPHONY_REAL_INTEGRATION_REQUIRED) ? '1' : '0');
+  printEvidence('REAL_INTEGRATION_REQUIRED', required ? '1' : '0');
 
   if (!skipOperational) {
     const operationalChecks = [
@@ -138,6 +147,7 @@ async function main() {
   }
 
   printEvidence('PROFILE_RESULT', 'PASS');
+  process.exit(0);
 }
 
 main().catch((error) => {
