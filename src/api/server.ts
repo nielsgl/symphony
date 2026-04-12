@@ -88,6 +88,20 @@ export class LocalApiServer {
         resolve();
       });
     });
+
+    const address = this.address();
+    this.logger?.log({
+      level: 'info',
+      event: 'api_server_listening',
+      message: 'local HTTP API server is listening',
+      context: {
+        configured_host: this.host,
+        configured_port: this.port,
+        host: address.host,
+        port: address.port,
+        ephemeral_port: this.port === 0
+      }
+    });
   }
 
   async close(): Promise<void> {

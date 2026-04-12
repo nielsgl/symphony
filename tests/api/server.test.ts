@@ -331,6 +331,34 @@ describe('LocalApiServer', () => {
     expect(cssPayload).toContain('.panel');
   });
 
+  it('logs bind diagnostics when the server begins listening', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+
+    server = new LocalApiServer({
+      host: '127.0.0.1',
+      port: 0,
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      logger: {
+        log: (params) => {
+          logs.push({ event: params.event, context: params.context ?? {} });
+        }
+      }
+    });
+
+    await server.listen();
+
+    const listening = logs.find((entry) => entry.event === 'api_server_listening');
+    expect(listening).toBeDefined();
+    expect(listening?.context.configured_port).toBe(0);
+    expect(typeof listening?.context.port).toBe('number');
+    expect(listening?.context.ephemeral_port).toBe(true);
+  });
+
   it('returns 500 envelope when snapshot source throws', async () => {
     server = new LocalApiServer({
       snapshotSource: {

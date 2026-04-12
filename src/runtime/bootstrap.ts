@@ -24,7 +24,7 @@ export interface RuntimeBootstrapOptions {
 }
 
 export interface RuntimeBootstrapResult {
-  apiServer: LocalApiServer;
+  apiServer: LocalApiServer | null;
   orchestrator: OrchestratorCore;
   effectiveConfig: EffectiveConfig;
   start: () => Promise<void>;
@@ -196,40 +196,66 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     logger
   });
 
-  const apiServer = new LocalApiServer({
-    host: options.host ?? '127.0.0.1',
-    port: options.port ?? effectiveConfig.server?.port ?? 3000,
-    snapshotSource: {
-      getStateSnapshot: () => orchestrator.getStateSnapshot()
-    },
-    refreshSource: {
-      tick: (reason) => orchestrator.tick(reason)
-    },
-    diagnosticsSource: {
-      getActiveProfile: () => activeProfile,
-      getPersistenceHealth: () =>
-        persistenceStore
-          ? persistenceStore.health()
-          : {
-              enabled: false,
-              db_path: null,
-              retention_days: effectiveConfig.persistence.retention_days,
-              run_count: 0,
-              last_pruned_at: null,
-              integrity_ok: true
-            },
-      listRunHistory: (limit) => (persistenceStore ? persistenceStore.listRunHistory(limit) : []),
-      getUiState: () => (persistenceStore ? persistenceStore.loadUiState() : null),
-      setUiState: (state) => {
-        persistenceStore?.saveUiState(state);
-      }
-    },
-    logger,
-    nowMs
-  });
+  const resolvedPort = options.port ?? effectiveConfig.server?.port;
+  const apiServer =
+    resolvedPort === undefined
+      ? null
+      : new LocalApiServer({
+          host: options.host ?? '127.0.0.1',
+          port: resolvedPort,
+          snapshotSource: {
+            getStateSnapshot: () => orchestrator.getStateSnapshot()
+          },
+          refreshSource: {
+            tick: (reason) => orchestrator.tick(reason)
+          },
+          diagnosticsSource: {
+            getActiveProfile: () => activeProfile,
+            getPersistenceHealth: () =>
+              persistenceStore
+                ? persistenceStore.health()
+                : {
+                    enabled: false,
+                    db_path: null,
+                    retention_days: effectiveConfig.persistence.retention_days,
+                    run_count: 0,
+                    last_pruned_at: null,
+                    integrity_ok: true
+                  },
+            listRunHistory: (limit) => (persistenceStore ? persistenceStore.listRunHistory(limit) : []),
+            getUiState: () => (persistenceStore ? persistenceStore.loadUiState() : null),
+            setUiState: (state) => {
+              persistenceStore?.saveUiState(state);
+            }
+          },
+          logger,
+          nowMs
+        });
 
   const start = async (): Promise<void> => {
-    await apiServer.listen();
+    if (apiServer) {
+      await apiServer.listen();
+      const address = apiServer.address();
+      logger.log({
+        level: 'info',
+        event: 'runtime_http_enabled',
+        message: 'local HTTP extension enabled',
+        context: {
+          host: address.host,
+          port: address.port,
+          configured_port: resolvedPort
+        }
+      });
+    } else {
+      logger.log({
+        level: 'info',
+        event: 'runtime_http_disabled',
+        message: 'local HTTP extension disabled (no CLI or workflow port configured)',
+        context: {
+          configured_port: null
+        }
+      });
+    }
 
     if (persistenceStore) {
       const pruned = persistenceStore.pruneExpiredRuns();
@@ -265,7 +291,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       event: 'runtime_started',
       message: 'runtime environment started',
       context: {
-        poll_interval_ms: effectiveConfig.polling.interval_ms
+        poll_interval_ms: effectiveConfig.polling.interval_ms,
+        http_server_enabled: apiServer !== null
       }
     });
   };
@@ -281,7 +308,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     }
     retryTimers.clear();
 
-    await apiServer.close();
+    if (apiServer) {
+      await apiServer.close();
+    }
 
     persistenceStore?.close();
 
