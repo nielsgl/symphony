@@ -20,8 +20,8 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P8 audit closure.
-- Current phase: P1 (entry approved; implementation already delivered through P7 closure evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P9c parity closure.
+- Current phase: P1 (entry approved; implementation already delivered through P9c closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
 - Next-agent routing: start `P9d` (domain/config/telemetry + Section 18 conformance parity), then continue in queue order.
