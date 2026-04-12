@@ -65,10 +65,18 @@ Decision: Initial implementation repository structure is locked as:
 - `tests/` for mirrored subsystem test coverage.
 - `scripts/` for build, launch, and developer automation tooling.
 
+Lock status evidence (2026-04-12 refresh):
+- The required top-level baseline remains exactly `src/`, `tests/`, and
+  `scripts/`.
+- P1 through P7 implementation evidence in this file remained within that
+  baseline and did not require additional top-level runtime directories.
+
 Ownership and decision authority:
 - Accountable owner role: `orchestration planning`.
 - Structural governance authority is maintained via this status tracker and
   aligned repository guidance in `AGENTS.md`.
+- Decision authority for top-level structural changes remains with governance
+  review in this tracker, with aligned PRD updates in the same change.
 
 Rules for adding new top-level directories:
 - Add only when required by a new subsystem boundary or toolchain/runtime

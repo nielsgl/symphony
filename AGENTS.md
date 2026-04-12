@@ -8,6 +8,7 @@ This repo is currently specification-first.
 - `.codex/skills/commit/SKILL.md`: required commit workflow.
 
 The initial implementation structure is locked at top level as `src/`, `tests/`, and `scripts/`.
+This top-level baseline is frozen for v1 unless governance approves a structural change.
 Keep module boundaries aligned with `SPEC.md` components and mirror test coverage by subsystem.
 
 Repository structure baseline mapping:
@@ -15,7 +16,9 @@ Repository structure baseline mapping:
 - `tests/` mirrors major `src/` subsystem areas.
 - `scripts/` contains build, launch, and smoke-test automation.
 
-Structural changes to top-level directories require governance updates in `docs/prd/STATUS.md` and aligned PRD references in the same change.
+Structural changes to top-level directories require governance approval and
+must include updates in `docs/prd/STATUS.md` plus aligned PRD references in the
+same change.
 
 ## Build, Test, and Development Commands
 Primary validation commands:
