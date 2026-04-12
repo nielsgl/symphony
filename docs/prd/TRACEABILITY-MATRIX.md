@@ -31,6 +31,18 @@ Every Core Conformance item (SPEC 18.1) must map to:
 | Secret redaction for logs/API/persistence outputs | PRD-006 | orchestration planning | `tests/security/redaction.test.ts` (`redacts sensitive context keys and inline message secrets`, `recursively redacts nested API/persistence payloads`) + `tests/observability/logger.test.ts` (`redacts secrets in message and context`) | redacted structured logs + redacted API envelopes/payloads |
 | Minimal durable persistence + restart continuity + retention/integrity | PRD-006 | orchestration planning | `tests/persistence/store.test.ts` (`persists append-only run/session history across restart`, `persists UI continuity state`, `applies retention pruning and reports integrity`) + `tests/runtime/bootstrap.test.ts` (`restores durable history on restart without restoring running or retry state`) | `/api/v1/history`, `/api/v1/ui-state`, `/api/v1/diagnostics` persistence health (`integrity_ok`, `retention_days`, `run_count`) |
 
+## Operational Validation Matrix (P9b)
+| SPEC Requirement | Owning PRD | Accountable owner role | Test Coverage Anchor | Observability Signal |
+|---|---|---|---|---|
+| SPEC 17.8 real tracker smoke + explicit skip/fail semantics | PRD-008 | orchestration planning | `tests/cli/integration-profile-script.test.ts` (`reports SKIPPED when LINEAR_API_KEY is missing and strict mode is disabled`, `fails when LINEAR_API_KEY is missing and strict mode is enabled`, `reports PASS in dry-run mode when LINEAR_API_KEY is present`) | `P9B_EVIDENCE_REAL_TRACKER=*` + `P9B_PROFILE_RESULT=*` markers from `scripts/validate-real-integration-profile.js` |
+| SPEC 17.8 isolated workspace cleanup evidence | PRD-008 | orchestration planning | `scripts/validate-real-integration-profile.js` deterministic temp workspace create/remove check | `P9B_EVIDENCE_WORKSPACE_ISOLATION=PASS` marker |
+| SPEC 18.3 hook execution + workflow path operational verification | PRD-008 | orchestration planning | `tests/workspace/workspace-manager.test.ts` + `tests/cli/cli-args.test.ts` executed by profile command set | `P9B_EVIDENCE_OPERATIONAL_CHECKS=PASS|FAIL` + `P9B_COMMAND=npm test -- --run ...` markers |
+| SPEC 18.3 optional HTTP port/bind operational verification | PRD-008 | orchestration planning | `tests/runtime/bootstrap.test.ts` + `tests/api/server.test.ts` executed by profile command set | `P9B_EVIDENCE_OPERATIONAL_CHECKS=PASS|FAIL` + `P9B_COMMAND=npm test -- --run ...` markers |
+
+P9b runbook and command contract:
+- `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md`
+- `scripts/validate-real-integration-profile.js`
+
 ## Extension Tracking
 | Extension Area | Owning PRD | Status |
 |---|---|---|
