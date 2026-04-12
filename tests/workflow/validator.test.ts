@@ -164,4 +164,19 @@ describe('ConfigValidator', () => {
       expect(result.error_code).toBe('invalid_codex_approval_policy');
     }
   });
+
+  it('rejects non-positive worker max_concurrent_agents_per_host when provided', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.worker = {
+      ssh_hosts: ['build-1'],
+      max_concurrent_agents_per_host: 0
+    };
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_worker_max_concurrent_agents_per_host');
+    }
+  });
 });

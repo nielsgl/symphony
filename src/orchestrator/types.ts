@@ -16,8 +16,12 @@ export interface RunningEntry {
   retry_attempt: number;
   workspace_path: string | null;
   session_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  codex_app_server_pid: string | null;
   turn_count: number;
   last_event: string | null;
+  last_event_summary: string | null;
   last_message: string | null;
   tokens: CodexUsageTotals;
   last_reported_tokens: CodexUsageTotals;
@@ -112,7 +116,10 @@ export interface OrchestratorPersistencePort {
 export interface WorkerObservabilityEvent {
   timestamp_ms: number;
   event: string;
+  thread_id?: string;
+  turn_id?: string;
   session_id?: string;
+  codex_app_server_pid?: number | null;
   detail?: string;
   usage?: CodexUsageTotals;
   rate_limits?: Record<string, unknown> | null;

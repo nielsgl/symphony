@@ -63,6 +63,15 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
   };
 }
 
+function humanizeWorkerEvent(event: WorkerObservabilityEvent): string {
+  const base = event.event.replace(/[_/]+/g, ' ').trim();
+  if (event.detail && event.detail.trim().length > 0) {
+    return `${base}: ${event.detail.trim()}`;
+  }
+
+  return base;
+}
+
 export class OrchestratorCore {
   private readonly config: OrchestratorOptions['config'];
   private readonly ports: OrchestratorOptions['ports'];
@@ -195,7 +204,24 @@ export class OrchestratorCore {
 
     runningEntry.last_codex_timestamp_ms = workerEvent.timestamp_ms;
     runningEntry.last_event = workerEvent.event;
+    runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
     runningEntry.last_message = workerEvent.detail ?? null;
+
+    if (workerEvent.thread_id) {
+      runningEntry.thread_id = workerEvent.thread_id;
+    }
+
+    if (workerEvent.turn_id) {
+      runningEntry.turn_id = workerEvent.turn_id;
+    }
+
+    if (workerEvent.codex_app_server_pid !== undefined && workerEvent.codex_app_server_pid !== null) {
+      runningEntry.codex_app_server_pid = String(workerEvent.codex_app_server_pid);
+    }
+
+    if (!workerEvent.session_id && runningEntry.thread_id && runningEntry.turn_id) {
+      workerEvent.session_id = `${runningEntry.thread_id}-${runningEntry.turn_id}`;
+    }
 
     if (workerEvent.session_id) {
       const hadSessionId = runningEntry.session_id;
@@ -267,7 +293,11 @@ export class OrchestratorCore {
         issue_id,
         issue_identifier: runningEntry.identifier,
         session_id: runningEntry.session_id,
-        event: workerEvent.event
+        thread_id: runningEntry.thread_id,
+        turn_id: runningEntry.turn_id,
+        codex_app_server_pid: runningEntry.codex_app_server_pid,
+        event: workerEvent.event,
+        event_summary: runningEntry.last_event_summary
       }
     });
   }
@@ -488,8 +518,12 @@ export class OrchestratorCore {
       retry_attempt: attempt ?? 0,
       workspace_path: spawned.workspace_path ?? null,
       session_id: null,
+      thread_id: null,
+      turn_id: null,
+      codex_app_server_pid: null,
       turn_count: 0,
       last_event: null,
+      last_event_summary: null,
       last_message: null,
       tokens: {
         input_tokens: 0,

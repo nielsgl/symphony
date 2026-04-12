@@ -152,6 +152,19 @@ export class ConfigValidator {
       };
     }
 
+    if (
+      effectiveConfig.worker?.max_concurrent_agents_per_host !== undefined &&
+      (!Number.isFinite(effectiveConfig.worker.max_concurrent_agents_per_host) ||
+        effectiveConfig.worker.max_concurrent_agents_per_host <= 0)
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_worker_max_concurrent_agents_per_host',
+        message: 'worker.max_concurrent_agents_per_host must be a positive integer when provided',
+        at
+      };
+    }
+
     return { ok: true, at };
   }
 

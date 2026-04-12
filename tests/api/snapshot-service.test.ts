@@ -14,8 +14,12 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     retry_attempt: 0,
     workspace_path: '/tmp/symphony/ABC-1',
     session_id: 'thread-1-turn-3',
+    thread_id: 'thread-1',
+    turn_id: 'turn-3',
+    codex_app_server_pid: '12345',
     turn_count: 3,
     last_event: 'turn_completed',
+    last_event_summary: 'turn completed: done',
     last_message: 'done',
     tokens: {
       input_tokens: 11,
@@ -103,6 +107,10 @@ describe('SnapshotService', () => {
     expect(projected.codex_totals.seconds_running).toBe(100);
     expect(projected.health.dispatch_validation).toBe('ok');
     expect(projected.running[0]?.session_id).toBe('thread-1-turn-3');
+    expect(projected.running[0]?.thread_id).toBe('thread-1');
+    expect(projected.running[0]?.turn_id).toBe('turn-3');
+    expect(projected.running[0]?.codex_app_server_pid).toBe('12345');
+    expect(projected.running[0]?.last_event_summary).toBe('turn completed: done');
     expect(projected.running[0]?.turn_count).toBe(3);
   });
 
@@ -150,6 +158,10 @@ describe('SnapshotService', () => {
 
     const issue = service.projectIssue(state, 'ABC-1');
     expect(issue.workspace.path).toBe('/tmp/symphony/ABC-1');
+    expect(issue.running?.thread_id).toBe('thread-1');
+    expect(issue.running?.turn_id).toBe('turn-3');
+    expect(issue.running?.codex_app_server_pid).toBe('12345');
+    expect(issue.running?.last_event_summary).toBe('turn completed: done');
     expect(issue.recent_events).toHaveLength(2);
     expect(issue.recent_events[1]?.event).toBe('turn_completed');
   });
