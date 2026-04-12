@@ -42,5 +42,10 @@ Every Core Conformance item (SPEC 18.1) must map to:
 ## Audit Checklist
 - [x] All matrix rows have at least one concrete test implementation reference.
 - [x] All matrix rows have at least one runtime/API observability output.
-- [ ] No core requirement has multiple conflicting owners.
-- [ ] Phase 2 rows do not weaken v1 core conformance obligations.
+- [x] No core requirement has multiple conflicting owners.
+  Evidence: every SPEC 18.1 core row has one accountable owner role
+  (`orchestration planning`) with no conflicting owner assignments.
+- [x] Phase 2 rows do not weaken v1 core conformance obligations.
+  Evidence: Phase 2 scope is isolated to extension tracking (`PRD-007`), while
+  all SPEC 18.1 core conformance rows remain mapped to required v1 PRDs,
+  concrete tests, and observability outputs.

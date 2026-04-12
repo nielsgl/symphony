@@ -20,11 +20,12 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: Program-level governance remains in P0; implementation evidence is recorded through P7 closure.
-- Current phase: P0 (Architecture freeze and PRD sign-off).
+- Program status: P0 governance is closed; implementation evidence is recorded through P7 closure.
+- Current phase: P1 (entry approved; implementation already delivered through P7 closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
-- Execution routing source: `Next Queue` (implementation delivery should follow this list while P0 governance items remain open).
-- P0 governance remaining after this update: approve entry into P1.
+- Execution routing source: `Current Phase` (P0 is closed; route from the P1 section only).
+- Next-agent routing: no unchecked items remain in `Current Phase` or `Next Queue`; await governance-tracked queue updates before starting new delivery work.
+- P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
 ## Done
@@ -36,12 +37,25 @@ Owner: orchestration planning
 - [x] Traceability matrix scaffold created (`TRACEABILITY-MATRIX.md`).
 - [x] PRD-000 through PRD-008 reviewed and signed off for P0 planning baseline.
 
-## Current Phase (P0)
+## Current Phase (P1)
+- [x] P1 entry approved from closed P0 governance gate.
+- [x] P1 implementation scope completed and evidenced in this file's implementation sections.
+
+## P0 Gate Checklist (Closed)
 - [x] Review and sign off PRD-000 through PRD-008.
 - [x] Confirm interface ownership per subsystem.
 - [x] Lock initial implementation repo structure (`src/`, `tests/`, `scripts/`).
 - [x] Convert traceability checklist placeholders into concrete owner/test references.
-- [ ] Approve entry into P1.
+- [x] Approve entry into P1.
+
+## P0 Closeout Decision
+
+- Date: 2026-04-12
+- Decision: Approved entry into P1; P0 governance is fully closed.
+- Evidence links:
+  - `docs/prd/STATUS.md` (this file): P0 checklist now fully complete.
+  - `docs/prd/TRACEABILITY-MATRIX.md`: audit checklist confirms owner
+    consistency and Phase 2 non-regression against v1 core conformance.
 
 ## P0 Sign-off Evidence (Traceability Placeholder Conversion)
 
