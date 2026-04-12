@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { OrchestratorCore } from '../../src/orchestrator/core';
 import type { OrchestratorConfig, OrchestratorPorts } from '../../src/orchestrator/types';
+import type { StructuredLogger } from '../../src/observability';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -47,6 +48,7 @@ interface Harness {
 function createHarness(options: {
   configOverrides?: Partial<OrchestratorConfig>;
   spawnWorker?: OrchestratorPorts['spawnWorker'];
+  logger?: StructuredLogger;
 } = {}): Harness {
   const tracker = makeTracker();
   const now = { value: 1_000_000 };
@@ -100,7 +102,8 @@ function createHarness(options: {
       },
       notifyObservers
     },
-    nowMs: () => now.value
+    nowMs: () => now.value,
+    logger: options.logger
   });
 
   return { orchestrator, tracker, now, scheduled, terminated, spawned, notifyObservers };
@@ -356,6 +359,93 @@ describe('OrchestratorCore', () => {
     const snapshot = dispatchDenied.getStateSnapshot();
     expect(snapshot.health.dispatch_validation).toBe('failed');
     expect(snapshot.health.last_error).toContain('missing runtime token');
+  });
+
+  it('emits dispatch validation recovered when preflight transitions failed->ok', async () => {
+    const tracker = makeTracker();
+    const now = { value: 1_000_000 };
+    const notifyObservers = vi.fn();
+    const logs: Array<{ event: string; level: 'info' | 'warn' | 'error' }> = [];
+    const dispatchAllowed = { value: false };
+    const logger: StructuredLogger = {
+      log: ({ level, event }) => {
+        logs.push({ level, event });
+      }
+    };
+
+    const orchestrator = new OrchestratorCore({
+      config: {
+        poll_interval_ms: 30_000,
+        max_concurrent_agents: 2,
+        max_concurrent_agents_by_state: {},
+        max_retry_backoff_ms: 300_000,
+        active_states: ['Todo', 'In Progress'],
+        terminal_states: ['Done'],
+        stall_timeout_ms: 300_000
+      },
+      ports: {
+        tracker,
+        dispatchPreflight: () =>
+          dispatchAllowed.value
+            ? { dispatch_allowed: true }
+            : { dispatch_allowed: false, reason: 'missing runtime token' },
+        spawnWorker: async () => ({ ok: false, error: 'blocked' }),
+        terminateWorker: async () => undefined,
+        scheduleRetryTimer: () => ({}),
+        cancelRetryTimer: () => undefined,
+        notifyObservers
+      },
+      nowMs: () => now.value,
+      logger
+    });
+
+    await orchestrator.tick('interval');
+    dispatchAllowed.value = true;
+    await orchestrator.tick('manual_refresh');
+
+    expect(logs.some((entry) => entry.event === 'dispatch_validation_failed')).toBe(true);
+    expect(logs.some((entry) => entry.event === 'dispatch_validation_recovered')).toBe(true);
+    expect(orchestrator.getStateSnapshot().health.dispatch_validation).toBe('ok');
+    expect(orchestrator.getStateSnapshot().health.last_error).toBeNull();
+  });
+
+  it('logs tracker state refresh failure and keeps workers running', async () => {
+    const logs: Array<{ event: string }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event }) => {
+        logs.push({ event });
+      }
+    };
+    const harness = createHarness({ logger });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-refresh-fail' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_issue_states_by_ids.mockRejectedValue(new Error('unavailable'));
+    await harness.orchestrator.reconcileRunningIssues();
+
+    expect(harness.orchestrator.getStateSnapshot().running.has('i-refresh-fail')).toBe(true);
+    expect(logs.some((entry) => entry.event === 'tracker_state_refresh_failed')).toBe(true);
+  });
+
+  it('logs retry candidate fetch failure and requeues retry with incremented attempt', async () => {
+    const logs: Array<{ event: string }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event }) => {
+        logs.push({ event });
+      }
+    };
+    const harness = createHarness({ logger });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-retry-fetch-fail' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit('i-retry-fetch-fail', 'normal');
+    harness.tracker.fetch_candidate_issues.mockRejectedValue(new Error('tracker unavailable'));
+    await harness.orchestrator.onRetryTimer('i-retry-fetch-fail');
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-retry-fetch-fail');
+    expect(retryEntry?.attempt).toBe(2);
+    expect(retryEntry?.error).toBe('retry poll failed');
+    expect(logs.some((entry) => entry.event === 'tracker_retry_fetch_failed')).toBe(true);
   });
 
   it('aggregates worker event usage and turn counts deterministically', async () => {

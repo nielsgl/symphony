@@ -117,9 +117,10 @@ export class OrchestratorCore {
     };
   }
 
-  async tick(_reason: TickReason): Promise<void> {
+  async tick(reason: TickReason): Promise<void> {
     await this.reconcileRunningIssues();
 
+    const previousDispatchValidation = this.state.health.dispatch_validation;
     const preflight = this.ports.dispatchPreflight();
     if (!preflight.dispatch_allowed) {
       this.state.health.dispatch_validation = 'failed';
@@ -129,7 +130,8 @@ export class OrchestratorCore {
         event: 'dispatch_validation_failed',
         message: this.state.health.last_error,
         context: {
-          reason: this.state.health.last_error
+          reason: this.state.health.last_error,
+          tick_reason: reason
         }
       });
       this.ports.notifyObservers?.();
@@ -137,16 +139,31 @@ export class OrchestratorCore {
     }
 
     this.state.health.dispatch_validation = 'ok';
+    if (previousDispatchValidation === 'failed') {
+      this.logger?.log({
+        level: 'info',
+        event: 'dispatch_validation_recovered',
+        message: 'dispatch validation recovered',
+        context: {
+          tick_reason: reason
+        }
+      });
+    }
+    this.state.health.last_error = null;
 
     let candidates: Issue[];
     try {
       candidates = await this.ports.tracker.fetch_candidate_issues();
-    } catch {
+    } catch (error) {
       this.state.health.last_error = 'failed to fetch candidate issues';
       this.logger?.log({
         level: 'error',
         event: 'tracker_candidate_fetch_failed',
-        message: 'failed to fetch candidate issues'
+        message: 'failed to fetch candidate issues',
+        context: {
+          tick_reason: reason,
+          error: error instanceof Error ? error.message : 'unknown'
+        }
       });
       this.ports.notifyObservers?.();
       return;
@@ -300,7 +317,18 @@ export class OrchestratorCore {
     let candidates: Issue[];
     try {
       candidates = await this.ports.tracker.fetch_candidate_issues();
-    } catch {
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: 'tracker_retry_fetch_failed',
+        message: 'failed to fetch candidates for retry dispatch',
+        context: {
+          issue_id,
+          identifier: retryEntry.identifier,
+          attempt: retryEntry.attempt,
+          error: error instanceof Error ? error.message : 'unknown'
+        }
+      });
       await this.scheduleRetry({
         issue_id,
         identifier: retryEntry.identifier,
@@ -357,7 +385,16 @@ export class OrchestratorCore {
     let refreshed: Issue[];
     try {
       refreshed = await this.ports.tracker.fetch_issue_states_by_ids(runningIssueIds);
-    } catch {
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: 'tracker_state_refresh_failed',
+        message: 'failed to refresh tracker states for running issues',
+        context: {
+          issue_count: runningIssueIds.length,
+          error: error instanceof Error ? error.message : 'unknown'
+        }
+      });
       return;
     }
 
