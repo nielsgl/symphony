@@ -456,7 +456,9 @@ describe('OrchestratorCore', () => {
     harness.orchestrator.onWorkerEvent('i-usage', {
       timestamp_ms: harness.now.value,
       event: 'turn_started',
-      session_id: 'thread-1-turn-1'
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      codex_app_server_pid: 4321
     });
     harness.orchestrator.onWorkerEvent('i-usage', {
       timestamp_ms: harness.now.value + 100,
@@ -474,6 +476,10 @@ describe('OrchestratorCore', () => {
     const running = snapshot.running.get('i-usage');
     expect(running?.turn_count).toBe(1);
     expect(running?.session_id).toBe('thread-1-turn-1');
+    expect(running?.thread_id).toBe('thread-1');
+    expect(running?.turn_id).toBe('turn-1');
+    expect(running?.codex_app_server_pid).toBe('4321');
+    expect(running?.last_event_summary).toBe('turn completed: done');
     expect(running?.tokens.total_tokens).toBe(14);
     expect(running?.recent_events).toHaveLength(2);
     expect(snapshot.codex_totals.total_tokens).toBe(14);

@@ -37,8 +37,12 @@ export interface ApiStateResponse {
     issue_identifier: string;
     state: string;
     session_id: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+    codex_app_server_pid: string | null;
     turn_count: number;
     last_event: string | null;
+    last_event_summary: string | null;
     last_message: string | null;
     started_at: string;
     last_event_at: string | null;
@@ -81,10 +85,14 @@ export interface ApiIssueResponse {
   };
   running: {
     session_id: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+    codex_app_server_pid: string | null;
     turn_count: number;
     state: string;
     started_at: string;
     last_event: string | null;
+    last_event_summary: string | null;
     last_message: string | null;
     last_event_at: string | null;
     tokens: {

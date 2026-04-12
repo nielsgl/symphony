@@ -14,8 +14,12 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     retry_attempt: 0,
     workspace_path: '/tmp/symphony/ABC-1',
     session_id: 'thread-1-turn-1',
+    thread_id: 'thread-1',
+    turn_id: 'turn-1',
+    codex_app_server_pid: '9999',
     turn_count: 2,
     last_event: 'turn_completed',
+    last_event_summary: 'turn completed: completed work',
     last_message: 'completed work',
     tokens: {
       input_tokens: 12,
@@ -214,6 +218,9 @@ describe('LocalApiServer', () => {
     expect(knownPayload.issue_identifier).toBe('ABC-1');
     expect(knownPayload.status).toBe('running');
     expect((knownPayload.running as { session_id: string | null }).session_id).toBe('thread-1-turn-1');
+    expect((knownPayload.running as { thread_id: string | null }).thread_id).toBe('thread-1');
+    expect((knownPayload.running as { turn_id: string | null }).turn_id).toBe('turn-1');
+    expect((knownPayload.running as { codex_app_server_pid: string | null }).codex_app_server_pid).toBe('9999');
 
     const missingResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-999`);
     const missingPayload = (await missingResponse.json()) as { error: { code: string; message: string } };

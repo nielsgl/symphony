@@ -36,7 +36,10 @@ function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObservabil
   return {
     timestamp_ms: Number.isFinite(parsed) ? parsed : nowMs,
     event: event.event,
+    thread_id: event.thread_id,
+    turn_id: event.turn_id,
     session_id: event.session_id,
+    codex_app_server_pid: event.codex_app_server_pid,
     detail: event.detail,
     usage: event.usage,
     rate_limits: event.rate_limits
