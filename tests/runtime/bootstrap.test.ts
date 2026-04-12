@@ -355,4 +355,60 @@ describe('createRuntimeEnvironment', () => {
       })
     ).toThrow(/workflow file/i);
   });
+
+  it('emits startup cold-start and terminal cleanup diagnostics markers', async () => {
+    const workflowPath = await makeWorkflowFile();
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    const workspaceRoot = path.join(workflowDir, 'workspaces');
+    await fs.mkdir(path.join(workspaceRoot, 'ABC-1'), { recursive: true });
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => [
+        {
+          id: 'issue-1',
+          identifier: 'ABC-1',
+          title: 'Issue ABC-1',
+          description: null,
+          priority: 1,
+          state: 'Done',
+          branch_name: null,
+          url: null,
+          labels: [],
+          blocked_by: [],
+          created_at: new Date('2026-04-10T10:00:00.000Z'),
+          updated_at: new Date('2026-04-10T10:00:00.000Z')
+        }
+      ]),
+      fetch_issue_states_by_ids: vi.fn(async () => [])
+    };
+
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0,
+      logger: {
+        log: (params) => {
+          logs.push({ event: params.event, context: params.context ?? {} });
+        }
+      }
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+
+    const stateInitialized = logs.find((entry) => entry.event === 'startup_orchestrator_state_initialized');
+    expect(stateInitialized).toBeDefined();
+    expect(stateInitialized?.context.state_source).toBe('cold_start');
+    expect(stateInitialized?.context.running_cleared).toBe(0);
+    expect(stateInitialized?.context.retry_cleared).toBe(0);
+
+    const cleanupCompleted = logs.find((entry) => entry.event === 'startup_terminal_cleanup_completed');
+    expect(cleanupCompleted).toBeDefined();
+    expect(cleanupCompleted?.context.terminal_issue_count).toBe(1);
+    expect(cleanupCompleted?.context.cleaned_count).toBe(1);
+    expect(cleanupCompleted?.context.failed_count).toBe(0);
+  });
 });

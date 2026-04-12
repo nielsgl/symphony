@@ -43,6 +43,15 @@ P9b runbook and command contract:
 - `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md`
 - `scripts/validate-real-integration-profile.js`
 
+## Failure Model and Hardening Matrix (P9c)
+| SPEC Requirement | Owning PRD | Accountable owner role | Test Coverage Anchor | Observability Signal |
+|---|---|---|---|---|
+| SPEC 14.1 failure-class diagnostics and deterministic handling | PRD-001 + PRD-005 | orchestration planning | `tests/orchestrator/core.test.ts` (`logs tracker state refresh failure and keeps workers running`, `logs retry candidate fetch failure and requeues retry with incremented attempt`) | `tracker_candidate_fetch_failed`, `tracker_state_refresh_failed`, `tracker_retry_fetch_failed` |
+| SPEC 14.2 recovery behavior transition visibility | PRD-001 + PRD-002 | orchestration planning | `tests/orchestrator/core.test.ts` (`emits dispatch validation recovered when preflight transitions failed->ok`) | `dispatch_validation_failed`, `dispatch_validation_recovered`, `/api/v1/state.health.dispatch_validation` |
+| SPEC 14.3 cold-start partial-state recovery signals | PRD-001 + PRD-006 | orchestration planning | `tests/runtime/bootstrap.test.ts` (`emits startup cold-start and terminal cleanup diagnostics markers`, `restores durable history on restart without restoring running or retry state`) | `startup_orchestrator_state_initialized`, `startup_terminal_cleanup_completed`, `/api/v1/history`, `/api/v1/state` counts |
+| SPEC 14.4 operator intervention observability continuity | PRD-002 + PRD-005 | orchestration planning | `tests/runtime/bootstrap.test.ts` (`maps refresh endpoint to orchestrator manual refresh tick`) + `tests/orchestrator/core.test.ts` recovery transition coverage | `/api/v1/refresh`, `/api/v1/state.health.*`, startup and recovery diagnostics markers |
+| SPEC 15.5 harness hardening posture is explicit and testable | PRD-006 | orchestration planning | `tests/security/profiles.test.ts`, `tests/security/redaction.test.ts`, `tests/workspace/workspace-manager.test.ts`, `tests/runtime/bootstrap.test.ts` (`exposes diagnostics profile and persistence status endpoints`) | startup `security_profile_active` + `/api/v1/diagnostics.active_profile` + redacted structured logs |
+
 ## Extension Tracking
 | Extension Area | Owning PRD | Status |
 |---|---|---|

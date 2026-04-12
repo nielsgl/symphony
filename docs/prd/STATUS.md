@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P8 audit closure.
-- Current phase: P1 (entry approved; implementation already delivered through P7 closure evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P9c parity closure.
+- Current phase: P1 (entry approved; implementation already delivered through P9c closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: start `P9c` (failure-model/security-hardening parity), then continue in queue order.
+- Next-agent routing: start `P9d` (domain/config/telemetry + Section 18 conformance parity), then continue in queue order.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -152,8 +152,48 @@ Ownership evidence links:
 - [x] P8: Perform full SPEC line parity audit and extract backlog stories (docs-only).
 - [x] P9a: Close CLI/host lifecycle + HTTP control parity gaps.
 - [x] P9b: Implement real integration + operational validation profile evidence.
-- [ ] P9c: Close failure-model/security-hardening parity gaps.
+- [x] P9c: Close failure-model/security-hardening parity gaps.
 - [ ] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
+
+## Implementation Evidence (P9c)
+- Date: 2026-04-12
+- Scope delivered (failure-model/security-hardening parity closure):
+  - Added deterministic recovery-transition and failure-class diagnostics in orchestrator core:
+    - `dispatch_validation_recovered`
+    - `tracker_state_refresh_failed`
+    - `tracker_retry_fetch_failed`
+    - Existing `dispatch_validation_failed` and `tracker_candidate_fetch_failed` now include tick/error context.
+  - Added deterministic startup/restart recovery diagnostics in runtime bootstrap:
+    - `startup_orchestrator_state_initialized` with cold-start source and cleared-state counters.
+    - `startup_terminal_cleanup_completed` with terminal issue count and cleanup pass/fail counts.
+  - Extended deterministic tests to lock in these failure-model and hardening observability guarantees:
+    - `tests/orchestrator/core.test.ts`
+      - `emits dispatch validation recovered when preflight transitions failed->ok`
+      - `logs tracker state refresh failure and keeps workers running`
+      - `logs retry candidate fetch failure and requeues retry with incremented attempt`
+    - `tests/runtime/bootstrap.test.ts`
+      - `emits startup cold-start and terminal cleanup diagnostics markers`
+  - Reused existing hardening controls/signals for SPEC 15.5 closure evidence:
+    - security posture diagnostics via `security_profile_active` and `/api/v1/diagnostics.active_profile`.
+    - secret/log redaction and workspace safety controls validated by existing `tests/security/*.test.ts` and `tests/workspace/workspace-manager.test.ts` anchors.
+- SPEC closure intent:
+  - SPEC 14.1 (`Failure Classes`): explicit failure-class observability and deterministic fault-path assertions across workflow/tracker/worker/bootstrap handling.
+  - SPEC 14.2 (`Recovery Behavior`): deterministic recovery transition behavior and retry/reconciliation failure handling with non-crash semantics.
+  - SPEC 14.3 (`Partial State Recovery`): startup cold-state initialization and terminal cleanup sweep are explicitly signaled and tested.
+  - SPEC 14.4 (`Operator Intervention Points`): operator-visible dispatch/recovery and startup cleanup markers are exposed via logs/API health surfaces.
+  - SPEC 15.5 (`Harness Hardening Guidance`): hardening posture is explicitly observable (`security_profile_active`, diagnostics profile payload), with deterministic tests guarding safety-relevant behavior.
+- Outputs:
+  - `src/orchestrator/core.ts`
+  - `src/runtime/bootstrap.ts`
+  - `tests/orchestrator/core.test.ts`
+  - `tests/runtime/bootstrap.test.ts`
+  - `docs/prd/TRACEABILITY-MATRIX.md`
+  - `docs/prd/SPEC-LINE-PARITY-AUDIT.md`
+  - `docs/prd/STATUS.md`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `git diff --check`
 
 ## Implementation Evidence (P9b)
 - Date: 2026-04-12

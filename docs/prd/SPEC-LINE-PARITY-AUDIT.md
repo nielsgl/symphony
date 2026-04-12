@@ -13,8 +13,8 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 ## Coverage Summary
 - Total units classified: **1240**
 - Section ranges classified: **81**
-- Implemented ranges: **64**
-- Partially implemented ranges: **12**
+- Implemented ranges: **69**
+- Partially implemented ranges: **7**
 - Missing ranges: **0**
 - Not applicable ranges: **5**
 
@@ -34,8 +34,8 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 | EP-DOMAIN-PARITY | `src/orchestrator/types.ts`, `src/api/types.ts`, `src/api/snapshot-service.ts` | `tests/orchestrator/core.test.ts`, `tests/api/snapshot-service.test.ts` | token/session fields in `/api/v1/state` and issue projections |
 | EP-TELEMETRY-PARITY | `src/codex/runner.ts`, `src/orchestrator/core.ts` | `tests/codex/runner.test.ts`, `tests/orchestrator/core.test.ts` | codex totals/rate-limit fields in state snapshot |
 | EP-HTTP-PARITY | `src/api/server.ts`, `src/runtime/bootstrap.ts`, `scripts/start-dashboard.js` | `tests/api/server.test.ts`, `tests/runtime/bootstrap.test.ts`, `tests/runtime/desktop-launcher.test.ts` | root dashboard + `/api/v1/state` + `/api/v1/refresh` + diagnostics endpoints |
-| EP-FAILURE-PARITY | `src/workflow/*`, `src/orchestrator/core.ts`, `src/runtime/bootstrap.ts` | `tests/workflow/*.test.ts`, `tests/orchestrator/core.test.ts`, `tests/runtime/bootstrap.test.ts` | failed-dispatch health, retry logs, and startup/runtime warning logs |
-| EP-SECURITY-HARDENING | `src/security/redaction.ts`, `src-tauri/src/main.rs`, `src/api/dashboard-assets.ts` | `tests/security/redaction.test.ts`, desktop smoke tests | CSP/sanitization/host-hardening observability currently incomplete for full spec guidance |
+| EP-FAILURE-PARITY | `src/workflow/*`, `src/orchestrator/core.ts`, `src/runtime/bootstrap.ts` | `tests/workflow/*.test.ts`, `tests/orchestrator/core.test.ts`, `tests/runtime/bootstrap.test.ts` | `dispatch_validation_failed`, `dispatch_validation_recovered`, `tracker_candidate_fetch_failed`, `tracker_state_refresh_failed`, `tracker_retry_fetch_failed`, `startup_orchestrator_state_initialized`, `startup_terminal_cleanup_completed` |
+| EP-SECURITY-HARDENING | `src/security/profiles.ts`, `src/security/redaction.ts`, `src/workspace/manager.ts`, `src/runtime/bootstrap.ts` | `tests/security/profiles.test.ts`, `tests/security/redaction.test.ts`, `tests/workspace/workspace-manager.test.ts`, `tests/runtime/bootstrap.test.ts` | startup `security_profile_active` + `/api/v1/diagnostics.active_profile` + startup cleanup/state diagnostics markers |
 | EP-REAL-INTEGRATION | `scripts/validate-real-integration-profile.js`, `docs/prd/P9B-REAL-INTEGRATION-PROFILE.md` | `tests/cli/integration-profile-script.test.ts` | deterministic `P9B_*` evidence markers and required-mode pass/fail semantics |
 | EP-CONFORMANCE | Cross-cutting Section 18 claims over core modules | Cross-cutting Section 17 profile tests | Cross-cutting API/log/state signals in Section 13 |
 
@@ -100,15 +100,15 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 | 13.5 | SPEC-13.5-1..SPEC-13.5-23 | 23 | partially_implemented | EP-TELEMETRY-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
 | 13.6 | SPEC-13.6-1..SPEC-13.6-4 | 4 | partially_implemented | EP-TELEMETRY-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9d |
 | 13.7 | SPEC-13.7-1..SPEC-13.7-48 | 48 | implemented | EP-HTTP-PARITY | Triad satisfied via CLI/runtime HTTP control updates and deterministic tests/logging evidence. | N/A |
-| 14.1 | SPEC-14.1-1..SPEC-14.1-26 | 26 | partially_implemented | EP-FAILURE-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9c |
-| 14.2 | SPEC-14.2-1..SPEC-14.2-14 | 14 | partially_implemented | EP-FAILURE-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9c |
-| 14.3 | SPEC-14.3-1..SPEC-14.3-8 | 8 | partially_implemented | EP-FAILURE-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9c |
-| 14.4 | SPEC-14.4-1..SPEC-14.4-8 | 8 | partially_implemented | EP-FAILURE-PARITY | Partial triad: at least one required evidence anchor class is incomplete. | P9c |
+| 14.1 | SPEC-14.1-1..SPEC-14.1-26 | 26 | implemented | EP-FAILURE-PARITY | Triad satisfied via deterministic failure-class tests and explicit failure markers across dispatch/retry/reconciliation paths. | N/A |
+| 14.2 | SPEC-14.2-1..SPEC-14.2-14 | 14 | implemented | EP-FAILURE-PARITY | Triad satisfied via deterministic recovery-transition assertions and retry/reconcile failure handling signals. | N/A |
+| 14.3 | SPEC-14.3-1..SPEC-14.3-8 | 8 | implemented | EP-FAILURE-PARITY | Triad satisfied via startup cold-state initialization diagnostics and startup terminal cleanup completion evidence. | N/A |
+| 14.4 | SPEC-14.4-1..SPEC-14.4-8 | 8 | implemented | EP-FAILURE-PARITY | Triad satisfied via operator-facing dispatch/recovery/startup diagnostics plus existing workflow/state intervention contracts. | N/A |
 | 15.1 | SPEC-15.1-1..SPEC-15.1-8 | 8 | implemented | EP-SECURITY | Triad satisfied via mapped evidence profile. | N/A |
 | 15.2 | SPEC-15.2-1..SPEC-15.2-8 | 8 | implemented | EP-SECURITY | Triad satisfied via mapped evidence profile. | N/A |
 | 15.3 | SPEC-15.3-1..SPEC-15.3-3 | 3 | implemented | EP-SECURITY | Triad satisfied via mapped evidence profile. | N/A |
 | 15.4 | SPEC-15.4-1..SPEC-15.4-6 | 6 | implemented | EP-SECURITY | Triad satisfied via mapped evidence profile. | N/A |
-| 15.5 | SPEC-15.5-1..SPEC-15.5-21 | 21 | partially_implemented | EP-SECURITY-HARDENING | Partial triad: at least one required evidence anchor class is incomplete. | P9c |
+| 15.5 | SPEC-15.5-1..SPEC-15.5-21 | 21 | implemented | EP-SECURITY-HARDENING | Triad satisfied via explicit hardening posture diagnostics, secret-redaction coverage, workspace safety invariants, and deterministic startup hardening signals. | N/A |
 | 17 | SPEC-17-1..SPEC-17-10 | 10 | not_applicable | N/A | Section preface only; concrete requirements are in 17.1-17.8. | N/A |
 | 17.1 | SPEC-17.1-1..SPEC-17.1-18 | 18 | implemented | EP-TESTMATRIX | Triad satisfied via mapped evidence profile. | N/A |
 | 17.2 | SPEC-17.2-1..SPEC-17.2-13 | 13 | implemented | EP-TESTMATRIX | Triad satisfied via mapped evidence profile. | N/A |
@@ -128,7 +128,6 @@ Audit scope: sentence/bullet unit parity between [SPEC.md](/Users/niels.van.Gale
 | Story ID | Subsystem bundle | SPEC unit ranges | Gap statement | Acceptance criteria | Required test anchors | Required observability signals |
 |---|---|---|---|---|---|---|
 | P9a | CLI/host lifecycle + HTTP control parity | SPEC-13.7-1..SPEC-13.7-48, SPEC-17.7-1..SPEC-17.7-6 | CLI workflow-path and server-port precedence/lifecycle expectations are not fully covered end-to-end. | Implement and validate CLI lifecycle semantics from Section 17.7 and HTTP extension precedence behaviors required by Section 13.7 contracts. | `tests/runtime/bootstrap.test.ts`, new `tests/cli/*.test.ts`, `tests/api/server.test.ts` | startup argument resolution logs, bind/port diagnostics, `/api/v1/state` health consistency |
-| P9c | Failure-model/security hardening closure | SPEC-14.1-1..SPEC-14.1-26, SPEC-14.2-1..SPEC-14.2-14, SPEC-14.3-1..SPEC-14.3-8, SPEC-14.4-1..SPEC-14.4-8, SPEC-15.5-1..SPEC-15.5-21 | Failure-class and hardening guidance are only partially represented in deterministic checks and operator controls. | Close explicit failure-injection coverage and hardening controls per sections 14.x/15.5 without regressing current runtime behavior. | `tests/orchestrator/core.test.ts`, `tests/runtime/bootstrap.test.ts`, new failure-injection tests | failure-class specific logs, hardened-mode diagnostics, policy-violation counters |
 | P9d | Domain/config/telemetry conformance closure | SPEC-4.1-1..SPEC-4.1-87, SPEC-6.4-1..SPEC-6.4-31, SPEC-13.5-1..SPEC-13.5-23, SPEC-13.6-1..SPEC-13.6-4, SPEC-18-1..SPEC-18-4, SPEC-18.1-1..SPEC-18.1-18, SPEC-18.2-1..SPEC-18.2-10 | Some domain-model fields, config cheat-sheet claims, token/session summary details, and checklist-level conformance statements still require strict parity closure. | Provide explicit parity matrix updates and targeted implementation/test deltas to satisfy all Section 18 core conformance assertions at sentence-level fidelity. | `tests/api/snapshot-service.test.ts`, `tests/codex/runner.test.ts`, `tests/workflow/resolver.test.ts`, `tests/workflow/validator.test.ts` | API schema parity snapshots, token/session telemetry parity output, conformance gate report |
 
 ## Completeness Checks
