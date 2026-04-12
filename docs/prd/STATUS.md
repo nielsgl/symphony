@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P7 closure.
+- Program status: P0 governance is closed; implementation evidence is recorded through P8 audit closure.
 - Current phase: P1 (entry approved; implementation already delivered through P7 closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
-- Execution routing source: `Current Phase` (P0 is closed; route from the P1 section only).
-- Next-agent routing: no unchecked items remain in `Current Phase` or `Next Queue`; await governance-tracked queue updates before starting new delivery work.
+- Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
+- Next-agent routing: start `P9a` (CLI/host lifecycle + HTTP control parity), then continue in queue order.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -40,6 +40,7 @@ Owner: orchestration planning
 ## Current Phase (P1)
 - [x] P1 entry approved from closed P0 governance gate.
 - [x] P1 implementation scope completed and evidenced in this file's implementation sections.
+- [x] P8 parity-audit governance scope completed and evidenced in `docs/prd/SPEC-LINE-PARITY-AUDIT.md`.
 
 ## P0 Gate Checklist (Closed)
 - [x] Review and sign off PRD-000 through PRD-008.
@@ -148,6 +149,37 @@ Ownership evidence links:
 - [x] P5: Implement local HTTP API and embedded desktop UI integration.
 - [x] P6: Implement security profiles and minimal persistence.
 - [x] P7: Implement GitHub Issues adapter + PR metadata (Phase 2).
+- [x] P8: Perform full SPEC line parity audit and extract backlog stories (docs-only).
+- [ ] P9a: Close CLI/host lifecycle + HTTP control parity gaps.
+- [ ] P9b: Implement real integration + operational validation profile evidence.
+- [ ] P9c: Close failure-model/security-hardening parity gaps.
+- [ ] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
+
+## Implementation Evidence (P8)
+- Date: 2026-04-12
+- Scope delivered (SPEC line parity audit + backlog extraction):
+  - Added deterministic sentence/bullet parity audit artifact in
+    `docs/prd/SPEC-LINE-PARITY-AUDIT.md`.
+  - Parsed `SPEC.md` into atomic units with stable IDs
+    (`SPEC-<section>-<unit_index>`) and classified all unit ranges as
+    `implemented`, `partially_implemented`, `missing`, or `not_applicable`.
+  - Applied strict triad evidence mapping (code + tests + observability) to
+    all implemented range classifications.
+  - Created backlog bundle stories `P9a` through `P9d`; every partial/missing
+    SPEC range maps to exactly one follow-up story.
+- Coverage summary:
+  - Total units classified: `1240`
+  - Implemented ranges: `60`
+  - Partially implemented ranges: `13`
+  - Missing ranges: `3`
+  - Not applicable ranges: `5`
+- Outputs:
+  - `docs/prd/SPEC-LINE-PARITY-AUDIT.md`
+  - `docs/prd/STATUS.md` queue and routing updates
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `git diff --check`
 
 ## Implementation Evidence (P1)
 - Date: 2026-04-10
@@ -431,3 +463,4 @@ Ownership evidence links:
 - Index: `/Users/niels.van.Galen.last/code/symphony/docs/prd/INDEX.md`
 - Roadmap/gates: `/Users/niels.van.Galen.last/code/symphony/docs/prd/PRD-008-delivery-roadmap-gates.md`
 - Traceability: `/Users/niels.van.Galen.last/code/symphony/docs/prd/TRACEABILITY-MATRIX.md`
+- SPEC parity audit (P8): `/Users/niels.van.Galen.last/code/symphony/docs/prd/SPEC-LINE-PARITY-AUDIT.md`

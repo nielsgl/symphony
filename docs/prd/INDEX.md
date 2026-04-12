@@ -20,6 +20,7 @@ This directory contains the decision-complete PRD suite for Symphony:
 8. [PRD-007 Phase 2: GitHub Issues Adapter with PR Metadata](/Users/niels.van.Galen.last/code/symphony/docs/prd/PRD-007-phase2-github-issues-pr-metadata.md)
 9. [PRD-008 Delivery Roadmap, Dependencies, and Gates](/Users/niels.van.Galen.last/code/symphony/docs/prd/PRD-008-delivery-roadmap-gates.md)
 10. [Traceability Matrix](/Users/niels.van.Galen.last/code/symphony/docs/prd/TRACEABILITY-MATRIX.md)
+11. [P8 SPEC Line Parity Audit](/Users/niels.van.Galen.last/code/symphony/docs/prd/SPEC-LINE-PARITY-AUDIT.md)
 
 ## Reading Order
 - Start: PRD-000
@@ -29,6 +30,7 @@ This directory contains the decision-complete PRD suite for Symphony:
 - Execute phased roadmap: PRD-008
 - Plan Phase 2: PRD-007
 - Validate completeness: TRACEABILITY-MATRIX
+- Audit sentence-level parity and backlog extraction: SPEC-LINE-PARITY-AUDIT
 
 ## Definition of Complete PRD Package
 - Every core requirement in SPEC 18.1 has an owner and test/observability mapping.
