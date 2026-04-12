@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P9c parity closure.
-- Current phase: P1 (entry approved; implementation already delivered through P9c closure evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P9d parity closure.
+- Current phase: P1 (entry approved; implementation delivered through P9d closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: start `P9d` (domain/config/telemetry + Section 18 conformance parity), then continue in queue order.
+- Next-agent routing: queue is fully closed through `P9d`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -153,7 +153,57 @@ Ownership evidence links:
 - [x] P9a: Close CLI/host lifecycle + HTTP control parity gaps.
 - [x] P9b: Implement real integration + operational validation profile evidence.
 - [x] P9c: Close failure-model/security-hardening parity gaps.
-- [ ] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
+- [x] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
+
+## Implementation Evidence (P9d)
+- Date: 2026-04-12
+- Scope delivered (domain/config/telemetry + Section 18 conformance parity closure):
+  - Added explicit Section 4.1 live-session parity fields in orchestrator runtime state and API projections:
+    - `thread_id`, `turn_id`, `codex_app_server_pid`, `last_event_summary` are now tracked and projected.
+    - `session_id` composition remains `<thread_id>-<turn_id>` with fallback synthesis when event payloads provide thread/turn IDs.
+  - Added optional humanized event summaries for Section 13.6 telemetry parity as observability-only output:
+    - runtime keeps `last_event_summary` without coupling orchestrator control logic to humanized text.
+  - Added Section 6.4 worker extension config support and validation:
+    - `worker.ssh_hosts` parsing/normalization.
+    - `worker.max_concurrent_agents_per_host` parsing and positive-integer validation semantics.
+  - Extended deterministic tests for all closed parity gaps:
+    - `tests/orchestrator/core.test.ts`
+      - `aggregates worker event usage and turn counts deterministically` now asserts `thread_id`, `turn_id`, `codex_app_server_pid`, and `last_event_summary`.
+    - `tests/api/snapshot-service.test.ts`
+      - state and issue projection assertions now cover `thread_id`, `turn_id`, `codex_app_server_pid`, and summary fields.
+    - `tests/api/server.test.ts`
+      - issue endpoint projection now asserts `thread_id`, `turn_id`, and `codex_app_server_pid`.
+    - `tests/workflow/resolver.test.ts`
+      - `parses optional worker extension fields` validates worker extension resolution behavior.
+    - `tests/workflow/validator.test.ts`
+      - `rejects non-positive worker max_concurrent_agents_per_host when provided` validates extension safety semantics.
+- SPEC closure intent:
+  - SPEC 4.1 (`Domain Model`): session/thread/turn/pid and summarized event parity fields are represented in runtime state and API contracts.
+  - SPEC 6.4 (`Config Fields Summary`): worker extension cheat-sheet fields are parsed and validated deterministically.
+  - SPEC 13.5 (`Session Metrics and Token Accounting`): token/rate-limit accounting remains deterministic and projected with updated live-session identifiers.
+  - SPEC 13.6 (`Humanized Agent Event Summaries`): optional summaries are implemented as observability-only output.
+  - SPEC 18 + 18.1 + 18.2 (`Implementation Checklist`): conformance checklist rows now have explicit triad evidence anchors across code/tests/observability and are reflected in parity/traceability updates.
+- Outputs:
+  - `src/orchestrator/types.ts`
+  - `src/orchestrator/core.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/api/types.ts`
+  - `src/api/snapshot-service.ts`
+  - `src/workflow/types.ts`
+  - `src/workflow/resolver.ts`
+  - `src/workflow/validator.ts`
+  - `tests/orchestrator/core.test.ts`
+  - `tests/api/snapshot-service.test.ts`
+  - `tests/api/server.test.ts`
+  - `tests/workflow/resolver.test.ts`
+  - `tests/workflow/validator.test.ts`
+  - `docs/prd/TRACEABILITY-MATRIX.md`
+  - `docs/prd/SPEC-LINE-PARITY-AUDIT.md`
+  - `docs/prd/STATUS.md`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `git diff --check`
 
 ## Implementation Evidence (P9c)
 - Date: 2026-04-12
