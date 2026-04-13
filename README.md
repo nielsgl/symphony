@@ -34,13 +34,37 @@ execution, and a local observability API with an embedded dashboard.
 	npm test
 	```
 
-## Workflow Playbooks
+## Workflow Learning Path
 
-- Linear workflow playbook: `docs/playbooks/linear-workflow-playbook.md`
-- GitHub workflow playbook: `docs/playbooks/github-workflow-playbook.md`
+Start here for a practical end-to-end workflow:
 
-Use the playbooks for end-to-end operator guidance, including setup,
-workflow authoring, startup modes, API/dashboard operation, and troubleshooting.
+1. Todo app tutorial (issue backlog -> Codex execution -> verification):
+	`docs/tutorials/todo-app-end-to-end.md`
+2. Linear workflow playbook:
+	`docs/playbooks/linear-workflow-playbook.md`
+3. GitHub workflow playbook:
+	`docs/playbooks/github-workflow-playbook.md`
+4. Integrate with your own application:
+	`docs/playbooks/integrate-your-application.md`
+5. Monitoring and recovery runbook:
+	`docs/playbooks/operations-runbook.md`
+
+Workflow preset examples for prompt and tracker configuration:
+
+- `docs/examples/workflow-presets/linear-todo-workflow.md`
+- `docs/examples/workflow-presets/github-todo-workflow.md`
+
+Tracker seed examples for bootstrapping issue backlogs:
+
+- `tests/fixtures/tracker-seeds/linear-todo-issues.json`
+- `tests/fixtures/tracker-seeds/github-todo-issues.json`
+
+Generate import-ready payloads from seed files:
+
+```bash
+npm run bootstrap:tracker-seeds:linear
+npm run bootstrap:tracker-seeds:github
+```
 
 ## Run Dashboard and API
 

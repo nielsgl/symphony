@@ -3,6 +3,13 @@
 This guide is the end-to-end operator playbook for running Symphony against Linear.
 It covers setup, configuration, runtime behavior, observability, recovery, and day-to-day workflow operation.
 
+The recommended practical path is to run this playbook with:
+
+- Tutorial: `docs/tutorials/todo-app-end-to-end.md`
+- Sample app fixture: `tests/fixtures/todo-sample-app`
+- Seed backlog: `tests/fixtures/tracker-seeds/linear-todo-issues.json`
+- Workflow preset: `docs/examples/workflow-presets/linear-todo-workflow.md`
+
 ## 1. What You Get
 
 When configured for Linear, Symphony provides:
@@ -53,7 +60,26 @@ Notes:
 - Set SYMPHONY_ENV_FILE to use a non-default env file path.
 - For local UI-only runs, set SYMPHONY_OFFLINE=1.
 
-## 4. Configure WORKFLOW.md
+## 4. Build an End-to-End Linear Workflow
+
+1. Create issues in Linear from `tests/fixtures/tracker-seeds/linear-todo-issues.json`.
+2. Copy `docs/examples/workflow-presets/linear-todo-workflow.md` into your local `WORKFLOW.md` and adjust project slug.
+3. Start Symphony and observe dispatch for active issue states.
+4. Verify generated changes and tests in the issue workspace.
+5. Move completed issues to terminal states and confirm reconciliation.
+
+Bootstrap helper command:
+
+```bash
+npm run bootstrap:tracker-seeds:linear
+```
+
+Important:
+
+- Symphony does not create issues directly; issue creation is tracker-side.
+- Tracker writes are performed via your workflow tooling and agent behavior.
+
+## 5. Configure WORKFLOW.md
 
 Use Linear tracker settings in front matter:
 
@@ -97,7 +123,7 @@ Important behavior:
 - If server.port is omitted and no CLI/env port is provided, HTTP API is disabled.
 - Prompt template body below front matter is rendered per issue and attempt.
 
-## 5. Start Symphony (CLI and Desktop)
+## 6. Start Symphony (CLI and Desktop)
 
 Run dashboard and API (recommended):
 
@@ -134,7 +160,7 @@ Native desktop smoke test:
 npm run test:desktop:native-smoke
 ```
 
-## 6. Run Lifecycle and Dispatch Workflow
+## 7. Run Lifecycle and Dispatch Workflow
 
 Each poll cycle:
 
@@ -161,7 +187,7 @@ Worker lifecycle:
 - Abnormal exits schedule exponential retry.
 - Normal completion schedules short continuation retry for re-check.
 
-## 7. Operate via Dashboard and HTTP API
+## 8. Operate via Dashboard and HTTP API
 
 Default dashboard URL:
 
@@ -192,7 +218,7 @@ Issue details example:
 curl -sS http://127.0.0.1:3000/api/v1/SYM-123
 ```
 
-## 8. Security, Redaction, and Persistence
+## 9. Security, Redaction, and Persistence
 
 Security profile:
 
@@ -210,7 +236,7 @@ Persistence:
 - Stores run history, sessions, events, and dashboard UI state.
 - Prunes records older than retention_days on startup.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 Startup validation errors:
 
@@ -226,17 +252,19 @@ Runtime symptoms:
 - Workspaces not cleaned: check terminal_states and hook behavior.
 - API disabled unexpectedly: ensure a port is set by CLI, env, or server.port.
 
-## 10. Daily Operator Workflow
+## 11. Daily Operator Workflow
 
 1. Pull latest workflow and code changes.
-2. Validate env and workflow config.
-3. Start dashboard mode.
-4. Observe /api/v1/state and dashboard for running/retrying health.
-5. Trigger /api/v1/refresh after state changes if needed.
-6. Review /api/v1/history for outcomes and trends.
-7. Stop with Ctrl+C and retain persistence for next session.
+2. Seed or groom tracker issues for small, atomic implementation tasks.
+3. Validate env and workflow config.
+4. Start dashboard mode.
+5. Observe /api/v1/state and dashboard for running/retrying health.
+6. Trigger /api/v1/refresh after state changes if needed.
+7. Validate generated code and tests in workspace before closing issue.
+8. Review /api/v1/history for outcomes and trends.
+9. Stop with Ctrl+C and retain persistence for next session.
 
-## 11. References
+## 12. References
 
 - README.md
 - WORKFLOW.md
@@ -244,6 +272,11 @@ Runtime symptoms:
 - docs/prd/PRD-001-orchestrator-core-linear.md
 - docs/prd/PRD-005-observability-local-api-desktop-ui.md
 - docs/prd/PRD-006-security-approval-profiles-persistence.md
+- docs/tutorials/todo-app-end-to-end.md
+- docs/playbooks/integrate-your-application.md
+- docs/playbooks/operations-runbook.md
+- docs/examples/workflow-presets/linear-todo-workflow.md
+- tests/fixtures/todo-sample-app/README.md
 - src/runtime/cli.ts
 - src/runtime/cli-runner.ts
 - src/tracker/linear-adapter.ts

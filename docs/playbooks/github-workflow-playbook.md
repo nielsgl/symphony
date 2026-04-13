@@ -3,6 +3,13 @@
 This guide is the end-to-end operator playbook for running Symphony against GitHub Issues.
 It covers setup, configuration, runtime behavior, observability, recovery, and day-to-day workflow operation.
 
+The recommended practical path is to run this playbook with:
+
+- Tutorial: `docs/tutorials/todo-app-end-to-end.md`
+- Sample app fixture: `tests/fixtures/todo-sample-app`
+- Seed backlog: `tests/fixtures/tracker-seeds/github-todo-issues.json`
+- Workflow preset: `docs/examples/workflow-presets/github-todo-workflow.md`
+
 ## 1. Status and Scope
 
 GitHub tracker support exists in the codebase and can be used in workflow configuration.
@@ -57,7 +64,26 @@ Notes:
 - Set SYMPHONY_ENV_FILE to use a non-default env file path.
 - For local UI-only runs, set SYMPHONY_OFFLINE=1.
 
-## 5. Configure WORKFLOW.md for GitHub
+## 5. Build an End-to-End GitHub Workflow
+
+1. Create issues in your GitHub repository from `tests/fixtures/tracker-seeds/github-todo-issues.json`.
+2. Copy `docs/examples/workflow-presets/github-todo-workflow.md` into your local `WORKFLOW.md` and set owner/repo.
+3. Start Symphony and observe dispatch for Open issues.
+4. Verify generated changes and tests in the issue workspace.
+5. Close completed issues and confirm reconciliation in dashboard and API.
+
+Bootstrap helper command:
+
+```bash
+npm run bootstrap:tracker-seeds:github
+```
+
+Important:
+
+- Symphony does not create issues directly; issue creation is tracker-side.
+- Current GitHub workflow should treat tracker updates as external/agent-driven operations.
+
+## 6. Configure WORKFLOW.md for GitHub
 
 Use GitHub tracker settings in front matter:
 
@@ -100,7 +126,7 @@ Important behavior:
 - tracker.api_key supports env token syntax like $GITHUB_TOKEN.
 - If server.port is omitted and no CLI/env port is provided, HTTP API is disabled.
 
-## 6. Start Symphony (CLI and Desktop)
+## 7. Start Symphony (CLI and Desktop)
 
 Run dashboard and API (recommended):
 
@@ -131,7 +157,7 @@ Packaged desktop build:
 npm run build:desktop
 ```
 
-## 7. GitHub Runtime Behavior
+## 8. GitHub Runtime Behavior
 
 Polling and normalization:
 
@@ -147,7 +173,7 @@ Dispatch and execution:
 - Priority is null for GitHub issues, so created time and identifier dominate ordering.
 - Workspace and hook lifecycle behavior is unchanged from Linear mode.
 
-## 8. Operate via Dashboard and HTTP API
+## 9. Operate via Dashboard and HTTP API
 
 Default dashboard URL:
 
@@ -178,7 +204,7 @@ Issue details example:
 curl -sS http://127.0.0.1:3000/api/v1/nielsgl%2Fsymphony%2317
 ```
 
-## 9. Security, Redaction, and Persistence
+## 10. Security, Redaction, and Persistence
 
 Security profile:
 
@@ -195,13 +221,13 @@ Persistence:
 - Persists run history and dashboard UI state.
 - Prunes old records based on retention_days.
 
-## 10. Known Limitations and Rollout Notes
+## 11. Known Limitations and Rollout Notes
 
 Current limitations to plan around:
 
 - State model is constrained to Open and Closed mapping.
 - Issue priority is not provided by GitHub adapter normalization.
-- blocker relationships are not modeled for GitHub issues.
+- Blocker relationships are not modeled for GitHub issues.
 - branch_name is not populated from GitHub issue data.
 - Orchestrator-native issue writeback is not part of current tracker adapter behavior.
 - Single repository scope per runtime instance.
@@ -212,7 +238,7 @@ Practical impact:
 - Do not rely on blocker gating behavior for GitHub issues.
 - Use issue and PR metadata for visibility, not automated writeback.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 Startup validation errors:
 
@@ -227,17 +253,19 @@ Runtime symptoms:
 - Dispatch blocked: inspect /api/v1/state health.dispatch_validation.
 - API disabled unexpectedly: ensure port is set by CLI, env, or server.port.
 
-## 12. Daily Operator Workflow
+## 13. Daily Operator Workflow
 
 1. Pull latest workflow and code changes.
-2. Validate token, owner/repo, and active states.
-3. Start dashboard mode.
-4. Observe runtime and issue detail state via dashboard/API.
-5. Trigger manual refresh after external issue state changes.
-6. Review run history and diagnostics for drift.
-7. Stop with Ctrl+C and retain persistence for next session.
+2. Seed or groom tracker issues for small, atomic implementation tasks.
+3. Validate token, owner/repo, and active states.
+4. Start dashboard mode.
+5. Observe runtime and issue detail state via dashboard/API.
+6. Trigger manual refresh after external issue state changes.
+7. Validate generated code and tests in workspace before closing issues.
+8. Review run history and diagnostics for drift.
+9. Stop with Ctrl+C and retain persistence for next session.
 
-## 13. References
+## 14. References
 
 - README.md
 - WORKFLOW.md
@@ -245,6 +273,11 @@ Runtime symptoms:
 - docs/prd/PRD-007-phase2-github-issues-pr-metadata.md
 - docs/prd/PRD-005-observability-local-api-desktop-ui.md
 - docs/prd/PRD-006-security-approval-profiles-persistence.md
+- docs/tutorials/todo-app-end-to-end.md
+- docs/playbooks/integrate-your-application.md
+- docs/playbooks/operations-runbook.md
+- docs/examples/workflow-presets/github-todo-workflow.md
+- tests/fixtures/todo-sample-app/README.md
 - src/tracker/github-adapter.ts
 - src/workflow/validator.ts
 - src/runtime/cli.ts
