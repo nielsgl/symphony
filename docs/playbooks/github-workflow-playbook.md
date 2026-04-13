@@ -1,0 +1,252 @@
+# Symphony GitHub Workflow Playbook
+
+This guide is the end-to-end operator playbook for running Symphony against GitHub Issues.
+It covers setup, configuration, runtime behavior, observability, recovery, and day-to-day workflow operation.
+
+## 1. Status and Scope
+
+GitHub tracker support exists in the codebase and can be used in workflow configuration.
+Use this playbook for current supported behavior, with explicit limitations listed in section 10.
+
+## 2. What You Get
+
+When configured for GitHub, Symphony provides:
+
+- Tracker polling from GitHub GraphQL for one owner and one repository.
+- Normalized issue model with repository-scoped identifiers.
+- Linked pull request metadata extraction from cross-referenced events.
+- The same orchestrator dispatch, retry, workspace, and worker lifecycle as other trackers.
+- Local HTTP API and dashboard UX.
+- Optional desktop shell with the same backend.
+- Security profile resolution, redaction, and persistence features.
+
+## 3. Prerequisites
+
+- Node.js and npm installed.
+- GitHub token with issue read access for the target repository.
+- A valid workflow file at repository root or a custom path.
+
+Install and validate once:
+
+```bash
+npm install
+npm run build
+npm test
+```
+
+## 4. Configure Environment
+
+Create a local env file:
+
+```bash
+cp .env.example .env
+```
+
+Set at minimum:
+
+```dotenv
+GITHUB_TOKEN=your_github_token
+SYMPHONY_OFFLINE=0
+SYMPHONY_PORT=3000
+SYMPHONY_WORKFLOW_PATH=./WORKFLOW.md
+```
+
+Notes:
+
+- Startup scripts load .env automatically.
+- Set SYMPHONY_ENV_FILE to use a non-default env file path.
+- For local UI-only runs, set SYMPHONY_OFFLINE=1.
+
+## 5. Configure WORKFLOW.md for GitHub
+
+Use GitHub tracker settings in front matter:
+
+```yaml
+---
+tracker:
+  kind: github
+  endpoint: https://api.github.com/graphql
+  api_key: $GITHUB_TOKEN
+  owner: nielsgl
+  repo: symphony
+  active_states:
+    - Open
+  terminal_states:
+    - Closed
+polling:
+  interval_ms: 30000
+workspace:
+  root: ./.symphony/workspaces
+hooks:
+  timeout_ms: 60000
+agent:
+  max_concurrent_agents: 2
+  max_retry_backoff_ms: 300000
+  max_turns: 20
+codex:
+  command: codex app-server
+  turn_timeout_ms: 3600000
+  read_timeout_ms: 5000
+  stall_timeout_ms: 300000
+server:
+  port: 3000
+---
+```
+
+Important behavior:
+
+- tracker.owner and tracker.repo are required for GitHub.
+- tracker.active_states must include at least Open or Closed.
+- tracker.api_key supports env token syntax like $GITHUB_TOKEN.
+- If server.port is omitted and no CLI/env port is provided, HTTP API is disabled.
+
+## 6. Start Symphony (CLI and Desktop)
+
+Run dashboard and API (recommended):
+
+```bash
+npm run start:dashboard
+```
+
+Useful variants:
+
+```bash
+npm run start:dashboard -- --port=0
+npm run start:dashboard -- --workflow=./WORKFLOW.md
+npm run start:dashboard -- ./WORKFLOW.md
+SYMPHONY_PORT=5050 npm run start:dashboard
+SYMPHONY_WORKFLOW_PATH=./WORKFLOW.md npm run start:dashboard
+SYMPHONY_OFFLINE=1 npm run start:dashboard
+```
+
+Desktop mode:
+
+```bash
+npm run start:desktop
+```
+
+Packaged desktop build:
+
+```bash
+npm run build:desktop
+```
+
+## 7. GitHub Runtime Behavior
+
+Polling and normalization:
+
+- Fetches issues by state via GitHub GraphQL.
+- Supports pagination with configurable page size.
+- Normalizes issue identifiers to owner/repo#number.
+- Adds tracker metadata including repository and linked PR references.
+
+Dispatch and execution:
+
+- Uses standard orchestration rules for concurrency and retries.
+- Sorts by priority, created time, then identifier.
+- Priority is null for GitHub issues, so created time and identifier dominate ordering.
+- Workspace and hook lifecycle behavior is unchanged from Linear mode.
+
+## 8. Operate via Dashboard and HTTP API
+
+Default dashboard URL:
+
+- http://127.0.0.1:3000/
+
+Core API endpoints:
+
+- GET /api/v1/state
+- GET /api/v1/{issue_identifier}
+- POST /api/v1/refresh
+
+Operational endpoints:
+
+- GET /api/v1/diagnostics
+- GET /api/v1/history?limit=50
+- GET /api/v1/ui-state
+- POST /api/v1/ui-state
+
+Manual refresh example:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/api/v1/refresh
+```
+
+Issue details example:
+
+```bash
+curl -sS http://127.0.0.1:3000/api/v1/nielsgl%2Fsymphony%2317
+```
+
+## 9. Security, Redaction, and Persistence
+
+Security profile:
+
+- Effective codex approval and sandbox settings are resolved at startup.
+
+Redaction:
+
+- API responses and persisted event messages are redacted.
+- Keep tokens and secrets out of prompt templates and hooks.
+
+Persistence:
+
+- Enabled by default unless explicitly disabled.
+- Persists run history and dashboard UI state.
+- Prunes old records based on retention_days.
+
+## 10. Known Limitations and Rollout Notes
+
+Current limitations to plan around:
+
+- State model is constrained to Open and Closed mapping.
+- Issue priority is not provided by GitHub adapter normalization.
+- blocker relationships are not modeled for GitHub issues.
+- branch_name is not populated from GitHub issue data.
+- Orchestrator-native issue writeback is not part of current tracker adapter behavior.
+- Single repository scope per runtime instance.
+
+Practical impact:
+
+- Use labels or project conventions for prioritization.
+- Do not rely on blocker gating behavior for GitHub issues.
+- Use issue and PR metadata for visibility, not automated writeback.
+
+## 11. Troubleshooting
+
+Startup validation errors:
+
+- missing_tracker_api_key: set GITHUB_TOKEN or tracker.api_key.
+- missing_tracker_owner: set tracker.owner for GitHub.
+- missing_tracker_repo: set tracker.repo for GitHub.
+- invalid_tracker_active_states_for_github: include Open or Closed.
+
+Runtime symptoms:
+
+- No issues fetched: verify owner, repo, token scope, and endpoint reachability.
+- Dispatch blocked: inspect /api/v1/state health.dispatch_validation.
+- API disabled unexpectedly: ensure port is set by CLI, env, or server.port.
+
+## 12. Daily Operator Workflow
+
+1. Pull latest workflow and code changes.
+2. Validate token, owner/repo, and active states.
+3. Start dashboard mode.
+4. Observe runtime and issue detail state via dashboard/API.
+5. Trigger manual refresh after external issue state changes.
+6. Review run history and diagnostics for drift.
+7. Stop with Ctrl+C and retain persistence for next session.
+
+## 13. References
+
+- README.md
+- WORKFLOW.md
+- SPEC.md
+- docs/prd/PRD-007-phase2-github-issues-pr-metadata.md
+- docs/prd/PRD-005-observability-local-api-desktop-ui.md
+- docs/prd/PRD-006-security-approval-profiles-persistence.md
+- src/tracker/github-adapter.ts
+- src/workflow/validator.ts
+- src/runtime/cli.ts
+- src/runtime/cli-runner.ts
+- src/api/server.ts
