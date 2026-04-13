@@ -34,6 +34,14 @@ execution, and a local observability API with an embedded dashboard.
 	npm test
 	```
 
+## Workflow Playbooks
+
+- Linear workflow playbook: `docs/playbooks/linear-workflow-playbook.md`
+- GitHub workflow playbook: `docs/playbooks/github-workflow-playbook.md`
+
+Use the playbooks for end-to-end operator guidance, including setup,
+workflow authoring, startup modes, API/dashboard operation, and troubleshooting.
+
 ## Run Dashboard and API
 
 The dashboard and API are served by the same local process.
