@@ -1,0 +1,42 @@
+[
+  {
+    "identifier": "SYM-101",
+    "title": "Create in-memory todo model",
+    "description": "Implement todo entity shape and repository helpers for create/list/update/delete.",
+    "state": "Todo",
+    "priority": 1,
+    "labels": ["backend", "foundation"]
+  },
+  {
+    "identifier": "SYM-102",
+    "title": "Add create and list endpoints",
+    "description": "Expose POST /todos and GET /todos in sample app with input validation.",
+    "state": "Todo",
+    "priority": 2,
+    "labels": ["api"]
+  },
+  {
+    "identifier": "SYM-103",
+    "title": "Implement complete and reopen endpoints",
+    "description": "Add PATCH endpoints for complete/reopen transitions and validate state rules.",
+    "state": "Todo",
+    "priority": 2,
+    "labels": ["api", "state"]
+  },
+  {
+    "identifier": "SYM-104",
+    "title": "Add filter support for status",
+    "description": "Support query param filtering for open and completed todo views.",
+    "state": "Todo",
+    "priority": 3,
+    "labels": ["api", "query"]
+  },
+  {
+    "identifier": "SYM-105",
+    "title": "Add test coverage for todo API",
+    "description": "Write tests for create/list/update/delete and invalid input behavior.",
+    "state": "Todo",
+    "priority": 1,
+    "labels": ["test"]
+  }
+]
