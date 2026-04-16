@@ -46,7 +46,7 @@ Approval profile contract:
   "name": "balanced",
   "approval_policy": "on-request",
   "thread_sandbox": "workspace-write",
-  "turn_sandbox_policy": {"type": "workspace"},
+  "turn_sandbox_policy": {"type": "workspace-write"},
   "user_input_policy": "fail_attempt"
 }
 ```

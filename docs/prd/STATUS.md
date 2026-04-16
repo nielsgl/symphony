@@ -527,7 +527,7 @@ Ownership evidence links:
 - Date: 2026-04-11
 - Scope delivered (security profiles + redaction + minimal persistence):
   - Security profile contract and precedence in `src/security/profiles.ts`:
-    - Balanced safe default profile (`approval_policy=on-request`, `thread_sandbox=workspace-write`, `turn_sandbox_policy.type=workspace`, `user_input_policy=fail_attempt`).
+    - Balanced safe default profile (`approval_policy=on-request`, `thread_sandbox=workspace-write`, `turn_sandbox_policy.type=workspace-write`, `user_input_policy=fail_attempt`).
     - Deterministic precedence from defaults with workflow codex overrides for allowed fields.
     - Operator-visible startup diagnostics (`security_profile_active`) emitted from `src/runtime/bootstrap.ts`.
   - Secret redaction in `src/security/redaction.ts` integrated across:
