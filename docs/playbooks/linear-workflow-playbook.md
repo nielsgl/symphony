@@ -74,6 +74,21 @@ Bootstrap helper command:
 npm run bootstrap:tracker-seeds:linear
 ```
 
+Automatic issue creation commands:
+
+```bash
+export LINEAR_PROJECT_SLUG=SYMPHONY
+npm run seed:linear
+npm run seed:linear:apply
+```
+
+For multi-team projects, set team key explicitly:
+
+```bash
+export LINEAR_TEAM_KEY=SYM
+npm run seed:linear:apply
+```
+
 Important:
 
 - Symphony does not create issues directly; issue creation is tracker-side.

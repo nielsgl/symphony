@@ -66,6 +66,14 @@ npm run bootstrap:tracker-seeds:linear
 npm run bootstrap:tracker-seeds:github
 ```
 
+Automatically create Linear issues from seed data:
+
+```bash
+export LINEAR_PROJECT_SLUG=SYMPHONY
+npm run seed:linear
+npm run seed:linear:apply
+```
+
 ## Run Dashboard and API
 
 The dashboard and API are served by the same local process.

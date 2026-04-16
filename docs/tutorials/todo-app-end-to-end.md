@@ -46,6 +46,27 @@ npm run bootstrap:tracker-seeds:linear
 npm run bootstrap:tracker-seeds:github
 ```
 
+Automatically create Linear issues from seed data (dry-run first):
+
+```bash
+export LINEAR_PROJECT_SLUG=SYMPHONY
+npm run seed:linear
+```
+
+Apply creation in Linear:
+
+```bash
+export LINEAR_PROJECT_SLUG=SYMPHONY
+npm run seed:linear:apply
+```
+
+Optional team targeting for multi-team projects:
+
+```bash
+export LINEAR_TEAM_KEY=SYM
+npm run seed:linear:apply
+```
+
 Or write payload to a file:
 
 ```bash
