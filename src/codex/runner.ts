@@ -41,6 +41,56 @@ function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function describeProtocolError(error: unknown): string {
+  const record = asRecord(error);
+  if (!record) {
+    return '';
+  }
+
+  const code = readString(record.code);
+  const message = readString(record.message);
+  const data = record.data;
+
+  const details: string[] = [];
+  if (code) {
+    details.push(`code=${code}`);
+  }
+  if (message) {
+    details.push(`message=${message}`);
+  }
+  if (data !== undefined) {
+    try {
+      details.push(`data=${JSON.stringify(data)}`);
+    } catch {
+      details.push('data=[unserializable]');
+    }
+  }
+
+  return details.length > 0 ? ` (${details.join(' ')})` : '';
+}
+
+function normalizeTurnSandboxPolicy(policy: Record<string, unknown> | undefined): Record<string, unknown> {
+  const candidateType = readString(policy?.type);
+
+  const mappedType =
+    candidateType === 'workspace-write' || candidateType === 'workspace'
+      ? 'workspaceWrite'
+      : candidateType === 'read-only'
+        ? 'readOnly'
+        : candidateType === 'danger-full-access'
+          ? 'dangerFullAccess'
+          : candidateType;
+
+  if (!mappedType) {
+    return { type: 'workspaceWrite' };
+  }
+
+  return {
+    ...policy,
+    type: mappedType
+  };
+}
+
 function isProtocolResponse(message: ProtocolMessage): boolean {
   return (
     typeof message.id === 'number' &&
@@ -225,6 +275,7 @@ export class CodexRunner {
 
       for (let turnIndex = 0; turnIndex < maxTurns; turnIndex += 1) {
         const promptText = turnIndex === 0 ? input.prompt : input.continuationPrompt ?? CONTINUATION_GUIDANCE;
+        const sandboxPolicy = normalizeTurnSandboxPolicy(input.turnSandboxPolicy);
         const turnResponse = await protocol.request(
           'turn/start',
           {
@@ -233,7 +284,7 @@ export class CodexRunner {
             cwd: input.workspaceCwd,
             title: input.title,
             approvalPolicy: input.approvalPolicy ?? 'never',
-            sandboxPolicy: input.turnSandboxPolicy ?? { type: 'workspace-write' }
+            sandboxPolicy
           },
           input.readTimeoutMs
         );
@@ -372,7 +423,9 @@ class ProtocolClient {
   private stdoutBuffer = '';
   private stderrBuffer = '';
   private nextId = 1;
+  private nextNotificationIndex = 0;
   private stderrLines: string[] = [];
+  private static readonly TURN_WAITING_HEARTBEAT_MS = 5000;
 
   constructor(processHandle: RunnerProcess) {
     this.processHandle = processHandle;
@@ -429,7 +482,9 @@ class ProtocolClient {
         if (pending) {
           this.pending.delete(id);
           if (early.error) {
-            pending.reject(new CodexRunnerError('response_error', `Protocol error response for id ${id}`));
+            pending.reject(
+              new CodexRunnerError('response_error', `Protocol error response for id ${id}${describeProtocolError(early.error)}`)
+            );
           } else {
             pending.resolve(asRecord(early.result) ?? {});
           }
@@ -444,11 +499,9 @@ class ProtocolClient {
     timeoutMs: number,
     emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
   ): Promise<WaitForTerminalResult> {
-    let nextNotificationIndex = 0;
-
     const consume = (): WaitForTerminalResult | null => {
-      while (nextNotificationIndex < this.notifications.length) {
-        const message = this.notifications[nextNotificationIndex++];
+      while (this.nextNotificationIndex < this.notifications.length) {
+        const message = this.notifications[this.nextNotificationIndex++];
         this.usageTracker.observe(message);
 
         const rateLimits = this.extractRateLimits(message);
@@ -468,6 +521,16 @@ class ProtocolClient {
           continue;
         }
 
+        if (this.isMcpElicitationRequest(message)) {
+          this.write({ id: message.id, result: { action: 'cancel' } });
+          emit({ event: 'turn_input_required', detail: 'mcp elicitation request cancelled' });
+          return {
+            terminal: 'turn/input_required',
+            usage: this.usageTracker.snapshot(),
+            rate_limits: this.latestRateLimits
+          };
+        }
+
         const terminal = this.readTerminal(message);
         if (terminal) {
           return {
@@ -475,6 +538,13 @@ class ProtocolClient {
             usage: this.usageTracker.snapshot(),
             rate_limits: this.latestRateLimits
           };
+        }
+
+        if (this.isUnhandledServerRequest(message)) {
+          const method = message.method ?? 'unknown';
+          this.write({ id: message.id, result: { success: false, error: 'unsupported_server_request', method } });
+          emit({ event: 'unsupported_server_request', detail: method });
+          continue;
         }
       }
 
@@ -487,13 +557,21 @@ class ProtocolClient {
     }
 
     return new Promise((resolve, reject) => {
+      const waitStartedAtMs = Date.now();
+      const heartbeat = setInterval(() => {
+        const elapsedSeconds = Math.floor((Date.now() - waitStartedAtMs) / 1000);
+        emit({ event: 'turn_waiting', detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
+      }, ProtocolClient.TURN_WAITING_HEARTBEAT_MS);
+
       const timer = setTimeout(() => {
+        clearInterval(heartbeat);
         this.messageEmitter.off('message', onMessage);
         this.messageEmitter.off('exit', onExit);
         reject(new CodexRunnerError('turn_timeout', 'Timed out waiting for turn terminal event'));
       }, timeoutMs);
 
       const onExit = () => {
+        clearInterval(heartbeat);
         clearTimeout(timer);
         this.messageEmitter.off('message', onMessage);
         reject(new CodexRunnerError('port_exit', 'Codex process exited before turn completed'));
@@ -505,6 +583,7 @@ class ProtocolClient {
           return;
         }
 
+        clearInterval(heartbeat);
         clearTimeout(timer);
         this.messageEmitter.off('message', onMessage);
         this.messageEmitter.off('exit', onExit);
@@ -551,7 +630,12 @@ class ProtocolClient {
 
         this.pending.delete(parsed.id);
         if (parsed.error) {
-          pending.reject(new CodexRunnerError('response_error', `Protocol error response for id ${parsed.id}`));
+          pending.reject(
+            new CodexRunnerError(
+              'response_error',
+              `Protocol error response for id ${parsed.id}${describeProtocolError(parsed.error)}`
+            )
+          );
         } else {
           pending.resolve(asRecord(parsed.result) ?? {});
         }
@@ -618,6 +702,18 @@ class ProtocolClient {
     return method.includes('tool') && method.includes('call');
   }
 
+  private isMcpElicitationRequest(message: ProtocolMessage): boolean {
+    if (typeof message.id !== 'number') {
+      return false;
+    }
+
+    return (message.method ?? '').toLowerCase() === 'mcpserver/elicitation/request';
+  }
+
+  private isUnhandledServerRequest(message: ProtocolMessage): boolean {
+    return typeof message.id === 'number' && typeof message.method === 'string';
+  }
+
   private readTerminal(
     message: ProtocolMessage
   ): 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required' | null {
@@ -638,7 +734,8 @@ class ProtocolClient {
 
     if (
       (normalizedMethod.includes('input') && normalizedMethod.includes('required')) ||
-      normalizedMethod.includes('requestuserinput')
+      normalizedMethod.includes('requestuserinput') ||
+      normalizedMethod.includes('elicitation/request')
     ) {
       return 'turn/input_required';
     }

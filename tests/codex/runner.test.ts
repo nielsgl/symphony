@@ -103,6 +103,35 @@ describe('CodexRunner', () => {
       .map((line) => (typeof line.method === 'string' ? line.method : null))
       .filter((method): method is string => Boolean(method));
     expect(writtenMethods).toEqual(['initialize', 'initialized', 'thread/start', 'turn/start']);
+
+    const turnStart = parseWrittenMessages(fake).find((line) => line.method === 'turn/start') as
+      | { params?: Record<string, unknown> }
+      | undefined;
+    expect((turnStart?.params?.sandboxPolicy as { type: string }).type).toBe('workspaceWrite');
+  });
+
+  it('maps legacy kebab-case turn sandbox policy values to protocol camelCase', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        turnSandboxPolicy: { type: 'danger-full-access' }
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"method":"turn/completed","params":{}}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const turnStart = parseWrittenMessages(fake).find((line) => line.method === 'turn/start') as
+      | { params?: Record<string, unknown> }
+      | undefined;
+    expect((turnStart?.params?.sandboxPolicy as { type: string }).type).toBe('dangerFullAccess');
   });
 
   it('supports continuation turns on the same thread within one process', async () => {
@@ -145,6 +174,36 @@ describe('CodexRunner', () => {
 
     const secondTurnText = ((turnStarts[1].params as Record<string, unknown>).input as Array<Record<string, unknown>>)[0].text;
     expect(secondTurnText).toBe(CONTINUATION_GUIDANCE);
+  });
+
+  it('waits for a fresh terminal event for each continuation turn', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    let settled = false;
+    const promise = runner
+      .startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          maxTurns: 2
+        })
+      )
+      .then(() => {
+        settled = true;
+      });
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+    fake.emitStdout('{"id":4,"result":{"turn":{"id":"turn-2"}}}\n');
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+
+    fake.emitStdout('{"method":"turn/completed"}\n');
+    await promise;
+    expect(settled).toBe(true);
   });
 
   it('accepts compatible payload variants for nested ids', async () => {
@@ -302,6 +361,32 @@ describe('CodexRunner', () => {
     expect(responses).toContainEqual({ id: 92, result: { success: false, error: 'unsupported_tool_call' } });
   });
 
+  it('rejects unknown server requests so they cannot silently stall a turn', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":99,"method":"account/chatgptAuthTokens/refresh","params":{}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => typeof message.id === 'number' && 'result' in message);
+    expect(responses).toContainEqual({
+      id: 99,
+      result: {
+        success: false,
+        error: 'unsupported_server_request',
+        method: 'account/chatgptAuthTokens/refresh'
+      }
+    });
+  });
+
   it('fails hard on user-input-required signals from compatible payload shapes', async () => {
     const fakeMethod = new FakeProcess();
     const workspaceCwdMethod = makeWorkspace();
@@ -324,6 +409,23 @@ describe('CodexRunner', () => {
     fakeParams.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
     fakeParams.emitStdout('{"method":"turn/update","params":{"inputRequired":true}}\n');
     await expect(paramsPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+
+    const fakeElicitation = new FakeProcess();
+    const workspaceCwdElicitation = makeWorkspace();
+    const runnerElicitation = new CodexRunner({ spawnProcess: () => fakeElicitation });
+
+    const elicitationPromise = runnerElicitation.startSessionAndRunTurn(makeStartInput(workspaceCwdElicitation));
+    fakeElicitation.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fakeElicitation.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fakeElicitation.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fakeElicitation.emitStdout('{"id":77,"method":"mcpServer/elicitation/request","params":{"threadId":"thread-1"}}\n');
+
+    await expect(elicitationPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+
+    const responses = parseWrittenMessages(fakeElicitation).filter(
+      (message) => typeof message.id === 'number' && 'result' in message
+    );
+    expect(responses).toContainEqual({ id: 77, result: { action: 'cancel' } });
   });
 
   it('extracts usage/rate-limit telemetry from compatible payload variants', async () => {
