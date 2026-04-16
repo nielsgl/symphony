@@ -149,3 +149,4 @@ playwright-report/
 output/playwright/
 
 .worktrees
+.symphony/
