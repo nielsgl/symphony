@@ -1,6 +1,6 @@
 # Symphony PRD Execution Status
 
-Last updated: 2026-04-12
+Last updated: 2026-04-17
 Owner: orchestration planning
 
 ## How Agents Should Use This File
@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P9d parity closure.
-- Current phase: P1 (entry approved; implementation delivered through P9d closure evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P10 web parity + superset upgrade.
+- Current phase: P1 (entry approved; implementation delivered through P10 closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P9d`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P10`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -154,6 +154,7 @@ Ownership evidence links:
 - [x] P9b: Implement real integration + operational validation profile evidence.
 - [x] P9c: Close failure-model/security-hardening parity gaps.
 - [x] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
+- [x] P10: Implement web parity + superset UI/runtime push upgrades (SSE + redesigned operator surface).
 
 ## Implementation Evidence (P9d)
 - Date: 2026-04-12
@@ -587,6 +588,52 @@ Ownership evidence links:
 - Gate outcome:
   - P7 exit criteria satisfied (GitHub adapter contract tests passing; Linear regression suite remains green).
 
+## Implementation Evidence (P10)
+- Date: 2026-04-17
+- Scope delivered (web parity + superset execution):
+  - Replaced dashboard information architecture in `src/api/dashboard-assets.ts` with parity-complete operator surface:
+    - Hero with explicit `Live/Offline` connection badge and last-update timestamp.
+    - KPI strip for running/retrying/tokens/runtime.
+    - Dedicated rate-limit panel.
+    - Running sessions table with parity actions and metadata columns (`state badge`, `session`, `runtime`, `turns`, `tokens`, `last event`, `last message`, `last event at`, row actions).
+    - Retry queue table and upgraded issue-detail panel.
+    - Diagnostics/history extension panels integrated as first-class UI sections.
+  - Added realtime push API in `src/api/server.ts`:
+    - `GET /api/v1/events` SSE endpoint with typed envelopes:
+      - `state_snapshot`
+      - `refresh_accepted`
+      - `runtime_health_changed`
+      - `heartbeat`
+    - Monotonic `event_id` and `generated_at` included in each envelope.
+    - Streaming clients receive initial snapshot and ongoing updates; method/error envelope semantics remain stable.
+  - Wired runtime observer notifications in `src/runtime/bootstrap.ts`:
+    - Orchestrator observer callbacks now trigger API stream state publication on tick/reconcile lifecycle updates.
+    - Existing REST endpoints remain unchanged and backward compatible.
+  - Added resilient client stream behavior in dashboard JS:
+    - SSE first, with exponential reconnect and polling fallback when stream is disconnected.
+    - UI continuity persistence/restoration retained via `GET/POST /api/v1/ui-state`.
+    - No unsafe `innerHTML` usage; runtime/tracker-controlled content is rendered via text-node APIs.
+- Public interface deltas:
+  - Added `GET /api/v1/events` contract and `ApiEventEnvelope` / `ApiEventType` in `src/api/types.ts`.
+  - No breaking changes to:
+    - `GET /api/v1/state`
+    - `POST /api/v1/refresh`
+    - `GET /api/v1/:issue_identifier`
+    - diagnostics/history/ui-state extension endpoints.
+- Test evidence:
+  - `tests/api/server.test.ts`
+    - `serves GET /api/v1/events as SSE and emits state snapshots with monotonic ids`
+    - `emits refresh_accepted event envelopes on POST /api/v1/refresh`
+    - updated dashboard asset assertions for new UI/stream contract.
+  - `tests/runtime/bootstrap.test.ts`
+    - `exposes SSE event stream endpoint for runtime state push updates`
+  - Full regression validation:
+    - `npm test` -> pass (`27` files, `176` tests).
+    - `npm run build` -> pass (`tsc --project tsconfig.json`).
+    - `git diff --check` -> pass.
+- Gate outcome:
+  - P10 web parity + superset scope closed with SSE contract, operator surface redesign, runtime observer push wiring, and non-breaking API compatibility.
+
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
 2. P1 exit requires: Section 17.1 tests passing; typed validation errors surfaced in logs/API.
@@ -596,6 +643,7 @@ Ownership evidence links:
 6. P5 exit requires: Section 17.6 pass criteria met; `/api/v1/state`, `/api/v1/<issue_identifier>`, `/api/v1/refresh` stable for UI.
 7. P6 exit requires: security profile and redaction checks passing; minimal persistence continuity verified across restart.
 8. P7 exit requires: GitHub adapter contract tests passing; Linear regression suite remains green.
+9. P10 exit requires: SSE `/api/v1/events` contract stable, dashboard parity surface implemented, and REST compatibility preserved.
 
 ## Active Blockers
 - None.
