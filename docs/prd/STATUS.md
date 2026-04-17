@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P11 parity-defaults execution closure.
-- Current phase: P1 (entry approved; implementation delivered through P11 closure evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P12 observability + vocabulary harmonization closure.
+- Current phase: P1 (entry approved; implementation delivered through P12 closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P11`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P12`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -156,6 +156,31 @@ Ownership evidence links:
 - [x] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
 - [x] P10: Implement web parity + superset UI/runtime push upgrades (SSE + redesigned operator surface).
 - [x] P11: Implement XR-01/XR-02/XR-04/XR-05/XR-08 with breaking defaults now.
+- [x] P12: Implement XR-06/XR-09 observability enrichment + canonical event vocabulary harmonization.
+
+## Implementation Evidence (P12)
+- Date: 2026-04-17
+- Scope delivered:
+  - XR-06 closed with throughput aggregation (`5s`, `60s`, `10m`), additive `/api/v1/state` fields (`throughput`, `recent_runtime_events`), and dashboard runtime-event feed + throughput panel wired through `/api/v1/ui-state` continuity keys.
+  - XR-09 closed with canonical event vocabulary registry (`event_vocabulary_version: v2`) and covered emitter migration (workflow/orchestrator/codex/runtime/api) to canonical names.
+  - Locked hard-cut decision: no `legacy_event` alias retained (no external users), frontend and diagnostics consume canonical names directly.
+- Key outputs:
+  - `src/observability/events.ts`
+  - `src/observability/throughput.ts`
+  - `src/orchestrator/core.ts`
+  - `src/api/server.ts`
+  - `src/api/snapshot-service.ts`
+  - `src/api/dashboard-assets.ts`
+  - `tests/observability/throughput.test.ts`
+  - `tests/observability/events-vocabulary.test.ts`
+  - `docs/analysis/crossref/02-cross-reference-matrix.md`
+  - `docs/analysis/crossref/03-recommendations-and-migration-plan.md`
+  - `docs/analysis/crossref/appendix/subsystem-diff.json`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
 
 ## Implementation Evidence (P9d)
 - Date: 2026-04-12

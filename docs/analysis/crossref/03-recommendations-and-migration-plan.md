@@ -77,6 +77,41 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/package.json`
   - `/Users/niels.van.Galen.last/code/symphony/tests/cli/meta-check-scripts.test.ts`
 
+### XR-06 — Observability enrichment parity (throughput + runtime event feed)
+- Priority: `P2`
+- Decision: `adopted` (closed in `P12`)
+- Delivered:
+  - throughput aggregation windows (`5s`, `60s`, `10m`) with deterministic snapshot projection,
+  - additive API contract fields on `/api/v1/state`: `throughput` + `recent_runtime_events`,
+  - dashboard throughput panel + runtime event feed with severity filter and UI-state continuity keys,
+  - diagnostics contract kept stable with additive observability-only fields.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/observability/throughput.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/core.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/snapshot-service.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/dashboard-assets.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/observability/throughput.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
+
+### XR-09 — Canonical event vocabulary harmonization
+- Priority: `P2`
+- Decision: `adopted` (closed in `P12`)
+- Delivered:
+  - centralized canonical event registry and explicit version marker (`event_vocabulary_version=v2`),
+  - covered emitter migration (workflow/orchestrator/codex/runtime/api) to canonical names,
+  - hard cutover decision: no `legacy_event` compatibility alias retained (no external users),
+  - diagnostics endpoint includes `event_vocabulary_version`.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/observability/events.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/watcher.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/core.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/codex/runner.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/bootstrap.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/cli-runner.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/observability/events-vocabulary.test.ts`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -91,24 +126,13 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-### XR-06 — Observability enrichment parity (terminal + throughput)
-- Priority: `P2`
-- Decision: `investigate`
-- Delta:
-  - Evaluate optional terminal dashboard parity mode and richer throughput drilldowns.
+- None. Parity recommendations are closed through `P12`.
+- Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
-### XR-09 — Harmonize workflow reload and protocol event vocabulary
-- Priority: `P2`
-- Decision: `refine`
-- Delta:
-  - Normalize event naming/documentation to reduce cross-implementation operator confusion.
-
-## Suggested Rollout Order (Post-P11)
+## Suggested Rollout Order (Post-P12)
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
-2. `XR-06` optional observability enrichment
-3. `XR-09` terminology/event harmonization
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, and `XR-08` are marked closed with concrete code/test anchors.
-- Open recommendations are only `XR-06` and `XR-09` plus explicit preservation items.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, and `XR-09` are marked closed with concrete code/test anchors.
+- Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.

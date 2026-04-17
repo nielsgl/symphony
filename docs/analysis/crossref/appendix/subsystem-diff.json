@@ -35,7 +35,7 @@
         "elixir/lib/symphony_elixir/config.ex",
         "elixir/test/symphony_elixir/workspace_and_config_test.exs"
       ],
-      "recommendations": ["XR-09"]
+      "recommendations": []
     },
     {
       "id": "orchestrator-core",
@@ -90,11 +90,11 @@
         "elixir/test/symphony_elixir/app_server_test.exs",
         "elixir/test/symphony_elixir/dynamic_tool_test.exs"
       ],
-      "recommendations": ["XR-09"]
+      "recommendations": []
     },
     {
       "id": "tracker-adapters",
-      "status": "different-safe",
+      "status": "functionally-equivalent",
       "classification": "extension",
       "risk": "low",
       "summary": "Reference is Linear-focused; ours includes Linear and GitHub adapters with parity tests.",
@@ -132,7 +132,7 @@
       "status": "different-safe",
       "classification": "extension",
       "risk": "low",
-      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, and desktop-oriented dashboard assets.",
+      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, and now includes throughput + runtime-event feed observability enrichment.",
       "ours_anchors": [
         "src/api/server.ts",
         "src/api/types.ts",
@@ -145,7 +145,7 @@
         "elixir/lib/symphony_elixir_web/controllers/observability_api_controller.ex",
         "elixir/lib/symphony_elixir_web/presenter.ex"
       ],
-      "recommendations": ["XR-03", "XR-06"]
+      "recommendations": ["XR-03"]
     },
     {
       "id": "security-policy",
