@@ -17,9 +17,13 @@ Base URL default:
 
 ## Projects and Worktrees
 - GET /projects
-  - Params: include_silent
+  - Params: include_silent, limit, offset
+  - Notes:
+    - Returns paginated envelope: total, limit, offset, items
 - GET /projects/{project_id}/threads
-  - Params: from, to, sort (cost|tokens|updated), include_silent
+  - Params: from, to, sort (cost|tokens|updated), include_silent, limit, offset
+  - Notes:
+    - Returns paginated envelope: total, limit, offset, items
 - GET /projects/{project_id}/worktrees
   - Params: from, to, include_silent
 
@@ -43,6 +47,18 @@ Base URL default:
   - Notes:
     - Transcript is redacted by default.
     - include_unredacted may return 403 if backend guardrails are not satisfied.
+
+## Workflow Diagnostics
+- GET /diagnostics/workflow/stalled-threads
+  - Params:
+    - project
+    - project_name
+    - from, to
+    - include_silent
+    - limit (1-500), offset (>=0)
+  - Notes:
+    - `project` and `project_name` are mutually exclusive; sending both returns 400.
+    - Returns paginated envelope with classification and evidence fields for stalled/question-loop triage.
 
 ## Models and Pricing
 - GET /models/mix

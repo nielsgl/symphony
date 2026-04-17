@@ -19,6 +19,7 @@ Use this skill when the user asks to:
 - refresh ingestion data
 - get KPI and timeseries metrics
 - list latest threads or fetch thread details
+- triage stalled workflows and question-loops
 - inspect project, worktree, model mix, or pricing diagnostics
 
 Do not use this skill when the task is strictly frontend styling, repository policy editing, or non-API scripting.
@@ -42,6 +43,8 @@ Default is http://127.0.0.1:18731/api.
 - Trigger ingest refresh: POST /refresh
 - Latest global threads: GET /threads (defaults sort=updated, direction=desc)
 - Latest threads for named project: GET /threads?project_name=<name>
+- Project groups/worktrees: GET /projects and GET /projects/{project_id}/worktrees
+- Workflow diagnostics: GET /diagnostics/workflow/stalled-threads
 - Thread detail: GET /threads/{thread_id}
 - Project thread list: GET /projects/{project_id}/threads
 - KPI summary: GET /kpis
@@ -59,6 +62,10 @@ Default is http://127.0.0.1:18731/api.
 - scripts/refresh.sh: trigger refresh run.
 - scripts/kpis.sh: KPI query helper.
 - scripts/list_threads.sh: list latest threads with pagination/sorting.
+- scripts/projects.sh: list projects/worktree groups with pagination.
+- scripts/project_threads.sh: list threads for a project id with pagination.
+- scripts/project_worktrees.sh: inspect worktree rollups and timeseries for one project id.
+- scripts/workflow_diagnostics.sh: detect stalled/question-loop thread patterns.
 - scripts/thread_detail.sh: fetch one thread detail.
 - scripts/pricing_diagnostics.sh: query pricing diagnostics.
 
@@ -79,6 +86,18 @@ Latest threads for project name:
 
 ```bash
 scripts/list_threads.sh --project-name codex-dashboard --limit 20 --offset 0 --sort updated --direction desc
+```
+
+Project groups:
+
+```bash
+scripts/projects.sh --limit 25 --offset 0 --include-silent true
+```
+
+Workflow diagnostics:
+
+```bash
+scripts/workflow_diagnostics.sh --project-name symphony --limit 20 --offset 0 --include-silent false
 ```
 
 Thread detail:

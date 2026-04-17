@@ -49,12 +49,16 @@ Action:
 ## Invalid query parameter values
 Symptoms:
 - 422 validation errors.
+- 400 conflict errors for mutually exclusive filters.
 
 Action:
 1. Check allowed enums from references/endpoints.md.
 2. Check numeric bounds:
    - threads limit: 1-500
    - offset: >= 0
+3. For `/threads` and `/diagnostics/workflow/stalled-threads`, do not send both:
+   - `project`
+   - `project_name`
 
 ## Script-level failures
 Symptoms:

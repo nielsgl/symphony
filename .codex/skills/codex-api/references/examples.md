@@ -36,6 +36,30 @@ scripts/list_threads.sh --project-name codex-dashboard --limit 25 --offset 0 --s
 scripts/list_threads.sh --project PROJECT_ID --limit 25 --offset 0 --sort updated --direction desc
 ```
 
+## Projects (paginated)
+
+```bash
+scripts/projects.sh --limit 25 --offset 0 --include-silent true
+```
+
+## Threads for one project ID (paginated)
+
+```bash
+scripts/project_threads.sh PROJECT_ID --sort updated --limit 25 --offset 0 --include-silent true
+```
+
+## Worktrees for one project ID
+
+```bash
+scripts/project_worktrees.sh PROJECT_ID --from 2026-04-01 --to 2026-04-14 --include-silent true
+```
+
+## Workflow stalled-thread diagnostics by project name
+
+```bash
+scripts/workflow_diagnostics.sh --project-name symphony --limit 20 --offset 0 --include-silent false
+```
+
 ## Thread details by id
 
 ```bash
