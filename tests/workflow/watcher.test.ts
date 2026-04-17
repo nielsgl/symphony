@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
+import { CANONICAL_EVENT } from '../../src/observability/events';
 import { ConfigResolver } from '../../src/workflow/resolver';
 import { EffectiveConfigStore } from '../../src/workflow/store';
 import type { WorkflowEvent } from '../../src/workflow/types';
@@ -60,7 +61,7 @@ describe('WorkflowWatcher', () => {
     expect(snapshot).toBeDefined();
     expect(snapshot?.versionHash).toMatch(/^[a-f0-9]{64}$/);
     expect(events[0]).toMatchObject({
-      event: 'workflow_reload_succeeded',
+      event: CANONICAL_EVENT.workflow.reloadSucceeded,
       source: 'startup',
       version_hash: expect.any(String)
     });
@@ -105,7 +106,7 @@ Body`,
     expect(store.getSnapshot()?.versionHash).toBe(baselineHash);
     expect(store.getSnapshot()?.lastReloadStatus.ok).toBe(false);
     expect(store.getSnapshot()?.lastReloadStatus.error_code).toBe('missing_tracker_api_key');
-    expect(events.some((event) => event.event === 'workflow_reload_failed')).toBe(true);
+    expect(events.some((event) => event.event === CANONICAL_EVENT.workflow.reloadFailed)).toBe(true);
   });
 
   it('reloads on atomic save rename of workflow file', async () => {
@@ -204,7 +205,7 @@ Body`
 
     expect(() => watcher.start()).toThrowError();
 
-    const failedEvents = events.filter((event) => event.event === 'workflow_reload_failed');
+    const failedEvents = events.filter((event) => event.event === CANONICAL_EVENT.workflow.reloadFailed);
     expect(failedEvents).toHaveLength(1);
   });
 });

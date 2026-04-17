@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { CANONICAL_EVENT } from '../../src/observability/events';
 import { createRuntimeEnvironment } from '../../src/runtime';
 import { SqlitePersistenceStore } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
@@ -362,7 +363,7 @@ describe('createRuntimeEnvironment', () => {
 
     await runtime.start();
 
-    const enabledEvent = entries.find((entry) => entry.event === 'runtime_http_enabled');
+    const enabledEvent = entries.find((entry) => entry.event === CANONICAL_EVENT.runtime.httpEnabled);
     expect(enabledEvent).toBeDefined();
     expect(enabledEvent?.context.configured_port).toBe(0);
   });
@@ -426,13 +427,13 @@ describe('createRuntimeEnvironment', () => {
 
     await runtime.start();
 
-    const stateInitialized = logs.find((entry) => entry.event === 'startup_orchestrator_state_initialized');
+    const stateInitialized = logs.find((entry) => entry.event === CANONICAL_EVENT.runtime.startupStateInitialized);
     expect(stateInitialized).toBeDefined();
     expect(stateInitialized?.context.state_source).toBe('cold_start');
     expect(stateInitialized?.context.running_cleared).toBe(0);
     expect(stateInitialized?.context.retry_cleared).toBe(0);
 
-    const cleanupCompleted = logs.find((entry) => entry.event === 'startup_terminal_cleanup_completed');
+    const cleanupCompleted = logs.find((entry) => entry.event === CANONICAL_EVENT.runtime.startupCleanupCompleted);
     expect(cleanupCompleted).toBeDefined();
     expect(cleanupCompleted?.context.terminal_issue_count).toBe(1);
     expect(cleanupCompleted?.context.cleaned_count).toBe(1);

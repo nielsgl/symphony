@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { OrchestratorCore } from '../../src/orchestrator/core';
 import type { OrchestratorConfig, OrchestratorPorts } from '../../src/orchestrator/types';
 import type { StructuredLogger } from '../../src/observability';
+import { CANONICAL_EVENT } from '../../src/observability/events';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -444,8 +445,8 @@ describe('OrchestratorCore', () => {
     dispatchAllowed.value = true;
     await orchestrator.tick('manual_refresh');
 
-    expect(logs.some((entry) => entry.event === 'dispatch_validation_failed')).toBe(true);
-    expect(logs.some((entry) => entry.event === 'dispatch_validation_recovered')).toBe(true);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.dispatchValidationFailed)).toBe(true);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.dispatchValidationRecovered)).toBe(true);
     expect(orchestrator.getStateSnapshot().health.dispatch_validation).toBe('ok');
     expect(orchestrator.getStateSnapshot().health.last_error).toBeNull();
   });
@@ -465,7 +466,7 @@ describe('OrchestratorCore', () => {
     await harness.orchestrator.reconcileRunningIssues();
 
     expect(harness.orchestrator.getStateSnapshot().running.has('i-refresh-fail')).toBe(true);
-    expect(logs.some((entry) => entry.event === 'tracker_state_refresh_failed')).toBe(true);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.tracker.stateRefreshFailed)).toBe(true);
   });
 
   it('logs retry candidate fetch failure and requeues retry with incremented attempt', async () => {
@@ -486,7 +487,7 @@ describe('OrchestratorCore', () => {
     const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-retry-fetch-fail');
     expect(retryEntry?.attempt).toBe(2);
     expect(retryEntry?.error).toBe('retry poll failed');
-    expect(logs.some((entry) => entry.event === 'tracker_retry_fetch_failed')).toBe(true);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.tracker.retryFetchFailed)).toBe(true);
   });
 
   it('aggregates worker event usage and turn counts deterministically', async () => {
@@ -496,14 +497,14 @@ describe('OrchestratorCore', () => {
 
     harness.orchestrator.onWorkerEvent('i-usage', {
       timestamp_ms: harness.now.value,
-      event: 'turn_started',
+      event: CANONICAL_EVENT.codex.turnStarted,
       thread_id: 'thread-1',
       turn_id: 'turn-1',
       codex_app_server_pid: 4321
     });
     harness.orchestrator.onWorkerEvent('i-usage', {
       timestamp_ms: harness.now.value + 100,
-      event: 'turn_completed',
+      event: CANONICAL_EVENT.codex.turnCompleted,
       session_id: 'thread-1-turn-1',
       usage: {
         input_tokens: 10,
@@ -520,7 +521,7 @@ describe('OrchestratorCore', () => {
     expect(running?.thread_id).toBe('thread-1');
     expect(running?.turn_id).toBe('turn-1');
     expect(running?.codex_app_server_pid).toBe('4321');
-    expect(running?.last_event_summary).toBe('turn completed: done');
+    expect(running?.last_event_summary).toBe('codex turn completed: done');
     expect(running?.tokens.total_tokens).toBe(14);
     expect(running?.recent_events).toHaveLength(2);
     expect(snapshot.codex_totals.total_tokens).toBe(14);

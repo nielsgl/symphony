@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SnapshotService } from '../../src/api';
 import type { OrchestratorState } from '../../src/orchestrator';
+import { CANONICAL_EVENT } from '../../src/observability/events';
 import type { Issue } from '../../src/tracker';
 
 function makeRunningEntry(overrides: Record<string, unknown> = {}) {
@@ -18,8 +19,8 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     turn_id: 'turn-3',
     codex_app_server_pid: '12345',
     turn_count: 3,
-    last_event: 'turn_completed',
-    last_event_summary: 'turn completed: done',
+    last_event: CANONICAL_EVENT.codex.turnCompleted,
+    last_event_summary: 'codex turn completed: done',
     last_message: 'done',
     tokens: {
       input_tokens: 11,
@@ -34,7 +35,7 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     recent_events: [
       {
         at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
-        event: 'turn_completed',
+        event: CANONICAL_EVENT.codex.turnCompleted,
         message: 'done'
       }
     ],
@@ -81,6 +82,14 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
       dispatch_validation: 'ok',
       last_error: null
     },
+    throughput: {
+      current_tps: 0,
+      avg_tps_60s: 0,
+      window_seconds: 600,
+      sparkline_10m: Array.from({ length: 24 }, () => 0),
+      sample_count: 0
+    },
+    recent_runtime_events: [],
     ...overrides
   };
 }
@@ -110,7 +119,7 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.thread_id).toBe('thread-1');
     expect(projected.running[0]?.turn_id).toBe('turn-3');
     expect(projected.running[0]?.codex_app_server_pid).toBe('12345');
-    expect(projected.running[0]?.last_event_summary).toBe('turn completed: done');
+    expect(projected.running[0]?.last_event_summary).toBe('codex turn completed: done');
     expect(projected.running[0]?.turn_count).toBe(3);
   });
 
@@ -138,12 +147,12 @@ describe('SnapshotService', () => {
             recent_events: [
               {
                 at_ms: Date.parse('2026-04-10T10:01:30.000Z'),
-                event: 'turn_started',
+                event: CANONICAL_EVENT.codex.turnStarted,
                 message: null
               },
               {
                 at_ms: Date.parse('2026-04-10T10:01:45.000Z'),
-                event: 'turn_completed',
+                event: CANONICAL_EVENT.codex.turnCompleted,
                 message: 'done'
               }
             ]
@@ -162,9 +171,9 @@ describe('SnapshotService', () => {
     expect(issue.running?.thread_id).toBe('thread-1');
     expect(issue.running?.turn_id).toBe('turn-3');
     expect(issue.running?.codex_app_server_pid).toBe('12345');
-    expect(issue.running?.last_event_summary).toBe('turn completed: done');
+    expect(issue.running?.last_event_summary).toBe('codex turn completed: done');
     expect(issue.recent_events).toHaveLength(2);
-    expect(issue.recent_events[1]?.event).toBe('turn_completed');
+    expect(issue.recent_events[1]?.event).toBe(CANONICAL_EVENT.codex.turnCompleted);
     expect(issue.logs.codex_session_logs).toEqual([]);
     expect(issue.tracked).toEqual({});
   });

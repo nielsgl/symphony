@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { OrchestratorCore } from '../../src/orchestrator/core';
 import { LocalRunnerBridge } from '../../src/orchestrator/local-runner-bridge';
 import type { OrchestratorConfig, OrchestratorPorts } from '../../src/orchestrator/types';
+import { CANONICAL_EVENT } from '../../src/observability/events';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 import type { EffectiveConfig } from '../../src/workflow/types';
 import type { CodexRunner } from '../../src/codex';
@@ -75,7 +76,7 @@ describe('LocalRunnerBridge integration', () => {
       thread_id: 'thread-1',
       turn_id: 'turn-1',
       session_id: 'thread-1-turn-1',
-      last_event: 'turn_completed'
+      last_event: CANONICAL_EVENT.codex.turnCompleted
     }));
 
     const workspaceManager = {
@@ -262,7 +263,7 @@ describe('LocalRunnerBridge integration', () => {
     expect(retry?.error).toBe('worker exited: abnormal');
   });
 
-  it('fails fast with startup_failed event when workspace resolves to unsafe root', async () => {
+  it('fails fast with codex.startup.failed event when workspace resolves to unsafe root', async () => {
     const workspaceManager = {
       ensureWorkspace: vi.fn(async () => ({
         path: '/tmp/symphony',
@@ -279,7 +280,7 @@ describe('LocalRunnerBridge integration', () => {
       thread_id: 'thread-1',
       turn_id: 'turn-1',
       session_id: 'thread-1-turn-1',
-      last_event: 'turn_completed'
+      last_event: CANONICAL_EVENT.codex.turnCompleted
     }));
     const codexRunner = {
       startSessionAndRunTurn
@@ -304,6 +305,6 @@ describe('LocalRunnerBridge integration', () => {
     await flush();
 
     expect(startSessionAndRunTurn).not.toHaveBeenCalled();
-    expect(events).toContain('startup_failed');
+    expect(events).toContain(CANONICAL_EVENT.codex.startupFailed);
   });
 });

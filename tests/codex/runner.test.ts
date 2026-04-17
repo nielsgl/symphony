@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CodexRunner, CONTINUATION_GUIDANCE } from '../../src/codex';
 import type { CodexRunnerStartInput } from '../../src/codex';
+import { CANONICAL_EVENT } from '../../src/observability/events';
 
 class FakeProcess {
   pid: number | null = 4242;
@@ -89,7 +90,7 @@ describe('CodexRunner', () => {
       thread_id: 'thread-1',
       turn_id: 'turn-1',
       session_id: 'thread-1-turn-1',
-      last_event: 'turn_completed',
+      last_event: CANONICAL_EVENT.codex.turnCompleted,
       turns_completed: 1,
       usage: {
         input_tokens: 0,
@@ -278,7 +279,7 @@ describe('CodexRunner', () => {
     fake.emitStdout('pleted","params":{}}\n');
 
     const result = await promise;
-    expect(result.last_event).toBe('turn_completed');
+    expect(result.last_event).toBe(CANONICAL_EVENT.codex.turnCompleted);
   });
 
   it('keeps stderr isolated from stdout protocol parsing', async () => {

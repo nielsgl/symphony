@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalApiServer } from '../../src/api';
 import { LocalApiError } from '../../src/api/errors';
 import type { OrchestratorState } from '../../src/orchestrator';
+import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../../src/observability/events';
 import type { Issue } from '../../src/tracker';
 
 function makeRunningEntry(overrides: Record<string, unknown> = {}) {
@@ -19,8 +20,8 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     turn_id: 'turn-1',
     codex_app_server_pid: '9999',
     turn_count: 2,
-    last_event: 'turn_completed',
-    last_event_summary: 'turn completed: completed work',
+    last_event: CANONICAL_EVENT.codex.turnCompleted,
+    last_event_summary: 'codex turn completed: completed work',
     last_message: 'completed work',
     tokens: {
       input_tokens: 12,
@@ -35,12 +36,12 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     recent_events: [
       {
         at_ms: Date.parse('2026-04-10T10:00:30.000Z'),
-        event: 'turn_started',
+        event: CANONICAL_EVENT.codex.turnStarted,
         message: null
       },
       {
         at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
-        event: 'turn_completed',
+        event: CANONICAL_EVENT.codex.turnCompleted,
         message: 'completed work'
       }
     ],
@@ -87,6 +88,14 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
       dispatch_validation: 'ok',
       last_error: null
     },
+    throughput: {
+      current_tps: 0,
+      avg_tps_60s: 0,
+      window_seconds: 600,
+      sparkline_10m: Array.from({ length: 24 }, () => 0),
+      sample_count: 0
+    },
+    recent_runtime_events: [],
     ...overrides
   };
 }
@@ -497,7 +506,7 @@ describe('LocalApiServer', () => {
 
     await server.listen();
 
-    const listening = logs.find((entry) => entry.event === 'api_server_listening');
+    const listening = logs.find((entry) => entry.event === CANONICAL_EVENT.api.serverListening);
     expect(listening).toBeDefined();
     expect(listening?.context.configured_port).toBe(0);
     expect(typeof listening?.context.port).toBe('number');
@@ -656,10 +665,12 @@ describe('LocalApiServer', () => {
     const diagnosticsPayload = (await diagnosticsResponse.json()) as {
       active_profile: { name: string };
       persistence: { retention_days: number };
+      event_vocabulary_version: string;
     };
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.active_profile.name).toBe('balanced');
     expect(diagnosticsPayload.persistence.retention_days).toBe(14);
+    expect(diagnosticsPayload.event_vocabulary_version).toBe(EVENT_VOCABULARY_VERSION);
 
     const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history?limit=1`);
     const historyPayload = (await historyResponse.json()) as { runs: Array<{ run_id: string }> };
@@ -680,13 +691,27 @@ describe('LocalApiServer', () => {
         state: {
           selected_issue: 'ABC-2',
           filters: { status: 'running', query: 'token=secret123' },
+          event_feed_filter: 'warn',
+          panels: {
+            throughput_open: false,
+            runtime_events_open: true
+          },
           panel_state: { issue_detail_open: true }
         }
       })
     });
 
     expect(saveResponse.status).toBe(202);
-    expect(setUiState).toHaveBeenCalled();
+    expect(setUiState).toHaveBeenCalledWith({
+      selected_issue: 'ABC-2',
+      filters: { status: 'running', query: 'token=secret123' },
+      event_feed_filter: 'warn',
+      panels: {
+        throughput_open: false,
+        runtime_events_open: true
+      },
+      panel_state: { issue_detail_open: true }
+    });
   });
 
   it('returns invalid_ui_state when ui-state JSON body is malformed', async () => {
