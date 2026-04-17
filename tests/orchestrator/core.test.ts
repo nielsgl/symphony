@@ -41,7 +41,7 @@ interface Harness {
   now: { value: number };
   scheduled: Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>;
   terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }>;
-  spawned: Array<{ issue_id: string; attempt: number | null }>;
+  spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null }>;
   notifyObservers: ReturnType<typeof vi.fn>;
 }
 
@@ -54,7 +54,7 @@ function createHarness(options: {
   const now = { value: 1_000_000 };
   const scheduled = new Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>();
   const terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }> = [];
-  const spawned: Array<{ issue_id: string; attempt: number | null }> = [];
+  const spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null }> = [];
   const notifyObservers = vi.fn();
 
   const config: OrchestratorConfig = {
@@ -70,12 +70,13 @@ function createHarness(options: {
 
   const spawnWorker: OrchestratorPorts['spawnWorker'] =
     options.spawnWorker ??
-    (async ({ issue, attempt }) => {
-      spawned.push({ issue_id: issue.id, attempt });
+    (async ({ issue, attempt, worker_host }) => {
+      spawned.push({ issue_id: issue.id, attempt, worker_host });
       return {
         ok: true,
         worker_handle: { issue_id: issue.id },
-        monitor_handle: { issue_id: issue.id }
+        monitor_handle: { issue_id: issue.id },
+        worker_host
       };
     });
 
@@ -152,6 +153,46 @@ describe('OrchestratorCore', () => {
     expect(snapshot.running.has('i-claim')).toBe(true);
     expect(snapshot.claimed.has('i-claim')).toBe(true);
     expect(snapshot.retry_attempts.has('i-claim')).toBe(false);
+  });
+
+  it('assigns worker hosts in deterministic round-robin order when ssh hosts are configured', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        max_concurrent_agents: 2,
+        worker_hosts: ['build-1', 'build-2'],
+        max_concurrent_agents_per_host: 1
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-host-1', identifier: 'ABC-1' }),
+      makeIssue({ id: 'i-host-2', identifier: 'ABC-2' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-host-1', attempt: null, worker_host: 'build-1' },
+      { issue_id: 'i-host-2', attempt: null, worker_host: 'build-2' }
+    ]);
+  });
+
+  it('retries when all configured worker hosts are at capacity', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        max_concurrent_agents: 2,
+        worker_hosts: ['build-1'],
+        max_concurrent_agents_per_host: 1
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-capacity-1', identifier: 'ABC-1' }),
+      makeIssue({ id: 'i-capacity-2', identifier: 'ABC-2' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-capacity-2');
+    expect(retryEntry?.error).toBe('no available worker host slots');
+    expect(harness.spawned).toEqual([{ issue_id: 'i-capacity-1', attempt: null, worker_host: 'build-1' }]);
   });
 
   it('schedules continuation retry with attempt=1 and 1000ms delay on normal exit', async () => {

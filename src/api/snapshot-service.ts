@@ -13,6 +13,7 @@ function toStateRunningRow(issueId: string, entry: RunningEntry): ApiStateRespon
     issue_identifier: entry.identifier,
     state: entry.issue.state,
     session_id: entry.session_id,
+    worker_host: entry.worker_host ?? null,
     thread_id: entry.thread_id,
     turn_id: entry.turn_id,
     codex_app_server_pid: entry.codex_app_server_pid,
@@ -100,7 +101,7 @@ export class SnapshotService {
         status: 'running',
         workspace: {
           path: entry.workspace_path,
-          host: null
+          host: entry.worker_host ?? null
         },
         attempts: {
           restart_count: entry.retry_attempt,
@@ -108,6 +109,7 @@ export class SnapshotService {
         },
         running: {
           session_id: entry.session_id,
+          worker_host: entry.worker_host ?? null,
           thread_id: entry.thread_id,
           turn_id: entry.turn_id,
           codex_app_server_pid: entry.codex_app_server_pid,

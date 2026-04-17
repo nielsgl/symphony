@@ -4,12 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { CodexRunnerError } from './errors';
+import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
 import type { CodexRunnerEvent, CodexRunnerStartInput, CodexTurnResult, CodexUsageTotals } from './types';
 
 interface ProtocolMessage {
   id?: number;
   method?: string;
-  result?: Record<string, unknown>;
+  result?: unknown;
   error?: unknown;
   params?: Record<string, unknown>;
 }
@@ -23,7 +24,7 @@ interface RunnerProcess {
   once: (event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void) => void;
 }
 
-type SpawnProcess = (params: { command: string; cwd: string }) => RunnerProcess;
+type SpawnProcess = (params: { command: string; cwd: string; workerHost?: string }) => RunnerProcess;
 
 interface WaitForTerminalResult {
   terminal: 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required';
@@ -89,6 +90,29 @@ function normalizeTurnSandboxPolicy(policy: Record<string, unknown> | undefined)
     ...policy,
     type: mappedType
   };
+}
+
+function normalizeApprovalPolicy(
+  policy:
+    | string
+    | {
+        reject?: {
+          sandbox_approval?: boolean;
+          rules?: boolean;
+          mcp_elicitations?: boolean;
+        };
+      }
+    | undefined
+): string | Record<string, unknown> {
+  if (!policy) {
+    return 'never';
+  }
+
+  if (typeof policy === 'string') {
+    return policy;
+  }
+
+  return policy as Record<string, unknown>;
 }
 
 function isProtocolResponse(message: ProtocolMessage): boolean {
@@ -189,7 +213,17 @@ class UsageTracker {
   }
 }
 
-function defaultSpawnProcess(params: { command: string; cwd: string }): RunnerProcess {
+function defaultSpawnProcess(params: { command: string; cwd: string; workerHost?: string }): RunnerProcess {
+  const workerHost = params.workerHost?.trim();
+  if (workerHost) {
+    const remoteCommand = `cd ${shellEscape(params.cwd)} && exec ${params.command}`;
+    const child: ChildProcessWithoutNullStreams = spawn('ssh', [workerHost, remoteCommand], {
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    return child;
+  }
+
   const child: ChildProcessWithoutNullStreams = spawn('bash', ['-lc', params.command], {
     cwd: params.cwd,
     stdio: ['pipe', 'pipe', 'pipe']
@@ -215,24 +249,49 @@ function assertWorkspaceCwd(workspaceCwd: string): void {
   }
 }
 
+function assertRemoteWorkspaceCwd(workspaceCwd: string): void {
+  if (!workspaceCwd.trim()) {
+    throw new CodexRunnerError('invalid_remote_workspace_cwd', 'Remote workspace cwd must be non-empty');
+  }
+
+  if (workspaceCwd.includes('\n') || workspaceCwd.includes('\r') || workspaceCwd.includes('\u0000')) {
+    throw new CodexRunnerError('invalid_remote_workspace_cwd', 'Remote workspace cwd contains invalid characters');
+  }
+}
+
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
 export class CodexRunner {
   private readonly spawnProcess: SpawnProcess;
+  private readonly dynamicToolExecutor: DynamicToolExecutor;
 
-  constructor(options: { spawnProcess?: SpawnProcess } = {}) {
+  constructor(options: { spawnProcess?: SpawnProcess; dynamicToolExecutor?: DynamicToolExecutor } = {}) {
     this.spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
+    this.dynamicToolExecutor =
+      options.dynamicToolExecutor ??
+      createDefaultDynamicToolExecutor({
+        trackerEndpoint: '',
+        trackerApiKey: ''
+      });
   }
 
   async startSessionAndRunTurn(input: CodexRunnerStartInput): Promise<CodexTurnResult> {
-    assertWorkspaceCwd(input.workspaceCwd);
+    if (input.workerHost) {
+      assertRemoteWorkspaceCwd(input.workspaceCwd);
+    } else {
+      assertWorkspaceCwd(input.workspaceCwd);
+    }
 
     let processHandle: RunnerProcess;
     try {
-      processHandle = this.spawnProcess({ command: input.command, cwd: input.workspaceCwd });
+      processHandle = this.spawnProcess({ command: input.command, cwd: input.workspaceCwd, workerHost: input.workerHost });
     } catch {
       throw new CodexRunnerError('invalid_workspace_cwd', `Failed to launch codex process in cwd: ${input.workspaceCwd}`);
     }
 
-    const protocol = new ProtocolClient(processHandle);
+    const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor);
     const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
 
     try {
@@ -250,9 +309,10 @@ export class CodexRunner {
       const threadResponse = await protocol.request(
         'thread/start',
         {
-          approvalPolicy: input.approvalPolicy ?? 'never',
+          approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
           sandbox: input.threadSandbox ?? 'workspace-write',
-          cwd: input.workspaceCwd
+          cwd: input.workspaceCwd,
+          dynamicTools: this.dynamicToolExecutor.toolSpecs()
         },
         input.readTimeoutMs
       );
@@ -283,7 +343,7 @@ export class CodexRunner {
             input: [{ type: 'text', text: promptText }],
             cwd: input.workspaceCwd,
             title: input.title,
-            approvalPolicy: input.approvalPolicy ?? 'never',
+            approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
             sandboxPolicy
           },
           input.readTimeoutMs
@@ -413,6 +473,7 @@ export class CodexRunner {
 
 class ProtocolClient {
   private readonly processHandle: RunnerProcess;
+  private readonly dynamicToolExecutor: DynamicToolExecutor;
   private readonly pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
   private readonly earlyResponses = new Map<number, ProtocolMessage>();
   private readonly notifications: ProtocolMessage[] = [];
@@ -427,8 +488,9 @@ class ProtocolClient {
   private stderrLines: string[] = [];
   private static readonly TURN_WAITING_HEARTBEAT_MS = 5000;
 
-  constructor(processHandle: RunnerProcess) {
+  constructor(processHandle: RunnerProcess, dynamicToolExecutor: DynamicToolExecutor) {
     this.processHandle = processHandle;
+    this.dynamicToolExecutor = dynamicToolExecutor;
 
     this.processHandle.stdout.on('data', (chunk: Buffer | string) => {
       this.onStdout(chunk.toString('utf8'));
@@ -499,7 +561,7 @@ class ProtocolClient {
     timeoutMs: number,
     emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
   ): Promise<WaitForTerminalResult> {
-    const consume = (): WaitForTerminalResult | null => {
+    const consume = async (): Promise<WaitForTerminalResult | null> => {
       while (this.nextNotificationIndex < this.notifications.length) {
         const message = this.notifications[this.nextNotificationIndex++];
         this.usageTracker.observe(message);
@@ -515,9 +577,19 @@ class ProtocolClient {
           continue;
         }
 
-        if (this.isUnsupportedToolRequest(message)) {
-          this.write({ id: message.id, result: { success: false, error: 'unsupported_tool_call' } });
-          emit({ event: 'unsupported_tool_call' });
+        if (this.isToolCallRequest(message)) {
+          const params = asRecord(message.params);
+          const toolName = readString(params?.tool) ?? readString(params?.name);
+          const argumentsValue = params?.arguments ?? {};
+          const toolResult = await this.dynamicToolExecutor.execute(toolName, argumentsValue);
+          this.write({ id: message.id, result: toolResult });
+          if (toolResult.success) {
+            emit({ event: 'tool_call_completed', detail: toolName ?? 'unknown_tool' });
+          } else if (toolName) {
+            emit({ event: 'tool_call_failed', detail: toolName });
+          } else {
+            emit({ event: 'unsupported_tool_call' });
+          }
           continue;
         }
 
@@ -551,11 +623,6 @@ class ProtocolClient {
       return null;
     };
 
-    const existing = consume();
-    if (existing) {
-      return Promise.resolve(existing);
-    }
-
     return new Promise((resolve, reject) => {
       const waitStartedAtMs = Date.now();
       const heartbeat = setInterval(() => {
@@ -563,9 +630,13 @@ class ProtocolClient {
         emit({ event: 'turn_waiting', detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
       }, ProtocolClient.TURN_WAITING_HEARTBEAT_MS);
 
+      const onMessageWrapper = () => {
+        void onMessage();
+      };
+
       const timer = setTimeout(() => {
         clearInterval(heartbeat);
-        this.messageEmitter.off('message', onMessage);
+        this.messageEmitter.off('message', onMessageWrapper);
         this.messageEmitter.off('exit', onExit);
         reject(new CodexRunnerError('turn_timeout', 'Timed out waiting for turn terminal event'));
       }, timeoutMs);
@@ -573,24 +644,31 @@ class ProtocolClient {
       const onExit = () => {
         clearInterval(heartbeat);
         clearTimeout(timer);
-        this.messageEmitter.off('message', onMessage);
+        this.messageEmitter.off('message', onMessageWrapper);
         reject(new CodexRunnerError('port_exit', 'Codex process exited before turn completed'));
       };
 
-      const onMessage = () => {
-        const terminal = consume();
+      let handlingMessage = false;
+      const onMessage = async () => {
+        if (handlingMessage) {
+          return;
+        }
+        handlingMessage = true;
+        const terminal = await consume();
+        handlingMessage = false;
         if (!terminal) {
           return;
         }
 
         clearInterval(heartbeat);
         clearTimeout(timer);
-        this.messageEmitter.off('message', onMessage);
+        this.messageEmitter.off('message', onMessageWrapper);
         this.messageEmitter.off('exit', onExit);
         resolve(terminal);
       };
 
-      this.messageEmitter.on('message', onMessage);
+      void onMessage();
+      this.messageEmitter.on('message', onMessageWrapper);
       this.messageEmitter.on('exit', onExit);
     });
   }
@@ -693,7 +771,7 @@ class ProtocolClient {
     return method.includes('approval') && (method.includes('request') || method.includes('required'));
   }
 
-  private isUnsupportedToolRequest(message: ProtocolMessage): boolean {
+  private isToolCallRequest(message: ProtocolMessage): boolean {
     if (typeof message.id !== 'number') {
       return false;
     }

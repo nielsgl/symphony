@@ -10,6 +10,7 @@ import { runLocalWorkerAttempt } from './local-worker-runner';
 interface WorkerHandle {
   issue_id: string;
   issue_identifier: string;
+  worker_host: string | null;
   promise: Promise<void>;
 }
 
@@ -47,18 +48,21 @@ export class LocalRunnerBridge {
     this.onWorkerEvent = options.onWorkerEvent;
   }
 
-  async spawnWorker(params: { issue: Issue; attempt: number | null }): Promise<SpawnWorkerResult> {
-    const workerPromise = this.startWorker(params.issue, params.attempt);
+  async spawnWorker(params: { issue: Issue; attempt: number | null; worker_host?: string | null }): Promise<SpawnWorkerResult> {
+    const workerHost = params.worker_host ?? null;
+    const workerPromise = this.startWorker(params.issue, params.attempt, workerHost);
     const worker_handle: WorkerHandle = {
       issue_id: params.issue.id,
       issue_identifier: params.issue.identifier,
-      promise: workerPromise
+      promise: workerPromise,
+      worker_host: workerHost
     };
 
     return {
       ok: true,
       worker_handle,
-      monitor_handle: worker_handle
+      monitor_handle: worker_handle,
+      worker_host: workerHost
     };
   }
 
@@ -75,10 +79,11 @@ export class LocalRunnerBridge {
     await this.workspaceManager.cleanupWorkspace(workerHandle.issue_identifier);
   }
 
-  private async startWorker(issue: Issue, attempt: number | null): Promise<void> {
+  private async startWorker(issue: Issue, attempt: number | null, worker_host: string | null): Promise<void> {
     const result = await runLocalWorkerAttempt({
       issue,
       attempt,
+      worker_host: worker_host ?? undefined,
       workspaceManager: this.workspaceManager,
       codexRunner: this.codexRunner,
       config: this.config,

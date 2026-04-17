@@ -2,6 +2,8 @@ export class CodexRunnerError extends Error {
   readonly code:
     | 'codex_not_found'
     | 'invalid_workspace_cwd'
+    | 'invalid_remote_workspace_cwd'
+    | 'unsafe_workspace_root'
     | 'response_timeout'
     | 'turn_timeout'
     | 'port_exit'
@@ -14,6 +16,8 @@ export class CodexRunnerError extends Error {
     code:
       | 'codex_not_found'
       | 'invalid_workspace_cwd'
+      | 'invalid_remote_workspace_cwd'
+      | 'unsafe_workspace_root'
       | 'response_timeout'
       | 'turn_timeout'
       | 'port_exit'

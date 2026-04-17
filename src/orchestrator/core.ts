@@ -80,6 +80,7 @@ export class OrchestratorCore {
   private readonly persistence?: OrchestratorOptions['persistence'];
 
   private readonly state: OrchestratorState;
+  private hostRoundRobinIndex: number;
 
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
@@ -107,6 +108,7 @@ export class OrchestratorCore {
         last_error: null
       }
     };
+    this.hostRoundRobinIndex = 0;
   }
 
   getStateSnapshot(): OrchestratorState {
@@ -295,6 +297,7 @@ export class OrchestratorCore {
         session_id: runningEntry.session_id,
         thread_id: runningEntry.thread_id,
         turn_id: runningEntry.turn_id,
+        worker_host: runningEntry.worker_host,
         codex_app_server_pid: runningEntry.codex_app_server_pid,
         event: workerEvent.event,
         event_summary: runningEntry.last_event_summary
@@ -495,7 +498,19 @@ export class OrchestratorCore {
   }
 
   private async dispatchIssue(issue: Issue, attempt: number | null): Promise<void> {
-    const spawned = await this.ports.spawnWorker({ issue, attempt });
+    const workerHost = this.selectWorkerHost();
+    if ((this.config.worker_hosts?.length ?? 0) > 0 && !workerHost) {
+      await this.scheduleRetry({
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        attempt: nextAttempt(attempt),
+        delay_type: 'failure',
+        error: 'no available worker host slots'
+      });
+      return;
+    }
+
+    const spawned = await this.ports.spawnWorker({ issue, attempt, worker_host: workerHost });
 
     if (!spawned.ok) {
       this.state.health.last_error = `failed to spawn agent for ${issue.identifier}`;
@@ -517,6 +532,7 @@ export class OrchestratorCore {
       monitor_handle: spawned.monitor_handle,
       retry_attempt: attempt ?? 0,
       workspace_path: spawned.workspace_path ?? null,
+      worker_host: spawned.worker_host ?? workerHost ?? null,
       session_id: null,
       thread_id: null,
       turn_id: null,
@@ -650,5 +666,38 @@ export class OrchestratorCore {
         message: `failed to complete durable run record for ${runningEntry.identifier}`
       });
     }
+  }
+
+  private selectWorkerHost(): string | null {
+    const configuredHosts = this.config.worker_hosts ?? [];
+    if (!configuredHosts.length) {
+      return null;
+    }
+
+    if (!this.config.max_concurrent_agents_per_host || this.config.max_concurrent_agents_per_host <= 0) {
+      const host = configuredHosts[this.hostRoundRobinIndex % configuredHosts.length] ?? configuredHosts[0];
+      this.hostRoundRobinIndex = (this.hostRoundRobinIndex + 1) % configuredHosts.length;
+      return host ?? null;
+    }
+
+    const hostLimit = this.config.max_concurrent_agents_per_host;
+    const currentByHost = new Map<string, number>();
+    for (const entry of this.state.running.values()) {
+      if (!entry.worker_host) {
+        continue;
+      }
+      currentByHost.set(entry.worker_host, (currentByHost.get(entry.worker_host) ?? 0) + 1);
+    }
+
+    for (let offset = 0; offset < configuredHosts.length; offset += 1) {
+      const idx = (this.hostRoundRobinIndex + offset) % configuredHosts.length;
+      const candidate = configuredHosts[idx];
+      if ((currentByHost.get(candidate) ?? 0) < hostLimit) {
+        this.hostRoundRobinIndex = (idx + 1) % configuredHosts.length;
+        return candidate;
+      }
+    }
+
+    return null;
   }
 }

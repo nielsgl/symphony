@@ -1,5 +1,5 @@
 import { LocalApiServer } from '../api';
-import { CodexRunner, type CodexRunnerEvent } from '../codex';
+import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
 import { MultiSinkLogger, type StructuredLogger } from '../observability';
 import { SqlitePersistenceStore } from '../persistence';
 import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult } from '../orchestrator';
@@ -106,7 +106,10 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     message: securityProfileSummary(activeProfile),
     context: {
       profile_name: activeProfile.name,
-      approval_policy: activeProfile.approval_policy,
+      approval_policy:
+        typeof activeProfile.approval_policy === 'string'
+          ? activeProfile.approval_policy
+          : JSON.stringify(activeProfile.approval_policy),
       thread_sandbox: activeProfile.thread_sandbox,
       turn_sandbox_policy: activeProfile.turn_sandbox_policy.type
     }
@@ -120,7 +123,13 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       })
     : null;
 
-  const codexRunner = new CodexRunner();
+  const codexRunner = new CodexRunner({
+    dynamicToolExecutor: createDefaultDynamicToolExecutor({
+      trackerEndpoint: effectiveConfig.tracker.endpoint,
+      trackerApiKey: effectiveConfig.tracker.api_key,
+      fetchFn: options.fetchFn
+    })
+  });
   let orchestrator: OrchestratorCore;
   let apiServer: LocalApiServer | null = null;
 
@@ -156,12 +165,14 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       max_retry_backoff_ms: effectiveConfig.agent.max_retry_backoff_ms,
       active_states: effectiveConfig.tracker.active_states,
       terminal_states: effectiveConfig.tracker.terminal_states,
-      stall_timeout_ms: effectiveConfig.codex.stall_timeout_ms
+      stall_timeout_ms: effectiveConfig.codex.stall_timeout_ms,
+      worker_hosts: effectiveConfig.worker?.ssh_hosts ?? [],
+      max_concurrent_agents_per_host: effectiveConfig.worker?.max_concurrent_agents_per_host ?? null
     },
     ports: {
       tracker,
       dispatchPreflight,
-      spawnWorker: ({ issue, attempt }) => bridge.spawnWorker({ issue, attempt }),
+      spawnWorker: ({ issue, attempt, worker_host }) => bridge.spawnWorker({ issue, attempt, worker_host }),
       terminateWorker: ({ issue_id, worker_handle, cleanup_workspace }) =>
         bridge.terminateWorker({ issue_id, worker_handle, cleanup_workspace }),
       scheduleRetryTimer: ({ issue_id, due_at_ms, callback }) => {

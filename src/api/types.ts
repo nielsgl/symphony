@@ -37,6 +37,7 @@ export interface ApiStateResponse {
     issue_identifier: string;
     state: string;
     session_id: string | null;
+    worker_host: string | null;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -98,6 +99,7 @@ export interface ApiIssueResponse {
   };
   running: {
     session_id: string | null;
+    worker_host: string | null;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;

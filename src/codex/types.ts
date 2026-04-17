@@ -1,11 +1,20 @@
 export interface CodexRunnerStartInput {
   command: string;
   workspaceCwd: string;
+  workerHost?: string;
   prompt: string;
   continuationPrompt?: string;
   title: string;
   maxTurns?: number;
-  approvalPolicy?: string;
+  approvalPolicy?:
+    | string
+    | {
+        reject?: {
+          sandbox_approval?: boolean;
+          rules?: boolean;
+          mcp_elicitations?: boolean;
+        };
+      };
   threadSandbox?: string;
   turnSandboxPolicy?: Record<string, unknown>;
   onEvent?: (event: CodexRunnerEvent) => void;
@@ -18,6 +27,8 @@ export type CodexTurnStatus = 'completed' | 'failed';
 export type CodexTurnErrorCode =
   | 'codex_not_found'
   | 'invalid_workspace_cwd'
+  | 'invalid_remote_workspace_cwd'
+  | 'unsafe_workspace_root'
   | 'response_timeout'
   | 'turn_timeout'
   | 'port_exit'

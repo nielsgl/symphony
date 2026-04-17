@@ -15,6 +15,7 @@ export interface RunningEntry {
   monitor_handle: unknown;
   retry_attempt: number;
   workspace_path: string | null;
+  worker_host?: string | null;
   session_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
@@ -73,6 +74,7 @@ export interface SpawnWorkerResultSuccess {
   worker_handle: unknown;
   monitor_handle: unknown;
   workspace_path?: string | null;
+  worker_host?: string | null;
 }
 
 export interface SpawnWorkerResultFailure {
@@ -85,7 +87,7 @@ export type SpawnWorkerResult = SpawnWorkerResultSuccess | SpawnWorkerResultFail
 export interface OrchestratorPorts {
   tracker: TrackerAdapter;
   dispatchPreflight: () => DispatchPreflightResult;
-  spawnWorker: (params: { issue: Issue; attempt: number | null }) => Promise<SpawnWorkerResult>;
+  spawnWorker: (params: { issue: Issue; attempt: number | null; worker_host?: string | null }) => Promise<SpawnWorkerResult>;
   terminateWorker: (params: {
     issue_id: string;
     worker_handle: unknown;
@@ -133,6 +135,8 @@ export interface OrchestratorConfig {
   active_states: string[];
   terminal_states: string[];
   stall_timeout_ms: number;
+  worker_hosts?: string[];
+  max_concurrent_agents_per_host?: number | null;
 }
 
 export interface OrchestratorOptions {

@@ -3,6 +3,7 @@ import type { WorkspaceManager } from '../workspace';
 import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
 import type { EffectiveConfig } from '../workflow';
+import path from 'node:path';
 
 const DEFAULT_CONTINUATION_PROMPT =
   'Continue on the same thread for this issue. Focus on incremental progress and report outcomes clearly.';
@@ -10,6 +11,7 @@ const DEFAULT_CONTINUATION_PROMPT =
 export interface LocalWorkerRunInput {
   issue: Issue;
   attempt: number | null;
+  worker_host?: string;
   workspaceManager: WorkspaceManager;
   codexRunner: CodexRunner;
   config: EffectiveConfig;
@@ -29,6 +31,21 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
   try {
     const workspace = await input.workspaceManager.ensureWorkspace(input.issue.identifier);
     workspacePath = workspace.path;
+    const normalizedWorkspace = path.resolve(workspace.path);
+    const normalizedRoot = path.resolve(input.config.workspace.root);
+    if (normalizedWorkspace === normalizedRoot) {
+      input.onCodexEvent?.({
+        event: 'startup_failed',
+        timestamp: new Date().toISOString(),
+        codex_app_server_pid: null,
+        detail: 'unsafe_workspace_root'
+      });
+      return {
+        reason: 'abnormal',
+        session_id: null,
+        error: 'unsafe_workspace_root'
+      };
+    }
     await input.workspaceManager.prepareAttempt(workspace.path);
     const prompt = await input.renderPrompt({
       issue: input.issue,
@@ -38,6 +55,7 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
     const turnResult = await input.codexRunner.startSessionAndRunTurn({
       command: input.config.codex.command,
       workspaceCwd: workspace.path,
+      workerHost: input.worker_host,
       prompt,
       continuationPrompt: DEFAULT_CONTINUATION_PROMPT,
       title: `${input.issue.identifier}: ${input.issue.title}`,

@@ -261,4 +261,49 @@ describe('LocalRunnerBridge integration', () => {
     expect(retry?.attempt).toBe(1);
     expect(retry?.error).toBe('worker exited: abnormal');
   });
+
+  it('fails fast with startup_failed event when workspace resolves to unsafe root', async () => {
+    const workspaceManager = {
+      ensureWorkspace: vi.fn(async () => ({
+        path: '/tmp/symphony',
+        workspace_key: 'ABC-1',
+        created_now: true
+      })),
+      prepareAttempt: vi.fn(async () => {}),
+      finalizeAttempt: vi.fn(async () => {}),
+      cleanupWorkspace: vi.fn(async () => true)
+    } as unknown as WorkspaceManager;
+
+    const startSessionAndRunTurn = vi.fn(async () => ({
+      status: 'completed' as const,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      last_event: 'turn_completed'
+    }));
+    const codexRunner = {
+      startSessionAndRunTurn
+    } as unknown as CodexRunner;
+
+    const events: string[] = [];
+    const bridge = new LocalRunnerBridge({
+      workspaceManager,
+      codexRunner,
+      config: {
+        ...makeConfig(),
+        workspace: { root: '/tmp/symphony' }
+      },
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      onWorkerEvent: ({ event }) => {
+        events.push(event.event);
+      }
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    await flush();
+
+    expect(startSessionAndRunTurn).not.toHaveBeenCalled();
+    expect(events).toContain('startup_failed');
+  });
 });

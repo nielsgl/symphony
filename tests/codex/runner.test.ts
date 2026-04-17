@@ -108,6 +108,12 @@ describe('CodexRunner', () => {
       | { params?: Record<string, unknown> }
       | undefined;
     expect((turnStart?.params?.sandboxPolicy as { type: string }).type).toBe('workspaceWrite');
+    const threadStart = parseWrittenMessages(fake).find((line) => line.method === 'thread/start') as
+      | { params?: Record<string, unknown> }
+      | undefined;
+    expect(threadStart?.params?.dynamicTools).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'linear_graphql' })])
+    );
   });
 
   it('maps legacy kebab-case turn sandbox policy values to protocol camelCase', async () => {
@@ -132,6 +138,38 @@ describe('CodexRunner', () => {
       | { params?: Record<string, unknown> }
       | undefined;
     expect((turnStart?.params?.sandboxPolicy as { type: string }).type).toBe('dangerFullAccess');
+  });
+
+  it('forwards object-form approval policy to thread/start and turn/start', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const policy = {
+      reject: {
+        sandbox_approval: true,
+        rules: true,
+        mcp_elicitations: true
+      }
+    };
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        approvalPolicy: policy
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const messages = parseWrittenMessages(fake);
+    const threadStart = messages.find((line) => line.method === 'thread/start') as { params?: Record<string, unknown> };
+    const turnStart = messages.find((line) => line.method === 'turn/start') as { params?: Record<string, unknown> };
+    expect(threadStart.params?.approvalPolicy).toEqual(policy);
+    expect(turnStart.params?.approvalPolicy).toEqual(policy);
   });
 
   it('supports continuation turns on the same thread within one process', async () => {
@@ -340,6 +378,22 @@ describe('CodexRunner', () => {
     ).rejects.toMatchObject({ code: 'invalid_workspace_cwd' });
   });
 
+  it('maps invalid remote workspace cwd to invalid_remote_workspace_cwd before launch', async () => {
+    const runner = new CodexRunner({
+      spawnProcess: () => {
+        throw new Error('should not be called');
+      }
+    });
+
+    await expect(
+      runner.startSessionAndRunTurn(
+        makeStartInput('/tmp/workspace\nbad', {
+          workerHost: 'build-1'
+        })
+      )
+    ).rejects.toMatchObject({ code: 'invalid_remote_workspace_cwd' });
+  });
+
   it('auto-approves approval requests and rejects unsupported tool calls without stalling', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
@@ -358,7 +412,83 @@ describe('CodexRunner', () => {
 
     const responses = parseWrittenMessages(fake).filter((message) => typeof message.id === 'number' && 'result' in message);
     expect(responses).toContainEqual({ id: 91, result: { approved: true } });
-    expect(responses).toContainEqual({ id: 92, result: { success: false, error: 'unsupported_tool_call' } });
+    expect(responses).toContainEqual(
+      expect.objectContaining({
+        id: 92,
+        result: expect.objectContaining({
+          success: false,
+          output: expect.stringContaining('Unsupported dynamic tool')
+        })
+      })
+    );
+  });
+
+  it('executes supported dynamic tool calls and returns tool output payload', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({
+      spawnProcess: () => fake,
+      dynamicToolExecutor: {
+        toolSpecs: () => [{ name: 'linear_graphql', description: 'tool', inputSchema: {} }],
+        execute: async () => ({
+          success: true,
+          output: '{"ok":true}',
+          contentItems: [{ type: 'inputText', text: '{"ok":true}' }]
+        })
+      }
+    });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":100,"method":"item/tool/call","params":{"name":"linear_graphql","arguments":{"query":"q"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 100);
+    expect(responses).toContainEqual({
+      id: 100,
+      result: {
+        success: true,
+        output: '{"ok":true}',
+        contentItems: [{ type: 'inputText', text: '{"ok":true}' }]
+      }
+    });
+  });
+
+  it('emits failed dynamic tool response without stalling when supported tool execution fails', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({
+      spawnProcess: () => fake,
+      dynamicToolExecutor: {
+        toolSpecs: () => [{ name: 'linear_graphql', description: 'tool', inputSchema: {} }],
+        execute: async () => ({
+          success: false,
+          output: '{"error":"failed"}',
+          contentItems: [{ type: 'inputText', text: '{"error":"failed"}' }]
+        })
+      }
+    });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":101,"method":"item/tool/call","params":{"name":"linear_graphql","arguments":{"query":"q"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 101);
+    expect(responses).toContainEqual({
+      id: 101,
+      result: {
+        success: false,
+        output: '{"error":"failed"}',
+        contentItems: [{ type: 'inputText', text: '{"error":"failed"}' }]
+      }
+    });
   });
 
   it('rejects unknown server requests so they cannot silently stall a turn', async () => {
