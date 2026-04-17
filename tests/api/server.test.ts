@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LocalApiServer } from '../../src/api';
+import { LocalApiError } from '../../src/api/errors';
 import type { OrchestratorState } from '../../src/orchestrator';
 import type { Issue } from '../../src/tracker';
 
@@ -399,6 +400,7 @@ describe('LocalApiServer', () => {
     expect(scriptPayload).toContain('/api/v1/state');
     expect(scriptPayload).toContain('/api/v1/refresh');
     expect(scriptPayload).toContain('/api/v1/events');
+    expect(scriptPayload).toContain('setInterval(updateRuntimeClock, 1000)');
 
     const cssResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/styles.css`);
     const cssPayload = await cssResponse.text();
@@ -522,6 +524,54 @@ describe('LocalApiServer', () => {
     expect(response.status).toBe(200);
     expect(payload.error.code).toBe('snapshot_unavailable');
     expect(payload.error.message).toContain('Snapshot unavailable');
+  });
+
+  it('returns snapshot_timeout payload when snapshot source throws timeout error', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => {
+          throw new LocalApiError('snapshot_timeout', 'state snapshot timed out', 503);
+        }
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(200);
+    expect(payload.error.code).toBe('snapshot_timeout');
+    expect(payload.error.message).toContain('Snapshot timed out');
+  });
+
+  it('emits state_snapshot envelope with error payload when snapshot retrieval fails', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => {
+          throw new Error('snapshot unavailable');
+        }
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const streamResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/events`);
+    expect(streamResponse.status).toBe(200);
+
+    const events = await readSseEvents(streamResponse, 1);
+    const stateSnapshotEvent = events.find((entry) => entry.data.type === 'state_snapshot');
+    expect(stateSnapshotEvent).toBeDefined();
+    const payload = stateSnapshotEvent?.data.payload as {
+      state?: { error?: { code?: string } };
+    };
+    expect(payload.state?.error?.code).toBe('snapshot_unavailable');
   });
 
   it('returns failed health semantics for UI health banner rendering', async () => {

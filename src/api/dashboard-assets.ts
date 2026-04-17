@@ -148,9 +148,11 @@ export function renderDashboardClientJs(): string {
   return `(() => {
   const state = {
     payload: null,
+    lastGoodPayload: null,
     selectedIssue: '',
     connection: 'offline',
     pollTimer: null,
+    runtimeTicker: null,
     pollDelayMs: 4000,
     streamRetryMs: 1000,
     streamConnected: false,
@@ -244,6 +246,19 @@ export function renderDashboardClientJs(): string {
     return card;
   }
 
+  function computeDisplayRuntimeSeconds(payload) {
+    if (!payload || !payload.codex_totals) {
+      return 0;
+    }
+    const base = Number(payload.codex_totals.seconds_running) || 0;
+    const generatedAtMs = Date.parse(payload.generated_at || '');
+    if (!Number.isFinite(generatedAtMs)) {
+      return base;
+    }
+    const elapsed = Math.max(0, Math.floor((Date.now() - generatedAtMs) / 1000));
+    return base + elapsed;
+  }
+
   function renderOverview(payload) {
     elements.kpiGrid.replaceChildren(
       createMetricCard('Running', formatNumber(payload.counts.running)),
@@ -251,7 +266,7 @@ export function renderDashboardClientJs(): string {
       createMetricCard('Total Tokens', formatNumber(payload.codex_totals.total_tokens)),
       createMetricCard('Input Tokens', formatNumber(payload.codex_totals.input_tokens)),
       createMetricCard('Output Tokens', formatNumber(payload.codex_totals.output_tokens)),
-      createMetricCard('Runtime Seconds', formatNumber(payload.codex_totals.seconds_running))
+      createMetricCard('Runtime Seconds', formatNumber(computeDisplayRuntimeSeconds(payload)))
     );
 
     const failed = payload.health.dispatch_validation === 'failed';
@@ -268,23 +283,31 @@ export function renderDashboardClientJs(): string {
     elements.snapshotErrorMessage.textContent =
       (errorPayload && errorPayload.code ? String(errorPayload.code) + ': ' : '') +
       (errorPayload && errorPayload.message ? String(errorPayload.message) : 'Snapshot unavailable.');
-    elements.kpiGrid.replaceChildren();
-    elements.rateLimits.textContent = 'n/a';
-    const emptyRunningRow = document.createElement('tr');
-    const runningCell = document.createElement('td');
-    runningCell.colSpan = 10;
-    runningCell.className = 'muted';
-    runningCell.textContent = 'No running issues while snapshot is unavailable.';
-    emptyRunningRow.appendChild(runningCell);
-    elements.runningRows.replaceChildren(emptyRunningRow);
+    if (!state.lastGoodPayload) {
+      elements.kpiGrid.replaceChildren();
+      elements.rateLimits.textContent = 'n/a';
+      const emptyRunningRow = document.createElement('tr');
+      const runningCell = document.createElement('td');
+      runningCell.colSpan = 10;
+      runningCell.className = 'muted';
+      runningCell.textContent = 'No running issues while snapshot is unavailable.';
+      emptyRunningRow.appendChild(runningCell);
+      elements.runningRows.replaceChildren(emptyRunningRow);
 
-    const emptyRetryRow = document.createElement('tr');
-    const retryCell = document.createElement('td');
-    retryCell.colSpan = 5;
-    retryCell.className = 'muted';
-    retryCell.textContent = 'No retry data while snapshot is unavailable.';
-    emptyRetryRow.appendChild(retryCell);
-    elements.retryRows.replaceChildren(emptyRetryRow);
+      const emptyRetryRow = document.createElement('tr');
+      const retryCell = document.createElement('td');
+      retryCell.colSpan = 5;
+      retryCell.className = 'muted';
+      retryCell.textContent = 'No retry data while snapshot is unavailable.';
+      emptyRetryRow.appendChild(retryCell);
+      elements.retryRows.replaceChildren(emptyRetryRow);
+      return;
+    }
+
+    // Keep stale-but-last-known-good data visible while snapshot fetch is degraded.
+    renderOverview(state.lastGoodPayload);
+    renderRunning(state.lastGoodPayload);
+    renderRetry(state.lastGoodPayload);
   }
 
   function clearSnapshotError() {
@@ -389,6 +412,8 @@ export function renderDashboardClientJs(): string {
       sessionCell.textContent = entry.session_id || 'n/a';
 
       const runtimeCell = document.createElement('td');
+      runtimeCell.className = 'runtime-cell';
+      runtimeCell.setAttribute('data-started-at', entry.started_at);
       runtimeCell.textContent = formatDurationFromIso(entry.started_at);
 
       const turnsCell = document.createElement('td');
@@ -501,6 +526,7 @@ export function renderDashboardClientJs(): string {
 
     clearSnapshotError();
     state.payload = payload;
+    state.lastGoodPayload = payload;
     renderOverview(payload);
     renderRunning(payload);
     renderRetry(payload);
@@ -508,6 +534,17 @@ export function renderDashboardClientJs(): string {
     if (source === 'stream') {
       setConnectionStatus('live', 'Streaming updates connected');
       state.pollDelayMs = 4000;
+    }
+  }
+
+  function updateRuntimeClock() {
+    if (state.lastGoodPayload) {
+      renderOverview(state.lastGoodPayload);
+    }
+    const runtimeCells = document.querySelectorAll('.runtime-cell');
+    for (const runtimeCell of runtimeCells) {
+      const startedAt = runtimeCell.getAttribute('data-started-at');
+      runtimeCell.textContent = formatDurationFromIso(startedAt);
     }
   }
 
@@ -791,6 +828,7 @@ export function renderDashboardClientJs(): string {
   void loadDiagnostics();
   void loadStateViaPoll();
   connectStream();
+  state.runtimeTicker = setInterval(updateRuntimeClock, 1000);
 })();`;
 }
 

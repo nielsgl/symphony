@@ -6,7 +6,13 @@ import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss 
 import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { SnapshotService } from './snapshot-service';
-import type { ApiEventEnvelope, LocalApiErrorEnvelope, LocalApiServerOptions } from './types';
+import type {
+  ApiEventEnvelope,
+  ApiStateErrorResponse,
+  ApiStateSnapshotResponse,
+  LocalApiErrorEnvelope,
+  LocalApiServerOptions
+} from './types';
 
 interface Route {
   method: 'GET' | 'POST';
@@ -188,17 +194,47 @@ export class LocalApiServer {
     }
   }
 
-  private broadcastStateSnapshot(source: string): void {
-    const state = this.snapshotSource.getStateSnapshot();
-    const payload = this.snapshotService.projectState(state);
-    const healthSignature = `${payload.health.dispatch_validation}:${payload.health.last_error ?? ''}`;
-    if (this.lastHealthSignature !== null && this.lastHealthSignature !== healthSignature) {
-      this.emitEvent('runtime_health_changed', {
-        source,
-        health: payload.health
+  private buildStateSnapshotResponse(): ApiStateSnapshotResponse {
+    try {
+      const state = this.snapshotSource.getStateSnapshot();
+      return this.snapshotService.projectState(state);
+    } catch (error) {
+      const code: ApiStateErrorResponse['error']['code'] =
+        error instanceof LocalApiError && error.code === 'snapshot_timeout'
+          ? 'snapshot_timeout'
+          : 'snapshot_unavailable';
+      const message = code === 'snapshot_timeout' ? 'Snapshot timed out' : 'Snapshot unavailable';
+      this.logger?.log({
+        level: 'warn',
+        event: 'api_state_snapshot_unavailable',
+        message,
+        context: {
+          code,
+          detail: error instanceof Error ? error.message : 'unknown'
+        }
       });
+      return {
+        generated_at: new Date().toISOString(),
+        error: {
+          code,
+          message
+        }
+      };
     }
-    this.lastHealthSignature = healthSignature;
+  }
+
+  private broadcastStateSnapshot(source: string): void {
+    const payload = this.buildStateSnapshotResponse();
+    if (!('error' in payload)) {
+      const healthSignature = `${payload.health.dispatch_validation}:${payload.health.last_error ?? ''}`;
+      if (this.lastHealthSignature !== null && this.lastHealthSignature !== healthSignature) {
+        this.emitEvent('runtime_health_changed', {
+          source,
+          health: payload.health
+        });
+      }
+      this.lastHealthSignature = healthSignature;
+    }
     this.emitEvent('state_snapshot', {
       source,
       state: payload
@@ -266,9 +302,8 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
-              try {
-                const state = this.snapshotSource.getStateSnapshot();
-                const payload = this.snapshotService.projectState(state);
+              const payload = this.buildStateSnapshotResponse();
+              if (!('error' in payload)) {
                 this.logger?.log({
                   level: 'info',
                   event: 'api_state_requested',
@@ -279,30 +314,8 @@ export class LocalApiServer {
                     dispatch_validation: payload.health.dispatch_validation
                   }
                 });
-                sendJson(response, 200, payload);
-              } catch (error) {
-                const code =
-                  error instanceof LocalApiError && error.code === 'snapshot_timeout'
-                    ? 'snapshot_timeout'
-                    : 'snapshot_unavailable';
-                const message = code === 'snapshot_timeout' ? 'Snapshot timed out' : 'Snapshot unavailable';
-                this.logger?.log({
-                  level: 'warn',
-                  event: 'api_state_snapshot_unavailable',
-                  message,
-                  context: {
-                    code,
-                    detail: error instanceof Error ? error.message : 'unknown'
-                  }
-                });
-                sendJson(response, 200, {
-                  generated_at: new Date().toISOString(),
-                  error: {
-                    code,
-                    message
-                  }
-                });
               }
+              sendJson(response, 200, payload);
             }
           }
         ]

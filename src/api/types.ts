@@ -72,6 +72,18 @@ export interface ApiStateResponse {
   };
 }
 
+export type ApiStateErrorCode = 'snapshot_timeout' | 'snapshot_unavailable';
+
+export interface ApiStateErrorResponse {
+  generated_at: string;
+  error: {
+    code: ApiStateErrorCode;
+    message: string;
+  };
+}
+
+export type ApiStateSnapshotResponse = ApiStateResponse | ApiStateErrorResponse;
+
 export interface ApiIssueResponse {
   issue_identifier: string;
   issue_id: string;
