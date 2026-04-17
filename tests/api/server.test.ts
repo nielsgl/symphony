@@ -176,7 +176,7 @@ afterEach(async () => {
 });
 
 describe('LocalApiServer', () => {
-  it('serves GET /api/v1/state with required baseline fields', async () => {
+  it('[SPEC-13.7-1][SPEC-17.6-1] serves GET /api/v1/state with required baseline fields', async () => {
     const state = makeState({
       running: new Map([
         [

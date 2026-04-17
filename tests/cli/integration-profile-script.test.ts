@@ -132,7 +132,7 @@ describe('P9b integration profile script', () => {
     expect(result.stdout).toContain('P9B_PROFILE_RESULT=FAIL');
   });
 
-  it('runs live required mode with operational checks and tracker smoke markers', async () => {
+  it('[SPEC-17.8-1][SPEC-18.3-1] runs live required mode with operational checks and tracker smoke markers', async () => {
     const npmShimDir = await mkdtemp(path.join(os.tmpdir(), 'symphony-p9b-npm-shim-'));
     cleanupPaths.push(npmShimDir);
 

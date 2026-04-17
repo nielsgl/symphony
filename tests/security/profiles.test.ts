@@ -8,7 +8,7 @@ import {
 } from '../../src/security/profiles';
 
 describe('security profile resolution', () => {
-  it('uses strict safe defaults when workflow does not override', () => {
+  it('[SPEC-15.1-1][SPEC-15.5-1] uses strict safe defaults when workflow does not override', () => {
     const profile = resolveSecurityProfile({});
     expect(profile).toEqual(DEFAULT_STRICT_PROFILE);
   });

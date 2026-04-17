@@ -67,7 +67,7 @@ describe('WorkflowWatcher', () => {
     });
   });
 
-  it('keeps last known good config on invalid reload', async () => {
+  it('[SPEC-6.2-1][SPEC-6.4-1][SPEC-12.1-1] keeps last known good config on invalid reload', async () => {
     const dir = createTempDir('wf-watcher-invalid-');
     const workflowPath = writeWorkflowFile(dir, validWorkflowContent());
     const events: WorkflowEvent[] = [];

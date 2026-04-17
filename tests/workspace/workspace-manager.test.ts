@@ -30,7 +30,7 @@ describe('WorkspaceManager', () => {
     );
   });
 
-  it('derives deterministic workspace key and path from issue identifier', async () => {
+  it('[SPEC-9.1-1][SPEC-17.2-1] derives deterministic workspace key and path from issue identifier', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);
     const manager = new WorkspaceManager({

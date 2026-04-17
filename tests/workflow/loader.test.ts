@@ -7,7 +7,7 @@ import { WorkflowLoader } from '../../src/workflow/loader';
 import { createTempDir, writeWorkflowFile } from './helpers';
 
 describe('WorkflowLoader', () => {
-  it('prefers explicit path over cwd default', () => {
+  it('[SPEC-5.1-1][SPEC-17.1-1] prefers explicit path over cwd default', () => {
     const loader = new WorkflowLoader();
     const temp = createTempDir('wf-loader-');
     const explicit = path.join(temp, 'custom-workflow.md');

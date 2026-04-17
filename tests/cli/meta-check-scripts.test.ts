@@ -13,7 +13,7 @@ function runNode(args: string[], cwd: string) {
 }
 
 describe('meta check scripts', () => {
-  it('passes api contract and governance checks in repository root', () => {
+  it('[SPEC-18-1][SPEC-18.1-1][SPEC-18.2-1] passes api contract and governance checks in repository root', () => {
     const root = process.cwd();
 
     const api = runNode(['scripts/check-api-contract.js'], root);
@@ -23,6 +23,10 @@ describe('meta check scripts', () => {
     const governance = runNode(['scripts/check-pr-governance.js'], root);
     expect(governance.status).toBe(0);
     expect(governance.stdout).toContain('PR governance check passed');
+
+    const specCoverage = runNode(['scripts/check-spec-coverage.js'], root);
+    expect(specCoverage.status).toBe(0);
+    expect(specCoverage.stdout).toContain('SPEC coverage check passed');
 
     const meta = runNode(['scripts/check-meta.js'], root);
     expect(meta.status).toBe(0);
@@ -39,5 +43,20 @@ describe('meta check scripts', () => {
     expect(governance.stderr).toContain('missing required document');
 
     fs.rmSync(tempCwd, { recursive: true, force: true });
+  });
+
+  it('fails with actionable output when SPEC test manifest is missing', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-spec-coverage-'));
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'docs'), path.join(tempRoot, 'docs'), { recursive: true });
+    fs.rmSync(path.join(tempRoot, 'docs/prd/SPEC-TEST-MANIFEST.json'), { force: true });
+
+    const result = runNode(['scripts/check-spec-coverage.js'], tempRoot);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('SPEC coverage check failed');
+    expect(result.stderr).toContain('SPEC-TEST-MANIFEST.json');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 });

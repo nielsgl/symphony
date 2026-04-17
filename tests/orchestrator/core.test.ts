@@ -112,7 +112,7 @@ function createHarness(options: {
 }
 
 describe('OrchestratorCore', () => {
-  it('dispatches in priority->created_at->identifier order', async () => {
+  it('[SPEC-4.1-1][SPEC-7.1-1][SPEC-8.1-1][SPEC-17.4-1] dispatches in priority->created_at->identifier order', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([
       makeIssue({ id: 'i-c', identifier: 'ABC-3', priority: 2, created_at: new Date('2026-01-03T00:00:00.000Z') }),
@@ -451,7 +451,7 @@ describe('OrchestratorCore', () => {
     expect(orchestrator.getStateSnapshot().health.last_error).toBeNull();
   });
 
-  it('logs tracker state refresh failure and keeps workers running', async () => {
+  it('[SPEC-14.1-1] logs tracker state refresh failure and keeps workers running', async () => {
     const logs: Array<{ event: string }> = [];
     const logger: StructuredLogger = {
       log: ({ event }) => {

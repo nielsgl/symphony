@@ -64,7 +64,7 @@ function parseWrittenMessages(fake: FakeProcess): Array<Record<string, unknown>>
 }
 
 describe('CodexRunner', () => {
-  it('launches with bash command/cwd and performs ordered startup handshake', async () => {
+  it('[SPEC-10.1-1][SPEC-17.5-1] launches with bash command/cwd and performs ordered startup handshake', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const spawnCalls: Array<{ command: string; cwd: string }> = [];
@@ -559,7 +559,7 @@ describe('CodexRunner', () => {
     expect(responses).toContainEqual({ id: 77, result: { action: 'cancel' } });
   });
 
-  it('extracts usage/rate-limit telemetry from compatible payload variants', async () => {
+  it('[SPEC-13.5-1] extracts usage/rate-limit telemetry from compatible payload variants', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const runner = new CodexRunner({ spawnProcess: () => fake });

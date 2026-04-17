@@ -4,7 +4,7 @@ import { runDashboardCli } from '../../src/runtime/cli-runner';
 import { GUARDRAIL_ACK_FLAG } from '../../src/runtime/cli';
 
 describe('CLI host lifecycle semantics', () => {
-  it('exits success on normal startup and signal-based shutdown', async () => {
+  it('[SPEC-17.7-1] exits success on normal startup and signal-based shutdown', async () => {
     const handlers: Array<() => void | Promise<void>> = [];
     const stdout: string[] = [];
 

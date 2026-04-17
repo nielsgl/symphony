@@ -74,7 +74,7 @@ function createAdapterWithQueuedResponses(responses: Array<Response | Error>, re
 }
 
 describe('LinearTrackerAdapter', () => {
-  it('uses project slugId + active-state filter and preserves pagination order', async () => {
+  it('[SPEC-11.2-1][SPEC-17.3-1] uses project slugId + active-state filter and preserves pagination order', async () => {
     const requests: FakeRequest[] = [];
     const adapter = createAdapterWithQueuedResponses(
       [
