@@ -125,7 +125,7 @@
         "elixir/lib/symphony_elixir/path_safety.ex",
         "elixir/test/symphony_elixir/workspace_and_config_test.exs"
       ],
-      "recommendations": ["XR-04"]
+      "recommendations": []
     },
     {
       "id": "api-observability",
