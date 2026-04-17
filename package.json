@@ -7,6 +7,7 @@
     "build": "tsc --project tsconfig.json",
     "build:desktop:prepare": "npm run build && node scripts/build-desktop-backend-sidecar.js",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:e2e:web": "playwright test --config=playwright.web.config.ts",
     "test:e2e:desktop-runtime": "playwright test --config=playwright.desktop.config.ts",
     "test:e2e:desktop": "npm run test:e2e:desktop-runtime",
@@ -20,6 +21,7 @@
     "validate:integration-profile": "node scripts/validate-real-integration-profile.js",
     "validate:integration-profile:required": "SYMPHONY_REAL_INTEGRATION_REQUIRED=1 node scripts/validate-real-integration-profile.js",
     "check:api-contract": "node scripts/check-api-contract.js",
+    "check:spec-coverage": "node scripts/check-spec-coverage.js",
     "check:pr-governance": "node scripts/check-pr-governance.js",
     "check:meta": "node scripts/check-meta.js",
     "start:dashboard": "npm run build && node scripts/start-dashboard.js",
@@ -39,6 +41,7 @@
     "@tauri-apps/cli": "^2.8.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.17",
+    "@vitest/coverage-v8": "^2.1.9",
     "pkg": "^5.8.1",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
