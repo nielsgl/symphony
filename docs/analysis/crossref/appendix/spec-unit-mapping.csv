@@ -1,0 +1,35 @@
+spec_section,requirement_id,ours_anchor,ref_anchor,parity_status,classification,recommendation_id
+3.1,XR-REQ-001,src/runtime/bootstrap.ts:createRuntimeEnvironment,elixir/lib/symphony_elixir/orchestrator.ex:init,functionally-equivalent,spec-required,XR-00
+5.1,XR-REQ-002,src/workflow/loader.ts:load,elixir/lib/symphony_elixir/workflow.ex:load,functionally-equivalent,spec-required,XR-00
+5.3,XR-REQ-003,src/workflow/resolver.ts:resolve,elixir/lib/symphony_elixir/config/schema.ex:changeset,functionally-equivalent,spec-required,XR-02
+5.4,XR-REQ-004,src/workflow/watcher.ts:WorkflowWatcher,elixir/lib/symphony_elixir/workflow_store.ex:reload_state,functionally-equivalent,spec-required,XR-09
+6.4,XR-REQ-005,src/workflow/types.ts:WorkerConfig,elixir/lib/symphony_elixir/config/schema.ex:Worker,different-safe,extension,XR-04
+6.4,XR-REQ-006,src/workflow/validator.ts:invalid_worker_max_concurrent_agents_per_host,elixir/lib/symphony_elixir/config/schema.ex:validate_number(max_concurrent_agents_per_host),equivalent,spec-required,XR-00
+7.3,XR-REQ-007,src/orchestrator/core.ts:onWorkerExit,elixir/lib/symphony_elixir/orchestrator.ex:handle_info({:DOWN,...}),functionally-equivalent,spec-required,XR-00
+8.4,XR-REQ-008,src/orchestrator/core.ts:scheduleRetry,elixir/lib/symphony_elixir/orchestrator.ex:schedule_issue_retry,equivalent,spec-required,XR-00
+8.5,XR-REQ-009,src/orchestrator/core.ts:reconcileRunningIssues,elixir/lib/symphony_elixir/orchestrator.ex:reconcile_running_issues,equivalent,spec-required,XR-00
+8.6,XR-REQ-010,src/runtime/bootstrap.ts:startup_terminal_cleanup_completed,elixir/lib/symphony_elixir/orchestrator.ex:run_terminal_workspace_cleanup,equivalent,spec-required,XR-00
+9.4,XR-REQ-011,src/workspace/manager.ts:runHookOrThrow,elixir/lib/symphony_elixir/workspace.ex:run_hook,functionally-equivalent,spec-required,XR-00
+9.5,XR-REQ-012,src/workspace/manager.ts:assertLaunchSafety,elixir/lib/symphony_elixir/path_safety.ex:canonicalize,equivalent,spec-required,XR-00
+10.1,XR-REQ-013,src/codex/runner.ts:startSessionAndRunTurn,elixir/lib/symphony_elixir/codex/app_server.ex:start_session,functionally-equivalent,spec-required,XR-00
+10.4,XR-REQ-014,src/codex/runner.ts:waitForTurnTerminal,elixir/lib/symphony_elixir/codex/app_server.ex:await_turn_completion,functionally-equivalent,spec-required,XR-00
+10.4,XR-REQ-015,src/codex/runner.ts:unsupported_server_request,elixir/lib/symphony_elixir/codex/app_server.ex:maybe_handle_approval_request,functionally-equivalent,spec-required,XR-09
+10.5,XR-REQ-016,src/codex/runner.ts:isMcpElicitationRequest,elixir/lib/symphony_elixir/codex/app_server.ex:tool_request_user_input_approval_answers,functionally-equivalent,spec-required,XR-00
+10.7,XR-REQ-017,src/codex/runner.ts:normalizeTurnSandboxPolicy,elixir/lib/symphony_elixir/config/schema.ex:resolve_runtime_turn_sandbox_policy,different-risky,divergence,XR-02
+11.1,XR-REQ-018,src/tracker/types.ts:TrackerAdapter,elixir/lib/symphony_elixir/tracker.ex:@callback,equivalent,spec-required,XR-00
+11.2,XR-REQ-019,src/tracker/linear-adapter.ts:fetch_candidate_issues,elixir/lib/symphony_elixir/linear/client.ex:fetch_candidate_issues,equivalent,spec-required,XR-00
+11.2,XR-REQ-020,src/tracker/github-adapter.ts:GitHubIssuesAdapter,elixir/lib/symphony_elixir/linear/adapter.ex:fetch_candidate_issues,missing-in-ref,extension,XR-00
+13.3,XR-REQ-021,src/api/snapshot-service.ts:projectState,elixir/lib/symphony_elixir_web/presenter.ex:state_payload,equivalent,spec-required,XR-00
+13.4,XR-REQ-022,src/api/dashboard-assets.ts:renderDashboardClientJs,elixir/lib/symphony_elixir/status_dashboard.ex:format_snapshot_content,different-safe,extension,XR-06
+13.7,XR-REQ-023,src/api/server.ts:LocalApiServer,elixir/lib/symphony_elixir_web/router.ex:scope("/"),equivalent,spec-required,XR-00
+13.7,XR-REQ-024,src/api/server.ts:/api/v1/diagnostics,elixir/lib/symphony_elixir_web/controllers/observability_api_controller.ex:state,missing-in-ref,extension,XR-03
+14.2,XR-REQ-025,src/orchestrator/core.ts:dispatch_validation_recovered,elixir/lib/symphony_elixir/orchestrator.ex:maybe_dispatch,functionally-equivalent,spec-required,XR-00
+15.1,XR-REQ-026,src/security/profiles.ts:DEFAULT_BALANCED_PROFILE,elixir/lib/symphony_elixir/config/schema.ex:Codex.default(different approval object),different-risky,divergence,XR-01
+15.5,XR-REQ-027,src/runtime/cli.ts:resolveCliRuntimeOptions,elixir/lib/symphony_elixir/cli.ex:require_guardrails_acknowledgement,different-risky,divergence,XR-07
+17.5,XR-REQ-028,tests/codex/runner.test.ts,elixir/test/symphony_elixir/app_server_test.exs,functionally-equivalent,spec-required,XR-00
+17.8,XR-REQ-029,scripts/validate-real-integration-profile.js,elixir/test/symphony_elixir/live_e2e_test.exs,functionally-equivalent,spec-required,XR-00
+A.A,XR-REQ-030,src/workflow/types.ts:WorkerConfig(parsed only),elixir/lib/symphony_elixir/ssh.ex:run/start_port,missing-in-ours,extension,XR-04
+A.A,XR-REQ-031,src/codex/runner.ts:no dynamic tool executor,elixir/lib/symphony_elixir/codex/dynamic_tool.ex:execute,missing-in-ours,extension,XR-05
+18.2,XR-REQ-032,tests/runtime/desktop-launcher.test.ts,elixir/test/symphony_elixir/extensions_test.exs:phoenix observability api,different-safe,extension,XR-03
+18.2,XR-REQ-033,src/persistence/store.ts:SqlitePersistenceStore,elixir/lib/symphony_elixir/* (no durable persistence store),missing-in-ref,extension,XR-00
+18.3,XR-REQ-034,tests/api/server.test.ts:405 envelopes,elixir/test/symphony_elixir/extensions_test.exs:405 behavior,equivalent,spec-required,XR-00

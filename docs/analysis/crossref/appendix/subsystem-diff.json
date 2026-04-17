@@ -1,0 +1,198 @@
+{
+  "meta": {
+    "baseline": "spec-first-strict",
+    "ours_repo": "/Users/niels.van.Galen.last/code/symphony",
+    "reference_repo": "/Users/niels.van.Galen.last/code/symphony-ref/elixir",
+    "status_values": [
+      "equivalent",
+      "functionally-equivalent",
+      "different-safe",
+      "different-risky",
+      "missing-in-ours",
+      "missing-in-ref"
+    ],
+    "classification_values": [
+      "spec-required",
+      "extension",
+      "divergence"
+    ]
+  },
+  "subsystems": [
+    {
+      "id": "cfg-workflow",
+      "status": "functionally-equivalent",
+      "classification": "spec-required",
+      "risk": "low",
+      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; policy shape representation differs.",
+      "ours_anchors": [
+        "src/workflow/resolver.ts",
+        "src/workflow/validator.ts",
+        "tests/workflow/resolver.test.ts",
+        "tests/workflow/validator.test.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/config/schema.ex",
+        "elixir/lib/symphony_elixir/config.ex",
+        "elixir/test/symphony_elixir/workspace_and_config_test.exs"
+      ],
+      "recommendations": ["XR-02", "XR-09"]
+    },
+    {
+      "id": "orchestrator-core",
+      "status": "functionally-equivalent",
+      "classification": "spec-required",
+      "risk": "low",
+      "summary": "Retry/backoff, reconciliation, and worker lifecycle are semantically aligned despite GenServer vs class-based architecture.",
+      "ours_anchors": [
+        "src/orchestrator/core.ts",
+        "tests/orchestrator/core.test.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/orchestrator.ex",
+        "elixir/test/symphony_elixir/core_test.exs",
+        "elixir/test/symphony_elixir/orchestrator_status_test.exs"
+      ],
+      "recommendations": ["XR-00"]
+    },
+    {
+      "id": "worker-execution",
+      "status": "missing-in-ours",
+      "classification": "extension",
+      "risk": "medium",
+      "summary": "Reference supports remote worker host execution and host scheduling at runtime; ours currently parses host fields but runs local bridge only.",
+      "ours_anchors": [
+        "src/orchestrator/local-runner-bridge.ts",
+        "src/workflow/types.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/agent_runner.ex",
+        "elixir/lib/symphony_elixir/ssh.ex",
+        "elixir/test/symphony_elixir/ssh_test.exs"
+      ],
+      "recommendations": ["XR-04"]
+    },
+    {
+      "id": "codex-protocol",
+      "status": "functionally-equivalent",
+      "classification": "spec-required",
+      "risk": "medium",
+      "summary": "Both implement robust app-server lifecycle and error mapping; reference includes built-in dynamic tool execution path.",
+      "ours_anchors": [
+        "src/codex/runner.ts",
+        "tests/codex/runner.test.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/codex/app_server.ex",
+        "elixir/lib/symphony_elixir/codex/dynamic_tool.ex",
+        "elixir/test/symphony_elixir/app_server_test.exs",
+        "elixir/test/symphony_elixir/dynamic_tool_test.exs"
+      ],
+      "recommendations": ["XR-05", "XR-09"]
+    },
+    {
+      "id": "tracker-adapters",
+      "status": "different-safe",
+      "classification": "extension",
+      "risk": "low",
+      "summary": "Reference is Linear-focused; ours includes Linear and GitHub adapters with parity tests.",
+      "ours_anchors": [
+        "src/tracker/linear-adapter.ts",
+        "src/tracker/github-adapter.ts",
+        "tests/tracker/github-adapter.test.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/tracker.ex",
+        "elixir/lib/symphony_elixir/linear/adapter.ex",
+        "elixir/lib/symphony_elixir/linear/client.ex"
+      ],
+      "recommendations": ["XR-00"]
+    },
+    {
+      "id": "workspace-safety",
+      "status": "functionally-equivalent",
+      "classification": "spec-required",
+      "risk": "low",
+      "summary": "Containment invariants and hook semantics are aligned; reference additionally supports remote hook execution.",
+      "ours_anchors": [
+        "src/workspace/manager.ts",
+        "tests/workspace/workspace-manager.test.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/workspace.ex",
+        "elixir/lib/symphony_elixir/path_safety.ex",
+        "elixir/test/symphony_elixir/workspace_and_config_test.exs"
+      ],
+      "recommendations": ["XR-04"]
+    },
+    {
+      "id": "api-observability",
+      "status": "different-safe",
+      "classification": "extension",
+      "risk": "low",
+      "summary": "Core `/api/v1` contracts align; ours adds diagnostics/history/ui-state and desktop-oriented dashboard assets.",
+      "ours_anchors": [
+        "src/api/server.ts",
+        "src/api/snapshot-service.ts",
+        "tests/api/server.test.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir_web/router.ex",
+        "elixir/lib/symphony_elixir_web/controllers/observability_api_controller.ex",
+        "elixir/lib/symphony_elixir_web/presenter.ex"
+      ],
+      "recommendations": ["XR-03", "XR-06"]
+    },
+    {
+      "id": "security-policy",
+      "status": "different-risky",
+      "classification": "divergence",
+      "risk": "high",
+      "summary": "Reference defaults and CLI flow enforce stronger explicit guardrails; ours favors balanced operator ergonomics without mandatory ack flow.",
+      "ours_anchors": [
+        "src/security/profiles.ts",
+        "src/runtime/cli.ts",
+        "tests/security/profiles.test.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/config/schema.ex",
+        "elixir/lib/symphony_elixir/cli.ex",
+        "elixir/test/symphony_elixir/cli_test.exs"
+      ],
+      "recommendations": ["XR-01", "XR-07"]
+    },
+    {
+      "id": "persistence",
+      "status": "missing-in-ref",
+      "classification": "extension",
+      "risk": "low",
+      "summary": "Ours includes durable local run/session history and ui-state continuity; reference does not expose equivalent local persistence subsystem.",
+      "ours_anchors": [
+        "src/persistence/store.ts",
+        "tests/persistence/store.test.ts",
+        "src/api/server.ts"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/orchestrator.ex",
+        "elixir/lib/symphony_elixir/status_dashboard.ex"
+      ],
+      "recommendations": ["XR-00"]
+    },
+    {
+      "id": "quality-gates",
+      "status": "different-safe",
+      "classification": "extension",
+      "risk": "medium",
+      "summary": "Reference adds Mix task quality gates (spec checks, PR-body checks) beyond runtime tests.",
+      "ours_anchors": [
+        "tests/**/*.ts",
+        "docs/prd/SPEC-LINE-PARITY-AUDIT.md"
+      ],
+      "ref_anchors": [
+        "elixir/lib/mix/tasks/specs.check.ex",
+        "elixir/lib/mix/tasks/pr_body.check.ex",
+        "elixir/test/mix/tasks/*.exs"
+      ],
+      "recommendations": ["XR-08"]
+    }
+  ]
+}
