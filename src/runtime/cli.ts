@@ -3,6 +3,9 @@ import path from 'node:path';
 export type WorkflowPathSource = 'positional' | 'flag' | 'env' | 'default';
 export type PortSource = 'cli' | 'env' | 'unset';
 export type OfflineModeSource = 'flag' | 'env' | 'default';
+export type GuardrailAckSource = 'flag' | 'missing';
+
+export const GUARDRAIL_ACK_FLAG = '--i-understand-that-this-will-be-running-without-the-usual-guardrails';
 
 export interface ParsedWorkflowPath {
   workflowPath: string;
@@ -23,6 +26,12 @@ export interface CliRuntimeOptions {
   workflow: ParsedWorkflowPath;
   port: ParsedPort;
   offline: ParsedOfflineMode;
+  guardrails: ParsedGuardrailAck;
+}
+
+export interface ParsedGuardrailAck {
+  acknowledged: boolean;
+  source: GuardrailAckSource;
 }
 
 function parseInteger(raw: string | undefined): number | undefined {
@@ -134,6 +143,14 @@ export function parseOfflineMode(argv: readonly string[], env: NodeJS.ProcessEnv
   return { offlineMode: false, source: 'default' };
 }
 
+export function parseGuardrailAck(argv: readonly string[]): ParsedGuardrailAck {
+  if (argv.includes(GUARDRAIL_ACK_FLAG)) {
+    return { acknowledged: true, source: 'flag' };
+  }
+
+  return { acknowledged: false, source: 'missing' };
+}
+
 export function resolveCliRuntimeOptions(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
@@ -142,6 +159,7 @@ export function resolveCliRuntimeOptions(
   return {
     workflow: parseWorkflowPath(argv, env, cwd),
     port: parsePort(argv, env),
-    offline: parseOfflineMode(argv, env)
+    offline: parseOfflineMode(argv, env),
+    guardrails: parseGuardrailAck(argv)
   };
 }

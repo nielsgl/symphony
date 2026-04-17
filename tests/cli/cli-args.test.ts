@@ -3,6 +3,8 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  GUARDRAIL_ACK_FLAG,
+  parseGuardrailAck,
   parseOfflineMode,
   parsePort,
   parseWorkflowPath,
@@ -91,7 +93,7 @@ describe('runtime CLI argument resolution', () => {
 
   it('returns one cohesive runtime options object', () => {
     const parsed = resolveCliRuntimeOptions(
-      ['workflow.md', '--port=0', '--offline'],
+      ['workflow.md', '--port=0', '--offline', GUARDRAIL_ACK_FLAG],
       {
         SYMPHONY_WORKFLOW_PATH: '/tmp/env/WORKFLOW.md',
         SYMPHONY_PORT: '3000'
@@ -105,5 +107,19 @@ describe('runtime CLI argument resolution', () => {
     expect(parsed.port.source).toBe('cli');
     expect(parsed.offline.offlineMode).toBe(true);
     expect(parsed.offline.source).toBe('flag');
+    expect(parsed.guardrails.acknowledged).toBe(true);
+    expect(parsed.guardrails.source).toBe('flag');
+  });
+
+  it('parses mandatory guardrail acknowledgment flag', () => {
+    expect(parseGuardrailAck([])).toEqual({
+      acknowledged: false,
+      source: 'missing'
+    });
+
+    expect(parseGuardrailAck([GUARDRAIL_ACK_FLAG])).toEqual({
+      acknowledged: true,
+      source: 'flag'
+    });
   });
 });

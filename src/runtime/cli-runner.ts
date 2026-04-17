@@ -2,7 +2,7 @@ import type { StructuredLogger } from '../observability';
 import { MultiSinkLogger } from '../observability';
 import type { TrackerAdapter } from '../tracker';
 import { createRuntimeEnvironment } from './bootstrap';
-import { resolveCliRuntimeOptions } from './cli';
+import { GUARDRAIL_ACK_FLAG, resolveCliRuntimeOptions } from './cli';
 
 interface RuntimeLike {
   apiServer: { address: () => { host: string; port: number } } | null;
@@ -25,6 +25,19 @@ interface RunnerDependencies {
   stderr: (text: string) => void;
   cwd: string;
   env: NodeJS.ProcessEnv;
+}
+
+const GUARDRAIL_BANNER_LINES = [
+  'This Symphony implementation runs without the usual guardrails.',
+  'Startup now requires explicit acknowledgment.',
+  `Re-run with: ${GUARDRAIL_ACK_FLAG}`
+];
+
+function guardrailBanner(): string {
+  const width = Math.max(...GUARDRAIL_BANNER_LINES.map((line) => line.length));
+  const border = '-'.repeat(width + 2);
+  const content = GUARDRAIL_BANNER_LINES.map((line) => `| ${line.padEnd(width, ' ')} |`).join('\n');
+  return `+${border}+\n| ${' '.repeat(width)} |\n${content}\n| ${' '.repeat(width)} |\n+${border}+`;
 }
 
 function createNoopTrackerAdapter(): TrackerAdapter {
@@ -78,9 +91,21 @@ export async function runDashboardCli(
       port: resolved.port.port ?? null,
       port_source: resolved.port.source,
       offline_mode: offlineMode,
-      offline_mode_source: resolved.offline.source
+      offline_mode_source: resolved.offline.source,
+      guardrails_acknowledged: resolved.guardrails.acknowledged,
+      guardrails_ack_source: resolved.guardrails.source
     }
   });
+
+  if (!resolved.guardrails.acknowledged) {
+    deps.logger.log({
+      level: 'warn',
+      event: 'startup_guardrail_ack_required',
+      message: 'guardrail acknowledgment flag is required before startup'
+    });
+    deps.stderr(`${guardrailBanner()}\n`);
+    return 1;
+  }
 
   let runtime: RuntimeLike;
   try {

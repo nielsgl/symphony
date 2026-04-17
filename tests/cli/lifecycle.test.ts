@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { runDashboardCli } from '../../src/runtime/cli-runner';
+import { GUARDRAIL_ACK_FLAG } from '../../src/runtime/cli';
 
 describe('CLI host lifecycle semantics', () => {
   it('exits success on normal startup and signal-based shutdown', async () => {
     const handlers: Array<() => void | Promise<void>> = [];
     const stdout: string[] = [];
 
-    const runPromise = runDashboardCli([], {
+    const runPromise = runDashboardCli([GUARDRAIL_ACK_FLAG], {
       cwd: '/repo',
       env: {},
       stdout: (line) => {
@@ -38,7 +39,7 @@ describe('CLI host lifecycle semantics', () => {
   it('exits nonzero and surfaces startup failures cleanly', async () => {
     const stderr: string[] = [];
 
-    const code = await runDashboardCli([], {
+    const code = await runDashboardCli([GUARDRAIL_ACK_FLAG], {
       cwd: '/repo',
       env: {},
       stdout: () => undefined,
@@ -60,7 +61,7 @@ describe('CLI host lifecycle semantics', () => {
   it('exits nonzero on abnormal host fatal events', async () => {
     const fatalHandlers: Record<string, (error: unknown) => void> = {};
 
-    const runPromise = runDashboardCli([], {
+    const runPromise = runDashboardCli([GUARDRAIL_ACK_FLAG], {
       cwd: '/repo',
       env: {},
       stdout: () => undefined,
@@ -87,7 +88,7 @@ describe('CLI host lifecycle semantics', () => {
   it('exits nonzero when shutdown fails during signal handling', async () => {
     const handlers: Array<() => void | Promise<void>> = [];
 
-    const runPromise = runDashboardCli([], {
+    const runPromise = runDashboardCli([GUARDRAIL_ACK_FLAG], {
       cwd: '/repo',
       env: {},
       stdout: () => undefined,
@@ -110,5 +111,29 @@ describe('CLI host lifecycle semantics', () => {
     await handlers[0]();
     const code = await runPromise;
     expect(code).toBe(1);
+  });
+
+  it('exits nonzero when guardrail acknowledgment flag is missing', async () => {
+    const stderr: string[] = [];
+
+    const code = await runDashboardCli([], {
+      cwd: '/repo',
+      env: {},
+      stdout: () => undefined,
+      stderr: (line) => {
+        stderr.push(line);
+      },
+      logger: { log: () => undefined },
+      onFatal: () => undefined,
+      onSignal: () => undefined,
+      createRuntime: () => ({
+        apiServer: null,
+        start: async () => undefined,
+        stop: async () => undefined
+      })
+    });
+
+    expect(code).toBe(1);
+    expect(stderr.join('')).toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
   });
 });

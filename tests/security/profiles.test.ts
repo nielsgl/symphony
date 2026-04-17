@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_BALANCED_PROFILE, resolveSecurityProfile, securityProfileSummary } from '../../src/security/profiles';
+import {
+  DEFAULT_BALANCED_PROFILE,
+  DEFAULT_STRICT_PROFILE,
+  resolveSecurityProfile,
+  securityProfileSummary
+} from '../../src/security/profiles';
 
 describe('security profile resolution', () => {
-  it('uses balanced safe defaults when workflow does not override', () => {
+  it('uses strict safe defaults when workflow does not override', () => {
     const profile = resolveSecurityProfile({});
-    expect(profile).toEqual(DEFAULT_BALANCED_PROFILE);
+    expect(profile).toEqual(DEFAULT_STRICT_PROFILE);
   });
 
   it('applies workflow overrides on top of defaults', () => {
@@ -23,9 +28,28 @@ describe('security profile resolution', () => {
     expect(profile.user_input_policy).toBe('fail_attempt');
   });
 
+  it('supports object-form approval policy overrides', () => {
+    const profile = resolveSecurityProfile({
+      approval_policy: {
+        reject: {
+          sandbox_approval: true,
+          rules: true
+        }
+      }
+    });
+
+    expect(profile.approval_policy).toEqual({
+      reject: {
+        sandbox_approval: true,
+        rules: true
+      }
+    });
+  });
+
   it('emits operator-visible profile summary', () => {
-    const summary = securityProfileSummary(DEFAULT_BALANCED_PROFILE);
-    expect(summary).toContain('profile=balanced');
-    expect(summary).toContain('approval=on-request');
+    const summary = securityProfileSummary(DEFAULT_STRICT_PROFILE);
+    expect(summary).toContain('profile=strict');
+    expect(summary).toContain('approval=never');
+    expect(securityProfileSummary(DEFAULT_BALANCED_PROFILE)).toContain('profile=balanced');
   });
 });

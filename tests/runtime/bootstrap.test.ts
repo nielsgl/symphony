@@ -231,8 +231,8 @@ describe('createRuntimeEnvironment', () => {
     };
 
     expect(response.status).toBe(200);
-    expect(payload.active_profile.name).toBe('balanced');
-    expect(payload.active_profile.approval_policy).toBe('on-request');
+    expect(payload.active_profile.name).toBe('strict');
+    expect(payload.active_profile.approval_policy).toBe('never');
     expect(payload.persistence.enabled).toBe(true);
     expect(payload.persistence.integrity_ok).toBe(true);
   });
