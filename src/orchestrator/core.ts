@@ -1,5 +1,7 @@
 import type { Issue } from '../tracker';
 import type { StructuredLogger } from '../observability';
+import { CANONICAL_EVENT } from '../observability/events';
+import { ThroughputTracker } from '../observability/throughput';
 import {
   availableGlobalSlots,
   computeFailureBackoffMs,
@@ -64,12 +66,22 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
 }
 
 function humanizeWorkerEvent(event: WorkerObservabilityEvent): string {
-  const base = event.event.replace(/[_/]+/g, ' ').trim();
+  const base = event.event.replace(/[._/]+/g, ' ').trim();
   if (event.detail && event.detail.trim().length > 0) {
     return `${base}: ${event.detail.trim()}`;
   }
 
   return base;
+}
+
+function severityForRuntimeEvent(eventName: string): 'info' | 'warn' | 'error' {
+  if (eventName.includes('failed') || eventName.includes('error')) {
+    return 'error';
+  }
+  if (eventName.includes('retry') || eventName.includes('validation') || eventName.includes('unsupported')) {
+    return 'warn';
+  }
+  return 'info';
 }
 
 export class OrchestratorCore {
@@ -78,6 +90,7 @@ export class OrchestratorCore {
   private readonly nowMs: () => number;
   private readonly logger?: StructuredLogger;
   private readonly persistence?: OrchestratorOptions['persistence'];
+  private readonly throughputTracker: ThroughputTracker;
 
   private readonly state: OrchestratorState;
   private hostRoundRobinIndex: number;
@@ -106,9 +119,18 @@ export class OrchestratorCore {
       health: {
         dispatch_validation: 'ok',
         last_error: null
-      }
+      },
+      throughput: {
+        current_tps: 0,
+        avg_tps_60s: 0,
+        window_seconds: 600,
+        sparkline_10m: Array.from({ length: 24 }, () => 0),
+        sample_count: 0
+      },
+      recent_runtime_events: []
     };
     this.hostRoundRobinIndex = 0;
+    this.throughputTracker = new ThroughputTracker();
   }
 
   getStateSnapshot(): OrchestratorState {
@@ -124,7 +146,9 @@ export class OrchestratorCore {
       completed: new Set(this.state.completed.values()),
       codex_totals: { ...this.state.codex_totals },
       codex_rate_limits: this.state.codex_rate_limits ? { ...this.state.codex_rate_limits } : null,
-      health: { ...this.state.health }
+      health: { ...this.state.health },
+      throughput: this.throughputTracker.snapshot(this.nowMs()),
+      recent_runtime_events: this.state.recent_runtime_events.map((event) => ({ ...event }))
     };
   }
 
@@ -138,12 +162,17 @@ export class OrchestratorCore {
       this.state.health.last_error = preflight.reason ?? 'dispatch preflight rejected dispatch';
       this.logger?.log({
         level: 'warn',
-        event: 'dispatch_validation_failed',
+        event: CANONICAL_EVENT.orchestration.dispatchValidationFailed,
         message: this.state.health.last_error,
         context: {
           reason: this.state.health.last_error,
           tick_reason: reason
         }
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.orchestration.dispatchValidationFailed,
+        severity: 'warn',
+        detail: this.state.health.last_error ?? undefined
       });
       this.ports.notifyObservers?.();
       return;
@@ -153,11 +182,15 @@ export class OrchestratorCore {
     if (previousDispatchValidation === 'failed') {
       this.logger?.log({
         level: 'info',
-        event: 'dispatch_validation_recovered',
+        event: CANONICAL_EVENT.orchestration.dispatchValidationRecovered,
         message: 'dispatch validation recovered',
         context: {
           tick_reason: reason
         }
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.orchestration.dispatchValidationRecovered,
+        severity: 'info'
       });
     }
     this.state.health.last_error = null;
@@ -169,12 +202,17 @@ export class OrchestratorCore {
       this.state.health.last_error = 'failed to fetch candidate issues';
       this.logger?.log({
         level: 'error',
-        event: 'tracker_candidate_fetch_failed',
+        event: CANONICAL_EVENT.tracker.candidateFetchFailed,
         message: 'failed to fetch candidate issues',
         context: {
           tick_reason: reason,
           error: error instanceof Error ? error.message : 'unknown'
         }
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.tracker.candidateFetchFailed,
+        severity: 'error',
+        detail: error instanceof Error ? error.message : 'unknown'
       });
       this.ports.notifyObservers?.();
       return;
@@ -237,24 +275,33 @@ export class OrchestratorCore {
           .catch(() => {
             this.logger?.log({
               level: 'warn',
-              event: 'persistence_record_session_failed',
+              event: CANONICAL_EVENT.persistence.recordSessionFailed,
               message: `failed to persist session for ${runningEntry.identifier}`
             });
           });
       }
     }
 
-    if (workerEvent.event === 'turn_started') {
+    if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
       runningEntry.turn_count += 1;
     }
 
     if (workerEvent.usage) {
       const usage = workerEvent.usage;
-      this.state.codex_totals.input_tokens += Math.max(0, usage.input_tokens - runningEntry.last_reported_tokens.input_tokens);
-      this.state.codex_totals.output_tokens += Math.max(0, usage.output_tokens - runningEntry.last_reported_tokens.output_tokens);
-      this.state.codex_totals.total_tokens += Math.max(0, usage.total_tokens - runningEntry.last_reported_tokens.total_tokens);
+      const inputDelta = Math.max(0, usage.input_tokens - runningEntry.last_reported_tokens.input_tokens);
+      const outputDelta = Math.max(0, usage.output_tokens - runningEntry.last_reported_tokens.output_tokens);
+      const totalDelta = Math.max(0, usage.total_tokens - runningEntry.last_reported_tokens.total_tokens);
+      this.state.codex_totals.input_tokens += inputDelta;
+      this.state.codex_totals.output_tokens += outputDelta;
+      this.state.codex_totals.total_tokens += totalDelta;
       runningEntry.tokens = { ...usage };
       runningEntry.last_reported_tokens = { ...usage };
+      if (totalDelta > 0) {
+        this.throughputTracker.observe({
+          at_ms: workerEvent.timestamp_ms,
+          tokens: totalDelta
+        });
+      }
     }
 
     if (workerEvent.rate_limits) {
@@ -278,18 +325,18 @@ export class OrchestratorCore {
           event: workerEvent.event,
           message: workerEvent.detail ?? null
         })
-        .catch(() => {
-          this.logger?.log({
-            level: 'warn',
-            event: 'persistence_record_event_failed',
-            message: `failed to persist worker event for ${runningEntry.identifier}`
+          .catch(() => {
+            this.logger?.log({
+              level: 'warn',
+              event: CANONICAL_EVENT.persistence.recordEventFailed,
+              message: `failed to persist worker event for ${runningEntry.identifier}`
+            });
           });
-        });
     }
 
     this.logger?.log({
       level: 'info',
-      event: 'worker_event',
+      event: CANONICAL_EVENT.orchestration.workerEvent,
       message: workerEvent.event,
       context: {
         issue_id,
@@ -302,6 +349,13 @@ export class OrchestratorCore {
         event: workerEvent.event,
         event_summary: runningEntry.last_event_summary
       }
+    });
+    this.recordRuntimeEvent({
+      event: workerEvent.event,
+      severity: severityForRuntimeEvent(workerEvent.event),
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: workerEvent.detail
     });
   }
 
@@ -353,7 +407,7 @@ export class OrchestratorCore {
     } catch (error) {
       this.logger?.log({
         level: 'warn',
-        event: 'tracker_retry_fetch_failed',
+        event: CANONICAL_EVENT.tracker.retryFetchFailed,
         message: 'failed to fetch candidates for retry dispatch',
         context: {
           issue_id,
@@ -361,6 +415,12 @@ export class OrchestratorCore {
           attempt: retryEntry.attempt,
           error: error instanceof Error ? error.message : 'unknown'
         }
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.tracker.retryFetchFailed,
+        severity: 'warn',
+        issue_identifier: retryEntry.identifier,
+        detail: error instanceof Error ? error.message : 'unknown'
       });
       await this.scheduleRetry({
         issue_id,
@@ -421,12 +481,17 @@ export class OrchestratorCore {
     } catch (error) {
       this.logger?.log({
         level: 'warn',
-        event: 'tracker_state_refresh_failed',
+        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
         message: 'failed to refresh tracker states for running issues',
         context: {
           issue_count: runningIssueIds.length,
           error: error instanceof Error ? error.message : 'unknown'
         }
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+        severity: 'warn',
+        detail: error instanceof Error ? error.message : 'unknown'
       });
       return;
     }
@@ -494,12 +559,25 @@ export class OrchestratorCore {
         error: 'worker stalled'
       });
       this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.orchestration.workerStalled,
+        severity: 'warn',
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id ?? undefined,
+        detail: 'worker stalled'
+      });
     }
   }
 
   private async dispatchIssue(issue: Issue, attempt: number | null): Promise<void> {
     const workerHost = this.selectWorkerHost();
     if ((this.config.worker_hosts?.length ?? 0) > 0 && !workerHost) {
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.orchestration.workerHostSlotsExhausted,
+        severity: 'warn',
+        issue_identifier: issue.identifier,
+        detail: 'no available worker host slots'
+      });
       await this.scheduleRetry({
         issue_id: issue.id,
         identifier: issue.identifier,
@@ -566,7 +644,7 @@ export class OrchestratorCore {
       } catch {
         this.logger?.log({
           level: 'warn',
-          event: 'persistence_start_run_failed',
+          event: CANONICAL_EVENT.persistence.startRunFailed,
           message: `failed to start durable run record for ${issue.identifier}`
         });
       }
@@ -662,9 +740,30 @@ export class OrchestratorCore {
     } catch {
       this.logger?.log({
         level: 'warn',
-        event: 'persistence_complete_run_failed',
+        event: CANONICAL_EVENT.persistence.completeRunFailed,
         message: `failed to complete durable run record for ${runningEntry.identifier}`
       });
+    }
+  }
+
+
+  private recordRuntimeEvent(params: {
+    event: string;
+    severity: 'info' | 'warn' | 'error';
+    issue_identifier?: string;
+    session_id?: string;
+    detail?: string;
+  }): void {
+    this.state.recent_runtime_events.push({
+      at_ms: this.nowMs(),
+      event: params.event,
+      severity: params.severity,
+      issue_identifier: params.issue_identifier,
+      session_id: params.session_id,
+      detail: params.detail
+    });
+    if (this.state.recent_runtime_events.length > 50) {
+      this.state.recent_runtime_events.splice(0, this.state.recent_runtime_events.length - 50);
     }
   }
 

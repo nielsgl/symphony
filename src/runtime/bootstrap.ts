@@ -1,6 +1,7 @@
 import { LocalApiServer } from '../api';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
 import { MultiSinkLogger, type StructuredLogger } from '../observability';
+import { CANONICAL_EVENT } from '../observability/events';
 import { SqlitePersistenceStore } from '../persistence';
 import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult } from '../orchestrator';
 import type { WorkerObservabilityEvent } from '../orchestrator';
@@ -72,7 +73,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
     logger.log({
       level: 'warn',
-      event: 'runtime_startup_validation_bypassed',
+      event: CANONICAL_EVENT.runtime.startupValidationBypassed,
       message: startupValidation.message
     });
   }
@@ -102,7 +103,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
   logger.log({
     level: 'info',
-    event: 'security_profile_active',
+    event: CANONICAL_EVENT.runtime.securityProfileActive,
     message: securityProfileSummary(activeProfile),
     context: {
       profile_name: activeProfile.name,
@@ -254,7 +255,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     const startupSnapshot = orchestrator.getStateSnapshot();
     logger.log({
       level: 'info',
-      event: 'startup_orchestrator_state_initialized',
+      event: CANONICAL_EVENT.runtime.startupStateInitialized,
       message: 'startup initialized orchestrator state from cold process memory',
       context: {
         state_source: 'cold_start',
@@ -268,7 +269,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       const address = apiServer.address();
       logger.log({
         level: 'info',
-        event: 'runtime_http_enabled',
+        event: CANONICAL_EVENT.runtime.httpEnabled,
         message: 'local HTTP extension enabled',
         context: {
           host: address.host,
@@ -279,7 +280,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     } else {
       logger.log({
         level: 'info',
-        event: 'runtime_http_disabled',
+        event: CANONICAL_EVENT.runtime.httpDisabled,
         message: 'local HTTP extension disabled (no CLI or workflow port configured)',
         context: {
           configured_port: null
@@ -291,7 +292,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       const pruned = persistenceStore.pruneExpiredRuns();
       logger.log({
         level: 'info',
-        event: 'persistence_pruned',
+        event: CANONICAL_EVENT.persistence.pruned,
         message: `pruned ${pruned} expired run records`,
         context: {
           pruned,
@@ -306,7 +307,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       const cleanedCount = cleanupResults.filter((result) => result.cleaned).length;
       logger.log({
         level: 'info',
-        event: 'startup_terminal_cleanup_completed',
+        event: CANONICAL_EVENT.runtime.startupCleanupCompleted,
         message: 'completed startup terminal workspace cleanup sweep',
         context: {
           terminal_issue_count: terminalIssues.length,
@@ -317,7 +318,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     } catch (error) {
       logger.log({
         level: 'warn',
-        event: 'startup_terminal_cleanup_failed',
+        event: CANONICAL_EVENT.runtime.startupCleanupFailed,
         message: error instanceof Error ? error.message : 'terminal cleanup failed'
       });
     }
@@ -329,7 +330,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
     logger.log({
       level: 'info',
-      event: 'runtime_started',
+      event: CANONICAL_EVENT.runtime.started,
       message: 'runtime environment started',
       context: {
         poll_interval_ms: effectiveConfig.polling.interval_ms,
@@ -357,7 +358,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
     logger.log({
       level: 'info',
-      event: 'runtime_stopped',
+      event: CANONICAL_EVENT.runtime.stopped,
       message: 'runtime environment stopped'
     });
   };

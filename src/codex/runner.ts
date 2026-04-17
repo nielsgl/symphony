@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { CANONICAL_EVENT } from '../observability/events';
 import { CodexRunnerError } from './errors';
 import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
 import type { CodexRunnerEvent, CodexRunnerStartInput, CodexTurnResult, CodexUsageTotals } from './types';
@@ -328,7 +329,7 @@ export class CodexRunner {
         throw new CodexRunnerError('response_error', 'Missing thread id in thread/start response');
       }
 
-      emit({ event: 'session_started', thread_id });
+      emit({ event: CANONICAL_EVENT.codex.sessionStarted, thread_id });
 
       const maxTurns = Math.max(1, input.maxTurns ?? 1);
       let turnsCompleted = 0;
@@ -361,7 +362,7 @@ export class CodexRunner {
         }
 
         emit({
-          event: 'turn_started',
+          event: CANONICAL_EVENT.codex.turnStarted,
           thread_id,
           turn_id,
           session_id: `${thread_id}-${turn_id}`
@@ -376,7 +377,7 @@ export class CodexRunner {
           turnsCompleted += 1;
 
           emit({
-            event: 'turn_completed',
+            event: CANONICAL_EVENT.codex.turnCompleted,
             thread_id,
             turn_id,
             session_id,
@@ -393,7 +394,7 @@ export class CodexRunner {
             thread_id,
             turn_id,
             session_id,
-            last_event: 'turn_completed',
+            last_event: CANONICAL_EVENT.codex.turnCompleted,
             turns_completed: turnsCompleted,
             usage,
             rate_limits
@@ -401,13 +402,13 @@ export class CodexRunner {
         }
 
         if (waitResult.terminal === 'turn/failed') {
-          emit({ event: 'turn_failed', thread_id, turn_id, session_id, usage, rate_limits });
+          emit({ event: CANONICAL_EVENT.codex.turnFailed, thread_id, turn_id, session_id, usage, rate_limits });
           return {
             status: 'failed',
             thread_id,
             turn_id,
             session_id,
-            last_event: 'turn_failed',
+            last_event: CANONICAL_EVENT.codex.turnFailed,
             error_code: 'turn_failed',
             turns_completed: turnsCompleted,
             usage,
@@ -416,13 +417,13 @@ export class CodexRunner {
         }
 
         if (waitResult.terminal === 'turn/cancelled') {
-          emit({ event: 'turn_cancelled', thread_id, turn_id, session_id, usage, rate_limits });
+          emit({ event: CANONICAL_EVENT.codex.turnCancelled, thread_id, turn_id, session_id, usage, rate_limits });
           return {
             status: 'failed',
             thread_id,
             turn_id,
             session_id,
-            last_event: 'turn_cancelled',
+            last_event: CANONICAL_EVENT.codex.turnCancelled,
             error_code: 'turn_cancelled',
             turns_completed: turnsCompleted,
             usage,
@@ -430,13 +431,13 @@ export class CodexRunner {
           };
         }
 
-        emit({ event: 'turn_input_required', thread_id, turn_id, session_id, usage, rate_limits });
+        emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, rate_limits });
         return {
           status: 'failed',
           thread_id,
           turn_id,
           session_id,
-          last_event: 'turn_input_required',
+          last_event: CANONICAL_EVENT.codex.turnInputRequired,
           error_code: 'turn_input_required',
           turns_completed: turnsCompleted,
           usage,
@@ -450,7 +451,7 @@ export class CodexRunner {
         if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
           throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
         }
-        emit({ event: 'startup_failed', detail: error.message });
+        emit({ event: CANONICAL_EVENT.codex.startupFailed, detail: error.message });
         throw error;
       }
 
@@ -573,7 +574,7 @@ class ProtocolClient {
 
         if (this.isApprovalRequest(message)) {
           this.write({ id: message.id, result: { approved: true } });
-          emit({ event: 'approval_auto_approved' });
+          emit({ event: CANONICAL_EVENT.codex.approvalAutoApproved });
           continue;
         }
 
@@ -584,18 +585,18 @@ class ProtocolClient {
           const toolResult = await this.dynamicToolExecutor.execute(toolName, argumentsValue);
           this.write({ id: message.id, result: toolResult });
           if (toolResult.success) {
-            emit({ event: 'tool_call_completed', detail: toolName ?? 'unknown_tool' });
+            emit({ event: CANONICAL_EVENT.codex.toolCallCompleted, detail: toolName ?? 'unknown_tool' });
           } else if (toolName) {
-            emit({ event: 'tool_call_failed', detail: toolName });
+            emit({ event: CANONICAL_EVENT.codex.toolCallFailed, detail: toolName });
           } else {
-            emit({ event: 'unsupported_tool_call' });
+            emit({ event: CANONICAL_EVENT.codex.unsupportedToolCall });
           }
           continue;
         }
 
         if (this.isMcpElicitationRequest(message)) {
           this.write({ id: message.id, result: { action: 'cancel' } });
-          emit({ event: 'turn_input_required', detail: 'mcp elicitation request cancelled' });
+          emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'mcp elicitation request cancelled' });
           return {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
@@ -615,7 +616,7 @@ class ProtocolClient {
         if (this.isUnhandledServerRequest(message)) {
           const method = message.method ?? 'unknown';
           this.write({ id: message.id, result: { success: false, error: 'unsupported_server_request', method } });
-          emit({ event: 'unsupported_server_request', detail: method });
+          emit({ event: CANONICAL_EVENT.codex.unsupportedServerRequest, detail: method });
           continue;
         }
       }
@@ -627,7 +628,7 @@ class ProtocolClient {
       const waitStartedAtMs = Date.now();
       const heartbeat = setInterval(() => {
         const elapsedSeconds = Math.floor((Date.now() - waitStartedAtMs) / 1000);
-        emit({ event: 'turn_waiting', detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
+        emit({ event: CANONICAL_EVENT.codex.turnWaiting, detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
       }, ProtocolClient.TURN_WAITING_HEARTBEAT_MS);
 
       const onMessageWrapper = () => {

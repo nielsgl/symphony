@@ -76,7 +76,22 @@ export class SnapshotService {
       health: {
         dispatch_validation: state.health.dispatch_validation,
         last_error: state.health.last_error
-      }
+      },
+      throughput: {
+        current_tps: state.throughput.current_tps,
+        avg_tps_60s: state.throughput.avg_tps_60s,
+        window_seconds: state.throughput.window_seconds,
+        sparkline_10m: [...state.throughput.sparkline_10m],
+        sample_count: state.throughput.sample_count
+      },
+      recent_runtime_events: state.recent_runtime_events.map((event) => ({
+        at: asIsoDate(event.at_ms),
+        event: event.event,
+        severity: event.severity,
+        issue_identifier: event.issue_identifier,
+        session_id: event.session_id,
+        detail: event.detail
+      }))
     }) as ApiStateResponse;
   }
 

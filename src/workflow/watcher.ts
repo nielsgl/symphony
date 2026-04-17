@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { CANONICAL_EVENT } from '../observability/events';
 import { nowIso, WorkflowConfigError } from './errors';
 import { WorkflowLoader } from './loader';
 import { ConfigResolver } from './resolver';
@@ -160,7 +161,7 @@ export class WorkflowWatcher {
       });
 
       this.onEvent?.({
-        event: 'workflow_reload_succeeded',
+        event: CANONICAL_EVENT.workflow.reloadSucceeded,
         at,
         source,
         version_hash: snapshot.versionHash
@@ -202,7 +203,7 @@ export class WorkflowWatcher {
     at: string
   ): void {
     this.onEvent?.({
-      event: 'workflow_reload_failed',
+      event: CANONICAL_EVENT.workflow.reloadFailed,
       at,
       source,
       error_code: errorCode,

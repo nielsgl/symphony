@@ -1,6 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 
 import type { StructuredLogger } from '../observability';
+import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../observability/events';
 import { redactUnknown } from '../security/redaction';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
 import { LocalApiError } from './errors';
@@ -109,7 +110,7 @@ export class LocalApiServer {
     this.startHeartbeat();
     this.logger?.log({
       level: 'info',
-      event: 'api_server_listening',
+      event: CANONICAL_EVENT.api.serverListening,
       message: 'local HTTP API server is listening',
       context: {
         configured_host: this.host,
@@ -206,7 +207,7 @@ export class LocalApiServer {
       const message = code === 'snapshot_timeout' ? 'Snapshot timed out' : 'Snapshot unavailable';
       this.logger?.log({
         level: 'warn',
-        event: 'api_state_snapshot_unavailable',
+        event: CANONICAL_EVENT.api.stateSnapshotUnavailable,
         message,
         context: {
           code,
@@ -306,7 +307,7 @@ export class LocalApiServer {
               if (!('error' in payload)) {
                 this.logger?.log({
                   level: 'info',
-                  event: 'api_state_requested',
+                  event: CANONICAL_EVENT.api.stateRequested,
                   message: 'served state snapshot',
                   context: {
                     running: payload.counts.running,
@@ -340,7 +341,7 @@ export class LocalApiServer {
               const payload = this.refreshCoalescer.requestRefresh();
               this.logger?.log({
                 level: 'info',
-                event: 'api_refresh_requested',
+                event: CANONICAL_EVENT.api.refreshRequested,
                 message: 'manual refresh requested',
                 context: {
                   coalesced: payload.coalesced
@@ -367,7 +368,8 @@ export class LocalApiServer {
 
               sendJson(response, 200, {
                 active_profile: this.diagnosticsSource.getActiveProfile(),
-                persistence: this.diagnosticsSource.getPersistenceHealth()
+                persistence: this.diagnosticsSource.getPersistenceHealth(),
+                event_vocabulary_version: EVENT_VOCABULARY_VERSION
               });
             }
           }
@@ -430,6 +432,8 @@ export class LocalApiServer {
                 state?: {
                   selected_issue?: string | null;
                   filters?: { status?: 'all' | 'running' | 'retrying'; query?: string };
+                  event_feed_filter?: 'all' | 'warn' | 'error';
+                  panels?: { throughput_open?: boolean; runtime_events_open?: boolean };
                   panel_state?: { issue_detail_open?: boolean };
                 };
               };
@@ -438,6 +442,8 @@ export class LocalApiServer {
                   state?: {
                     selected_issue?: string | null;
                     filters?: { status?: 'all' | 'running' | 'retrying'; query?: string };
+                    event_feed_filter?: 'all' | 'warn' | 'error';
+                    panels?: { throughput_open?: boolean; runtime_events_open?: boolean };
                     panel_state?: { issue_detail_open?: boolean };
                   };
                 };
@@ -455,6 +461,11 @@ export class LocalApiServer {
                 filters: {
                   status: state.filters?.status ?? 'all',
                   query: state.filters?.query ?? ''
+                },
+                event_feed_filter: state.event_feed_filter ?? 'all',
+                panels: {
+                  throughput_open: state.panels?.throughput_open ?? true,
+                  runtime_events_open: state.panels?.runtime_events_open ?? true
                 },
                 panel_state: {
                   issue_detail_open: state.panel_state?.issue_detail_open ?? false
@@ -477,7 +488,7 @@ export class LocalApiServer {
               const payload = this.snapshotService.projectIssue(state, issueIdentifier);
               this.logger?.log({
                 level: 'info',
-                event: 'api_issue_requested',
+                event: CANONICAL_EVENT.api.issueRequested,
                 message: 'served issue snapshot',
                 context: {
                   issue_id: payload.issue_id,
@@ -499,7 +510,7 @@ export class LocalApiServer {
     if (!endpointMatch) {
       this.logger?.log({
         level: 'warn',
-        event: 'api_route_not_found',
+        event: CANONICAL_EVENT.api.routeNotFound,
         message: `route not found for ${urlPath}`
       });
       sendError(res, 404, 'route_not_found', `Route ${urlPath} was not found`);
@@ -510,7 +521,7 @@ export class LocalApiServer {
     if (!matchingMethodRoute) {
       this.logger?.log({
         level: 'warn',
-        event: 'api_method_not_allowed',
+        event: CANONICAL_EVENT.api.methodNotAllowed,
         message: `method ${method} is not supported for ${urlPath}`
       });
       sendError(res, 405, 'method_not_allowed', `Method ${method} is not supported for ${urlPath}`);
@@ -523,7 +534,7 @@ export class LocalApiServer {
       if (error instanceof LocalApiError) {
         this.logger?.log({
           level: 'warn',
-          event: 'api_local_error',
+          event: CANONICAL_EVENT.api.localError,
           message: error.message,
           context: {
             code: error.code,
@@ -536,7 +547,7 @@ export class LocalApiServer {
 
       this.logger?.log({
         level: 'error',
-        event: 'api_internal_error',
+        event: CANONICAL_EVENT.api.internalError,
         message: error instanceof Error ? error.message : 'unknown internal server error'
       });
 

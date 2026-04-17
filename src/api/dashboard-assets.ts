@@ -54,6 +54,13 @@ export function renderDashboardHtml(): string {
     </section>
 
     <section class="panel panel-wide">
+      <details id="throughput-panel" open>
+        <summary>Throughput</summary>
+        <pre id="throughput-output" class="code-block">No throughput samples yet.</pre>
+      </details>
+    </section>
+
+    <section class="panel panel-wide">
       <div class="panel-head">
         <h2>Running Sessions</h2>
         <div class="toolbar">
@@ -124,6 +131,22 @@ export function renderDashboardHtml(): string {
       </details>
     </section>
 
+    <section class="panel panel-wide">
+      <details id="runtime-events-panel" open>
+        <summary>Runtime Event Feed</summary>
+        <div class="toolbar">
+          <select id="event-feed-filter" aria-label="Runtime event severity filter">
+            <option value="all">All</option>
+            <option value="warn">Warn</option>
+            <option value="error">Error</option>
+          </select>
+        </div>
+        <ul id="runtime-events-list" class="list">
+          <li class="muted">No runtime events.</li>
+        </ul>
+      </details>
+    </section>
+
     <section class="panel">
       <div class="panel-head">
         <h2>Diagnostics</h2>
@@ -161,7 +184,12 @@ export function renderDashboardClientJs(): string {
     uiStateSaveTimer: null,
     filter: {
       query: '',
-      status: 'all'
+      status: 'all',
+      eventFeedSeverity: 'all'
+    },
+    panels: {
+      throughputOpen: true,
+      runtimeEventsOpen: true
     }
   };
 
@@ -177,6 +205,8 @@ export function renderDashboardClientJs(): string {
     snapshotErrorMessage: document.getElementById('snapshot-error-message'),
     kpiGrid: document.getElementById('kpi-grid'),
     rateLimits: document.getElementById('rate-limits'),
+    throughputPanel: document.getElementById('throughput-panel'),
+    throughputOutput: document.getElementById('throughput-output'),
     runningRows: document.getElementById('running-rows'),
     retryRows: document.getElementById('retry-rows'),
     statusFilter: document.getElementById('status-filter'),
@@ -186,6 +216,9 @@ export function renderDashboardClientJs(): string {
     issueLoad: document.getElementById('issue-load'),
     issueOpenJson: document.getElementById('issue-open-json'),
     issueOutput: document.getElementById('issue-output'),
+    runtimeEventsPanel: document.getElementById('runtime-events-panel'),
+    eventFeedFilter: document.getElementById('event-feed-filter'),
+    runtimeEventsList: document.getElementById('runtime-events-list'),
     diagnosticsOutput: document.getElementById('diagnostics-output'),
     historyList: document.getElementById('history-list')
   };
@@ -278,6 +311,60 @@ export function renderDashboardClientJs(): string {
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
   }
 
+  function renderThroughput(payload) {
+    if (!payload || !payload.throughput) {
+      elements.throughputOutput.textContent = 'No throughput samples yet.';
+      return;
+    }
+
+    const throughput = payload.throughput;
+    const sparkline = Array.isArray(throughput.sparkline_10m) ? throughput.sparkline_10m : [];
+    elements.throughputOutput.textContent = JSON.stringify(
+      {
+        current_tps: throughput.current_tps,
+        avg_tps_60s: throughput.avg_tps_60s,
+        sample_count: throughput.sample_count,
+        window_seconds: throughput.window_seconds,
+        sparkline_10m: sparkline
+      },
+      null,
+      2
+    );
+  }
+
+  function renderRuntimeEvents(payload) {
+    const events = Array.isArray(payload && payload.recent_runtime_events) ? payload.recent_runtime_events : [];
+    const filtered = events.filter(function (entry) {
+      if (state.filter.eventFeedSeverity === 'all') {
+        return true;
+      }
+      return entry && entry.severity === state.filter.eventFeedSeverity;
+    });
+
+    if (!filtered.length) {
+      const empty = document.createElement('li');
+      empty.className = 'muted';
+      empty.textContent = 'No runtime events.';
+      elements.runtimeEventsList.replaceChildren(empty);
+      return;
+    }
+
+    const nodes = filtered.map(function (entry) {
+      const item = document.createElement('li');
+      const title = document.createElement('strong');
+      title.textContent = '[' + (entry.severity || 'info') + '] ' + (entry.event || 'unknown');
+      const meta = document.createElement('span');
+      const issue = entry.issue_identifier ? ' • issue ' + entry.issue_identifier : '';
+      const session = entry.session_id ? ' • session ' + entry.session_id : '';
+      const detail = entry.detail ? ' • ' + entry.detail : '';
+      meta.textContent = formatDate(entry.at) + issue + session + detail;
+      item.append(title, meta);
+      return item;
+    });
+
+    elements.runtimeEventsList.replaceChildren(...nodes);
+  }
+
   function renderSnapshotError(errorPayload) {
     elements.snapshotErrorPanel.classList.remove('hidden');
     elements.snapshotErrorMessage.textContent =
@@ -306,8 +393,10 @@ export function renderDashboardClientJs(): string {
 
     // Keep stale-but-last-known-good data visible while snapshot fetch is degraded.
     renderOverview(state.lastGoodPayload);
+    renderThroughput(state.lastGoodPayload);
     renderRunning(state.lastGoodPayload);
     renderRetry(state.lastGoodPayload);
+    renderRuntimeEvents(state.lastGoodPayload);
   }
 
   function clearSnapshotError() {
@@ -528,8 +617,10 @@ export function renderDashboardClientJs(): string {
     state.payload = payload;
     state.lastGoodPayload = payload;
     renderOverview(payload);
+    renderThroughput(payload);
     renderRunning(payload);
     renderRetry(payload);
+    renderRuntimeEvents(payload);
     setLastUpdated(payload.generated_at || new Date().toISOString());
     if (source === 'stream') {
       setConnectionStatus('live', 'Streaming updates connected');
@@ -593,6 +684,11 @@ export function renderDashboardClientJs(): string {
                 status: state.filter.status,
                 query: state.filter.query
               },
+              event_feed_filter: state.filter.eventFeedSeverity,
+              panels: {
+                throughput_open: !!elements.throughputPanel.open,
+                runtime_events_open: !!elements.runtimeEventsPanel.open
+              },
               panel_state: {
                 issue_detail_open: !!elements.issuePanel.open
               }
@@ -622,10 +718,20 @@ export function renderDashboardClientJs(): string {
       state.selectedIssue = restored.selected_issue || '';
       state.filter.query = restored.filters && restored.filters.query ? restored.filters.query : '';
       state.filter.status = restored.filters && restored.filters.status ? restored.filters.status : 'all';
+      state.filter.eventFeedSeverity = restored.event_feed_filter || 'all';
+      state.panels.throughputOpen =
+        restored.panels && typeof restored.panels.throughput_open === 'boolean' ? restored.panels.throughput_open : true;
+      state.panels.runtimeEventsOpen =
+        restored.panels && typeof restored.panels.runtime_events_open === 'boolean'
+          ? restored.panels.runtime_events_open
+          : true;
 
       elements.issueInput.value = state.selectedIssue;
       elements.runningFilter.value = state.filter.query;
       elements.statusFilter.value = state.filter.status;
+      elements.eventFeedFilter.value = state.filter.eventFeedSeverity;
+      elements.throughputPanel.open = state.panels.throughputOpen;
+      elements.runtimeEventsPanel.open = state.panels.runtimeEventsOpen;
       if (restored.panel_state && typeof restored.panel_state.issue_detail_open === 'boolean') {
         elements.issuePanel.open = restored.panel_state.issue_detail_open;
       }
@@ -807,7 +913,25 @@ export function renderDashboardClientJs(): string {
       scheduleStateSave();
     });
 
+    elements.eventFeedFilter.addEventListener('change', function (event) {
+      state.filter.eventFeedSeverity = event.target && event.target.value ? event.target.value : 'all';
+      if (state.payload) {
+        renderRuntimeEvents(state.payload);
+      }
+      scheduleStateSave();
+    });
+
     elements.issuePanel.addEventListener('toggle', function () {
+      scheduleStateSave();
+    });
+
+    elements.throughputPanel.addEventListener('toggle', function () {
+      state.panels.throughputOpen = !!elements.throughputPanel.open;
+      scheduleStateSave();
+    });
+
+    elements.runtimeEventsPanel.addEventListener('toggle', function () {
+      state.panels.runtimeEventsOpen = !!elements.runtimeEventsPanel.open;
       scheduleStateSave();
     });
 

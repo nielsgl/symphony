@@ -71,6 +71,21 @@ export interface ApiStateResponse {
     dispatch_validation: 'ok' | 'failed';
     last_error: string | null;
   };
+  throughput: {
+    current_tps: number;
+    avg_tps_60s: number;
+    window_seconds: number;
+    sparkline_10m: number[];
+    sample_count: number;
+  };
+  recent_runtime_events: Array<{
+    at: string;
+    event: string;
+    severity: 'info' | 'warn' | 'error';
+    issue_identifier?: string;
+    session_id?: string;
+    detail?: string;
+  }>;
 }
 
 export type ApiStateErrorCode = 'snapshot_timeout' | 'snapshot_unavailable';
@@ -162,4 +177,5 @@ export interface LocalApiServerOptions {
 export interface ApiDiagnosticsResponse {
   active_profile: SecurityProfile;
   persistence: PersistenceHealth;
+  event_vocabulary_version: string;
 }

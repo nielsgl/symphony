@@ -3,6 +3,7 @@ import type { WorkspaceManager } from '../workspace';
 import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
 import type { EffectiveConfig } from '../workflow';
+import { CANONICAL_EVENT } from '../observability/events';
 import path from 'node:path';
 
 const DEFAULT_CONTINUATION_PROMPT =
@@ -35,7 +36,7 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
     const normalizedRoot = path.resolve(input.config.workspace.root);
     if (normalizedWorkspace === normalizedRoot) {
       input.onCodexEvent?.({
-        event: 'startup_failed',
+        event: CANONICAL_EVENT.codex.startupFailed,
         timestamp: new Date().toISOString(),
         codex_app_server_pid: null,
         detail: 'unsafe_workspace_root'

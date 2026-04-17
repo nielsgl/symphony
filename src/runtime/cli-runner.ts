@@ -1,5 +1,6 @@
 import type { StructuredLogger } from '../observability';
 import { MultiSinkLogger } from '../observability';
+import { CANONICAL_EVENT } from '../observability/events';
 import type { TrackerAdapter } from '../tracker';
 import { createRuntimeEnvironment } from './bootstrap';
 import { GUARDRAIL_ACK_FLAG, resolveCliRuntimeOptions } from './cli';
@@ -83,7 +84,7 @@ export async function runDashboardCli(
 
   deps.logger.log({
     level: 'info',
-    event: 'runtime_args_resolved',
+    event: CANONICAL_EVENT.runtime.argsResolved,
     message: 'resolved startup arguments',
     context: {
       workflow_path: resolved.workflow.workflowPath,
@@ -100,7 +101,7 @@ export async function runDashboardCli(
   if (!resolved.guardrails.acknowledged) {
     deps.logger.log({
       level: 'warn',
-      event: 'startup_guardrail_ack_required',
+      event: CANONICAL_EVENT.runtime.guardrailAckRequired,
       message: 'guardrail acknowledgment flag is required before startup'
     });
     deps.stderr(`${guardrailBanner()}\n`);

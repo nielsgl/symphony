@@ -17,6 +17,11 @@ export interface UiContinuityState {
     status: 'all' | 'running' | 'retrying';
     query: string;
   };
+  event_feed_filter?: 'all' | 'warn' | 'error';
+  panels?: {
+    throughput_open?: boolean;
+    runtime_events_open?: boolean;
+  };
   panel_state: {
     issue_detail_open: boolean;
   };

@@ -127,7 +127,7 @@ export interface EffectiveConfigSnapshot {
 }
 
 export interface WorkflowEvent {
-  event: 'workflow_reload_succeeded' | 'workflow_reload_failed';
+  event: string;
   at: string;
   source: 'startup' | 'watch' | 'preflight';
   version_hash?: string;

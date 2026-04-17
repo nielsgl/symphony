@@ -62,6 +62,21 @@ export interface OrchestratorState {
     dispatch_validation: 'ok' | 'failed';
     last_error: string | null;
   };
+  throughput: {
+    current_tps: number;
+    avg_tps_60s: number;
+    window_seconds: number;
+    sparkline_10m: number[];
+    sample_count: number;
+  };
+  recent_runtime_events: Array<{
+    at_ms: number;
+    event: string;
+    severity: 'info' | 'warn' | 'error';
+    issue_identifier?: string;
+    session_id?: string;
+    detail?: string;
+  }>;
 }
 
 export interface DispatchPreflightResult {
