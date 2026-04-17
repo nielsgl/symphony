@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P10 web parity + superset upgrade.
-- Current phase: P1 (entry approved; implementation delivered through P10 closure evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P11 parity-defaults execution closure.
+- Current phase: P1 (entry approved; implementation delivered through P11 closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P10`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P11`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -155,6 +155,7 @@ Ownership evidence links:
 - [x] P9c: Close failure-model/security-hardening parity gaps.
 - [x] P9d: Close domain/config/telemetry + Section 18 conformance parity gaps.
 - [x] P10: Implement web parity + superset UI/runtime push upgrades (SSE + redesigned operator surface).
+- [x] P11: Implement XR-01/XR-02/XR-04/XR-05/XR-08 with breaking defaults now.
 
 ## Implementation Evidence (P9d)
 - Date: 2026-04-12
@@ -634,6 +635,60 @@ Ownership evidence links:
 - Gate outcome:
   - P10 web parity + superset scope closed with SSE contract, operator surface redesign, runtime observer push wiring, and non-breaking API compatibility.
 
+## Implementation Evidence (P11)
+- Date: 2026-04-17
+- Scope delivered (XR-01, XR-02, XR-04, XR-05, XR-08; breaking defaults now):
+  - XR-01 + XR-07 combined strict-default execution:
+    - Replaced balanced-first default with strict security profile defaults in `src/security/profiles.ts`.
+    - Added mandatory startup acknowledgment flag in `src/runtime/cli.ts`:
+      - `--i-understand-that-this-will-be-running-without-the-usual-guardrails`
+    - Enforced deterministic startup block in `src/runtime/cli-runner.ts` when flag is missing, with explicit nonzero exit and fixed banner + telemetry (`startup_guardrail_ack_required`).
+  - XR-02 approval-policy compatibility + unsafe-root diagnostics:
+    - Expanded `WorkflowConfig.codex.approval_policy` contract to support string or object shape in `src/workflow/types.ts`.
+    - Added resolver/validator normalization + typed error handling for invalid object shapes in `src/workflow/resolver.ts` and `src/workflow/validator.ts`.
+    - Updated protocol forwarding in `src/codex/runner.ts` so `thread/start` and `turn/start` preserve normalized string/object policy payloads.
+    - Added unsafe-root pre-spawn fail-fast diagnostics in `src/orchestrator/local-worker-runner.ts` (`unsafe_workspace_root` mapped through deterministic startup-failed path).
+  - XR-04 remote worker execution activation:
+    - Activated host-aware scheduling in orchestrator with deterministic round-robin and per-host cap enforcement in `src/orchestrator/core.ts`.
+    - Threaded `worker_host` through orchestrator/bridge/runner contracts (`src/orchestrator/types.ts`, `src/orchestrator/local-runner-bridge.ts`, `src/codex/runner.ts`).
+    - Added SSH remote spawn path with remote cwd validation and typed failures in `src/codex/runner.ts`.
+    - Wired worker host settings into runtime bootstrap in `src/runtime/bootstrap.ts`.
+  - XR-05 dynamic tool adapter enabled by default:
+    - Added dynamic tool registry/executor subsystem in `src/codex/dynamic-tools.ts`.
+    - `thread/start` now always advertises dynamic tools; `item/tool/call` is executed by registry-backed handlers in `src/codex/runner.ts`.
+    - Added built-in `linear_graphql` dynamic tool wiring via runtime bootstrap with redaction-safe error mapping and preserved token telemetry fields.
+  - XR-08 meta quality gates:
+    - Added script checks:
+      - `scripts/check-api-contract.js`
+      - `scripts/check-pr-governance.js`
+      - `scripts/check-meta.js`
+    - Added lifecycle command in `package.json`: `npm run check:meta`.
+    - Added script-level tests in `tests/cli/meta-check-scripts.test.ts`.
+- Public/runtime contract impacts:
+  - Startup now requires explicit guardrail acknowledgment flag.
+  - Default security posture is strict immediately (no compatibility default mode).
+  - `codex.approval_policy` supports string and object forms.
+  - Dynamic tools are advertised and enabled by default.
+  - Worker host fields are behaviorally active at runtime.
+- Test evidence:
+  - `tests/security/profiles.test.ts`
+  - `tests/cli/cli-args.test.ts`
+  - `tests/cli/lifecycle.test.ts`
+  - `tests/workflow/resolver.test.ts`
+  - `tests/workflow/validator.test.ts`
+  - `tests/codex/runner.test.ts`
+  - `tests/orchestrator/core.test.ts`
+  - `tests/orchestrator/local-runner-bridge.test.ts`
+  - `tests/runtime/bootstrap.test.ts`
+  - `tests/cli/meta-check-scripts.test.ts`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
+- Gate outcome:
+  - P11 closure criteria satisfied for XR-01/XR-02/XR-04/XR-05/XR-08 with breaking-defaults rollout.
+
 ## Phase Gates
 1. P0 exit requires: PRD package approved; ownership and dependencies accepted; traceability matrix converted from scaffold to actionable mapping.
 2. P1 exit requires: Section 17.1 tests passing; typed validation errors surfaced in logs/API.
@@ -644,6 +699,7 @@ Ownership evidence links:
 7. P6 exit requires: security profile and redaction checks passing; minimal persistence continuity verified across restart.
 8. P7 exit requires: GitHub adapter contract tests passing; Linear regression suite remains green.
 9. P10 exit requires: SSE `/api/v1/events` contract stable, dashboard parity surface implemented, and REST compatibility preserved.
+10. P11 exit requires: strict-default security + guardrail acknowledgment enforced, approval policy shape compatibility implemented, remote worker host path active, dynamic tools enabled by default, and `npm run check:meta` green.
 
 ## Active Blockers
 - None.

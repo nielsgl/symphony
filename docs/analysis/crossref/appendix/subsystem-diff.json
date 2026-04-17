@@ -20,10 +20,10 @@
   "subsystems": [
     {
       "id": "cfg-workflow",
-      "status": "functionally-equivalent",
+      "status": "equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; policy shape representation differs.",
+      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; approval policy shape compatibility is now aligned.",
       "ours_anchors": [
         "src/workflow/resolver.ts",
         "src/workflow/validator.ts",
@@ -35,7 +35,7 @@
         "elixir/lib/symphony_elixir/config.ex",
         "elixir/test/symphony_elixir/workspace_and_config_test.exs"
       ],
-      "recommendations": ["XR-02", "XR-09"]
+      "recommendations": ["XR-09"]
     },
     {
       "id": "orchestrator-core",
@@ -56,29 +56,32 @@
     },
     {
       "id": "worker-execution",
-      "status": "missing-in-ours",
+      "status": "functionally-equivalent",
       "classification": "extension",
-      "risk": "medium",
-      "summary": "Reference supports remote worker host execution and host scheduling at runtime; ours currently parses host fields but runs local bridge only.",
+      "risk": "low-medium",
+      "summary": "Reference remote host scheduling/execution is now matched by host-aware dispatch and SSH execution path in ours.",
       "ours_anchors": [
+        "src/orchestrator/core.ts",
         "src/orchestrator/local-runner-bridge.ts",
-        "src/workflow/types.ts"
+        "src/codex/runner.ts",
+        "tests/orchestrator/core.test.ts"
       ],
       "ref_anchors": [
         "elixir/lib/symphony_elixir/agent_runner.ex",
         "elixir/lib/symphony_elixir/ssh.ex",
         "elixir/test/symphony_elixir/ssh_test.exs"
       ],
-      "recommendations": ["XR-04"]
+      "recommendations": []
     },
     {
       "id": "codex-protocol",
       "status": "functionally-equivalent",
       "classification": "spec-required",
-      "risk": "medium",
-      "summary": "Both implement robust app-server lifecycle and error mapping; reference includes built-in dynamic tool execution path.",
+      "risk": "low",
+      "summary": "Both implement robust app-server lifecycle and error mapping; dynamic tools are now default-enabled in ours with deterministic unsupported behavior.",
       "ours_anchors": [
         "src/codex/runner.ts",
+        "src/codex/dynamic-tools.ts",
         "tests/codex/runner.test.ts"
       ],
       "ref_anchors": [
@@ -87,7 +90,7 @@
         "elixir/test/symphony_elixir/app_server_test.exs",
         "elixir/test/symphony_elixir/dynamic_tool_test.exs"
       ],
-      "recommendations": ["XR-05", "XR-09"]
+      "recommendations": ["XR-09"]
     },
     {
       "id": "tracker-adapters",
@@ -112,7 +115,7 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Containment invariants and hook semantics are aligned; reference additionally supports remote hook execution.",
+      "summary": "Containment invariants and hook semantics are aligned; reference additionally supports remote hook execution details.",
       "ours_anchors": [
         "src/workspace/manager.ts",
         "tests/workspace/workspace-manager.test.ts"
@@ -129,7 +132,7 @@
       "status": "different-safe",
       "classification": "extension",
       "risk": "low",
-      "summary": "Core `/api/v1` contracts align; ours adds explicit `GET /api/v1/events` SSE push, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, and desktop-oriented dashboard assets.",
+      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, and desktop-oriented dashboard assets.",
       "ours_anchors": [
         "src/api/server.ts",
         "src/api/types.ts",
@@ -146,21 +149,23 @@
     },
     {
       "id": "security-policy",
-      "status": "different-risky",
-      "classification": "divergence",
-      "risk": "high",
-      "summary": "Reference defaults and CLI flow enforce stronger explicit guardrails; ours favors balanced operator ergonomics without mandatory ack flow.",
+      "status": "equivalent",
+      "classification": "spec-required",
+      "risk": "low",
+      "summary": "Safety posture is now strict-by-default with mandatory startup guardrail acknowledgment, aligned with reference intent.",
       "ours_anchors": [
         "src/security/profiles.ts",
         "src/runtime/cli.ts",
-        "tests/security/profiles.test.ts"
+        "src/runtime/cli-runner.ts",
+        "tests/security/profiles.test.ts",
+        "tests/cli/lifecycle.test.ts"
       ],
       "ref_anchors": [
         "elixir/lib/symphony_elixir/config/schema.ex",
         "elixir/lib/symphony_elixir/cli.ex",
         "elixir/test/symphony_elixir/cli_test.exs"
       ],
-      "recommendations": ["XR-01", "XR-07"]
+      "recommendations": []
     },
     {
       "id": "persistence",
@@ -181,20 +186,22 @@
     },
     {
       "id": "quality-gates",
-      "status": "different-safe",
-      "classification": "extension",
-      "risk": "medium",
-      "summary": "Reference adds Mix task quality gates (spec checks, PR-body checks) beyond runtime tests.",
+      "status": "functionally-equivalent",
+      "classification": "spec-required",
+      "risk": "low",
+      "summary": "Reference Mix-task quality gates are now mirrored by TS script-level meta checks and test coverage in ours.",
       "ours_anchors": [
-        "tests/**/*.ts",
-        "docs/prd/SPEC-LINE-PARITY-AUDIT.md"
+        "scripts/check-meta.js",
+        "scripts/check-api-contract.js",
+        "scripts/check-pr-governance.js",
+        "tests/cli/meta-check-scripts.test.ts"
       ],
       "ref_anchors": [
         "elixir/lib/mix/tasks/specs.check.ex",
         "elixir/lib/mix/tasks/pr_body.check.ex",
         "elixir/test/mix/tasks/*.exs"
       ],
-      "recommendations": ["XR-08"]
+      "recommendations": []
     }
   ]
 }
