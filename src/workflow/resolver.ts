@@ -38,6 +38,53 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
+function parseApprovalPolicy(
+  value: unknown
+):
+  | string
+  | {
+      reject?: {
+        sandbox_approval?: boolean;
+        rules?: boolean;
+        mcp_elicitations?: boolean;
+      };
+    }
+  | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const rejectRaw = record.reject;
+  if (typeof rejectRaw !== 'object' || rejectRaw === null || Array.isArray(rejectRaw)) {
+    return {};
+  }
+
+  const rejectRecord = rejectRaw as Record<string, unknown>;
+  const reject: {
+    sandbox_approval?: boolean;
+    rules?: boolean;
+    mcp_elicitations?: boolean;
+  } = {};
+
+  if (typeof rejectRecord.sandbox_approval === 'boolean') {
+    reject.sandbox_approval = rejectRecord.sandbox_approval;
+  }
+  if (typeof rejectRecord.rules === 'boolean') {
+    reject.rules = rejectRecord.rules;
+  }
+  if (typeof rejectRecord.mcp_elicitations === 'boolean') {
+    reject.mcp_elicitations = rejectRecord.mcp_elicitations;
+  }
+
+  return Object.keys(reject).length > 0 ? { reject } : {};
+}
+
 function readInt(value: unknown, fallback: number): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return Math.trunc(value);
@@ -237,7 +284,7 @@ export class ConfigResolver {
       codex: {
         command: codexCommand,
         security_profile: readString(codex.security_profile, '') || undefined,
-        approval_policy: readString(codex.approval_policy, '') || undefined,
+        approval_policy: parseApprovalPolicy(codex.approval_policy),
         thread_sandbox: readString(codex.thread_sandbox, '') || undefined,
         turn_sandbox_policy: readString(codex.turn_sandbox_policy, '') || undefined,
         user_input_policy: readString(codex.user_input_policy, '') || undefined,

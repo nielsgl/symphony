@@ -15,6 +15,7 @@ export type ValidationErrorCode =
   | 'invalid_tracker_active_states_for_github'
   | 'missing_codex_command'
   | 'invalid_codex_approval_policy'
+  | 'invalid_codex_approval_policy_shape'
   | 'invalid_codex_thread_sandbox'
   | 'invalid_codex_turn_sandbox_policy'
   | 'invalid_codex_user_input_policy'
@@ -54,7 +55,15 @@ export interface AgentConfig {
 export interface CodexConfig {
   command: string;
   security_profile?: string;
-  approval_policy?: string;
+  approval_policy?:
+    | string
+    | {
+        reject?: {
+          sandbox_approval?: boolean;
+          rules?: boolean;
+          mcp_elicitations?: boolean;
+        };
+      };
   thread_sandbox?: string;
   turn_sandbox_policy?: string;
   user_input_policy?: string;

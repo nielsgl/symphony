@@ -113,11 +113,20 @@ export class ConfigValidator {
       };
     }
 
-    if (!isSupportedApprovalPolicy(effectiveConfig.codex.approval_policy)) {
+    const approvalPolicyValue = effectiveConfig.codex.approval_policy;
+    const approvalPolicyLooksLikeObject =
+      approvalPolicyValue !== undefined &&
+      typeof approvalPolicyValue === 'object' &&
+      approvalPolicyValue !== null;
+    if (!isSupportedApprovalPolicy(approvalPolicyValue)) {
       return {
         ok: false,
-        error_code: 'invalid_codex_approval_policy',
-        message: `codex.approval_policy '${effectiveConfig.codex.approval_policy}' is not supported`,
+        error_code: approvalPolicyLooksLikeObject
+          ? 'invalid_codex_approval_policy_shape'
+          : 'invalid_codex_approval_policy',
+        message: approvalPolicyLooksLikeObject
+          ? 'codex.approval_policy object shape is invalid'
+          : `codex.approval_policy '${String(approvalPolicyValue)}' is not supported`,
         at
       };
     }
