@@ -99,7 +99,8 @@ export class SnapshotService {
         issue_id: issueId,
         status: 'running',
         workspace: {
-          path: entry.workspace_path
+          path: entry.workspace_path,
+          host: null
         },
         attempts: {
           restart_count: entry.retry_attempt,
@@ -135,7 +136,11 @@ export class SnapshotService {
           event: event.event,
           message: event.message
         })),
-        last_error: retryEntry?.error ?? state.health.last_error
+        last_error: retryEntry?.error ?? state.health.last_error,
+        logs: {
+          codex_session_logs: []
+        },
+        tracked: {}
       }) as ApiIssueResponse;
     }
 
@@ -154,7 +159,8 @@ export class SnapshotService {
       issue_id: issueId,
       status: 'retrying',
       workspace: {
-        path: null
+        path: null,
+        host: null
       },
       attempts: {
         restart_count: 0,
@@ -167,7 +173,11 @@ export class SnapshotService {
         error: retryOnlyEntry.error
       },
       recent_events: [],
-      last_error: retryOnlyEntry.error
+      last_error: retryOnlyEntry.error,
+      logs: {
+        codex_session_logs: []
+      },
+      tracked: {}
     }) as ApiIssueResponse;
   }
 }

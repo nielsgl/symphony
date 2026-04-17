@@ -147,6 +147,33 @@ describe('createRuntimeEnvironment', () => {
     expect(tracker.fetch_candidate_issues).toHaveBeenCalled();
   });
 
+  it('exposes SSE event stream endpoint for runtime state push updates', async () => {
+    const workflowPath = await makeWorkflowFile();
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [])
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/events`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    await runtime.orchestrator.tick('manual_refresh');
+    await response.body?.cancel();
+  });
+
   it('starts in offline mode when tracker credentials are missing and adapter is provided', async () => {
     const workflowPath = await makeWorkflowFile({ includeTrackerCredentials: false });
     dirs.push(path.dirname(workflowPath));

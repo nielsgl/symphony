@@ -158,11 +158,14 @@ describe('SnapshotService', () => {
 
     const issue = service.projectIssue(state, 'ABC-1');
     expect(issue.workspace.path).toBe('/tmp/symphony/ABC-1');
+    expect(issue.workspace.host).toBeNull();
     expect(issue.running?.thread_id).toBe('thread-1');
     expect(issue.running?.turn_id).toBe('turn-3');
     expect(issue.running?.codex_app_server_pid).toBe('12345');
     expect(issue.running?.last_event_summary).toBe('turn completed: done');
     expect(issue.recent_events).toHaveLength(2);
     expect(issue.recent_events[1]?.event).toBe('turn_completed');
+    expect(issue.logs.codex_session_logs).toEqual([]);
+    expect(issue.tracked).toEqual({});
   });
 });

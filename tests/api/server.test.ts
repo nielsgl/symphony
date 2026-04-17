@@ -92,6 +92,72 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
 
 let server: LocalApiServer | null = null;
 
+async function readSseEvents(
+  response: Response,
+  expectedCount: number,
+  timeoutMs: number = 4000
+): Promise<Array<{ id?: number; event?: string; data: Record<string, unknown> }>> {
+  if (!response.body) {
+    throw new Error('expected stream body');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const events: Array<{ id?: number; event?: string; data: Record<string, unknown> }> = [];
+  let buffer = '';
+  const deadline = Date.now() + timeoutMs;
+
+  while (events.length < expectedCount && Date.now() < deadline) {
+    const result = await Promise.race([
+      reader.read(),
+      new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) =>
+        setTimeout(() => resolve({ done: true, value: undefined }), 250)
+      )
+    ]);
+
+    if (result.done || !result.value) {
+      continue;
+    }
+
+    buffer += decoder.decode(result.value, { stream: true });
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop() ?? '';
+    for (const block of blocks) {
+      const lines = block.split('\n');
+      let id: number | undefined;
+      let eventName: string | undefined;
+      let dataLine = '';
+      for (const line of lines) {
+        if (line.startsWith('id: ')) {
+          id = Number.parseInt(line.slice(4), 10);
+          continue;
+        }
+        if (line.startsWith('event: ')) {
+          eventName = line.slice(7);
+          continue;
+        }
+        if (line.startsWith('data: ')) {
+          dataLine += line.slice(6);
+        }
+      }
+      if (!dataLine) {
+        continue;
+      }
+      events.push({
+        id,
+        event: eventName,
+        data: JSON.parse(dataLine) as Record<string, unknown>
+      });
+      if (events.length >= expectedCount) {
+        break;
+      }
+    }
+  }
+
+  await reader.cancel();
+  return events;
+}
+
 afterEach(async () => {
   if (server) {
     await server.close();
@@ -217,10 +283,13 @@ describe('LocalApiServer', () => {
     expect(knownResponse.status).toBe(200);
     expect(knownPayload.issue_identifier).toBe('ABC-1');
     expect(knownPayload.status).toBe('running');
+    expect((knownPayload.workspace as { host: string | null }).host).toBeNull();
     expect((knownPayload.running as { session_id: string | null }).session_id).toBe('thread-1-turn-1');
     expect((knownPayload.running as { thread_id: string | null }).thread_id).toBe('thread-1');
     expect((knownPayload.running as { turn_id: string | null }).turn_id).toBe('turn-1');
     expect((knownPayload.running as { codex_app_server_pid: string | null }).codex_app_server_pid).toBe('9999');
+    expect((knownPayload.logs as { codex_session_logs: unknown[] }).codex_session_logs).toEqual([]);
+    expect(knownPayload.tracked).toEqual({});
 
     const missingResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-999`);
     const missingPayload = (await missingResponse.json()) as { error: { code: string; message: string } };
@@ -305,7 +374,7 @@ describe('LocalApiServer', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
-    expect(payload).toContain('Symphony Local Control');
+    expect(payload).toContain('Symphony Operator Control');
     expect(payload).toContain('/dashboard/client.js');
     expect(payload).toContain('/dashboard/styles.css');
   });
@@ -329,6 +398,7 @@ describe('LocalApiServer', () => {
     expect(scriptResponse.headers.get('content-type')).toContain('application/javascript');
     expect(scriptPayload).toContain('/api/v1/state');
     expect(scriptPayload).toContain('/api/v1/refresh');
+    expect(scriptPayload).toContain('/api/v1/events');
 
     const cssResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/styles.css`);
     const cssPayload = await cssResponse.text();
@@ -336,6 +406,72 @@ describe('LocalApiServer', () => {
     expect(cssResponse.headers.get('content-type')).toContain('text/css');
     expect(cssPayload).toContain('.layout');
     expect(cssPayload).toContain('.panel');
+  });
+
+  it('serves GET /api/v1/events as SSE and emits state snapshots with monotonic ids', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry()
+        ]
+      ])
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/events`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+
+    server.notifyStateChanged('test');
+    server.notifyStateChanged('test');
+
+    const events = await readSseEvents(response, 2);
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    expect(events[0].event).toBe('symphony');
+    expect((events[0].data.type as string) === 'state_snapshot' || (events[0].data.type as string) === 'runtime_health_changed').toBe(true);
+
+    const ids = events.map((entry) => Number(entry.data.event_id)).filter((entry) => Number.isFinite(entry));
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < ids.length; i += 1) {
+      expect(ids[i]).toBeGreaterThan(ids[i - 1]);
+    }
+  });
+
+  it('emits refresh_accepted event envelopes on POST /api/v1/refresh', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const streamResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/events`);
+    expect(streamResponse.status).toBe(200);
+
+    const refreshResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
+    expect(refreshResponse.status).toBe(202);
+
+    const events = await readSseEvents(streamResponse, 2);
+    const refreshEvent = events.find((entry) => entry.data.type === 'refresh_accepted');
+    expect(refreshEvent).toBeDefined();
+    expect(refreshEvent?.data.generated_at).toBeTypeOf('string');
   });
 
   it('logs bind diagnostics when the server begins listening', async () => {
@@ -366,7 +502,7 @@ describe('LocalApiServer', () => {
     expect(listening?.context.ephemeral_port).toBe(true);
   });
 
-  it('returns 500 envelope when snapshot source throws', async () => {
+  it('returns snapshot_unavailable payload when snapshot source throws', async () => {
     server = new LocalApiServer({
       snapshotSource: {
         getStateSnapshot: () => {
@@ -383,8 +519,9 @@ describe('LocalApiServer', () => {
     const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
     const payload = (await response.json()) as { error: { code: string; message: string } };
 
-    expect(response.status).toBe(500);
-    expect(payload.error.code).toBe('internal_error');
+    expect(response.status).toBe(200);
+    expect(payload.error.code).toBe('snapshot_unavailable');
+    expect(payload.error.message).toContain('Snapshot unavailable');
   });
 
   it('returns failed health semantics for UI health banner rendering', async () => {

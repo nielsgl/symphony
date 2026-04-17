@@ -6,7 +6,7 @@ import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss 
 import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { SnapshotService } from './snapshot-service';
-import type { LocalApiErrorEnvelope, LocalApiServerOptions } from './types';
+import type { ApiEventEnvelope, LocalApiErrorEnvelope, LocalApiServerOptions } from './types';
 
 interface Route {
   method: 'GET' | 'POST';
@@ -62,6 +62,11 @@ export class LocalApiServer {
   private readonly logger?: StructuredLogger;
 
   private readonly server: http.Server;
+  private readonly eventClients: Map<number, ServerResponse>;
+  private nextClientId: number;
+  private nextEventId: number;
+  private heartbeatHandle: NodeJS.Timeout | null;
+  private lastHealthSignature: string | null;
 
   constructor(options: LocalApiServerOptions) {
     this.host = options.host ?? '127.0.0.1';
@@ -74,6 +79,11 @@ export class LocalApiServer {
       refreshSource: options.refreshSource,
       nowMs: options.nowMs
     });
+    this.eventClients = new Map();
+    this.nextClientId = 1;
+    this.nextEventId = 1;
+    this.heartbeatHandle = null;
+    this.lastHealthSignature = null;
 
     this.server = http.createServer((req, res) => {
       void this.handle(req, res);
@@ -90,6 +100,7 @@ export class LocalApiServer {
     });
 
     const address = this.address();
+    this.startHeartbeat();
     this.logger?.log({
       level: 'info',
       event: 'api_server_listening',
@@ -105,6 +116,16 @@ export class LocalApiServer {
   }
 
   async close(): Promise<void> {
+    if (this.heartbeatHandle) {
+      clearInterval(this.heartbeatHandle);
+      this.heartbeatHandle = null;
+    }
+
+    for (const response of this.eventClients.values()) {
+      response.end();
+    }
+    this.eventClients.clear();
+
     await new Promise<void>((resolve, reject) => {
       this.server.close((error) => {
         if (error) {
@@ -126,6 +147,79 @@ export class LocalApiServer {
       host: address.address,
       port: address.port
     };
+  }
+
+  notifyStateChanged(source: string = 'runtime'): void {
+    this.broadcastStateSnapshot(source);
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeatHandle) {
+      return;
+    }
+
+    this.heartbeatHandle = setInterval(() => {
+      this.emitEvent('heartbeat', {
+        source: 'api_server',
+        clients: this.eventClients.size
+      });
+    }, 15_000);
+  }
+
+  private emitEvent(type: ApiEventEnvelope['type'], payload: unknown): void {
+    if (this.eventClients.size === 0) {
+      return;
+    }
+
+    const envelope: ApiEventEnvelope = {
+      event_id: this.nextEventId++,
+      generated_at: new Date().toISOString(),
+      type,
+      payload: redactUnknown(payload)
+    };
+    const message = `id: ${envelope.event_id}\nevent: symphony\ndata: ${JSON.stringify(envelope)}\n\n`;
+
+    for (const [clientId, response] of this.eventClients.entries()) {
+      try {
+        response.write(message);
+      } catch {
+        this.eventClients.delete(clientId);
+      }
+    }
+  }
+
+  private broadcastStateSnapshot(source: string): void {
+    const state = this.snapshotSource.getStateSnapshot();
+    const payload = this.snapshotService.projectState(state);
+    const healthSignature = `${payload.health.dispatch_validation}:${payload.health.last_error ?? ''}`;
+    if (this.lastHealthSignature !== null && this.lastHealthSignature !== healthSignature) {
+      this.emitEvent('runtime_health_changed', {
+        source,
+        health: payload.health
+      });
+    }
+    this.lastHealthSignature = healthSignature;
+    this.emitEvent('state_snapshot', {
+      source,
+      state: payload
+    });
+  }
+
+  private registerEventStream(_request: IncomingMessage, response: ServerResponse): void {
+    response.statusCode = 200;
+    response.setHeader('content-type', 'text/event-stream; charset=utf-8');
+    response.setHeader('cache-control', 'no-cache, no-transform');
+    response.setHeader('connection', 'keep-alive');
+    response.setHeader('x-accel-buffering', 'no');
+    response.write(': connected\n\n');
+
+    const clientId = this.nextClientId++;
+    this.eventClients.set(clientId, response);
+    this.broadcastStateSnapshot('stream_connected');
+
+    response.on('close', () => {
+      this.eventClients.delete(clientId);
+    });
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -172,19 +266,54 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
-              const state = this.snapshotSource.getStateSnapshot();
-              const payload = this.snapshotService.projectState(state);
-              this.logger?.log({
-                level: 'info',
-                event: 'api_state_requested',
-                message: 'served state snapshot',
-                context: {
-                  running: payload.counts.running,
-                  retrying: payload.counts.retrying,
-                  dispatch_validation: payload.health.dispatch_validation
-                }
-              });
-              sendJson(response, 200, payload);
+              try {
+                const state = this.snapshotSource.getStateSnapshot();
+                const payload = this.snapshotService.projectState(state);
+                this.logger?.log({
+                  level: 'info',
+                  event: 'api_state_requested',
+                  message: 'served state snapshot',
+                  context: {
+                    running: payload.counts.running,
+                    retrying: payload.counts.retrying,
+                    dispatch_validation: payload.health.dispatch_validation
+                  }
+                });
+                sendJson(response, 200, payload);
+              } catch (error) {
+                const code =
+                  error instanceof LocalApiError && error.code === 'snapshot_timeout'
+                    ? 'snapshot_timeout'
+                    : 'snapshot_unavailable';
+                const message = code === 'snapshot_timeout' ? 'Snapshot timed out' : 'Snapshot unavailable';
+                this.logger?.log({
+                  level: 'warn',
+                  event: 'api_state_snapshot_unavailable',
+                  message,
+                  context: {
+                    code,
+                    detail: error instanceof Error ? error.message : 'unknown'
+                  }
+                });
+                sendJson(response, 200, {
+                  generated_at: new Date().toISOString(),
+                  error: {
+                    code,
+                    message
+                  }
+                });
+              }
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/events$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (request, response) => {
+              this.registerEventStream(request, response);
             }
           }
         ]
@@ -203,6 +332,10 @@ export class LocalApiServer {
                 context: {
                   coalesced: payload.coalesced
                 }
+              });
+              this.emitEvent('refresh_accepted', {
+                source: 'api_refresh',
+                accepted: payload
               });
               sendJson(response, 202, payload);
             }

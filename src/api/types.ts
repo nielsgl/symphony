@@ -78,6 +78,7 @@ export interface ApiIssueResponse {
   status: 'running' | 'retrying';
   workspace: {
     path: string | null;
+    host: string | null;
   };
   attempts: {
     restart_count: number;
@@ -112,6 +113,10 @@ export interface ApiIssueResponse {
     message: string | null;
   }>;
   last_error: string | null;
+  logs: {
+    codex_session_logs: string[];
+  };
+  tracked: Record<string, unknown>;
 }
 
 export interface ApiRefreshAcceptedResponse {
@@ -119,6 +124,15 @@ export interface ApiRefreshAcceptedResponse {
   coalesced: boolean;
   requested_at: string;
   operations: ['poll', 'reconcile'];
+}
+
+export type ApiEventType = 'state_snapshot' | 'refresh_accepted' | 'runtime_health_changed' | 'heartbeat';
+
+export interface ApiEventEnvelope {
+  event_id: number;
+  generated_at: string;
+  type: ApiEventType;
+  payload: unknown;
 }
 
 export interface LocalApiServerOptions {

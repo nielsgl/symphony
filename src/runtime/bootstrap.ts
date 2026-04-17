@@ -122,6 +122,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
   const codexRunner = new CodexRunner();
   let orchestrator: OrchestratorCore;
+  let apiServer: LocalApiServer | null = null;
 
   const bridge = new LocalRunnerBridge({
     workspaceManager,
@@ -179,6 +180,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             retryTimers.delete(issueId);
           }
         }
+      },
+      notifyObservers: () => {
+        apiServer?.notifyStateChanged('orchestrator_observer');
       }
     },
     nowMs,
@@ -200,7 +204,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   });
 
   const resolvedPort = options.port ?? effectiveConfig.server?.port;
-  const apiServer =
+  apiServer =
     resolvedPort === undefined
       ? null
       : new LocalApiServer({
