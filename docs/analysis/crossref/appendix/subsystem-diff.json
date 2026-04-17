@@ -129,10 +129,12 @@
       "status": "different-safe",
       "classification": "extension",
       "risk": "low",
-      "summary": "Core `/api/v1` contracts align; ours adds diagnostics/history/ui-state and desktop-oriented dashboard assets.",
+      "summary": "Core `/api/v1` contracts align; ours adds explicit `GET /api/v1/events` SSE push, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, and desktop-oriented dashboard assets.",
       "ours_anchors": [
         "src/api/server.ts",
+        "src/api/types.ts",
         "src/api/snapshot-service.ts",
+        "src/api/dashboard-assets.ts",
         "tests/api/server.test.ts"
       ],
       "ref_anchors": [
