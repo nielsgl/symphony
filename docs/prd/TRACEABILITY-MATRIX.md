@@ -69,6 +69,24 @@ P9b runbook and command contract:
 | GitHub Issues + PR metadata | PRD-007 | Phase 2 |
 | Delivery roadmap and gates | PRD-008 | v1 required |
 
+## Test Evidence Index
+Canonical machine-checkable coverage artifacts:
+- Manifest policy (profile->tests/signals/code anchors): `docs/prd/SPEC-TEST-MANIFEST-POLICY.json`
+- Expanded requirement manifest (atomic `SPEC-<section>-<unit>` rows): `docs/prd/SPEC-TEST-MANIFEST.json`
+- Gate scripts:
+  - `scripts/check-spec-coverage.js`
+  - `scripts/check-meta.js`
+
+Execution tiers:
+- `pr`: deterministic unit/contract/integration gates + `npm run check:spec-coverage`
+- `nightly`: full deterministic suite + web and desktop e2e commands
+- `pre-release`: nightly gates + `npm run validate:integration-profile:required`
+
+Coverage policy:
+- Requirement-level mapping is the hard acceptance gate.
+- Line/branch coverage is informational and scoped to runtime code (`src/**`)
+  with type-barrel exclusions configured in `vitest.config.ts`.
+
 ## Audit Checklist
 - [x] All matrix rows have at least one concrete test implementation reference.
 - [x] All matrix rows have at least one runtime/API observability output.

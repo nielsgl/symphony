@@ -28,6 +28,30 @@ Owner: orchestration planning
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
+## Implementation Evidence (SPEC Coverage Program)
+- Date: 2026-04-17
+- Scope delivered:
+  - Added canonical requirement-level manifest policy and expanded artifact:
+    - `docs/prd/SPEC-TEST-MANIFEST-POLICY.json`
+    - `docs/prd/SPEC-TEST-MANIFEST.json`
+  - Added deterministic gate script:
+    - `scripts/check-spec-coverage.js`
+  - Added test-ID convention in suite titles using `SPEC-<section>-<unit>` tags
+    for canonical anchors referenced by the manifest.
+  - Added coverage scope policy in `vitest.config.ts`:
+    - report scope limited to runtime code (`src/**`),
+    - pure type files (`src/**/types.ts`) excluded from reported percentages.
+  - Added tiered gate references in traceability:
+    - PR: deterministic suite + `check:spec-coverage`
+    - Nightly: deterministic + e2e
+    - Pre-release: nightly + required real integration profile
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:spec-coverage`
+  - `npm run check:meta`
+  - `git diff --check`
+
 ## Done
 - [x] PRD package authored in `docs/prd/`.
 - [x] Master system contract defined (`PRD-000`).
