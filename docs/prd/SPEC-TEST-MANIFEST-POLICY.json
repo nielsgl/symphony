@@ -1,0 +1,240 @@
+{
+  "owner_role": "orchestration planning",
+  "section_tier_overrides": {
+    "13": "nightly",
+    "17.6": "nightly",
+    "17.8": "pre-release",
+    "18.3": "pre-release"
+  },
+  "test_index": {
+    "SPEC-4.1-1": {
+      "file": "tests/orchestrator/core.test.ts",
+      "title_contains": "dispatches in priority->created_at->identifier order"
+    },
+    "SPEC-5.1-1": {
+      "file": "tests/workflow/loader.test.ts",
+      "title_contains": "[SPEC-5.1-1][SPEC-17.1-1] prefers explicit path over cwd default"
+    },
+    "SPEC-6.2-1": {
+      "file": "tests/workflow/watcher.test.ts",
+      "title_contains": "keeps last known good config on invalid reload"
+    },
+    "SPEC-6.4-1": {
+      "file": "tests/workflow/watcher.test.ts",
+      "title_contains": "keeps last known good config on invalid reload"
+    },
+    "SPEC-7.1-1": {
+      "file": "tests/orchestrator/core.test.ts",
+      "title_contains": "dispatches in priority->created_at->identifier order"
+    },
+    "SPEC-8.1-1": {
+      "file": "tests/orchestrator/core.test.ts",
+      "title_contains": "dispatches in priority->created_at->identifier order"
+    },
+    "SPEC-9.1-1": {
+      "file": "tests/workspace/workspace-manager.test.ts",
+      "title_contains": "[SPEC-9.1-1][SPEC-17.2-1] derives deterministic workspace key and path from issue identifier"
+    },
+    "SPEC-10.1-1": {
+      "file": "tests/codex/runner.test.ts",
+      "title_contains": "[SPEC-10.1-1][SPEC-17.5-1] launches with bash command/cwd and performs ordered startup handshake"
+    },
+    "SPEC-11.2-1": {
+      "file": "tests/tracker/linear-adapter.test.ts",
+      "title_contains": "[SPEC-11.2-1][SPEC-17.3-1] uses project slugId + active-state filter and preserves pagination order"
+    },
+    "SPEC-12.1-1": {
+      "file": "tests/workflow/watcher.test.ts",
+      "title_contains": "keeps last known good config on invalid reload"
+    },
+    "SPEC-13.5-1": {
+      "file": "tests/codex/runner.test.ts",
+      "title_contains": "[SPEC-13.5-1] extracts usage/rate-limit telemetry from compatible payload variants"
+    },
+    "SPEC-13.7-1": {
+      "file": "tests/api/server.test.ts",
+      "title_contains": "[SPEC-13.7-1][SPEC-17.6-1] serves GET /api/v1/state with required baseline fields"
+    },
+    "SPEC-14.1-1": {
+      "file": "tests/orchestrator/core.test.ts",
+      "title_contains": "[SPEC-14.1-1] logs tracker state refresh failure and keeps workers running"
+    },
+    "SPEC-15.1-1": {
+      "file": "tests/security/profiles.test.ts",
+      "title_contains": "[SPEC-15.1-1][SPEC-15.5-1] uses strict safe defaults when workflow does not override"
+    },
+    "SPEC-15.5-1": {
+      "file": "tests/security/profiles.test.ts",
+      "title_contains": "[SPEC-15.1-1][SPEC-15.5-1] uses strict safe defaults when workflow does not override"
+    },
+    "SPEC-17.1-1": {
+      "file": "tests/workflow/loader.test.ts",
+      "title_contains": "[SPEC-5.1-1][SPEC-17.1-1] prefers explicit path over cwd default"
+    },
+    "SPEC-17.2-1": {
+      "file": "tests/workspace/workspace-manager.test.ts",
+      "title_contains": "[SPEC-9.1-1][SPEC-17.2-1] derives deterministic workspace key and path from issue identifier"
+    },
+    "SPEC-17.3-1": {
+      "file": "tests/tracker/linear-adapter.test.ts",
+      "title_contains": "[SPEC-11.2-1][SPEC-17.3-1] uses project slugId + active-state filter and preserves pagination order"
+    },
+    "SPEC-17.4-1": {
+      "file": "tests/orchestrator/core.test.ts",
+      "title_contains": "dispatches in priority->created_at->identifier order"
+    },
+    "SPEC-17.5-1": {
+      "file": "tests/codex/runner.test.ts",
+      "title_contains": "[SPEC-10.1-1][SPEC-17.5-1] launches with bash command/cwd and performs ordered startup handshake"
+    },
+    "SPEC-17.6-1": {
+      "file": "tests/api/server.test.ts",
+      "title_contains": "[SPEC-13.7-1][SPEC-17.6-1] serves GET /api/v1/state with required baseline fields"
+    },
+    "SPEC-17.7-1": {
+      "file": "tests/cli/lifecycle.test.ts",
+      "title_contains": "[SPEC-17.7-1] exits success on normal startup and signal-based shutdown"
+    },
+    "SPEC-17.8-1": {
+      "file": "tests/cli/integration-profile-script.test.ts",
+      "title_contains": "[SPEC-17.8-1][SPEC-18.3-1] runs live required mode with operational checks and tracker smoke markers"
+    },
+    "SPEC-18-1": {
+      "file": "tests/cli/meta-check-scripts.test.ts",
+      "title_contains": "passes api contract and governance checks in repository root"
+    },
+    "SPEC-18.1-1": {
+      "file": "tests/cli/meta-check-scripts.test.ts",
+      "title_contains": "passes api contract and governance checks in repository root"
+    },
+    "SPEC-18.2-1": {
+      "file": "tests/cli/meta-check-scripts.test.ts",
+      "title_contains": "passes api contract and governance checks in repository root"
+    },
+    "SPEC-18.3-1": {
+      "file": "tests/cli/integration-profile-script.test.ts",
+      "title_contains": "[SPEC-17.8-1][SPEC-18.3-1] runs live required mode with operational checks and tracker smoke markers"
+    }
+  },
+  "profile_policies": {
+    "EP-STACK": {
+      "subsystem": "runtime-stack",
+      "mandatory_test_ids": ["SPEC-4.1-1"],
+      "required_observability_signals": ["runtime_started", "runtime_stopped", "/api/v1/state"],
+      "code_anchors": ["src/index.ts", "src/runtime/bootstrap.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-WORKFLOW": {
+      "subsystem": "workflow-config",
+      "mandatory_test_ids": ["SPEC-5.1-1", "SPEC-6.2-1", "SPEC-12.1-1"],
+      "required_observability_signals": ["health.dispatch_validation", "health.last_error", "workflow reload"],
+      "code_anchors": ["src/workflow/loader.ts", "src/workflow/resolver.ts", "src/workflow/watcher.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-ORCH": {
+      "subsystem": "orchestrator-core",
+      "mandatory_test_ids": ["SPEC-7.1-1", "SPEC-8.1-1"],
+      "required_observability_signals": ["/api/v1/state", "retry", "reconcile"],
+      "code_anchors": ["src/orchestrator/core.ts", "src/orchestrator/decisions.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-WORKSPACE": {
+      "subsystem": "workspace-safety",
+      "mandatory_test_ids": ["SPEC-9.1-1"],
+      "required_observability_signals": ["workspace", "hook", "cleanup"],
+      "code_anchors": ["src/workspace/manager.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-CODEX": {
+      "subsystem": "codex-runner",
+      "mandatory_test_ids": ["SPEC-10.1-1", "SPEC-13.5-1"],
+      "required_observability_signals": ["session_started", "token", "rate-limit"],
+      "code_anchors": ["src/codex/runner.ts", "src/orchestrator/local-worker-runner.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-TRACKER": {
+      "subsystem": "tracker-adapter",
+      "mandatory_test_ids": ["SPEC-11.2-1"],
+      "required_observability_signals": ["tracker request", "tracker error", "/api/v1/state"],
+      "code_anchors": ["src/tracker/linear-adapter.ts", "src/tracker/github-adapter.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-OBS": {
+      "subsystem": "api-observability",
+      "mandatory_test_ids": ["SPEC-13.7-1"],
+      "required_observability_signals": ["/api/v1/state", "/api/v1/refresh", "structured log"],
+      "code_anchors": ["src/api/server.ts", "src/api/snapshot-service.ts", "src/observability/logger.ts"],
+      "execution_tier": "nightly"
+    },
+    "EP-SECURITY": {
+      "subsystem": "security-profile",
+      "mandatory_test_ids": ["SPEC-15.1-1"],
+      "required_observability_signals": ["security_profile_active", "/api/v1/diagnostics"],
+      "code_anchors": ["src/security/profiles.ts", "src/security/redaction.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-TESTMATRIX": {
+      "subsystem": "acceptance-matrix",
+      "mandatory_test_ids": ["SPEC-17.1-1", "SPEC-17.2-1", "SPEC-17.3-1", "SPEC-17.4-1", "SPEC-17.5-1", "SPEC-17.6-1", "SPEC-17.7-1"],
+      "required_observability_signals": ["/api/v1/state", "/api/v1/refresh", "runtime health"],
+      "code_anchors": ["src/workflow", "src/workspace", "src/tracker", "src/orchestrator", "src/codex", "src/api"],
+      "execution_tier": "pr"
+    },
+    "EP-CONFIG-PARITY": {
+      "subsystem": "config-parity",
+      "mandatory_test_ids": ["SPEC-6.4-1"],
+      "required_observability_signals": ["validation error codes", "dispatch preflight health"],
+      "code_anchors": ["src/workflow/resolver.ts", "src/workflow/validator.ts", "src/workflow/types.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-DOMAIN-PARITY": {
+      "subsystem": "domain-parity",
+      "mandatory_test_ids": ["SPEC-4.1-1"],
+      "required_observability_signals": ["/api/v1/state.running", "/api/v1/:issue_identifier"],
+      "code_anchors": ["src/orchestrator/types.ts", "src/orchestrator/core.ts", "src/api/types.ts", "src/api/snapshot-service.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-TELEMETRY-PARITY": {
+      "subsystem": "telemetry-parity",
+      "mandatory_test_ids": ["SPEC-13.5-1"],
+      "required_observability_signals": ["codex_totals", "rate_limits", "event_summary"],
+      "code_anchors": ["src/codex/runner.ts", "src/orchestrator/core.ts", "src/runtime/bootstrap.ts"],
+      "execution_tier": "nightly"
+    },
+    "EP-HTTP-PARITY": {
+      "subsystem": "http-parity",
+      "mandatory_test_ids": ["SPEC-13.7-1", "SPEC-17.6-1"],
+      "required_observability_signals": ["/", "/api/v1/state", "/api/v1/refresh"],
+      "code_anchors": ["src/api/server.ts", "src/runtime/bootstrap.ts", "scripts/start-dashboard.js"],
+      "execution_tier": "nightly"
+    },
+    "EP-FAILURE-PARITY": {
+      "subsystem": "failure-recovery",
+      "mandatory_test_ids": ["SPEC-14.1-1"],
+      "required_observability_signals": ["dispatch_validation_failed", "dispatch_validation_recovered", "tracker_state_refresh_failed"],
+      "code_anchors": ["src/workflow/watcher.ts", "src/orchestrator/core.ts", "src/runtime/bootstrap.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-SECURITY-HARDENING": {
+      "subsystem": "security-hardening",
+      "mandatory_test_ids": ["SPEC-15.5-1"],
+      "required_observability_signals": ["security_profile_active", "diagnostics.active_profile", "redacted structured logs"],
+      "code_anchors": ["src/security/profiles.ts", "src/security/redaction.ts", "src/workspace/manager.ts", "src/runtime/bootstrap.ts"],
+      "execution_tier": "pr"
+    },
+    "EP-REAL-INTEGRATION": {
+      "subsystem": "real-integration",
+      "mandatory_test_ids": ["SPEC-17.8-1", "SPEC-18.3-1"],
+      "required_observability_signals": ["P9B_PROFILE_RESULT", "P9B_EVIDENCE_REAL_TRACKER", "P9B_EVIDENCE_OPERATIONAL_CHECKS"],
+      "code_anchors": ["scripts/validate-real-integration-profile.js", "docs/prd/P9B-REAL-INTEGRATION-PROFILE.md"],
+      "execution_tier": "pre-release"
+    },
+    "EP-CONFORMANCE": {
+      "subsystem": "conformance-checklist",
+      "mandatory_test_ids": ["SPEC-18.1-1", "SPEC-18.2-1", "SPEC-18-1"],
+      "required_observability_signals": ["TRACEABILITY-MATRIX", "/api/v1/state", "structured runtime log"],
+      "code_anchors": ["docs/prd/TRACEABILITY-MATRIX.md", "src/orchestrator/core.ts", "src/api/server.ts"],
+      "execution_tier": "pr"
+    }
+  }
+}
