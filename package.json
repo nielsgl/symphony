@@ -25,6 +25,7 @@
     "check:pr-governance": "node scripts/check-pr-governance.js",
     "check:meta": "node scripts/check-meta.js",
     "start:dashboard": "npm run build && node scripts/start-dashboard.js",
+    "start:project-dashboard": "bash scripts/start-project-dashboard.sh",
     "start:api": "npm run start:dashboard",
     "start:web": "npm run start:dashboard",
     "start:desktop": "npm run build && tauri dev",

@@ -105,6 +105,28 @@ or
 SYMPHONY_PORT=5050 npm run start:dashboard
 ```
 
+### Project Wrapper (Recommended for Multi-Project)
+
+Use the wrapper to run Symphony against another repository's `WORKFLOW.md`
+without remembering full startup flags:
+
+```bash
+npm run start:project-dashboard -- ../symphony-todo-app
+```
+
+Optional flags:
+
+```bash
+npm run start:project-dashboard -- ../symphony-todo-app --port 3001
+npm run start:project-dashboard -- ../symphony-todo-app --offline
+```
+
+Behavior:
+
+- Defaults to `--workflow=<app-repo>/WORKFLOW.md`
+- Uses `--port=0` by default to avoid port collisions
+- Always includes the required guardrail acknowledgment flag
+
 ### Script Aliases
 
 These aliases intentionally launch the same local API/dashboard surface:
