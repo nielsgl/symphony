@@ -191,6 +191,20 @@ describe('ConfigResolver', () => {
     expect(config.persistence.retention_days).toBe(30);
   });
 
+  it('defaults persistence.db_path to workflow directory when workflow path is provided', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve(
+      {
+        config: {},
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.persistence.db_path).toBe(path.normalize('/workspace/projects/todo-app/.symphony/runtime.sqlite'));
+  });
+
   it('parses optional worker extension fields', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 

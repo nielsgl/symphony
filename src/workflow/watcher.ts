@@ -127,8 +127,9 @@ export class WorkflowWatcher {
     const at = nowIso(this.clock);
 
     try {
-      const workflowDefinition = this.loader.load({ explicitPath: this.explicitPath, cwd: this.cwd });
-      const effectiveConfig = this.resolver.resolve(workflowDefinition);
+      const workflowPath = this.loader.resolvePath({ explicitPath: this.explicitPath, cwd: this.cwd });
+      const workflowDefinition = this.loader.load({ explicitPath: workflowPath, cwd: this.cwd });
+      const effectiveConfig = this.resolver.resolve(workflowDefinition, { workflowPath });
       const validation = this.validator.validate(effectiveConfig);
 
       if (!validation.ok) {

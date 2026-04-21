@@ -52,10 +52,11 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   const logger = options.logger ?? new MultiSinkLogger();
 
   const workflowLoader = new WorkflowLoader();
-  const workflowDefinition = workflowLoader.load({ explicitPath: options.workflowPath });
+  const resolvedWorkflowPath = workflowLoader.resolvePath({ explicitPath: options.workflowPath });
+  const workflowDefinition = workflowLoader.load({ explicitPath: resolvedWorkflowPath });
 
   const configResolver = new ConfigResolver();
-  const effectiveConfig = configResolver.resolve(workflowDefinition);
+  const effectiveConfig = configResolver.resolve(workflowDefinition, { workflowPath: resolvedWorkflowPath });
 
   const validator = new ConfigValidator();
   const startupValidation = validator.validate(effectiveConfig);

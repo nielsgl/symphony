@@ -9,6 +9,10 @@ interface ResolverOptions {
   tmpdir?: () => string;
 }
 
+interface ResolveOptions {
+  workflowPath?: string;
+}
+
 const DEFAULT_LINEAR_ACTIVE_STATES = ['Todo', 'In Progress'];
 const DEFAULT_LINEAR_TERMINAL_STATES = ['Closed', 'Cancelled', 'Canceled', 'Duplicate', 'Done'];
 const DEFAULT_GITHUB_ACTIVE_STATES = ['Open'];
@@ -197,7 +201,7 @@ export class ConfigResolver {
     this.tmpdir = options.tmpdir ?? os.tmpdir;
   }
 
-  resolve(workflowDefinition: WorkflowDefinition): EffectiveConfig {
+  resolve(workflowDefinition: WorkflowDefinition, options: ResolveOptions = {}): EffectiveConfig {
     const config = asRecord(workflowDefinition.config);
 
     const tracker = asRecord(config.tracker);
@@ -244,11 +248,16 @@ export class ConfigResolver {
     const hooksTimeoutMs = hooksTimeoutCandidate > 0 ? hooksTimeoutCandidate : 60000;
 
     const codexCommand = readString(codex.command, 'codex app-server');
+    const workflowScopedPersistencePath =
+      typeof options.workflowPath === 'string' && options.workflowPath.trim().length > 0
+        ? path.join(path.dirname(path.resolve(options.workflowPath)), '.symphony', 'runtime.sqlite')
+        : path.join(this.homedir(), '.symphony', 'runtime.sqlite');
+
     const persistenceDbPath = resolvePathLikeValue(
       persistence.db_path,
       this.env,
       this.homedir(),
-      path.join(this.homedir(), '.symphony', 'runtime.sqlite')
+      workflowScopedPersistencePath
     );
 
     const resolved: EffectiveConfig = {
