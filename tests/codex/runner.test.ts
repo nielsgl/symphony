@@ -605,7 +605,7 @@ describe('CodexRunner', () => {
       '{"method":"thread/tokenUsage/updated","params":{"usage":{"input_tokens":99,"output_tokens":99,"total_tokens":99}}}\n'
     );
     fake.emitStdout(
-      '{"method":"thread/tokenUsage/updated","params":{"totalTokenUsage":{"input_tokens":17,"output_tokens":6,"total_tokens":23,"cached_input_tokens":5,"reasoning_output_tokens":4,"model_context_window":16384},"last_token_usage":{"input_tokens":999,"output_tokens":999,"total_tokens":999}}}\n'
+      '{"method":"token/count","params":{"info":{"total_token_usage":{"input_tokens":17,"output_tokens":6,"total_tokens":23,"cached_input_tokens":5,"reasoning_output_tokens":4,"model_context_window":16384},"last_token_usage":{"input_tokens":999,"output_tokens":999,"total_tokens":999}}}}\n'
     );
     fake.emitStdout('{"method":"limits/update","params":{"rateLimits":{"remaining":42,"limit":100}}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
@@ -649,6 +649,55 @@ describe('CodexRunner', () => {
         input_tokens: 20,
         output_tokens: 10,
         total_tokens: 30
+      }
+    });
+  });
+
+  it('captures model_context_window from tokenUsage container when total payload omits it', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"modelContextWindow":131072,"total":{"inputTokens":11,"outputTokens":7,"totalTokens":18},"last":{"inputTokens":11,"outputTokens":7,"totalTokens":18}}}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 11,
+        output_tokens: 7,
+        total_tokens: 18,
+        model_context_window: 131072
+      }
+    });
+  });
+
+  it('ignores info.last_token_usage when no absolute total is present', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":99,"output_tokens":99,"total_tokens":198}}}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0
       }
     });
   });

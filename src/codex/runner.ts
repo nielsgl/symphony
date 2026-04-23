@@ -180,6 +180,29 @@ function parseTokenTotals(payload: Record<string, unknown> | null): CodexUsageTo
   return null;
 }
 
+function mergeTokenUsageMetadata(
+  absolute: CodexUsageTotals,
+  tokenUsageContainer: Record<string, unknown> | null
+): CodexUsageTotals {
+  if (!tokenUsageContainer) {
+    return absolute;
+  }
+
+  if (typeof absolute.model_context_window === 'number') {
+    return absolute;
+  }
+
+  const containerContextWindow = tokenUsageContainer.model_context_window ?? tokenUsageContainer.modelContextWindow;
+  if (typeof containerContextWindow === 'number') {
+    return {
+      ...absolute,
+      model_context_window: containerContextWindow
+    };
+  }
+
+  return absolute;
+}
+
 class UsageTracker {
   private lastAbsolute: CodexUsageTotals | null = null;
   private aggregate: CodexUsageTotals = {
@@ -200,7 +223,14 @@ class UsageTracker {
     // Token accounting is strict-canonical: absolute totals only.
     if (method === 'thread/tokenusage/updated') {
       const tokenUsage = asRecord(params.tokenUsage);
-      absolute = parseTokenTotals(asRecord(tokenUsage?.total));
+      const parsedTotal = parseTokenTotals(asRecord(tokenUsage?.total));
+      absolute = parsedTotal ? mergeTokenUsageMetadata(parsedTotal, tokenUsage) : null;
+    }
+
+    if (!absolute) {
+      const info = asRecord(params.info);
+      const infoTotalTokenUsage = asRecord(info?.total_token_usage) ?? asRecord(info?.totalTokenUsage);
+      absolute = parseTokenTotals(infoTotalTokenUsage);
     }
 
     if (!absolute) {
