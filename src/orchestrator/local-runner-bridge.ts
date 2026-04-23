@@ -1,5 +1,7 @@
 import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
+import type { StructuredLogger } from '../observability';
+import { CANONICAL_EVENT } from '../observability/events';
 import type { Issue } from '../tracker';
 import { TemplateEngine, type Template } from '../workflow';
 import type { EffectiveConfig } from '../workflow';
@@ -20,6 +22,7 @@ export interface LocalRunnerBridgeOptions {
   config: EffectiveConfig;
   promptTemplate: string;
   renderPrompt?: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
+  logger?: StructuredLogger;
   onWorkerExit?: (params: { issue_id: string; reason: 'normal' | 'abnormal'; error?: string }) => Promise<void> | void;
   onWorkerEvent?: (params: { issue_id: string; event: CodexRunnerEvent }) => void;
 }
@@ -29,6 +32,7 @@ export class LocalRunnerBridge {
   private readonly codexRunner: CodexRunner;
   private readonly config: EffectiveConfig;
   private readonly renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
+  private readonly logger?: StructuredLogger;
   private readonly onWorkerExit?: LocalRunnerBridgeOptions['onWorkerExit'];
   private readonly onWorkerEvent?: LocalRunnerBridgeOptions['onWorkerEvent'];
 
@@ -44,6 +48,7 @@ export class LocalRunnerBridge {
         return compiledTemplate.render({ issue: issue as unknown as Record<string, unknown>, attempt });
       };
     }
+    this.logger = options.logger;
     this.onWorkerExit = options.onWorkerExit;
     this.onWorkerEvent = options.onWorkerEvent;
   }
@@ -80,6 +85,17 @@ export class LocalRunnerBridge {
   }
 
   private async startWorker(issue: Issue, attempt: number | null, worker_host: string | null): Promise<void> {
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.agentRunner.attemptStarted,
+      message: 'agent runner attempt started',
+      context: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        worker_host,
+        attempt: attempt ?? 0
+      }
+    });
     const result = await runLocalWorkerAttempt({
       issue,
       attempt,
@@ -92,6 +108,30 @@ export class LocalRunnerBridge {
         this.onWorkerEvent?.({ issue_id: issue.id, event });
       }
     });
+    if (result.reason === 'normal') {
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.agentRunner.attemptCompleted,
+        message: 'agent runner attempt completed',
+        context: {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          session_id: result.session_id
+        }
+      });
+    } else {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.agentRunner.attemptFailed,
+        message: 'agent runner attempt failed',
+        context: {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          session_id: result.session_id,
+          error: result.error ?? 'unknown'
+        }
+      });
+    }
 
     await this.onWorkerExit?.({
       issue_id: issue.id,

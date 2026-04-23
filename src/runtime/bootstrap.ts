@@ -139,6 +139,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     workspaceManager,
     codexRunner,
     config: effectiveConfig,
+    logger,
     promptTemplate: workflowDefinition.prompt_template,
     onWorkerExit: async ({ issue_id, reason, error }) => {
       await orchestrator.onWorkerExit(issue_id, reason, error);

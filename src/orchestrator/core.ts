@@ -276,7 +276,12 @@ export class OrchestratorCore {
             this.logger?.log({
               level: 'warn',
               event: CANONICAL_EVENT.persistence.recordSessionFailed,
-              message: `failed to persist session for ${runningEntry.identifier}`
+              message: `failed to persist session for ${runningEntry.identifier}`,
+              context: {
+                issue_id,
+                issue_identifier: runningEntry.identifier,
+                session_id: workerEvent.session_id
+              }
             });
           });
       }
@@ -357,7 +362,12 @@ export class OrchestratorCore {
             this.logger?.log({
               level: 'warn',
               event: CANONICAL_EVENT.persistence.recordEventFailed,
-              message: `failed to persist worker event for ${runningEntry.identifier}`
+              message: `failed to persist worker event for ${runningEntry.identifier}`,
+              context: {
+                issue_id,
+                issue_identifier: runningEntry.identifier,
+                session_id: runningEntry.session_id
+              }
             });
           });
     }
@@ -406,6 +416,19 @@ export class OrchestratorCore {
         delay_type: 'continuation',
         error: null
       });
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.orchestration.workerExitHandled,
+        message: 'worker exit handled: completed; retrying continuation',
+        context: {
+          issue_id,
+          issue_identifier: running.identifier,
+          session_id: running.session_id,
+          reason,
+          outcome: 'completed',
+          retry_attempt: 1
+        }
+      });
     } else {
       await this.completeRunRecord(running, 'failed', error ?? `worker exited: ${reason}`);
       this.state.health.last_error = `worker exited for ${running.identifier}`;
@@ -415,6 +438,20 @@ export class OrchestratorCore {
         attempt: running.retry_attempt + 1,
         delay_type: 'failure',
         error: error ?? `worker exited: ${reason}`
+      });
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.orchestration.workerExitHandled,
+        message: 'worker exit handled: failed; retrying',
+        context: {
+          issue_id,
+          issue_identifier: running.identifier,
+          session_id: running.session_id,
+          reason,
+          outcome: 'failed',
+          retry_attempt: running.retry_attempt + 1,
+          error: error ?? null
+        }
       });
     }
 
@@ -439,7 +476,7 @@ export class OrchestratorCore {
         message: 'failed to fetch candidates for retry dispatch',
         context: {
           issue_id,
-          identifier: retryEntry.identifier,
+          issue_identifier: retryEntry.identifier,
           attempt: retryEntry.attempt,
           error: error instanceof Error ? error.message : 'unknown'
         }
@@ -587,6 +624,17 @@ export class OrchestratorCore {
         error: 'worker stalled'
       });
       this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.orchestration.workerStalled,
+        message: 'worker stalled; retrying',
+        context: {
+          issue_id: issueId,
+          issue_identifier: runningEntry.identifier,
+          session_id: runningEntry.session_id,
+          elapsed_ms: elapsedMs
+        }
+      });
       this.recordRuntimeEvent({
         event: CANONICAL_EVENT.orchestration.workerStalled,
         severity: 'warn',
@@ -598,8 +646,27 @@ export class OrchestratorCore {
   }
 
   private async dispatchIssue(issue: Issue, attempt: number | null): Promise<void> {
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.dispatchAttemptStarted,
+      message: 'dispatch attempt started',
+      context: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        retry_attempt: attempt ?? 0
+      }
+    });
     const workerHost = this.selectWorkerHost();
     if ((this.config.worker_hosts?.length ?? 0) > 0 && !workerHost) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.orchestration.workerHostSlotsExhausted,
+        message: 'dispatch blocked: no available worker host slots',
+        context: {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier
+        }
+      });
       this.recordRuntimeEvent({
         event: CANONICAL_EVENT.orchestration.workerHostSlotsExhausted,
         severity: 'warn',
@@ -620,6 +687,17 @@ export class OrchestratorCore {
 
     if (!spawned.ok) {
       this.state.health.last_error = `failed to spawn agent for ${issue.identifier}`;
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.orchestration.dispatchSpawnFailed,
+        message: 'dispatch failed; retrying',
+        context: {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          retry_attempt: nextAttempt(attempt),
+          error: spawned.error
+        }
+      });
       await this.scheduleRetry({
         issue_id: issue.id,
         identifier: issue.identifier,
@@ -629,6 +707,16 @@ export class OrchestratorCore {
       });
       return;
     }
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.dispatchSpawnSucceeded,
+      message: 'dispatch spawn succeeded',
+      context: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        worker_host: spawned.worker_host ?? workerHost ?? null
+      }
+    });
 
     this.state.running.set(issue.id, {
       issue,
@@ -673,7 +761,11 @@ export class OrchestratorCore {
         this.logger?.log({
           level: 'warn',
           event: CANONICAL_EVENT.persistence.startRunFailed,
-          message: `failed to start durable run record for ${issue.identifier}`
+          message: `failed to start durable run record for ${issue.identifier}`,
+          context: {
+            issue_id: issue.id,
+            issue_identifier: issue.identifier
+          }
         });
       }
     }
@@ -704,6 +796,18 @@ export class OrchestratorCore {
     await this.completeRunRecord(runningEntry, 'cancelled', reason);
     this.state.running.delete(issue_id);
     this.state.claimed.delete(issue_id);
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.workerTerminated,
+      message: `worker terminated: ${reason}`,
+      context: {
+        issue_id,
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id,
+        cleanup_workspace,
+        reason
+      }
+    });
 
     const retry = this.state.retry_attempts.get(issue_id);
     if (retry) {
@@ -744,6 +848,19 @@ export class OrchestratorCore {
     });
 
     this.state.claimed.add(params.issue_id);
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.retryScheduled,
+      message: `retry scheduled (${params.delay_type})`,
+      context: {
+        issue_id: params.issue_id,
+        issue_identifier: params.identifier,
+        attempt: params.attempt,
+        delay_type: params.delay_type,
+        due_at_ms: dueAtMs,
+        error: params.error ?? null
+      }
+    });
   }
 
   private addRuntimeSecondsFromEntry(runningEntry: RunningEntry): void {
@@ -769,7 +886,12 @@ export class OrchestratorCore {
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.completeRunFailed,
-        message: `failed to complete durable run record for ${runningEntry.identifier}`
+        message: `failed to complete durable run record for ${runningEntry.identifier}`,
+        context: {
+          issue_id: runningEntry.issue.id,
+          issue_identifier: runningEntry.identifier,
+          session_id: runningEntry.session_id
+        }
       });
     }
   }

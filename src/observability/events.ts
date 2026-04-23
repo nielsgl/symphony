@@ -25,9 +25,20 @@ export const CANONICAL_EVENT = {
   orchestration: {
     dispatchValidationFailed: 'orchestration.dispatch.validation.failed',
     dispatchValidationRecovered: 'orchestration.dispatch.validation.recovered',
+    dispatchAttemptStarted: 'orchestration.dispatch.attempt.started',
+    dispatchSpawnSucceeded: 'orchestration.dispatch.spawn.succeeded',
+    dispatchSpawnFailed: 'orchestration.dispatch.spawn.failed',
+    retryScheduled: 'orchestration.retry.scheduled',
+    workerExitHandled: 'orchestration.worker.exit.handled',
+    workerTerminated: 'orchestration.worker.terminated',
     workerEvent: 'orchestration.worker.event',
     workerStalled: 'orchestration.worker.stalled',
     workerHostSlotsExhausted: 'orchestration.worker.host_slots_exhausted'
+  },
+  agentRunner: {
+    attemptStarted: 'agent_runner.attempt.started',
+    attemptCompleted: 'agent_runner.attempt.completed',
+    attemptFailed: 'agent_runner.attempt.failed'
   },
   tracker: {
     candidateFetchFailed: 'tracker.candidates.fetch_failed',
