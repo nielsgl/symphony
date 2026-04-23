@@ -43,7 +43,6 @@ interface Harness {
   scheduled: Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>;
   terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }>;
   spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null }>;
-  notifyObservers: ReturnType<typeof vi.fn>;
 }
 
 function createHarness(options: {
@@ -56,7 +55,6 @@ function createHarness(options: {
   const scheduled = new Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>();
   const terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }> = [];
   const spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null }> = [];
-  const notifyObservers = vi.fn();
 
   const config: OrchestratorConfig = {
     poll_interval_ms: 30_000,
@@ -102,13 +100,13 @@ function createHarness(options: {
           }
         }
       },
-      notifyObservers
+      notifyObservers: () => undefined
     },
     nowMs: () => now.value,
     logger: options.logger
   });
 
-  return { orchestrator, tracker, now, scheduled, terminated, spawned, notifyObservers };
+  return { orchestrator, tracker, now, scheduled, terminated, spawned };
 }
 
 describe('OrchestratorCore', () => {
@@ -392,7 +390,7 @@ describe('OrchestratorCore', () => {
         terminateWorker: async () => undefined,
         scheduleRetryTimer: () => ({}),
         cancelRetryTimer: () => undefined,
-        notifyObservers: harness.notifyObservers
+        notifyObservers: () => undefined
       },
       nowMs: () => harness.now.value
     });
@@ -406,7 +404,6 @@ describe('OrchestratorCore', () => {
   it('emits dispatch validation recovered when preflight transitions failed->ok', async () => {
     const tracker = makeTracker();
     const now = { value: 1_000_000 };
-    const notifyObservers = vi.fn();
     const logs: Array<{ event: string; level: 'info' | 'warn' | 'error' }> = [];
     const dispatchAllowed = { value: false };
     const logger: StructuredLogger = {
@@ -435,7 +432,7 @@ describe('OrchestratorCore', () => {
         terminateWorker: async () => undefined,
         scheduleRetryTimer: () => ({}),
         cancelRetryTimer: () => undefined,
-        notifyObservers
+        notifyObservers: () => undefined
       },
       nowMs: () => now.value,
       logger
