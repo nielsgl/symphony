@@ -8,8 +8,9 @@ Symphony treats only absolute thread totals as authoritative for accounting.
 
 Accepted source precedence:
 1. `thread/tokenUsage/updated.params.tokenUsage.total`
-2. `params.total_token_usage`
-3. `params.totalTokenUsage`
+2. `params.info.total_token_usage` (or `params.info.totalTokenUsage`)
+3. `params.total_token_usage`
+4. `params.totalTokenUsage`
 
 Rejected for totals:
 - `tokenUsage.last`

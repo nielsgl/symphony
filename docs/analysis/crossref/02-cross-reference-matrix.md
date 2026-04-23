@@ -43,7 +43,7 @@
 |---|---|---|---|---|---|
 | Session IDs and turn lifecycle | `<thread_id>-<turn_id>`, rich stream handling, auto approval routing | `<thread_id>-<turn_id>`, continuation handling, unsupported request rejection, elicitation cancel with canonical event vocabulary (`v2`) | `functionally-equivalent` | `spec-required` | Keep; XR-09 closed in P12 |
 | Dynamic tool call support | Built-in `linear_graphql` dynamic tool | Built-in registry/executor with default `linear_graphql` dynamic tool; unsupported tools remain deterministic and non-stalling | `functionally-equivalent` | `extension` | Keep default-enabled tool path (XR-05 closed) |
-| Token accounting semantics | Uses absolute thread token totals as durable source and treats deltas/event-scoped usage carefully (`docs/token_accounting.md`) | Uses strict-canonical absolute source precedence (`tokenUsage.total` -> `total_token_usage` -> `totalTokenUsage`), excludes generic/last usage for totals, and projects optional dimensions to state/diagnostics | `equivalent` | `spec-required` | Keep strict-canonical accounting contract (XR-10 closed in P13) |
+| Token accounting semantics | Uses absolute thread token totals as durable source and treats deltas/event-scoped usage carefully (`docs/token_accounting.md`) | Uses strict-canonical absolute source precedence (`tokenUsage.total` -> `info.total_token_usage` -> `total_token_usage` -> `totalTokenUsage`), excludes generic/last usage for totals, and projects optional dimensions to state/diagnostics | `equivalent` | `spec-required` | Keep strict-canonical accounting contract (XR-10 closed in P13) |
 
 ### API endpoint semantics and error envelopes
 | Interface Area | Reference | Ours | Status | Classification | Recommendation |
