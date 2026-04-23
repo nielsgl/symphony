@@ -1,6 +1,6 @@
 # Symphony PRD Execution Status
 
-Last updated: 2026-04-17
+Last updated: 2026-04-23
 Owner: orchestration planning
 
 ## How Agents Should Use This File
@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P12 observability + vocabulary harmonization closure.
-- Current phase: P1 (entry approved; implementation delivered through P12 closure evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P14 logging parity closure.
+- Current phase: P1 (entry approved; implementation delivered through P14 closure evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P12`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P14`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -181,6 +181,34 @@ Ownership evidence links:
 - [x] P10: Implement web parity + superset UI/runtime push upgrades (SSE + redesigned operator surface).
 - [x] P11: Implement XR-01/XR-02/XR-04/XR-05/XR-08 with breaking defaults now.
 - [x] P12: Implement XR-06/XR-09 observability enrichment + canonical event vocabulary harmonization.
+- [x] P14: Implement logging lifecycle/context parity closure against reference logging contract.
+
+## Implementation Evidence (P14)
+- Date: 2026-04-23
+- Scope delivered:
+  - Added explicit orchestrator lifecycle logs for dispatch attempt/success/failure, retry scheduling, worker exits, termination transitions, and stall handling.
+  - Standardized issue/session log context keys for issue-related logs (`issue_id`, `issue_identifier`, `session_id`) and removed non-canonical `identifier` usage from retry failure logs.
+  - Added explicit AgentRunner boundary logs for attempt started/completed/failed with issue/session context.
+  - Extended canonical event vocabulary for new lifecycle events and updated covered emitter checks.
+  - Added reference-aligned local logging contract document in `docs/logging.md`.
+- Key outputs:
+  - `src/observability/events.ts`
+  - `src/orchestrator/core.ts`
+  - `src/orchestrator/local-runner-bridge.ts`
+  - `src/runtime/bootstrap.ts`
+  - `tests/orchestrator/core.test.ts`
+  - `tests/orchestrator/local-runner-bridge.test.ts`
+  - `tests/observability/events-vocabulary.test.ts`
+  - `docs/logging.md`
+  - `docs/analysis/crossref/02-cross-reference-matrix.md`
+  - `docs/analysis/crossref/03-recommendations-and-migration-plan.md`
+  - `docs/analysis/crossref/appendix/subsystem-diff.json`
+  - `docs/prd/STATUS.md`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
 
 ## Implementation Evidence (P12)
 - Date: 2026-04-17

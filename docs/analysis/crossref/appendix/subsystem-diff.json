@@ -42,17 +42,18 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Retry/backoff, reconciliation, and worker lifecycle are semantically aligned despite GenServer vs class-based architecture.",
+      "summary": "Retry/backoff, reconciliation, and worker lifecycle are semantically aligned despite GenServer vs class-based architecture; logging lifecycle/context parity is now explicitly aligned (dispatch/retry/exit/termination/stall).",
       "ours_anchors": [
         "src/orchestrator/core.ts",
-        "tests/orchestrator/core.test.ts"
+        "tests/orchestrator/core.test.ts",
+        "docs/logging.md"
       ],
       "ref_anchors": [
         "elixir/lib/symphony_elixir/orchestrator.ex",
         "elixir/test/symphony_elixir/core_test.exs",
         "elixir/test/symphony_elixir/orchestrator_status_test.exs"
       ],
-      "recommendations": ["XR-00"]
+      "recommendations": []
     },
     {
       "id": "worker-execution",

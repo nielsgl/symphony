@@ -132,6 +132,24 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/tests/api/snapshot-service.test.ts`
   - `/Users/niels.van.Galen.last/code/symphony/docs/token-accounting.md`
 
+### XR-11 — Logging lifecycle/context parity alignment
+- Priority: `P1`
+- Decision: `adopted` (closed in `P14`)
+- Delivered:
+  - explicit orchestrator lifecycle logs for dispatch, retry scheduling, worker exits, terminal/non-active transitions, and stall handling,
+  - canonical issue/session context-key normalization (`issue_id`, `issue_identifier`, `session_id`) across issue-related logs,
+  - explicit AgentRunner boundary logs for attempt start/completion/failure,
+  - reference-aligned local logging contract documentation in `docs/logging.md`.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/observability/events.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/core.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/local-runner-bridge.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/bootstrap.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/orchestrator/core.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/orchestrator/local-runner-bridge.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/observability/events-vocabulary.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/docs/logging.md`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -153,6 +171,6 @@ Prioritization model:
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, and `XR-10` are marked closed with concrete code/test anchors.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, and `XR-11` are marked closed with concrete code/test anchors.
 - Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.
