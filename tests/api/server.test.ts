@@ -668,6 +668,7 @@ describe('LocalApiServer', () => {
       event_vocabulary_version: string;
       token_accounting: {
         mode: string;
+        canonical_precedence: string[];
         observed_dimensions: {
           cached_input_tokens: boolean;
           reasoning_output_tokens: boolean;
@@ -680,6 +681,13 @@ describe('LocalApiServer', () => {
     expect(diagnosticsPayload.persistence.retention_days).toBe(14);
     expect(diagnosticsPayload.event_vocabulary_version).toBe(EVENT_VOCABULARY_VERSION);
     expect(diagnosticsPayload.token_accounting.mode).toBe('strict_canonical');
+    expect(diagnosticsPayload.token_accounting.canonical_precedence).toEqual([
+      'thread/tokenUsage/updated.params.tokenUsage.total',
+      'params.info.total_token_usage',
+      'params.info.totalTokenUsage',
+      'params.total_token_usage',
+      'params.totalTokenUsage'
+    ]);
     expect(diagnosticsPayload.token_accounting.observed_dimensions.cached_input_tokens).toBe(false);
 
     const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history?limit=1`);

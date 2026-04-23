@@ -390,6 +390,8 @@ export class LocalApiServer {
                   mode: 'strict_canonical',
                   canonical_precedence: [
                     'thread/tokenUsage/updated.params.tokenUsage.total',
+                    'params.info.total_token_usage',
+                    'params.info.totalTokenUsage',
                     'params.total_token_usage',
                     'params.totalTokenUsage'
                   ],
