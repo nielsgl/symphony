@@ -112,6 +112,26 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
   - `/Users/niels.van.Galen.last/code/symphony/tests/observability/events-vocabulary.test.ts`
 
+### XR-10 — Token accounting semantics alignment
+- Priority: `P1`
+- Decision: `adopted` (closed in `P13`)
+- Delivered:
+  - strict-canonical token accounting precedence using absolute thread totals only,
+  - exclusion of generic `usage` and `last` payloads from cumulative total accounting,
+  - support for canonical v2 `tokenUsage.total`,
+  - additive optional dimensions (`cached_input_tokens`, `reasoning_output_tokens`, `model_context_window`) projected through state and diagnostics.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/codex/runner.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/codex/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/core.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/snapshot-service.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/codex/runner.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/orchestrator/core.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/snapshot-service.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/docs/token-accounting.md`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -126,13 +146,13 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-- None. Parity recommendations are closed through `P12`.
+- None. Parity recommendations are closed through `P13`.
 - Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
 ## Suggested Rollout Order (Post-P12)
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, and `XR-09` are marked closed with concrete code/test anchors.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, and `XR-10` are marked closed with concrete code/test anchors.
 - Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.

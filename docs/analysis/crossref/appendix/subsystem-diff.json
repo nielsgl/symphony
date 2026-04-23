@@ -78,11 +78,12 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implement robust app-server lifecycle and error mapping; dynamic tools are now default-enabled in ours with deterministic unsupported behavior.",
+      "summary": "Both implement robust app-server lifecycle and error mapping; dynamic tools are default-enabled in ours and token accounting now uses strict-canonical absolute-total precedence aligned to reference semantics.",
       "ours_anchors": [
         "src/codex/runner.ts",
         "src/codex/dynamic-tools.ts",
-        "tests/codex/runner.test.ts"
+        "tests/codex/runner.test.ts",
+        "docs/token-accounting.md"
       ],
       "ref_anchors": [
         "elixir/lib/symphony_elixir/codex/app_server.ex",
