@@ -71,6 +71,14 @@ function describeProtocolError(error: unknown): string {
   return details.length > 0 ? ` (${details.join(' ')})` : '';
 }
 
+function requiresExperimentalApiCapability(error: unknown): boolean {
+  if (!(error instanceof CodexRunnerError) || error.code !== 'response_error') {
+    return false;
+  }
+
+  return error.message.toLowerCase().includes('requires experimentalapi capability');
+}
+
 function normalizeTurnSandboxPolicy(policy: Record<string, unknown> | undefined): Record<string, unknown> {
   const candidateType = readString(policy?.type);
 
@@ -152,14 +160,20 @@ function parseTokenTotals(payload: Record<string, unknown> | null): CodexUsageTo
     return null;
   }
 
-  const input = payload.input_tokens;
-  const output = payload.output_tokens;
-  const total = payload.total_tokens;
+  const input = payload.input_tokens ?? payload.inputTokens;
+  const output = payload.output_tokens ?? payload.outputTokens;
+  const total = payload.total_tokens ?? payload.totalTokens;
   if (typeof input === 'number' && typeof output === 'number' && typeof total === 'number') {
+    const cached = payload.cached_input_tokens ?? payload.cachedInputTokens;
+    const reasoning = payload.reasoning_output_tokens ?? payload.reasoningOutputTokens;
+    const contextWindow = payload.model_context_window ?? payload.modelContextWindow;
     return {
       input_tokens: input,
       output_tokens: output,
-      total_tokens: total
+      total_tokens: total,
+      ...(typeof cached === 'number' ? { cached_input_tokens: cached } : {}),
+      ...(typeof reasoning === 'number' ? { reasoning_output_tokens: reasoning } : {}),
+      ...(typeof contextWindow === 'number' ? { model_context_window: contextWindow } : {})
     };
   }
 
@@ -183,14 +197,15 @@ class UsageTracker {
 
     let absolute: CodexUsageTotals | null = null;
 
-    const totalTokenUsage = asRecord(params.total_token_usage) ?? asRecord(params.totalTokenUsage);
-    absolute = parseTokenTotals(totalTokenUsage);
+    // Token accounting is strict-canonical: absolute totals only.
+    if (method === 'thread/tokenusage/updated') {
+      const tokenUsage = asRecord(params.tokenUsage);
+      absolute = parseTokenTotals(asRecord(tokenUsage?.total));
+    }
 
-    if (!absolute && method.includes('tokenusage') && method.includes('updated')) {
-      absolute =
-        parseTokenTotals(asRecord(params.usage)) ??
-        parseTokenTotals(asRecord(params.token_usage)) ??
-        parseTokenTotals(asRecord(params.tokenUsage));
+    if (!absolute) {
+      const totalTokenUsage = asRecord(params.total_token_usage) ?? asRecord(params.totalTokenUsage);
+      absolute = parseTokenTotals(totalTokenUsage);
     }
 
     if (!absolute) {
@@ -206,6 +221,26 @@ class UsageTracker {
     this.aggregate.input_tokens += Math.max(0, absolute.input_tokens - this.lastAbsolute.input_tokens);
     this.aggregate.output_tokens += Math.max(0, absolute.output_tokens - this.lastAbsolute.output_tokens);
     this.aggregate.total_tokens += Math.max(0, absolute.total_tokens - this.lastAbsolute.total_tokens);
+    if (typeof absolute.cached_input_tokens === 'number' && typeof this.lastAbsolute.cached_input_tokens === 'number') {
+      this.aggregate.cached_input_tokens = (this.aggregate.cached_input_tokens ?? 0) +
+        Math.max(0, absolute.cached_input_tokens - this.lastAbsolute.cached_input_tokens);
+    } else if (typeof absolute.cached_input_tokens === 'number' && this.aggregate.cached_input_tokens === undefined) {
+      this.aggregate.cached_input_tokens = absolute.cached_input_tokens;
+    }
+
+    if (
+      typeof absolute.reasoning_output_tokens === 'number' &&
+      typeof this.lastAbsolute.reasoning_output_tokens === 'number'
+    ) {
+      this.aggregate.reasoning_output_tokens = (this.aggregate.reasoning_output_tokens ?? 0) +
+        Math.max(0, absolute.reasoning_output_tokens - this.lastAbsolute.reasoning_output_tokens);
+    } else if (typeof absolute.reasoning_output_tokens === 'number' && this.aggregate.reasoning_output_tokens === undefined) {
+      this.aggregate.reasoning_output_tokens = absolute.reasoning_output_tokens;
+    }
+
+    if (typeof absolute.model_context_window === 'number') {
+      this.aggregate.model_context_window = absolute.model_context_window;
+    }
     this.lastAbsolute = { ...absolute };
   }
 
@@ -300,23 +335,38 @@ export class CodexRunner {
         'initialize',
         {
           clientInfo: { name: 'symphony', version: '0.1.0' },
-          capabilities: {}
+          capabilities: {
+            experimentalApi: true
+          }
         },
         input.readTimeoutMs
       );
 
       protocol.notify('initialized', {});
 
-      const threadResponse = await protocol.request(
-        'thread/start',
-        {
-          approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
-          sandbox: input.threadSandbox ?? 'workspace-write',
-          cwd: input.workspaceCwd,
-          dynamicTools: this.dynamicToolExecutor.toolSpecs()
-        },
-        input.readTimeoutMs
-      );
+      const baseThreadStartParams = {
+        approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
+        sandbox: input.threadSandbox ?? 'workspace-write',
+        cwd: input.workspaceCwd
+      };
+
+      let threadResponse: Record<string, unknown>;
+      try {
+        threadResponse = await protocol.request(
+          'thread/start',
+          {
+            ...baseThreadStartParams,
+            dynamicTools: this.dynamicToolExecutor.toolSpecs()
+          },
+          input.readTimeoutMs
+        );
+      } catch (error) {
+        if (!requiresExperimentalApiCapability(error)) {
+          throw error;
+        }
+
+        threadResponse = await protocol.request('thread/start', baseThreadStartParams, input.readTimeoutMs);
+      }
 
       const thread_id = readNestedString(threadResponse, [
         ['thread', 'id'],

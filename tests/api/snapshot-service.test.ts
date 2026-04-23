@@ -177,4 +177,46 @@ describe('SnapshotService', () => {
     expect(issue.logs.codex_session_logs).toEqual([]);
     expect(issue.tracked).toEqual({});
   });
+
+  it('projects enriched optional token dimensions without breaking baseline token fields', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:02:00.000Z')
+    });
+
+    const state = makeState({
+      codex_totals: {
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        cached_input_tokens: 4,
+        reasoning_output_tokens: 3,
+        model_context_window: 200000,
+        seconds_running: 40
+      },
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            tokens: {
+              input_tokens: 11,
+              output_tokens: 5,
+              total_tokens: 16,
+              cached_input_tokens: 2,
+              reasoning_output_tokens: 1,
+              model_context_window: 200000
+            }
+          })
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+    expect(projected.codex_totals.total_tokens).toBe(30);
+    expect(projected.codex_totals.cached_input_tokens).toBe(4);
+    expect(projected.codex_totals.reasoning_output_tokens).toBe(3);
+    expect(projected.codex_totals.model_context_window).toBe(200000);
+    expect(projected.running[0]?.tokens.cached_input_tokens).toBe(2);
+    expect(projected.running[0]?.tokens.reasoning_output_tokens).toBe(1);
+    expect(projected.running[0]?.tokens.model_context_window).toBe(200000);
+  });
 });

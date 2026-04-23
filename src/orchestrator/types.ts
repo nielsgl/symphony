@@ -55,6 +55,9 @@ export interface OrchestratorState {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    cached_input_tokens?: number;
+    reasoning_output_tokens?: number;
+    model_context_window?: number;
     seconds_running: number;
   };
   codex_rate_limits: Record<string, unknown> | null;

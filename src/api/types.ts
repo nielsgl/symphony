@@ -51,6 +51,9 @@ export interface ApiStateResponse {
       input_tokens: number;
       output_tokens: number;
       total_tokens: number;
+      cached_input_tokens?: number;
+      reasoning_output_tokens?: number;
+      model_context_window?: number;
     };
   }>;
   retrying: Array<{
@@ -64,6 +67,9 @@ export interface ApiStateResponse {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    cached_input_tokens?: number;
+    reasoning_output_tokens?: number;
+    model_context_window?: number;
     seconds_running: number;
   };
   rate_limits: Record<string, unknown> | null;
@@ -129,6 +135,9 @@ export interface ApiIssueResponse {
       input_tokens: number;
       output_tokens: number;
       total_tokens: number;
+      cached_input_tokens?: number;
+      reasoning_output_tokens?: number;
+      model_context_window?: number;
     };
   } | null;
   retry: {
@@ -178,4 +187,16 @@ export interface ApiDiagnosticsResponse {
   active_profile: SecurityProfile;
   persistence: PersistenceHealth;
   event_vocabulary_version: string;
+  token_accounting: {
+    mode: 'strict_canonical';
+    canonical_precedence: ['thread/tokenUsage/updated.params.tokenUsage.total', 'params.total_token_usage', 'params.totalTokenUsage'];
+    excludes_generic_usage_for_totals: true;
+    excludes_last_usage_for_totals: true;
+    optional_dimensions: ['cached_input_tokens', 'reasoning_output_tokens', 'model_context_window'];
+    observed_dimensions: {
+      cached_input_tokens: boolean;
+      reasoning_output_tokens: boolean;
+      model_context_window: boolean;
+    };
+  };
 }

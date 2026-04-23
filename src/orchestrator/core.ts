@@ -247,7 +247,7 @@ export class OrchestratorCore {
     runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
     runningEntry.last_message = workerEvent.detail ?? null;
 
-    if (workerEvent.thread_id) {
+    if (workerEvent.thread_id && !runningEntry.thread_id) {
       runningEntry.thread_id = workerEvent.thread_id;
     }
 
@@ -286,7 +286,9 @@ export class OrchestratorCore {
       runningEntry.turn_count += 1;
     }
 
-    if (workerEvent.usage) {
+    const usageThreadMatches =
+      !workerEvent.thread_id || !runningEntry.thread_id || workerEvent.thread_id === runningEntry.thread_id;
+    if (workerEvent.usage && usageThreadMatches) {
       const usage = workerEvent.usage;
       const inputDelta = Math.max(0, usage.input_tokens - runningEntry.last_reported_tokens.input_tokens);
       const outputDelta = Math.max(0, usage.output_tokens - runningEntry.last_reported_tokens.output_tokens);
@@ -294,6 +296,32 @@ export class OrchestratorCore {
       this.state.codex_totals.input_tokens += inputDelta;
       this.state.codex_totals.output_tokens += outputDelta;
       this.state.codex_totals.total_tokens += totalDelta;
+      if (
+        typeof usage.cached_input_tokens === 'number' &&
+        typeof runningEntry.last_reported_tokens.cached_input_tokens === 'number'
+      ) {
+        this.state.codex_totals.cached_input_tokens =
+          (this.state.codex_totals.cached_input_tokens ?? 0) +
+          Math.max(0, usage.cached_input_tokens - runningEntry.last_reported_tokens.cached_input_tokens);
+      } else if (typeof usage.cached_input_tokens === 'number' && this.state.codex_totals.cached_input_tokens === undefined) {
+        this.state.codex_totals.cached_input_tokens = usage.cached_input_tokens;
+      }
+      if (
+        typeof usage.reasoning_output_tokens === 'number' &&
+        typeof runningEntry.last_reported_tokens.reasoning_output_tokens === 'number'
+      ) {
+        this.state.codex_totals.reasoning_output_tokens =
+          (this.state.codex_totals.reasoning_output_tokens ?? 0) +
+          Math.max(0, usage.reasoning_output_tokens - runningEntry.last_reported_tokens.reasoning_output_tokens);
+      } else if (
+        typeof usage.reasoning_output_tokens === 'number' &&
+        this.state.codex_totals.reasoning_output_tokens === undefined
+      ) {
+        this.state.codex_totals.reasoning_output_tokens = usage.reasoning_output_tokens;
+      }
+      if (typeof usage.model_context_window === 'number') {
+        this.state.codex_totals.model_context_window = usage.model_context_window;
+      }
       runningEntry.tokens = { ...usage };
       runningEntry.last_reported_tokens = { ...usage };
       if (totalDelta > 0) {

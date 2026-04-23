@@ -366,10 +366,42 @@ export class LocalApiServer {
                 throw new LocalApiError('diagnostics_unavailable', 'Diagnostics source is not configured', 503);
               }
 
+              let observedDimensions = {
+                cached_input_tokens: false,
+                reasoning_output_tokens: false,
+                model_context_window: false
+              };
+              try {
+                const snapshot = this.snapshotSource.getStateSnapshot();
+                observedDimensions = {
+                  cached_input_tokens: typeof snapshot.codex_totals.cached_input_tokens === 'number',
+                  reasoning_output_tokens: typeof snapshot.codex_totals.reasoning_output_tokens === 'number',
+                  model_context_window: typeof snapshot.codex_totals.model_context_window === 'number'
+                };
+              } catch {
+                // Diagnostics should remain available even when state snapshotting is degraded.
+              }
+
               sendJson(response, 200, {
                 active_profile: this.diagnosticsSource.getActiveProfile(),
                 persistence: this.diagnosticsSource.getPersistenceHealth(),
-                event_vocabulary_version: EVENT_VOCABULARY_VERSION
+                event_vocabulary_version: EVENT_VOCABULARY_VERSION,
+                token_accounting: {
+                  mode: 'strict_canonical',
+                  canonical_precedence: [
+                    'thread/tokenUsage/updated.params.tokenUsage.total',
+                    'params.total_token_usage',
+                    'params.totalTokenUsage'
+                  ],
+                  excludes_generic_usage_for_totals: true,
+                  excludes_last_usage_for_totals: true,
+                  optional_dimensions: [
+                    'cached_input_tokens',
+                    'reasoning_output_tokens',
+                    'model_context_window'
+                  ],
+                  observed_dimensions: observedDimensions
+                }
               });
             }
           }

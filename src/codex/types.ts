@@ -41,6 +41,9 @@ export interface CodexUsageTotals {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  cached_input_tokens?: number;
+  reasoning_output_tokens?: number;
+  model_context_window?: number;
 }
 
 export interface CodexTurnResult {

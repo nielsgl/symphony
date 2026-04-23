@@ -666,11 +666,21 @@ describe('LocalApiServer', () => {
       active_profile: { name: string };
       persistence: { retention_days: number };
       event_vocabulary_version: string;
+      token_accounting: {
+        mode: string;
+        observed_dimensions: {
+          cached_input_tokens: boolean;
+          reasoning_output_tokens: boolean;
+          model_context_window: boolean;
+        };
+      };
     };
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.active_profile.name).toBe('balanced');
     expect(diagnosticsPayload.persistence.retention_days).toBe(14);
     expect(diagnosticsPayload.event_vocabulary_version).toBe(EVENT_VOCABULARY_VERSION);
+    expect(diagnosticsPayload.token_accounting.mode).toBe('strict_canonical');
+    expect(diagnosticsPayload.token_accounting.observed_dimensions.cached_input_tokens).toBe(false);
 
     const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history?limit=1`);
     const historyPayload = (await historyResponse.json()) as { runs: Array<{ run_id: string }> };
@@ -711,6 +721,69 @@ describe('LocalApiServer', () => {
         runtime_events_open: true
       },
       panel_state: { issue_detail_open: true }
+    });
+  });
+
+  it('reports observed token accounting dimensions in diagnostics from state snapshot', async () => {
+    const state = makeState({
+      codex_totals: {
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        cached_input_tokens: 25,
+        reasoning_output_tokens: 7,
+        model_context_window: 128000,
+        seconds_running: 10
+      }
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        getActiveProfile: () => ({
+          name: 'balanced',
+          approval_policy: 'on-request',
+          thread_sandbox: 'workspace-write',
+          turn_sandbox_policy: { type: 'workspace' },
+          user_input_policy: 'fail_attempt'
+        }),
+        getPersistenceHealth: () => ({
+          enabled: false,
+          db_path: null,
+          retention_days: 14,
+          run_count: 0,
+          last_pruned_at: null,
+          integrity_ok: true
+        }),
+        listRunHistory: () => [],
+        getUiState: () => null,
+        setUiState: () => undefined
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      token_accounting: {
+        observed_dimensions: {
+          cached_input_tokens: boolean;
+          reasoning_output_tokens: boolean;
+          model_context_window: boolean;
+        };
+      };
+    };
+
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.token_accounting.observed_dimensions).toEqual({
+      cached_input_tokens: true,
+      reasoning_output_tokens: true,
+      model_context_window: true
     });
   });
 

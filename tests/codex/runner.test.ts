@@ -117,6 +117,35 @@ describe('CodexRunner', () => {
     );
   });
 
+  it('retries thread/start without dynamicTools when app-server requires experimentalApi capability', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout(
+      '{"id":2,"error":{"code":"invalid_request","message":"thread/start.dynamicTools requires experimentalApi capability"}}\n'
+    );
+    fake.emitStdout('{"id":3,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":4,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"method":"turn/completed","params":{}}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+
+    const threadStartRequests = parseWrittenMessages(fake).filter((line) => line.method === 'thread/start');
+    expect(threadStartRequests).toHaveLength(2);
+    expect((threadStartRequests[0].params as Record<string, unknown>).dynamicTools).toBeTruthy();
+    expect((threadStartRequests[1].params as Record<string, unknown>).dynamicTools).toBeUndefined();
+  });
+
   it('maps legacy kebab-case turn sandbox policy values to protocol camelCase', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
@@ -570,13 +599,13 @@ describe('CodexRunner', () => {
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
     fake.emitStdout(
-      '{"method":"thread/tokenUsage/updated","params":{"total_token_usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14},"last_token_usage":{"input_tokens":9,"output_tokens":9,"total_tokens":18}}}\n'
+      '{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":10,"outputTokens":4,"totalTokens":14,"cachedInputTokens":3,"reasoningOutputTokens":2,"modelContextWindow":8192},"last":{"inputTokens":9,"outputTokens":9,"totalTokens":18}}}}\n'
     );
     fake.emitStdout(
-      '{"method":"thread/tokenUsage/updated","params":{"usage":{"input_tokens":17,"output_tokens":6,"total_tokens":23}}}\n'
+      '{"method":"thread/tokenUsage/updated","params":{"usage":{"input_tokens":99,"output_tokens":99,"total_tokens":99}}}\n'
     );
     fake.emitStdout(
-      '{"method":"some/other","params":{"usage":{"last_token_usage":{"input_tokens":999,"output_tokens":999,"total_tokens":999}}}}\n'
+      '{"method":"thread/tokenUsage/updated","params":{"totalTokenUsage":{"input_tokens":17,"output_tokens":6,"total_tokens":23,"cached_input_tokens":5,"reasoning_output_tokens":4,"model_context_window":16384},"last_token_usage":{"input_tokens":999,"output_tokens":999,"total_tokens":999}}}\n'
     );
     fake.emitStdout('{"method":"limits/update","params":{"rateLimits":{"remaining":42,"limit":100}}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
@@ -585,11 +614,41 @@ describe('CodexRunner', () => {
       usage: {
         input_tokens: 17,
         output_tokens: 6,
-        total_tokens: 23
+        total_tokens: 23,
+        cached_input_tokens: 5,
+        reasoning_output_tokens: 4,
+        model_context_window: 16384
       },
       rate_limits: {
         remaining: 42,
         limit: 100
+      }
+    });
+  });
+
+  it('does not decrement aggregate usage when absolute totals arrive out of order', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":20,"outputTokens":10,"totalTokens":30},"last":{"inputTokens":20,"outputTokens":10,"totalTokens":30}}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":10,"outputTokens":5,"totalTokens":15},"last":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30
       }
     });
   });

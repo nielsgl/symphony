@@ -26,7 +26,16 @@ function toStateRunningRow(issueId: string, entry: RunningEntry): ApiStateRespon
     tokens: {
       input_tokens: entry.tokens.input_tokens,
       output_tokens: entry.tokens.output_tokens,
-      total_tokens: entry.tokens.total_tokens
+      total_tokens: entry.tokens.total_tokens,
+      ...(typeof entry.tokens.cached_input_tokens === 'number'
+        ? { cached_input_tokens: entry.tokens.cached_input_tokens }
+        : {}),
+      ...(typeof entry.tokens.reasoning_output_tokens === 'number'
+        ? { reasoning_output_tokens: entry.tokens.reasoning_output_tokens }
+        : {}),
+      ...(typeof entry.tokens.model_context_window === 'number'
+        ? { model_context_window: entry.tokens.model_context_window }
+        : {})
     }
   };
 }
@@ -70,6 +79,15 @@ export class SnapshotService {
         input_tokens: state.codex_totals.input_tokens,
         output_tokens: state.codex_totals.output_tokens,
         total_tokens: state.codex_totals.total_tokens,
+        ...(typeof state.codex_totals.cached_input_tokens === 'number'
+          ? { cached_input_tokens: state.codex_totals.cached_input_tokens }
+          : {}),
+        ...(typeof state.codex_totals.reasoning_output_tokens === 'number'
+          ? { reasoning_output_tokens: state.codex_totals.reasoning_output_tokens }
+          : {}),
+        ...(typeof state.codex_totals.model_context_window === 'number'
+          ? { model_context_window: state.codex_totals.model_context_window }
+          : {}),
         seconds_running: state.codex_totals.seconds_running + activeSeconds
       },
       rate_limits: state.codex_rate_limits,
@@ -138,7 +156,16 @@ export class SnapshotService {
           tokens: {
             input_tokens: entry.tokens.input_tokens,
             output_tokens: entry.tokens.output_tokens,
-            total_tokens: entry.tokens.total_tokens
+            total_tokens: entry.tokens.total_tokens,
+            ...(typeof entry.tokens.cached_input_tokens === 'number'
+              ? { cached_input_tokens: entry.tokens.cached_input_tokens }
+              : {}),
+            ...(typeof entry.tokens.reasoning_output_tokens === 'number'
+              ? { reasoning_output_tokens: entry.tokens.reasoning_output_tokens }
+              : {}),
+            ...(typeof entry.tokens.model_context_window === 'number'
+              ? { model_context_window: entry.tokens.model_context_window }
+              : {})
           }
         },
         retry: retryEntry

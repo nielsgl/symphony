@@ -506,10 +506,14 @@ describe('OrchestratorCore', () => {
       timestamp_ms: harness.now.value + 100,
       event: CANONICAL_EVENT.codex.turnCompleted,
       session_id: 'thread-1-turn-1',
+      thread_id: 'thread-1',
       usage: {
         input_tokens: 10,
         output_tokens: 4,
-        total_tokens: 14
+        total_tokens: 14,
+        cached_input_tokens: 3,
+        reasoning_output_tokens: 2,
+        model_context_window: 8192
       },
       detail: 'done'
     });
@@ -523,7 +527,42 @@ describe('OrchestratorCore', () => {
     expect(running?.codex_app_server_pid).toBe('4321');
     expect(running?.last_event_summary).toBe('codex turn completed: done');
     expect(running?.tokens.total_tokens).toBe(14);
+    expect(running?.tokens.cached_input_tokens).toBe(3);
+    expect(running?.tokens.reasoning_output_tokens).toBe(2);
+    expect(running?.tokens.model_context_window).toBe(8192);
     expect(running?.recent_events).toHaveLength(2);
     expect(snapshot.codex_totals.total_tokens).toBe(14);
+    expect(snapshot.codex_totals.cached_input_tokens).toBe(3);
+    expect(snapshot.codex_totals.reasoning_output_tokens).toBe(2);
+    expect(snapshot.codex_totals.model_context_window).toBe(8192);
+  });
+
+  it('ignores usage aggregation when worker event thread_id mismatches active running thread', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-thread-mismatch' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-thread-mismatch', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+
+    harness.orchestrator.onWorkerEvent('i-thread-mismatch', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-2',
+      usage: {
+        input_tokens: 99,
+        output_tokens: 99,
+        total_tokens: 99
+      }
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-thread-mismatch');
+    expect(running?.tokens.total_tokens).toBe(0);
+    expect(snapshot.codex_totals.total_tokens).toBe(0);
   });
 });
