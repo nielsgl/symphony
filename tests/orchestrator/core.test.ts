@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { OrchestratorCore } from '../../src/orchestrator/core';
-import type { OrchestratorConfig, OrchestratorPorts } from '../../src/orchestrator/types';
+import type { OrchestratorConfig, OrchestratorPersistencePort, OrchestratorPorts } from '../../src/orchestrator/types';
 import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
@@ -49,6 +49,7 @@ function createHarness(options: {
   configOverrides?: Partial<OrchestratorConfig>;
   spawnWorker?: OrchestratorPorts['spawnWorker'];
   logger?: StructuredLogger;
+  persistence?: OrchestratorPersistencePort;
 } = {}): Harness {
   const tracker = makeTracker();
   const now = { value: 1_000_000 };
@@ -103,7 +104,8 @@ function createHarness(options: {
       notifyObservers: () => undefined
     },
     nowMs: () => now.value,
-    logger: options.logger
+    logger: options.logger,
+    persistence: options.persistence
   });
 
   return { orchestrator, tracker, now, scheduled, terminated, spawned };
@@ -349,7 +351,13 @@ describe('OrchestratorCore', () => {
   });
 
   it('kills stalled sessions and schedules retry', async () => {
-    const harness = createHarness({ configOverrides: { stall_timeout_ms: 10 } });
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({ configOverrides: { stall_timeout_ms: 10 }, logger });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stall' })]);
     await harness.orchestrator.tick('interval');
 
@@ -369,6 +377,9 @@ describe('OrchestratorCore', () => {
     expect(retryEntry?.attempt).toBe(1);
     expect(retryEntry?.error).toBe('worker stalled');
     expect(snapshot.codex_totals.seconds_running).toBe(3);
+    const stalled = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerStalled);
+    expect(stalled?.context.issue_id).toBe('i-stall');
+    expect(stalled?.context.issue_identifier).toBe('ABC-1');
   });
 
   it('tracks failed dispatch validation in health state', async () => {
@@ -467,10 +478,10 @@ describe('OrchestratorCore', () => {
   });
 
   it('logs retry candidate fetch failure and requeues retry with incremented attempt', async () => {
-    const logs: Array<{ event: string }> = [];
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
     const logger: StructuredLogger = {
-      log: ({ event }) => {
-        logs.push({ event });
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
       }
     };
     const harness = createHarness({ logger });
@@ -485,6 +496,85 @@ describe('OrchestratorCore', () => {
     expect(retryEntry?.attempt).toBe(2);
     expect(retryEntry?.error).toBe('retry poll failed');
     expect(logs.some((entry) => entry.event === CANONICAL_EVENT.tracker.retryFetchFailed)).toBe(true);
+    const failureLog = logs.find((entry) => entry.event === CANONICAL_EVENT.tracker.retryFetchFailed);
+    expect(failureLog?.context.issue_identifier).toBe('ABC-1');
+    expect(failureLog?.context).not.toHaveProperty('identifier');
+  });
+
+  it('emits deterministic lifecycle logs for dispatch, retry scheduling, worker exits, and terminal transitions', async () => {
+    const logs: Array<{ event: string; message: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, message, context }) => {
+        logs.push({ event, message, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({ logger });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-lifecycle', identifier: 'ABC-42' })]);
+
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-lifecycle', 'normal');
+
+    const dispatchStart = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.dispatchAttemptStarted);
+    expect(dispatchStart?.context.issue_id).toBe('i-lifecycle');
+    expect(dispatchStart?.context.issue_identifier).toBe('ABC-42');
+
+    const dispatchSuccess = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.dispatchSpawnSucceeded);
+    expect(dispatchSuccess?.message).toBe('dispatch spawn succeeded');
+    expect(dispatchSuccess?.context.issue_identifier).toBe('ABC-42');
+
+    const workerExit = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerExitHandled);
+    expect(workerExit?.message).toBe('worker exit handled: completed; retrying continuation');
+    expect(workerExit?.context.issue_id).toBe('i-lifecycle');
+    expect(workerExit?.context.issue_identifier).toBe('ABC-42');
+    expect(workerExit?.context).toHaveProperty('session_id');
+
+    const retryScheduled = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.retryScheduled);
+    expect(retryScheduled?.context.issue_id).toBe('i-lifecycle');
+    expect(retryScheduled?.context.issue_identifier).toBe('ABC-42');
+    expect(retryScheduled?.context.delay_type).toBe('continuation');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-terminal', identifier: 'ABC-99' })]);
+    await harness.orchestrator.tick('interval');
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([makeIssue({ id: 'i-terminal', identifier: 'ABC-99', state: 'Done' })]);
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const terminated = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerTerminated);
+    expect(terminated?.context.issue_id).toBe('i-terminal');
+    expect(terminated?.context.issue_identifier).toBe('ABC-99');
+    expect(terminated?.context.reason).toBe('terminal_state_transition');
+    expect(terminated?.context.cleanup_workspace).toBe(true);
+  });
+
+  it('includes issue/session context when session persistence logging fails', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-1',
+      recordSession: async () => {
+        throw new Error('persistence unavailable');
+      },
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({ logger, persistence });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-session-fail', identifier: 'ABC-5' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-session-fail', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      session_id: 'thread-9-turn-1'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const persistenceFailure = logs.find((entry) => entry.event === CANONICAL_EVENT.persistence.recordSessionFailed);
+    expect(persistenceFailure?.context.issue_id).toBe('i-session-fail');
+    expect(persistenceFailure?.context.issue_identifier).toBe('ABC-5');
+    expect(persistenceFailure?.context.session_id).toBe('thread-9-turn-1');
   });
 
   it('aggregates worker event usage and turn counts deterministically', async () => {

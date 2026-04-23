@@ -60,6 +60,7 @@ describe('canonical event vocabulary', () => {
     const coveredFiles = [
       'src/workflow/watcher.ts',
       'src/orchestrator/core.ts',
+      'src/orchestrator/local-runner-bridge.ts',
       'src/runtime/bootstrap.ts',
       'src/runtime/cli-runner.ts',
       'src/api/server.ts'

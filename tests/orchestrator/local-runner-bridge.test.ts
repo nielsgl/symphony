@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { OrchestratorCore } from '../../src/orchestrator/core';
 import { LocalRunnerBridge } from '../../src/orchestrator/local-runner-bridge';
 import type { OrchestratorConfig, OrchestratorPorts } from '../../src/orchestrator/types';
+import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 import type { EffectiveConfig } from '../../src/workflow/types';
@@ -97,11 +98,18 @@ describe('LocalRunnerBridge integration', () => {
     };
 
     let orchestrator!: OrchestratorCore;
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
     const bridge = new LocalRunnerBridge({
       workspaceManager,
       codexRunner,
       config: makeConfig(),
       promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      logger,
       onWorkerExit: async ({ issue_id, reason }) => {
         await orchestrator.onWorkerExit(issue_id, reason);
       }
@@ -143,6 +151,11 @@ describe('LocalRunnerBridge integration', () => {
 
     const retry = orchestrator.getStateSnapshot().retry_attempts.get('i-1');
     expect(retry?.attempt).toBe(1);
+    const started = logs.find((entry) => entry.event === CANONICAL_EVENT.agentRunner.attemptStarted);
+    expect(started?.context.issue_id).toBe('i-1');
+    expect(started?.context.issue_identifier).toBe('ABC-1');
+    const completed = logs.find((entry) => entry.event === CANONICAL_EVENT.agentRunner.attemptCompleted);
+    expect(completed?.context.session_id).toBe('thread-1-turn-1');
   });
 
   it('invokes workspace cleanup helper when terminateWorker requests cleanup', async () => {
@@ -222,11 +235,18 @@ describe('LocalRunnerBridge integration', () => {
     };
 
     let orchestrator!: OrchestratorCore;
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
     const bridge = new LocalRunnerBridge({
       workspaceManager,
       codexRunner,
       config: makeConfig(),
       promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      logger,
       onWorkerExit: async ({ issue_id, reason }) => {
         await orchestrator.onWorkerExit(issue_id, reason);
       }
@@ -261,6 +281,10 @@ describe('LocalRunnerBridge integration', () => {
     const retry = orchestrator.getStateSnapshot().retry_attempts.get('i-1');
     expect(retry?.attempt).toBe(1);
     expect(retry?.error).toBe('worker exited: abnormal');
+    const failed = logs.find((entry) => entry.event === CANONICAL_EVENT.agentRunner.attemptFailed);
+    expect(failed?.context.issue_id).toBe('i-1');
+    expect(failed?.context.issue_identifier).toBe('ABC-1');
+    expect(failed?.context.error).toBe('response timeout');
   });
 
   it('fails fast with codex.startup.failed event when workspace resolves to unsafe root', async () => {
