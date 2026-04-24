@@ -274,6 +274,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     config: effectiveConfig,
     logger,
     promptTemplate: workflowDefinition.prompt_template,
+    issueStateFetcher: async (issue_ids) => tracker.fetch_issue_states_by_ids(issue_ids),
     onWorkerExit: async ({ issue_id, reason, error }) => {
       await orchestrator.onWorkerExit(issue_id, reason, error);
     },

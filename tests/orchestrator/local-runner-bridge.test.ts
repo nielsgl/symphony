@@ -72,6 +72,80 @@ async function flush(): Promise<void> {
 }
 
 describe('LocalRunnerBridge integration', () => {
+  it('stops continuation turns when tracker refresh leaves active states', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+
+    const startSessionAndRunTurn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        session_id: 'thread-1-turn-1',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      })
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-2',
+        turn_id: 'turn-2',
+        session_id: 'thread-2-turn-2',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      });
+
+    const issueStateFetcher = vi
+      .fn()
+      .mockResolvedValueOnce([makeIssue({ id: 'i-1', identifier: 'ABC-1', state: 'In Progress' })])
+      .mockResolvedValueOnce([makeIssue({ id: 'i-1', identifier: 'ABC-1', state: 'Done' })]);
+
+    const workspaceManager = {
+      ensureWorkspace,
+      prepareAttempt,
+      finalizeAttempt,
+      cleanupWorkspace
+    } as unknown as WorkspaceManager;
+
+    const codexRunner = {
+      startSessionAndRunTurn
+    } as unknown as CodexRunner;
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager,
+      codexRunner,
+      config: {
+        ...makeConfig(),
+        agent: {
+          ...makeConfig().agent,
+          max_turns: 5
+        }
+      },
+      issueStateFetcher,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    const workerHandle = spawned.worker_handle as { promise: Promise<void> };
+    await workerHandle.promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledTimes(2);
+    expect(startSessionAndRunTurn.mock.calls[0][0]).toMatchObject({
+      prompt: expect.stringContaining('Issue ABC-1 attempt'),
+      maxTurns: 1
+    });
+    expect(startSessionAndRunTurn.mock.calls[1][0]).toMatchObject({
+      prompt: expect.stringContaining('Continue on the same thread'),
+      maxTurns: 1
+    });
+    expect(issueStateFetcher).toHaveBeenCalledTimes(2);
+    expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
+  });
+
   it('runs workspace ensure/prepare/codex/finalize via orchestrator spawn path', async () => {
     const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
     const prepareAttempt = vi.fn(async () => {});

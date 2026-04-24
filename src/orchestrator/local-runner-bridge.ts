@@ -22,6 +22,7 @@ export interface LocalRunnerBridgeOptions {
   config: EffectiveConfig;
   promptTemplate: string;
   renderPrompt?: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
+  issueStateFetcher?: (issue_ids: string[]) => Promise<Issue[]>;
   logger?: StructuredLogger;
   onWorkerExit?: (params: { issue_id: string; reason: 'normal' | 'abnormal'; error?: string }) => Promise<void> | void;
   onWorkerEvent?: (params: { issue_id: string; event: CodexRunnerEvent }) => void;
@@ -33,6 +34,7 @@ export class LocalRunnerBridge {
   private config: EffectiveConfig;
   private renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
   private readonly logger?: StructuredLogger;
+  private readonly issueStateFetcher: (issue_ids: string[]) => Promise<Issue[]>;
   private readonly onWorkerExit?: LocalRunnerBridgeOptions['onWorkerExit'];
   private readonly onWorkerEvent?: LocalRunnerBridgeOptions['onWorkerEvent'];
 
@@ -49,6 +51,7 @@ export class LocalRunnerBridge {
       };
     }
     this.logger = options.logger;
+    this.issueStateFetcher = options.issueStateFetcher ?? (async () => []);
     this.onWorkerExit = options.onWorkerExit;
     this.onWorkerEvent = options.onWorkerEvent;
   }
@@ -112,6 +115,7 @@ export class LocalRunnerBridge {
       codexRunner: this.codexRunner,
       config: this.config,
       renderPrompt: this.renderPrompt,
+      issueStateFetcher: this.issueStateFetcher,
       onCodexEvent: (event) => {
         this.onWorkerEvent?.({ issue_id: issue.id, event });
       }
