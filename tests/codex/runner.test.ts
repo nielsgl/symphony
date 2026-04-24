@@ -668,7 +668,37 @@ describe('CodexRunner', () => {
     const responses = parseWrittenMessages(fakeElicitation).filter(
       (message) => typeof message.id === 'number' && 'result' in message
     );
-    expect(responses).toContainEqual({ id: 77, result: { action: 'cancel' } });
+    expect(responses.find((message) => message.id === 77)).toBeUndefined();
+  });
+
+  it('auto-answers mcp elicitation approvals when approval options are present', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"id":110,"method":"mcpServer/elicitation/request","params":{"questions":[{"id":"mcp_approval","options":[{"label":"Approve Once"},{"label":"Approve this Session"},{"label":"Cancel"}]}]}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 110);
+    expect(responses).toContainEqual({
+      id: 110,
+      result: {
+        answers: {
+          mcp_approval: {
+            answers: ['Approve this Session']
+          }
+        }
+      }
+    });
   });
 
   it('auto-answers tool requestUserInput approvals when approval options are present', async () => {

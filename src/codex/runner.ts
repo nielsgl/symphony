@@ -214,6 +214,45 @@ function buildToolRequestUserInputAnswers(params: Record<string, unknown>): { an
   return { answers };
 }
 
+function buildMcpElicitationApprovalAnswers(
+  params: Record<string, unknown>
+): { answers: Record<string, { answers: string[] }> } | null {
+  const questions = Array.isArray(params.questions) ? params.questions : null;
+  if (!questions || questions.length === 0) {
+    return null;
+  }
+
+  const answers: Record<string, { answers: string[] }> = {};
+  let validQuestionCount = 0;
+
+  for (const question of questions) {
+    const questionRecord = asRecord(question);
+    const questionId = readString(questionRecord?.id);
+    if (!questionId) {
+      return null;
+    }
+
+    const options = Array.isArray(questionRecord?.options) ? questionRecord.options : null;
+    if (!options) {
+      return null;
+    }
+
+    const approvalLabel = selectApprovalOptionLabel(options);
+    if (!approvalLabel) {
+      return null;
+    }
+
+    answers[questionId] = { answers: [approvalLabel] };
+    validQuestionCount += 1;
+  }
+
+  if (validQuestionCount === 0) {
+    return null;
+  }
+
+  return { answers };
+}
+
 function parseTokenTotals(payload: Record<string, unknown> | null): CodexUsageTotals | null {
   if (!payload) {
     return null;
@@ -782,8 +821,18 @@ class ProtocolClient {
         }
 
         if (this.isMcpElicitationRequest(message)) {
-          this.write({ id: message.id, result: { action: 'cancel' } });
-          emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'mcp elicitation request cancelled' });
+          const params = asRecord(message.params);
+          const response = params ? buildMcpElicitationApprovalAnswers(params) : null;
+          if (response) {
+            this.write({ id: message.id, result: response });
+            emit({
+              event: CANONICAL_EVENT.codex.approvalAutoApproved,
+              detail: 'acceptForSession'
+            });
+            continue;
+          }
+
+          emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'mcp elicitation request requires operator input' });
           return {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
