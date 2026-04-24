@@ -34,6 +34,7 @@ interface WaitForTerminalResult {
 }
 
 const CONTINUATION_GUIDANCE = 'Continue working on the same issue thread. Provide concise progress and next actions.';
+const NON_INTERACTIVE_TOOL_INPUT_ANSWER = 'This is a non-interactive session. Operator input is unavailable.';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -153,6 +154,57 @@ function readNestedString(payload: Record<string, unknown> | null, paths: string
   }
 
   return undefined;
+}
+
+function selectApprovalOptionLabel(options: unknown[]): string | null {
+  const labels = options
+    .map((option) => asRecord(option))
+    .map((record) => readString(record?.label))
+    .filter((label): label is string => Boolean(label));
+
+  for (const preferred of ['Approve this Session', 'Approve Once']) {
+    const exact = labels.find((label) => label === preferred);
+    if (exact) {
+      return exact;
+    }
+  }
+
+  const fallback = labels.find((label) => {
+    const normalized = label.trim().toLowerCase();
+    return normalized.startsWith('approve') || normalized.startsWith('allow');
+  });
+
+  return fallback ?? null;
+}
+
+function buildToolRequestUserInputAnswers(params: Record<string, unknown>): { answers: Record<string, { answers: string[] }> } | null {
+  const questions = Array.isArray(params.questions) ? params.questions : null;
+  if (!questions || questions.length === 0) {
+    return null;
+  }
+
+  const answers: Record<string, { answers: string[] }> = {};
+  let validQuestionCount = 0;
+
+  for (const question of questions) {
+    const questionRecord = asRecord(question);
+    const questionId = readString(questionRecord?.id);
+    if (!questionId) {
+      return null;
+    }
+
+    validQuestionCount += 1;
+    const options = Array.isArray(questionRecord?.options) ? questionRecord.options : null;
+    const approvalLabel = options ? selectApprovalOptionLabel(options) : null;
+    const answerLabel = approvalLabel ?? NON_INTERACTIVE_TOOL_INPUT_ANSWER;
+    answers[questionId] = { answers: [answerLabel] };
+  }
+
+  if (validQuestionCount === 0) {
+    return null;
+  }
+
+  return { answers };
 }
 
 function parseTokenTotals(payload: Record<string, unknown> | null): CodexUsageTotals | null {
@@ -674,6 +726,31 @@ class ProtocolClient {
           continue;
         }
 
+        if (this.isToolRequestUserInput(message)) {
+          const params = asRecord(message.params);
+          const response = params ? buildToolRequestUserInputAnswers(params) : null;
+          if (response) {
+            const usedApprovalOption = Object.values(response.answers).some(
+              (entry) =>
+                Array.isArray(entry.answers) &&
+                entry.answers.some((answer) => answer !== NON_INTERACTIVE_TOOL_INPUT_ANSWER)
+            );
+            this.write({ id: message.id, result: response });
+            emit({
+              event: CANONICAL_EVENT.codex.toolInputAutoAnswered,
+              detail: usedApprovalOption ? 'approval_option' : 'non_interactive_fallback'
+            });
+            continue;
+          }
+
+          emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'tool requestUserInput could not be auto-answered' });
+          return {
+            terminal: 'turn/input_required',
+            usage: this.usageTracker.snapshot(),
+            rate_limits: this.latestRateLimits
+          };
+        }
+
         if (this.isMcpElicitationRequest(message)) {
           this.write({ id: message.id, result: { action: 'cancel' } });
           emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'mcp elicitation request cancelled' });
@@ -867,6 +944,15 @@ class ProtocolClient {
     }
 
     return (message.method ?? '').toLowerCase() === 'mcpserver/elicitation/request';
+  }
+
+  private isToolRequestUserInput(message: ProtocolMessage): boolean {
+    if (typeof message.id !== 'number') {
+      return false;
+    }
+
+    const method = (message.method ?? '').toLowerCase();
+    return method === 'item/tool/requestuserinput';
   }
 
   private isUnhandledServerRequest(message: ProtocolMessage): boolean {

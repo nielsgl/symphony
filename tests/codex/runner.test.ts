@@ -588,6 +588,90 @@ describe('CodexRunner', () => {
     expect(responses).toContainEqual({ id: 77, result: { action: 'cancel' } });
   });
 
+  it('auto-answers tool requestUserInput approvals when approval options are present', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: string[] = [];
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        onEvent: (event) => events.push(event.event)
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"id":88,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"q1","options":[{"label":"Cancel"},{"label":"Approve this Session"}]}]}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 88);
+    expect(responses).toContainEqual({
+      id: 88,
+      result: {
+        answers: {
+          q1: {
+            answers: ['Approve this Session']
+          }
+        }
+      }
+    });
+    expect(events).toContain(CANONICAL_EVENT.codex.toolInputAutoAnswered);
+  });
+
+  it('auto-answers tool requestUserInput with non-interactive fallback when no approval options exist', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"id":89,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"q1","options":[{"label":"Cancel"}]}]}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 89);
+    expect(responses).toContainEqual({
+      id: 89,
+      result: {
+        answers: {
+          q1: {
+            answers: ['This is a non-interactive session. Operator input is unavailable.']
+          }
+        }
+      }
+    });
+  });
+
+  it('fails with turn_input_required when tool requestUserInput cannot be auto-answered', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":90,"method":"item/tool/requestUserInput","params":{"questions":[{"options":[{"label":"Approve this Session"}]}]}}\n');
+
+    await expect(promise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 90);
+    expect(responses).toEqual([]);
+  });
+
   it('[SPEC-13.5-1] extracts usage/rate-limit telemetry from compatible payload variants', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

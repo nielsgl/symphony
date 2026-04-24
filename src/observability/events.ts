@@ -18,6 +18,7 @@ export const CANONICAL_EVENT = {
     turnInputRequired: 'codex.turn.input_required',
     startupFailed: 'codex.startup.failed',
     approvalAutoApproved: 'codex.approval.auto_approved',
+    toolInputAutoAnswered: 'codex.tool_input.auto_answered',
     toolCallCompleted: 'codex.tool.completed',
     toolCallFailed: 'codex.tool.failed',
     unsupportedToolCall: 'codex.tool.unsupported',
