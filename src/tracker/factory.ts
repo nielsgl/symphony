@@ -1,15 +1,22 @@
 import { TrackerAdapterError } from './errors';
 import { GitHubIssuesAdapter } from './github-adapter';
 import { LinearTrackerAdapter } from './linear-adapter';
+import { MemoryTrackerAdapter } from './memory-adapter';
 import type { TrackerAdapter, TrackerRuntimeConfig } from './types';
 
 export function createTrackerAdapter(config: TrackerRuntimeConfig, fetchFn?: typeof fetch): TrackerAdapter {
-  if (config.kind !== 'linear' && config.kind !== 'github') {
+  if (config.kind !== 'linear' && config.kind !== 'github' && config.kind !== 'memory') {
     throw new TrackerAdapterError('unsupported_tracker_kind', `tracker.kind '${config.kind}' is not supported`);
   }
 
-  if (!config.api_key.trim()) {
+  if (config.kind !== 'memory' && !config.api_key.trim()) {
     throw new TrackerAdapterError('missing_tracker_api_key', 'tracker.api_key is required after env resolution');
+  }
+
+  if (config.kind === 'memory') {
+    return new MemoryTrackerAdapter({
+      activeStates: config.active_states
+    });
   }
 
   if (config.kind === 'linear') {

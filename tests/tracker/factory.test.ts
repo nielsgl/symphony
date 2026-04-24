@@ -4,6 +4,7 @@ import { TrackerAdapterError } from '../../src/tracker/errors';
 import { createTrackerAdapter } from '../../src/tracker/factory';
 import { GitHubIssuesAdapter } from '../../src/tracker/github-adapter';
 import { LinearTrackerAdapter } from '../../src/tracker/linear-adapter';
+import { MemoryTrackerAdapter } from '../../src/tracker/memory-adapter';
 
 describe('createTrackerAdapter', () => {
   it('throws typed errors for unsupported tracker kind and missing linear credentials', () => {
@@ -88,5 +89,17 @@ describe('createTrackerAdapter', () => {
     });
 
     expect(adapter).toBeInstanceOf(GitHubIssuesAdapter);
+  });
+
+  it('creates a memory adapter without external credentials', () => {
+    const adapter = createTrackerAdapter({
+      kind: 'memory',
+      endpoint: 'memory://local',
+      api_key: '',
+      project_slug: '',
+      active_states: ['Todo']
+    });
+
+    expect(adapter).toBeInstanceOf(MemoryTrackerAdapter);
   });
 });

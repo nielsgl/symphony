@@ -47,7 +47,11 @@ export class ConfigValidator {
       };
     }
 
-    if (effectiveConfig.tracker.kind !== 'linear' && effectiveConfig.tracker.kind !== 'github') {
+    if (
+      effectiveConfig.tracker.kind !== 'linear' &&
+      effectiveConfig.tracker.kind !== 'github' &&
+      effectiveConfig.tracker.kind !== 'memory'
+    ) {
       return {
         ok: false,
         error_code: 'unsupported_tracker_kind',
@@ -56,7 +60,7 @@ export class ConfigValidator {
       };
     }
 
-    if (!effectiveConfig.tracker.api_key.trim()) {
+    if (effectiveConfig.tracker.kind !== 'memory' && !effectiveConfig.tracker.api_key.trim()) {
       return {
         ok: false,
         error_code: 'missing_tracker_api_key',

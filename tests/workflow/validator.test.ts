@@ -136,6 +136,17 @@ describe('ConfigValidator', () => {
     }
   });
 
+  it('accepts memory tracker config without api key or project slug', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.kind = 'memory';
+    config.tracker.api_key = '';
+    config.tracker.project_slug = '';
+    config.tracker.active_states = ['Todo'];
+
+    expect(validator.validate(config)).toEqual({ ok: true, at: expect.any(String) });
+  });
+
   it('enforces non-empty codex command', () => {
     const validator = new ConfigValidator();
     const config = baseConfig();

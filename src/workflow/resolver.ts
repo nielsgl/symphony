@@ -223,6 +223,8 @@ export class ConfigResolver {
         ? 'https://api.linear.app/graphql'
         : trackerKind === 'github'
           ? 'https://api.github.com/graphql'
+          : trackerKind === 'memory'
+            ? 'memory://local'
           : '');
 
     const trackerApiKeySource =
@@ -232,7 +234,9 @@ export class ConfigResolver {
           ? '$LINEAR_API_KEY'
           : trackerKind === 'github'
             ? '$GITHUB_TOKEN'
-          : '';
+            : trackerKind === 'memory'
+              ? ''
+            : '';
     const trackerApiKey = resolveEnvToken(trackerApiKeySource, this.env);
 
     const trackerProjectSlug = readString(tracker.project_slug, '');

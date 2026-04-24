@@ -81,6 +81,30 @@ describe('ConfigResolver', () => {
     expect(config.tracker.terminal_states).toEqual(['Closed']);
   });
 
+  it('uses memory defaults without tracker token fallback', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        LINEAR_API_KEY: 'linear-token',
+        GITHUB_TOKEN: 'gh-token'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve({
+      config: {
+        tracker: {
+          kind: 'memory'
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.tracker.endpoint).toBe('memory://local');
+    expect(config.tracker.api_key).toBe('');
+    expect(config.tracker.active_states).toEqual(['Todo', 'In Progress']);
+  });
+
   it('treats empty resolved $VAR as missing value', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 

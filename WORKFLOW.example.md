@@ -114,10 +114,11 @@ Return a concise summary with changed files and verification output.
 
 | Key | Type | Default | Allowed values / notes | Required by validator |
 |---|---|---|---|---|
-| `tracker.kind` | string | `""` | `linear` or `github` | Yes |
-| `tracker.endpoint` | string | by kind | `https://api.linear.app/graphql` for `linear`, `https://api.github.com/graphql` for `github` | No |
-| `tracker.api_key` | string | by kind env | `$LINEAR_API_KEY` for `linear`, `$GITHUB_TOKEN` for `github` | Yes |
+| `tracker.kind` | string | `""` | `linear`, `github`, or `memory` | Yes |
+| `tracker.endpoint` | string | by kind | `https://api.linear.app/graphql` (`linear`), `https://api.github.com/graphql` (`github`), `memory://local` (`memory`) | No |
+| `tracker.api_key` | string | by kind env | `$LINEAR_API_KEY` (`linear`), `$GITHUB_TOKEN` (`github`), empty (`memory`) | Required except `memory` |
 | `tracker.project_slug` | string | `""` | project key/slug | Required for `linear` |
+| `tracker.assignee` | string | unset | optional assignee routing filter for `linear`; supports `me`/`viewer` | No |
 | `tracker.owner` | string | `""` | GitHub org/user owner | Required for `github` |
 | `tracker.repo` | string | `""` | GitHub repo name | Required for `github` |
 | `tracker.active_states` | string[] | by kind | `linear`: `Todo`, `In Progress`; `github`: `Open` | No, but see github rule |
@@ -126,6 +127,11 @@ Return a concise summary with changed files and verification output.
 GitHub-specific active state rule:
 - For `tracker.kind: github`, `active_states` must include at least one state that maps to `Open` or `Closed`.
 - If none map, validation fails (`invalid_tracker_active_states_for_github`).
+
+Memory tracker note:
+- `tracker.kind: memory` is for local/dev deterministic testing.
+- It does not require remote credentials.
+- Start with seeded issues in tests or write to it using tracker write-paths.
 
 ### `polling`
 
