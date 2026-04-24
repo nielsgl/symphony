@@ -41,6 +41,8 @@ export interface RetryEntry {
   attempt: number;
   due_at_ms: number;
   error: string | null;
+  worker_host: string | null;
+  workspace_path: string | null;
   timer_handle: unknown;
 }
 

@@ -28,6 +28,8 @@ interface ScheduleRetryParams {
   attempt: number;
   delay_type: RetryDelayType;
   error?: string | null;
+  worker_host?: string | null;
+  workspace_path?: string | null;
 }
 
 function cloneIssue(issue: Issue): Issue {
@@ -61,6 +63,8 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     attempt: entry.attempt,
     due_at_ms: entry.due_at_ms,
     error: entry.error,
+    worker_host: entry.worker_host,
+    workspace_path: entry.workspace_path,
     timer_handle: entry.timer_handle
   };
 }
@@ -439,7 +443,9 @@ export class OrchestratorCore {
         identifier: running.identifier,
         attempt: 1,
         delay_type: 'continuation',
-        error: null
+        error: null,
+        worker_host: running.worker_host ?? null,
+        workspace_path: running.workspace_path ?? null
       });
       this.logger?.log({
         level: 'info',
@@ -462,7 +468,9 @@ export class OrchestratorCore {
         identifier: running.identifier,
         attempt: running.retry_attempt + 1,
         delay_type: 'failure',
-        error: error ?? `worker exited: ${reason}`
+        error: error ?? `worker exited: ${reason}`,
+        worker_host: running.worker_host ?? null,
+        workspace_path: running.workspace_path ?? null
       });
       this.logger?.log({
         level: 'warn',
@@ -517,7 +525,9 @@ export class OrchestratorCore {
         identifier: retryEntry.identifier,
         attempt: retryEntry.attempt + 1,
         delay_type: 'failure',
-        error: 'retry poll failed'
+        error: 'retry poll failed',
+        worker_host: retryEntry.worker_host ?? null,
+        workspace_path: retryEntry.workspace_path ?? null
       });
       return;
     }
@@ -544,7 +554,9 @@ export class OrchestratorCore {
           identifier: issue.identifier,
           attempt: retryEntry.attempt + 1,
           delay_type: 'failure',
-          error: 'no available orchestrator slots'
+          error: 'no available orchestrator slots',
+          worker_host: retryEntry.worker_host ?? null,
+          workspace_path: retryEntry.workspace_path ?? null
         });
       } else {
         this.state.claimed.delete(issue_id);
@@ -646,7 +658,9 @@ export class OrchestratorCore {
         identifier: runningEntry.identifier,
         attempt: runningEntry.retry_attempt + 1,
         delay_type: 'failure',
-        error: 'worker stalled'
+        error: 'worker stalled',
+        worker_host: runningEntry.worker_host ?? null,
+        workspace_path: runningEntry.workspace_path ?? null
       });
       this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
       this.logger?.log({
@@ -703,7 +717,9 @@ export class OrchestratorCore {
         identifier: issue.identifier,
         attempt: nextAttempt(attempt),
         delay_type: 'failure',
-        error: 'no available worker host slots'
+        error: 'no available worker host slots',
+        worker_host: workerHost,
+        workspace_path: null
       });
       return;
     }
@@ -728,7 +744,9 @@ export class OrchestratorCore {
         identifier: issue.identifier,
         attempt: nextAttempt(attempt),
         delay_type: 'failure',
-        error: 'failed to spawn agent'
+        error: 'failed to spawn agent',
+        worker_host: workerHost,
+        workspace_path: null
       });
       return;
     }
@@ -869,6 +887,8 @@ export class OrchestratorCore {
       attempt: params.attempt,
       due_at_ms: dueAtMs,
       error: params.error ?? null,
+      worker_host: params.worker_host ?? null,
+      workspace_path: params.workspace_path ?? null,
       timer_handle: timerHandle
     });
 

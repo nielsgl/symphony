@@ -108,6 +108,21 @@ describe('SnapshotService', () => {
             last_codex_timestamp_ms: null
           })
         ]
+      ]),
+      retry_attempts: new Map([
+        [
+          'issue-2',
+          {
+            issue_id: 'issue-2',
+            identifier: 'ABC-2',
+            attempt: 1,
+            due_at_ms: Date.parse('2026-04-10T10:02:30.000Z'),
+            error: 'retrying',
+            worker_host: 'build-1',
+            workspace_path: '/tmp/symphony/ABC-2',
+            timer_handle: {}
+          }
+        ]
       ])
     });
 
@@ -121,6 +136,8 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.codex_app_server_pid).toBe('12345');
     expect(projected.running[0]?.last_event_summary).toBe('codex turn completed: done');
     expect(projected.running[0]?.turn_count).toBe(3);
+    expect(projected.retrying[0]?.worker_host).toBe('build-1');
+    expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
   });
 
   it('throws issue_not_found for unknown issue projection', () => {

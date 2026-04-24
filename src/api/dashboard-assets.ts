@@ -106,12 +106,14 @@ export function renderDashboardHtml(): string {
               <th>Issue</th>
               <th>Attempt</th>
               <th>Due At</th>
+              <th>Host</th>
+              <th>Workspace</th>
               <th>Error</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="retry-rows">
-            <tr><td colspan="5" class="muted">No issues are waiting for retry.</td></tr>
+            <tr><td colspan="7" class="muted">No issues are waiting for retry.</td></tr>
           </tbody>
         </table>
       </div>
@@ -383,7 +385,7 @@ export function renderDashboardClientJs(): string {
 
       const emptyRetryRow = document.createElement('tr');
       const retryCell = document.createElement('td');
-      retryCell.colSpan = 5;
+      retryCell.colSpan = 7;
       retryCell.className = 'muted';
       retryCell.textContent = 'No retry data while snapshot is unavailable.';
       emptyRetryRow.appendChild(retryCell);
@@ -570,7 +572,7 @@ export function renderDashboardClientJs(): string {
     if (!payload.retrying.length) {
       const emptyRow = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 5;
+      cell.colSpan = 7;
       cell.className = 'muted';
       cell.textContent = 'No issues are waiting for retry.';
       emptyRow.appendChild(cell);
@@ -593,13 +595,19 @@ export function renderDashboardClientJs(): string {
       const errorCell = document.createElement('td');
       errorCell.textContent = entry.error || 'n/a';
 
+      const hostCell = document.createElement('td');
+      hostCell.textContent = entry.worker_host || 'n/a';
+
+      const workspaceCell = document.createElement('td');
+      workspaceCell.textContent = entry.workspace_path || 'n/a';
+
       const actionsCell = document.createElement('td');
       const openJson = createActionButton('JSON', 'ghost-button', function () {
         window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
       });
       actionsCell.appendChild(openJson);
 
-      row.append(issueCell, attemptCell, dueAtCell, errorCell, actionsCell);
+      row.append(issueCell, attemptCell, dueAtCell, hostCell, workspaceCell, errorCell, actionsCell);
       return row;
     });
 

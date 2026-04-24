@@ -59,7 +59,9 @@ export class SnapshotService {
       issue_identifier: entry.identifier,
       attempt: entry.attempt,
       due_at: asIsoDate(entry.due_at_ms),
-      error: entry.error
+      error: entry.error,
+      worker_host: entry.worker_host ?? null,
+      workspace_path: entry.workspace_path ?? null
     }));
 
     const activeSeconds = Array.from(state.running.values()).reduce((total, entry) => {

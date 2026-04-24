@@ -71,6 +71,8 @@ export interface ApiStateResponse {
     attempt: number;
     due_at: string;
     error: string | null;
+    worker_host: string | null;
+    workspace_path: string | null;
   }>;
   codex_totals: {
     input_tokens: number;

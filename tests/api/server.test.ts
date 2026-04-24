@@ -193,6 +193,8 @@ describe('LocalApiServer', () => {
             attempt: 2,
             due_at_ms: Date.parse('2026-04-10T10:02:00.000Z'),
             error: 'no available orchestrator slots',
+            worker_host: 'build-1',
+            workspace_path: '/tmp/symphony/ABC-2',
             timer_handle: {}
           }
         ]
@@ -225,6 +227,10 @@ describe('LocalApiServer', () => {
     expect(payload).toHaveProperty('health');
     expect((payload.counts as { running: number; retrying: number }).running).toBe(1);
     expect((payload.counts as { running: number; retrying: number }).retrying).toBe(1);
+    expect((payload.retrying as Array<{ worker_host: string; workspace_path: string }>)[0]).toMatchObject({
+      worker_host: 'build-1',
+      workspace_path: '/tmp/symphony/ABC-2'
+    });
   });
 
   it('serves GET /api/v1/:issue_identifier projection and returns 404 for unknown issue', async () => {
