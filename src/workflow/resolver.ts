@@ -162,7 +162,15 @@ function expandHome(value: string, homedir: string): string {
 }
 
 function hasPathSeparator(value: string): boolean {
-  return value.includes('/') || value.includes('\\') || value === '~' || value.startsWith('~/') || value.startsWith('~\\');
+  return (
+    value.includes('/') ||
+    value.includes('\\') ||
+    value === '~' ||
+    value.startsWith('~/') ||
+    value.startsWith('~\\') ||
+    value === '.' ||
+    value === '..'
+  );
 }
 
 function resolvePathLikeValue(

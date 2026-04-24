@@ -226,6 +226,36 @@ describe('ConfigResolver', () => {
     });
   });
 
+  it('resolves workspace.provisioner.repo_root dot path against workflow directory', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve(
+      {
+        config: {
+          workspace: {
+            provisioner: {
+              type: 'worktree',
+              repo_root: '.',
+              base_ref: 'origin/main',
+              branch_template: 'feature/{{ issue.identifier }}',
+              teardown_mode: 'remove_worktree'
+            }
+          }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.workspace.provisioner).toMatchObject({
+      type: 'worktree',
+      repo_root: path.normalize('/workspace/projects/todo-app'),
+      base_ref: 'origin/main',
+      branch_template: 'feature/{{ issue.identifier }}',
+      teardown_mode: 'remove_worktree'
+    });
+  });
+
   it('normalizes per-state concurrency map and ignores invalid entries', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 
