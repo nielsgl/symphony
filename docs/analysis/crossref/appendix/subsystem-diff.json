@@ -81,7 +81,7 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implement robust app-server lifecycle and error mapping; dynamic tools are default-enabled in ours and token accounting now uses strict-canonical absolute-total precedence aligned to reference semantics.",
+      "summary": "Both implement robust app-server lifecycle and error mapping; ours now also aligns non-interactive input handling and method-specific approval decisions, with dynamic tools default-enabled and strict-canonical token accounting.",
       "ours_anchors": [
         "src/codex/runner.ts",
         "src/codex/dynamic-tools.ts",
@@ -140,7 +140,7 @@
       "status": "different-safe",
       "classification": "extension",
       "risk": "low",
-      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, and runtime workflow path/reload controls.",
+      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, runtime workflow path/reload controls, and full workspace/worker projection parity.",
       "ours_anchors": [
         "src/api/server.ts",
         "src/api/types.ts",
@@ -221,11 +221,13 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Reference Mix-task quality gates are now mirrored by TS script-level meta checks and test coverage in ours.",
+      "summary": "Reference Mix-task quality gates are now mirrored by TS script-level meta checks and test coverage in ours, including public API contract checks and workspace cleanup helper parity.",
       "ours_anchors": [
         "scripts/check-meta.js",
         "scripts/check-api-contract.js",
         "scripts/check-pr-governance.js",
+        "scripts/check-public-api-contract.js",
+        "scripts/workspace-before-remove.js",
         "tests/cli/meta-check-scripts.test.ts"
       ],
       "ref_anchors": [

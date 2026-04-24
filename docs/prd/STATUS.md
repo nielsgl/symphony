@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P15b functional parity uplift closure.
-- Current phase: P1 (entry approved; implementation delivered through P15 evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P16 functional parity closure.
+- Current phase: P1 (entry approved; implementation delivered through P16 evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P15b`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P16`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -185,6 +185,48 @@ Ownership evidence links:
 - [x] P14b: Implement logging substrate parity (rotating file sink + logs-root + diagnostics + debug-skill alignment).
 - [x] P15: Implement logging hardening (bootstrap API cleanup, CLI duplication guard regression, AST context governance).
 - [x] P15b: Implement functional parity uplift findings F1-F8 (tracker write paths, assignee routing, memory tracker, runtime workflow switching, host binding, retry projection enrichment, observability knobs, prompt fallback).
+- [x] P16: Implement post-P15 functional parity closure findings F1-F6 (non-interactive approvals, method-specific approval mapping, continuation state-aware stop, workspace/worker payload parity, resolvable hostname validation, ops-helper parity scripts).
+
+## Implementation Evidence (P16 Functional Parity Closure)
+- Date: 2026-04-24
+- Scope delivered:
+  - Added deterministic non-interactive `item/tool/requestUserInput` auto-answer handling (approval-option preference + canonical fallback).
+  - Added method-specific approval decision mapping (`acceptForSession`, `approved_for_session`) for protocol approval requests.
+  - Added state-aware continuation stop behavior after each successful turn using tracker state refresh.
+  - Completed workspace/worker projection parity in API payloads:
+    - `/api/v1/state.running[].workspace_path`,
+    - issue `running.workspace_path`,
+    - issue `retry.worker_host` + `retry.workspace_path`,
+    - retry-only issue `workspace.host/path` hydration from retry state.
+  - Expanded `server.host` validation to accept resolvable DNS hostnames with deterministic startup failure on unresolved hosts.
+  - Added ops-helper parity scripts:
+    - `scripts/workspace-before-remove.js`,
+    - `scripts/check-public-api-contract.js` wired into `check:meta`.
+- Key outputs:
+  - `src/codex/runner.ts`
+  - `src/orchestrator/local-worker-runner.ts`
+  - `src/orchestrator/local-runner-bridge.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/workflow/validator.ts`
+  - `src/api/snapshot-service.ts`
+  - `src/api/types.ts`
+  - `src/api/dashboard-assets.ts`
+  - `scripts/workspace-before-remove.js`
+  - `scripts/check-public-api-contract.js`
+  - `scripts/check-meta.js`
+  - `tests/codex/runner.test.ts`
+  - `tests/orchestrator/local-runner-bridge.test.ts`
+  - `tests/api/server.test.ts`
+  - `tests/api/snapshot-service.test.ts`
+  - `tests/runtime/bootstrap.test.ts`
+  - `tests/workflow/validator.test.ts`
+  - `tests/cli/public-api-contract-check.test.ts`
+  - `tests/cli/workspace-before-remove.test.ts`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
 
 ## Implementation Evidence (P15b Functional Parity Uplift)
 - Date: 2026-04-24
