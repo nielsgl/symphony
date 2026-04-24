@@ -37,6 +37,8 @@ export interface TrackerAdapter {
   fetch_candidate_issues(): Promise<Issue[]>;
   fetch_issues_by_states(state_names: string[]): Promise<Issue[]>;
   fetch_issue_states_by_ids(issue_ids: string[]): Promise<Issue[]>;
+  create_comment(issue_id: string, body: string): Promise<void>;
+  update_issue_state(issue_id: string, state_name: string): Promise<void>;
 }
 
 export type TrackerErrorCode =
@@ -50,12 +52,14 @@ export type TrackerErrorCode =
   | 'linear_graphql_errors'
   | 'linear_unknown_payload'
   | 'linear_missing_end_cursor'
+  | 'linear_state_not_found'
   | 'github_api_request'
   | 'github_api_status'
   | 'github_graphql_errors'
   | 'github_unknown_payload'
   | 'github_missing_end_cursor'
-  | 'github_invalid_state_filter';
+  | 'github_invalid_state_filter'
+  | 'github_invalid_state_transition';
 
 export interface TrackerRuntimeConfig {
   kind: string;

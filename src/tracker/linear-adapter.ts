@@ -40,6 +40,10 @@ function readNullableString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
+function readBoolean(value: unknown): boolean {
+  return value === true;
+}
+
 function readObject(value: unknown): Record<string, unknown> | null {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -197,6 +201,40 @@ query IssuesByIds($issueIds: [ID!]!) {
 }`;
 }
 
+export function buildCreateCommentMutation(): string {
+  return `
+mutation CreateComment($issueId: String!, $body: String!) {
+  commentCreate(input: { issueId: $issueId, body: $body }) {
+    success
+  }
+}`;
+}
+
+export function buildIssueStateOptionsQuery(): string {
+  return `
+query IssueStateOptions($issueId: String!) {
+  issue(id: $issueId) {
+    team {
+      states {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+  }
+}`;
+}
+
+export function buildUpdateIssueStateMutation(): string {
+  return `
+mutation UpdateIssueState($issueId: String!, $stateId: String!) {
+  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
+    success
+  }
+}`;
+}
+
 export class LinearTrackerAdapter implements TrackerAdapter {
   private readonly endpoint: string;
   private readonly apiKey: string;
@@ -236,6 +274,31 @@ export class LinearTrackerAdapter implements TrackerAdapter {
     const payload = await this.graphqlRequest(buildIssueStatesByIdsQuery(), { issueIds: issue_ids });
     const nodes = this.extractIssueNodes(payload);
     return nodes.map(normalizeIssue).filter(isMinimalStateIssue);
+  }
+
+  async create_comment(issue_id: string, body: string): Promise<void> {
+    const payload = await this.graphqlRequest(buildCreateCommentMutation(), {
+      issueId: issue_id,
+      body
+    });
+    const data = readObject(payload.data);
+    const commentCreate = data ? readObject(data.commentCreate) : null;
+    if (!commentCreate || !readBoolean(commentCreate.success)) {
+      throw new TrackerAdapterError('linear_unknown_payload', 'Linear payload missing data.commentCreate.success');
+    }
+  }
+
+  async update_issue_state(issue_id: string, state_name: string): Promise<void> {
+    const stateId = await this.resolveStateId(issue_id, state_name);
+    const payload = await this.graphqlRequest(buildUpdateIssueStateMutation(), {
+      issueId: issue_id,
+      stateId
+    });
+    const data = readObject(payload.data);
+    const issueUpdate = data ? readObject(data.issueUpdate) : null;
+    if (!issueUpdate || !readBoolean(issueUpdate.success)) {
+      throw new TrackerAdapterError('linear_unknown_payload', 'Linear payload missing data.issueUpdate.success');
+    }
   }
 
   private async fetchIssuesByStateFilter(stateNames: string[]): Promise<Issue[]> {
@@ -327,6 +390,25 @@ export class LinearTrackerAdapter implements TrackerAdapter {
     }
 
     return objectPayload as unknown as GraphqlSuccess;
+  }
+
+  private async resolveStateId(issueId: string, stateName: string): Promise<string> {
+    const payload = await this.graphqlRequest(buildIssueStateOptionsQuery(), { issueId });
+    const data = readObject(payload.data);
+    const issue = data ? readObject(data.issue) : null;
+    const team = issue ? readObject(issue.team) : null;
+    const states = team ? readObject(team.states) : null;
+    const nodes = states ? readNodes(states) : [];
+    const normalizedName = stateName.trim().toLowerCase();
+    const matchedState = nodes.find((node) => readString(node.name).trim().toLowerCase() === normalizedName);
+    const stateId = matchedState ? readString(matchedState.id, '') : '';
+    if (!stateId) {
+      throw new TrackerAdapterError(
+        'linear_state_not_found',
+        `Linear state '${stateName}' was not found for issue ${issueId}`
+      );
+    }
+    return stateId;
   }
 
   private extractIssuesObject(payload: GraphqlSuccess): Record<string, unknown> {

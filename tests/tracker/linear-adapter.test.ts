@@ -244,4 +244,84 @@ describe('LinearTrackerAdapter', () => {
       code: 'linear_missing_end_cursor'
     });
   });
+
+  it('creates comments via commentCreate mutation', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [new Response(JSON.stringify({ data: { commentCreate: { success: true } } }), { status: 200 })],
+      requests
+    );
+
+    await expect(adapter.create_comment('issue-1', 'hello')).resolves.toBeUndefined();
+    expect(requests[0].query).toContain('mutation CreateComment');
+    expect(requests[0].variables).toEqual({ issueId: 'issue-1', body: 'hello' });
+  });
+
+  it('updates issue state by resolving state id from team states', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [
+        new Response(
+          JSON.stringify({
+            data: {
+              issue: {
+                team: {
+                  states: {
+                    nodes: [
+                      { id: 'state-1', name: 'Todo' },
+                      { id: 'state-2', name: 'In Progress' }
+                    ]
+                  }
+                }
+              }
+            }
+          }),
+          { status: 200 }
+        ),
+        new Response(
+          JSON.stringify({
+            data: {
+              issueUpdate: {
+                success: true
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      requests
+    );
+
+    await expect(adapter.update_issue_state('issue-1', 'in progress')).resolves.toBeUndefined();
+    expect(requests).toHaveLength(2);
+    expect(requests[0].query).toContain('query IssueStateOptions');
+    expect(requests[1].query).toContain('mutation UpdateIssueState');
+    expect(requests[1].variables).toEqual({ issueId: 'issue-1', stateId: 'state-2' });
+  });
+
+  it('throws linear_state_not_found when requested state cannot be resolved', async () => {
+    const adapter = createAdapterWithQueuedResponses(
+      [
+        new Response(
+          JSON.stringify({
+            data: {
+              issue: {
+                team: {
+                  states: {
+                    nodes: [{ id: 'state-1', name: 'Todo' }]
+                  }
+                }
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      []
+    );
+
+    await expect(adapter.update_issue_state('issue-1', 'Done')).rejects.toMatchObject({
+      code: 'linear_state_not_found'
+    });
+  });
 });

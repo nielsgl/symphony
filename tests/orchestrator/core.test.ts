@@ -28,11 +28,15 @@ function makeTracker(): TrackerAdapter & {
   fetch_candidate_issues: ReturnType<typeof vi.fn>;
   fetch_issues_by_states: ReturnType<typeof vi.fn>;
   fetch_issue_states_by_ids: ReturnType<typeof vi.fn>;
+  create_comment: ReturnType<typeof vi.fn>;
+  update_issue_state: ReturnType<typeof vi.fn>;
 } {
   return {
     fetch_candidate_issues: vi.fn(async () => []),
     fetch_issues_by_states: vi.fn(async () => []),
-    fetch_issue_states_by_ids: vi.fn(async () => [])
+    fetch_issue_states_by_ids: vi.fn(async () => []),
+    create_comment: vi.fn(async () => undefined),
+    update_issue_state: vi.fn(async () => undefined)
   };
 }
 

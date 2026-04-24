@@ -47,7 +47,9 @@ function createNoopTrackerAdapter(): TrackerAdapter {
   return {
     fetch_candidate_issues: async () => [],
     fetch_issues_by_states: async () => [],
-    fetch_issue_states_by_ids: async () => []
+    fetch_issue_states_by_ids: async () => [],
+    create_comment: async () => undefined,
+    update_issue_state: async () => undefined
   };
 }
 

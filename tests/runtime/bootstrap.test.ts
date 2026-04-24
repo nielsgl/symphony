@@ -106,7 +106,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const runtime = createRuntimeEnvironment({
@@ -138,7 +140,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const runtime = createRuntimeEnvironment({
@@ -163,7 +167,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const runtime = createRuntimeEnvironment({
@@ -190,7 +196,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const runtime = createRuntimeEnvironment({
@@ -220,7 +228,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const runtime = createRuntimeEnvironment({
@@ -275,7 +285,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const runtime = createRuntimeEnvironment({
@@ -311,7 +323,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const runtime = createRuntimeEnvironment({
@@ -333,7 +347,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const runtime = createRuntimeEnvironment({
@@ -356,7 +372,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const entries: Array<{ event: string; context: Record<string, unknown> }> = [];
@@ -406,7 +424,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
     const entries: Array<{ event: string; context: Record<string, unknown> }> = [];
 
@@ -451,7 +471,9 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
     const entries: Array<{ event: string; context: Record<string, unknown> }> = [];
 
@@ -502,8 +524,10 @@ describe('createRuntimeEnvironment', () => {
         trackerAdapter: {
           fetch_candidate_issues: async () => [],
           fetch_issues_by_states: async () => [],
-          fetch_issue_states_by_ids: async () => []
-        },
+          fetch_issue_states_by_ids: async () => [],
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    },
         port: 0
       })
     ).toThrow(/invalid_logging_root|logging\.root is not writable/i);
@@ -519,8 +543,10 @@ describe('createRuntimeEnvironment', () => {
         trackerAdapter: {
           fetch_candidate_issues: async () => [],
           fetch_issues_by_states: async () => [],
-          fetch_issue_states_by_ids: async () => []
-        }
+          fetch_issue_states_by_ids: async () => [],
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    }
       })
     ).toThrow(/workflow file/i);
   });
@@ -550,7 +576,9 @@ describe('createRuntimeEnvironment', () => {
           updated_at: new Date('2026-04-10T10:00:00.000Z')
         }
       ]),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];

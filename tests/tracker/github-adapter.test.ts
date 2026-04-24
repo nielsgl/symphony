@@ -284,4 +284,39 @@ describe('GitHubIssuesAdapter', () => {
       code: 'github_missing_end_cursor'
     });
   });
+
+  it('creates comments via addComment mutation', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [new Response(JSON.stringify({ data: { addComment: { clientMutationId: null } } }), { status: 200 })],
+      requests
+    );
+
+    await expect(adapter.create_comment('MDU6SXNzdWUx', 'hello')).resolves.toBeUndefined();
+    expect(requests[0].query).toContain('mutation AddComment');
+    expect(requests[0].variables).toEqual({ issueId: 'MDU6SXNzdWUx', body: 'hello' });
+  });
+
+  it('maps Open/Closed state updates to reopen/close issue mutations', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [
+        new Response(JSON.stringify({ data: { closeIssue: { issue: { id: 'issue-1' } } } }), { status: 200 }),
+        new Response(JSON.stringify({ data: { reopenIssue: { issue: { id: 'issue-1' } } } }), { status: 200 })
+      ],
+      requests
+    );
+
+    await expect(adapter.update_issue_state('issue-1', 'Closed')).resolves.toBeUndefined();
+    await expect(adapter.update_issue_state('issue-1', 'Open')).resolves.toBeUndefined();
+    expect(requests[0].query).toContain('mutation CloseIssue');
+    expect(requests[1].query).toContain('mutation ReopenIssue');
+  });
+
+  it('rejects unsupported github state transition names', async () => {
+    const adapter = createAdapterWithQueuedResponses([], []);
+    await expect(adapter.update_issue_state('issue-1', 'Todo')).rejects.toMatchObject({
+      code: 'github_invalid_state_transition'
+    });
+  });
 });

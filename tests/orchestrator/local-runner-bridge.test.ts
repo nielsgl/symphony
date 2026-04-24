@@ -100,7 +100,9 @@ describe('LocalRunnerBridge integration', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => [makeIssue()]),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     let orchestrator!: OrchestratorCore;
@@ -184,7 +186,9 @@ describe('LocalRunnerBridge integration', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => [issue]),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [makeIssue({ id: issue.id, state: 'Done' })])
+      fetch_issue_states_by_ids: vi.fn(async () => [makeIssue({ id: issue.id, state: 'Done' })]),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     const bridge = new LocalRunnerBridge({
@@ -237,7 +241,9 @@ describe('LocalRunnerBridge integration', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => [makeIssue()]),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => [])
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
     };
 
     let orchestrator!: OrchestratorCore;

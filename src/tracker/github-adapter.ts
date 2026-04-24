@@ -239,6 +239,37 @@ query IssuesByIds($issueIds: [ID!]!) {
 }`;
 }
 
+export function buildGitHubCreateCommentMutation(): string {
+  return `
+mutation AddComment($issueId: ID!, $body: String!) {
+  addComment(input: { subjectId: $issueId, body: $body }) {
+    clientMutationId
+  }
+}`;
+}
+
+export function buildGitHubCloseIssueMutation(): string {
+  return `
+mutation CloseIssue($issueId: ID!) {
+  closeIssue(input: { issueId: $issueId }) {
+    issue {
+      id
+    }
+  }
+}`;
+}
+
+export function buildGitHubReopenIssueMutation(): string {
+  return `
+mutation ReopenIssue($issueId: ID!) {
+  reopenIssue(input: { issueId: $issueId }) {
+    issue {
+      id
+    }
+  }
+}`;
+}
+
 export class GitHubIssuesAdapter implements TrackerAdapter {
   private readonly endpoint: string;
   private readonly apiKey: string;
@@ -282,6 +313,42 @@ export class GitHubIssuesAdapter implements TrackerAdapter {
     const payload = await this.graphqlRequest(buildGitHubIssueStatesByIdsQuery(), { issueIds: issue_ids });
     const nodes = this.extractIssueNodesByIds(payload);
     return nodes.map((node) => normalizeIssue(node, this.repository)).filter(isMinimalStateIssue);
+  }
+
+  async create_comment(issue_id: string, body: string): Promise<void> {
+    const payload = await this.graphqlRequest(buildGitHubCreateCommentMutation(), {
+      issueId: issue_id,
+      body
+    });
+    const data = readObject(payload.data);
+    const addComment = data ? readObject(data.addComment) : null;
+    if (!addComment) {
+      throw new TrackerAdapterError('github_unknown_payload', 'GitHub payload missing data.addComment');
+    }
+  }
+
+  async update_issue_state(issue_id: string, state_name: string): Promise<void> {
+    const normalized = state_name.trim().toLowerCase();
+    if (normalized === 'open') {
+      const payload = await this.graphqlRequest(buildGitHubReopenIssueMutation(), {
+        issueId: issue_id
+      });
+      this.ensureIssueMutationPayload(payload, 'reopenIssue');
+      return;
+    }
+
+    if (normalized === 'closed') {
+      const payload = await this.graphqlRequest(buildGitHubCloseIssueMutation(), {
+        issueId: issue_id
+      });
+      this.ensureIssueMutationPayload(payload, 'closeIssue');
+      return;
+    }
+
+    throw new TrackerAdapterError(
+      'github_invalid_state_transition',
+      `GitHub issue state '${state_name}' is not supported. Use Open or Closed.`
+    );
   }
 
   private async fetchIssuesByStateFilter(stateNames: string[]): Promise<Issue[]> {
@@ -417,5 +484,15 @@ export class GitHubIssuesAdapter implements TrackerAdapter {
     return nodes
       .map((node) => readObject(node))
       .filter((node): node is Record<string, unknown> => Boolean(node));
+  }
+
+  private ensureIssueMutationPayload(payload: GraphqlSuccess, mutationName: 'closeIssue' | 'reopenIssue'): void {
+    const data = readObject(payload.data);
+    const mutationObject = data ? readObject(data[mutationName]) : null;
+    const issue = mutationObject ? readObject(mutationObject.issue) : null;
+    const issueId = issue ? readString(issue.id, '') : '';
+    if (!issueId) {
+      throw new TrackerAdapterError('github_unknown_payload', `GitHub payload missing data.${mutationName}.issue.id`);
+    }
   }
 }
