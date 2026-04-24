@@ -73,4 +73,87 @@ describe('workspace-before-remove script', () => {
 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it('no-ops when git branch is detached or empty', () => {
+    const root = process.cwd();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-workspace-before-remove-'));
+    const binDir = path.join(tempDir, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+
+    writeExecutable(
+      path.join(binDir, 'git'),
+      '#!/bin/sh\nif [ "$1" = "rev-parse" ]; then\n  echo "HEAD"\n  exit 0\nfi\nexit 1\n'
+    );
+
+    const result = runNode(root, {
+      ...process.env,
+      PATH: binDir
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('workspace-before-remove: skipped (detached HEAD or empty branch)');
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('no-ops when gh pr list fails (including auth unavailable paths)', () => {
+    const root = process.cwd();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-workspace-before-remove-'));
+    const binDir = path.join(tempDir, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+
+    writeExecutable(
+      path.join(binDir, 'git'),
+      '#!/bin/sh\nif [ "$1" = "rev-parse" ]; then\n  echo "feature/test"\n  exit 0\nfi\nexit 1\n'
+    );
+
+    writeExecutable(
+      path.join(binDir, 'gh'),
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "gh version"\n  exit 0\nfi\nif [ "$1" = "pr" ] && [ "$2" = "list" ]; then\n  echo "authentication required" >&2\n  exit 1\nfi\nexit 1\n'
+    );
+
+    const result = runNode(root, {
+      ...process.env,
+      PATH: binDir
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('workspace-before-remove: skipped (unable to list PRs) branch=feature/test');
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('continues on partial close failures and reports deterministic diagnostics', () => {
+    const root = process.cwd();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-workspace-before-remove-'));
+    const binDir = path.join(tempDir, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+
+    const traceFile = path.join(tempDir, 'gh-calls.log');
+
+    writeExecutable(
+      path.join(binDir, 'git'),
+      '#!/bin/sh\nif [ "$1" = "rev-parse" ]; then\n  echo "feature/test"\n  exit 0\nfi\nexit 1\n'
+    );
+
+    writeExecutable(
+      path.join(binDir, 'gh'),
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "gh version"\n  exit 0\nfi\nif [ "$1" = "pr" ] && [ "$2" = "list" ]; then\n  printf "[{\\"number\\":12,\\"url\\":\\"https://example.test/pr/12\\"},{\\"number\\":13,\\"url\\":\\"https://example.test/pr/13\\"}]\\n"\n  exit 0\nfi\nif [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "12" ]; then\n  echo "$@" >> "$TRACE_FILE"\n  exit 0\nfi\nif [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "13" ]; then\n  echo "$@" >> "$TRACE_FILE"\n  exit 1\nfi\nexit 1\n'
+    );
+
+    const result = runNode(root, {
+      ...process.env,
+      PATH: binDir,
+      TRACE_FILE: traceFile
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('workspace-before-remove: failed to close PR #13; continuing');
+    expect(result.stdout).toContain('workspace-before-remove: completed branch=feature/test closed=1');
+    const calls = fs.readFileSync(traceFile, 'utf8');
+    expect(calls).toContain('pr close 12');
+    expect(calls).toContain('pr close 13');
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
 });

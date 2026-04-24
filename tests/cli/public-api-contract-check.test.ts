@@ -39,4 +39,21 @@ describe('check-public-api-contract script', () => {
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
+
+  it('fails with actionable output when a required module index is missing', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-public-api-check-'));
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+
+    fs.rmSync(path.join(tempRoot, 'src', 'runtime', 'index.ts'), { force: true });
+
+    const result = runNode(['scripts/check-public-api-contract.js'], tempRoot);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Public API contract check failed');
+    expect(result.stderr).toContain('missing module index');
+    expect(result.stderr).toContain('src/runtime/index.ts');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
 });
