@@ -19,7 +19,10 @@ export type ValidationErrorCode =
   | 'invalid_codex_thread_sandbox'
   | 'invalid_codex_turn_sandbox_policy'
   | 'invalid_codex_user_input_policy'
-  | 'invalid_worker_max_concurrent_agents_per_host';
+  | 'invalid_worker_max_concurrent_agents_per_host'
+  | 'invalid_logging_root'
+  | 'invalid_logging_max_bytes'
+  | 'invalid_logging_max_files';
 
 export interface WorkflowDefinition {
   config: Record<string, unknown>;
@@ -83,6 +86,13 @@ export interface WorkerConfig {
   max_concurrent_agents_per_host?: number;
 }
 
+export interface LoggingConfig {
+  root: string;
+  root_source: 'workflow' | 'default';
+  max_bytes: number;
+  max_files: number;
+}
+
 export interface EffectiveConfig {
   tracker: TrackerConfig;
   polling: { interval_ms: number };
@@ -91,6 +101,7 @@ export interface EffectiveConfig {
   agent: AgentConfig;
   codex: CodexConfig;
   persistence: PersistenceConfig;
+  logging: LoggingConfig;
   worker?: WorkerConfig;
   server?: { port: number };
 }

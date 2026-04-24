@@ -25,6 +25,10 @@ describe('ConfigResolver', () => {
     expect(config.codex.command).toBe('codex app-server');
     expect(config.persistence.enabled).toBe(true);
     expect(config.persistence.retention_days).toBe(14);
+    expect(config.logging.root).toBe(path.normalize('/home/tester/.symphony/log'));
+    expect(config.logging.root_source).toBe('default');
+    expect(config.logging.max_bytes).toBe(10 * 1024 * 1024);
+    expect(config.logging.max_files).toBe(5);
   });
 
   it('resolves $VAR for tracker.api_key and workspace.root', () => {
@@ -203,6 +207,57 @@ describe('ConfigResolver', () => {
     );
 
     expect(config.persistence.db_path).toBe(path.normalize('/workspace/projects/todo-app/.symphony/runtime.sqlite'));
+    expect(config.logging.root).toBe(path.normalize('/workspace/projects/todo-app/.symphony/log'));
+    expect(config.logging.root_source).toBe('default');
+  });
+
+  it('resolves optional logging.root from workflow config', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        SYMPHONY_LOG_ROOT: '/var/log/symphony'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve(
+      {
+        config: {
+          logging: {
+            root: '$SYMPHONY_LOG_ROOT'
+          }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.logging.root).toBe('/var/log/symphony');
+    expect(config.logging.root_source).toBe('workflow');
+  });
+
+  it('resolves optional logging.max_bytes and logging.max_files from workflow config', () => {
+    const resolver = new ConfigResolver({
+      env: {},
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve(
+      {
+        config: {
+          logging: {
+            max_bytes: 2097152,
+            max_files: 7
+          }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.logging.max_bytes).toBe(2097152);
+    expect(config.logging.max_files).toBe(7);
   });
 
   it('parses optional worker extension fields', () => {

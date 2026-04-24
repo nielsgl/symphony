@@ -174,6 +174,24 @@ export class ConfigValidator {
       };
     }
 
+    if (!Number.isFinite(effectiveConfig.logging.max_bytes) || effectiveConfig.logging.max_bytes <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_logging_max_bytes',
+        message: 'logging.max_bytes must be a positive integer',
+        at
+      };
+    }
+
+    if (!Number.isFinite(effectiveConfig.logging.max_files) || effectiveConfig.logging.max_files <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_logging_max_files',
+        message: 'logging.max_files must be a positive integer',
+        at
+      };
+    }
+
     return { ok: true, at };
   }
 

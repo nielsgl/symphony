@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import { DEFAULT_LOG_ROTATION_MAX_BYTES, DEFAULT_LOG_ROTATION_MAX_FILES } from '../observability';
 import type { EffectiveConfig, WorkflowDefinition } from './types';
 
 interface ResolverOptions {
@@ -211,6 +212,7 @@ export class ConfigResolver {
     const agent = asRecord(config.agent);
     const codex = asRecord(config.codex);
     const persistence = asRecord(config.persistence);
+    const logging = asRecord(config.logging);
     const worker = asRecord(config.worker);
     const server = asRecord(config.server);
 
@@ -248,9 +250,14 @@ export class ConfigResolver {
     const hooksTimeoutMs = hooksTimeoutCandidate > 0 ? hooksTimeoutCandidate : 60000;
 
     const codexCommand = readString(codex.command, 'codex app-server');
-    const workflowScopedPersistencePath =
+    const workflowResolvedPath =
       typeof options.workflowPath === 'string' && options.workflowPath.trim().length > 0
-        ? path.join(path.dirname(path.resolve(options.workflowPath)), '.symphony', 'runtime.sqlite')
+        ? path.resolve(options.workflowPath)
+        : null;
+    const workflowDir = workflowResolvedPath ? path.dirname(workflowResolvedPath) : this.homedir();
+    const workflowScopedPersistencePath =
+      workflowResolvedPath !== null
+        ? path.join(workflowDir, '.symphony', 'runtime.sqlite')
         : path.join(this.homedir(), '.symphony', 'runtime.sqlite');
 
     const persistenceDbPath = resolvePathLikeValue(
@@ -259,6 +266,16 @@ export class ConfigResolver {
       this.homedir(),
       workflowScopedPersistencePath
     );
+    const defaultLoggingRoot = path.join(workflowDir, '.symphony', 'log');
+    const resolvedLoggingRootCandidate = resolvePathLikeValue(logging.root, this.env, this.homedir(), defaultLoggingRoot);
+    const loggingRootSource =
+      typeof logging.root === 'string' && logging.root.trim().length > 0 && resolvedLoggingRootCandidate.trim().length > 0
+        ? 'workflow'
+        : 'default';
+    const loggingRoot =
+      resolvedLoggingRootCandidate.trim().length > 0 ? resolvedLoggingRootCandidate : defaultLoggingRoot;
+    const loggingMaxBytes = readInt(logging.max_bytes, DEFAULT_LOG_ROTATION_MAX_BYTES);
+    const loggingMaxFiles = readInt(logging.max_files, DEFAULT_LOG_ROTATION_MAX_FILES);
 
     const resolved: EffectiveConfig = {
       tracker: {
@@ -305,6 +322,12 @@ export class ConfigResolver {
         enabled: readBoolean(persistence.enabled, true),
         db_path: persistenceDbPath,
         retention_days: Math.max(1, readInt(persistence.retention_days, 14))
+      },
+      logging: {
+        root: loggingRoot,
+        root_source: loggingRootSource,
+        max_bytes: loggingMaxBytes,
+        max_files: loggingMaxFiles
       }
     };
 

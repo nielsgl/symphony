@@ -32,6 +32,12 @@ function baseConfig(): EffectiveConfig {
       enabled: true,
       db_path: '/tmp/symphony/runtime.sqlite',
       retention_days: 14
+    },
+    logging: {
+      root: '/tmp/symphony/log',
+      root_source: 'workflow',
+      max_bytes: 10 * 1024 * 1024,
+      max_files: 5
     }
   };
 }
@@ -177,6 +183,30 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('invalid_worker_max_concurrent_agents_per_host');
+    }
+  });
+
+  it('rejects non-positive logging.max_bytes', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.logging.max_bytes = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_logging_max_bytes');
+    }
+  });
+
+  it('rejects non-positive logging.max_files', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.logging.max_files = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_logging_max_files');
     }
   });
 });

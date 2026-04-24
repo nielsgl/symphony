@@ -57,6 +57,12 @@ function makeConfig(): EffectiveConfig {
       enabled: true,
       db_path: '/tmp/symphony/runtime.sqlite',
       retention_days: 14
+    },
+    logging: {
+      root: '/tmp/symphony/log',
+      root_source: 'workflow',
+      max_bytes: 10 * 1024 * 1024,
+      max_files: 5
     }
   };
 }
