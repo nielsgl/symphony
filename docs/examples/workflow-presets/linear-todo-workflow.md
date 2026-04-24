@@ -14,7 +14,21 @@ polling:
   interval_ms: 30000
 workspace:
   root: ./tests/fixtures/todo-sample-app/.symphony/workspaces
+  provisioner:
+    type: worktree
+    repo_root: ./tests/fixtures/todo-sample-app
+    base_ref: origin/main
+    branch_template: feature/{{ issue.identifier }}
+    teardown_mode: remove_worktree
+    allow_dirty_repo: false
+    fallback_to_clone_on_worktree_failure: false
 hooks:
+  after_create: |
+    corepack enable && pnpm install --frozen-lockfile || npm ci
+    git submodule update --init --recursive
+    npm run build --if-present
+  before_remove: |
+    node /Users/niels.van.Galen.last/code/symphony/scripts/workspace-before-remove.js
   timeout_ms: 60000
 agent:
   max_concurrent_agents: 2

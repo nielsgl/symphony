@@ -159,6 +159,11 @@ For GitHub-style identifiers, URL encode `owner/repo#number`.
 ## Step 5: Validate Changes in Workspace
 
 During execution, Symphony creates per-issue workspaces and runs Codex in that directory.
+For deterministic repository-backed workspaces, configure:
+
+- `workspace.provisioner.type: worktree`
+- `workspace.provisioner.repo_root: <your-repo-root>`
+- `workspace.provisioner.branch_template: feature/{{ issue.identifier }}`
 
 Use your normal verification flow in the sample app:
 

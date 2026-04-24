@@ -51,6 +51,14 @@ polling:
 
 workspace:
   root: ~/.symphony/workspaces
+  provisioner:
+    type: none
+    repo_root: ""
+    base_ref: origin/main
+    branch_template: feature/{{ issue.identifier }}
+    teardown_mode: remove_worktree
+    allow_dirty_repo: false
+    fallback_to_clone_on_worktree_failure: false
 
 hooks:
   after_create: ""
@@ -149,6 +157,13 @@ Memory tracker note:
 | Key | Type | Default | Allowed values / notes | Required |
 |---|---|---|---|---|
 | `workspace.root` | string | `<tmp>/symphony_workspaces` | absolute or relative path | No |
+| `workspace.provisioner.type` | string | `none` | `none`, `worktree`, `clone` | No |
+| `workspace.provisioner.repo_root` | string | unset | required when `type=worktree`; absolute or workflow-relative path | Conditional |
+| `workspace.provisioner.base_ref` | string | `origin/main` | git ref used when provisioning new worktrees/clones | No |
+| `workspace.provisioner.branch_template` | string | `feature/{{ issue.identifier }}` | for `worktree`, must include `{{ issue.identifier }}` | Conditional |
+| `workspace.provisioner.teardown_mode` | string | `remove_worktree` | `remove_worktree` or `keep` | No |
+| `workspace.provisioner.allow_dirty_repo` | boolean | `false` | if false, worktree provisioning fails on dirty repo | No |
+| `workspace.provisioner.fallback_to_clone_on_worktree_failure` | boolean | `false` | reserved fallback toggle for clone fallback behavior | No |
 
 ### `hooks`
 

@@ -31,7 +31,26 @@ Create issues that are:
 
 Avoid broad issues that exceed one agent attempt window.
 
-## 4. Configure Hooks Carefully
+## 4. Configure Workspace Provisioner
+
+Use first-class workspace provisioning for deterministic per-issue workspaces:
+
+- `workspace.provisioner.type: worktree` for repository-backed issue isolation.
+- `workspace.provisioner.repo_root` set to your repository root.
+- `workspace.provisioner.base_ref` usually `origin/main`.
+- `workspace.provisioner.branch_template` usually `feature/{{ issue.identifier }}`.
+- `workspace.provisioner.teardown_mode`:
+  - `remove_worktree` for ephemeral workspaces.
+  - `keep` for manual post-run debugging.
+- Keep `allow_dirty_repo: false` in normal operation.
+
+For diagnostics, verify:
+
+- `/api/v1/diagnostics.runtime_resolution.provisioner_type`
+- `/api/v1/diagnostics.workspace_provisioner.last_provision_result`
+- `/api/v1/diagnostics.workspace_provisioner.last_error_code`
+
+## 5. Configure Hooks Carefully
 
 Use hooks to enforce setup and quality gates:
 
@@ -42,20 +61,29 @@ Use hooks to enforce setup and quality gates:
 
 Keep hooks idempotent and bounded by `hooks.timeout_ms`.
 
-## 5. Operational Rollout Pattern
+Suggested hook patterns for Node repositories:
+
+- `after_create`:
+  - `corepack enable && pnpm install --frozen-lockfile || npm ci`
+  - `git submodule update --init --recursive`
+  - `npm run build --if-present`
+- `before_remove`:
+  - `node /Users/niels.van.Galen.last/code/symphony/scripts/workspace-before-remove.js`
+
+## 6. Operational Rollout Pattern
 
 1. Start with one active issue.
 2. Observe dashboard and state endpoint.
 3. Validate generated changes with project tests.
 4. Increase concurrency after stable runs.
 
-## 6. Production Hygiene
+## 7. Production Hygiene
 
 - Keep secrets in environment variables, not prompt templates.
 - Use persistence and history endpoints for auditability.
 - Keep tracker state naming aligned with workflow config.
 
-## 7. Suggested Adoption Milestones
+## 8. Suggested Adoption Milestones
 
 1. Local proof with 3-5 issues.
 2. Team pilot with controlled concurrency.
