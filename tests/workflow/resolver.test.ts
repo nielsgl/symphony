@@ -25,6 +25,11 @@ describe('ConfigResolver', () => {
     expect(config.codex.command).toBe('codex app-server');
     expect(config.persistence.enabled).toBe(true);
     expect(config.persistence.retention_days).toBe(14);
+    expect(config.observability).toEqual({
+      dashboard_enabled: true,
+      refresh_ms: 4000,
+      render_interval_ms: 1000
+    });
     expect(config.logging.root).toBe(path.normalize('/home/tester/.symphony/log'));
     expect(config.logging.root_source).toBe('default');
     expect(config.logging.max_bytes).toBe(10 * 1024 * 1024);
@@ -294,6 +299,26 @@ describe('ConfigResolver', () => {
 
     expect(config.logging.root).toBe('/var/log/symphony');
     expect(config.logging.root_source).toBe('workflow');
+  });
+
+  it('resolves observability dashboard knobs with safe minimums', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+    const config = resolver.resolve({
+      config: {
+        observability: {
+          dashboard_enabled: false,
+          refresh_ms: 100,
+          render_interval_ms: 50
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.observability).toEqual({
+      dashboard_enabled: false,
+      refresh_ms: 500,
+      render_interval_ms: 250
+    });
   });
 
   it('resolves optional logging.max_bytes and logging.max_files from workflow config', () => {

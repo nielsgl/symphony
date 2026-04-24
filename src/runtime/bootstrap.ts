@@ -512,6 +512,11 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               return result;
             }
           },
+          dashboardConfig: {
+            dashboard_enabled: effectiveConfig.observability?.dashboard_enabled ?? true,
+            refresh_ms: effectiveConfig.observability?.refresh_ms ?? 4000,
+            render_interval_ms: effectiveConfig.observability?.render_interval_ms ?? 1000
+          },
           logger,
           nowMs
         });

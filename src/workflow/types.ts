@@ -103,6 +103,11 @@ export interface EffectiveConfig {
   agent: AgentConfig;
   codex: CodexConfig;
   persistence: PersistenceConfig;
+  observability?: {
+    dashboard_enabled: boolean;
+    refresh_ms: number;
+    render_interval_ms: number;
+  };
   logging: LoggingConfig;
   worker?: WorkerConfig;
   server?: { port: number; host?: string };

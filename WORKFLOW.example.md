@@ -89,6 +89,11 @@ persistence:
   db_path: ~/.symphony/runtime.sqlite
   retention_days: 14
 
+observability:
+  dashboard_enabled: true
+  refresh_ms: 4000
+  render_interval_ms: 1000
+
 worker:
   ssh_hosts:
     - build-host-1
@@ -221,6 +226,14 @@ Runtime note:
 |---|---|---|---|---|
 | `worker.ssh_hosts` | string[] | unset | empty/whitespace entries removed | No |
 | `worker.max_concurrent_agents_per_host` | integer | unset | must be positive if provided (`> 0`) | No |
+
+### `observability`
+
+| Key | Type | Default | Allowed values / notes | Required |
+|---|---|---|---|---|
+| `observability.dashboard_enabled` | boolean | `true` | when `false`, background dashboard stream/render loop is disabled | No |
+| `observability.refresh_ms` | integer | `4000` | poll cadence in ms (resolver minimum `500`) | No |
+| `observability.render_interval_ms` | integer | `1000` | runtime clock repaint cadence in ms (resolver minimum `250`) | No |
 
 ### `server`
 

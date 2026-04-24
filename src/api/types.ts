@@ -202,6 +202,11 @@ export interface LocalApiServerOptions {
       error?: string;
     }>;
   };
+  dashboardConfig?: {
+    dashboard_enabled: boolean;
+    refresh_ms: number;
+    render_interval_ms: number;
+  };
   nowMs?: () => number;
   logger?: StructuredLogger;
 }

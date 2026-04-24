@@ -67,6 +67,7 @@ export class LocalApiServer {
   private readonly refreshCoalescer: RefreshCoalescer;
   private readonly diagnosticsSource?: LocalApiServerOptions['diagnosticsSource'];
   private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
+  private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
   private readonly logger?: StructuredLogger;
 
   private readonly server: http.Server;
@@ -83,6 +84,11 @@ export class LocalApiServer {
     this.snapshotSource = options.snapshotSource;
     this.diagnosticsSource = options.diagnosticsSource;
     this.workflowControlSource = options.workflowControlSource;
+    this.dashboardConfig = options.dashboardConfig ?? {
+      dashboard_enabled: true,
+      refresh_ms: 4000,
+      render_interval_ms: 1000
+    };
     this.logger = options.logger;
     this.refreshCoalescer = new RefreshCoalescer({
       refreshSource: options.refreshSource,
@@ -272,7 +278,7 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
-              sendHtml(response, 200, renderDashboardHtml());
+              sendHtml(response, 200, renderDashboardHtml(this.dashboardConfig));
             }
           }
         ]
@@ -283,7 +289,7 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
-              sendScript(response, 200, renderDashboardClientJs());
+              sendScript(response, 200, renderDashboardClientJs(this.dashboardConfig));
             }
           }
         ]

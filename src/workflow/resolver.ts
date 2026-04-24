@@ -212,6 +212,7 @@ export class ConfigResolver {
     const agent = asRecord(config.agent);
     const codex = asRecord(config.codex);
     const persistence = asRecord(config.persistence);
+    const observability = asRecord(config.observability);
     const logging = asRecord(config.logging);
     const worker = asRecord(config.worker);
     const server = asRecord(config.server);
@@ -328,6 +329,11 @@ export class ConfigResolver {
         enabled: readBoolean(persistence.enabled, true),
         db_path: persistenceDbPath,
         retention_days: Math.max(1, readInt(persistence.retention_days, 14))
+      },
+      observability: {
+        dashboard_enabled: readBoolean(observability.dashboard_enabled, true),
+        refresh_ms: Math.max(500, readInt(observability.refresh_ms, 4000)),
+        render_interval_ms: Math.max(250, readInt(observability.render_interval_ms, 1000))
       },
       logging: {
         root: loggingRoot,

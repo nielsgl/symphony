@@ -1,4 +1,10 @@
-export function renderDashboardHtml(): string {
+interface DashboardClientConfig {
+  dashboard_enabled: boolean;
+  refresh_ms: number;
+  render_interval_ms: number;
+}
+
+export function renderDashboardHtml(_config?: DashboardClientConfig): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -169,8 +175,18 @@ export function renderDashboardHtml(): string {
 </html>`;
 }
 
-export function renderDashboardClientJs(): string {
+export function renderDashboardClientJs(config: DashboardClientConfig = {
+  dashboard_enabled: true,
+  refresh_ms: 4000,
+  render_interval_ms: 1000
+}): string {
+  const safeConfig = {
+    dashboard_enabled: config.dashboard_enabled !== false,
+    refresh_ms: Math.max(500, Number(config.refresh_ms) || 4000),
+    render_interval_ms: Math.max(250, Number(config.render_interval_ms) || 1000)
+  };
   return `(() => {
+  const DASHBOARD_CONFIG = ${JSON.stringify(safeConfig)};
   const state = {
     payload: null,
     lastGoodPayload: null,
@@ -178,7 +194,7 @@ export function renderDashboardClientJs(): string {
     connection: 'offline',
     pollTimer: null,
     runtimeTicker: null,
-    pollDelayMs: 4000,
+    pollDelayMs: DASHBOARD_CONFIG.refresh_ms,
     streamRetryMs: 1000,
     streamConnected: false,
     eventSource: null,
@@ -632,7 +648,7 @@ export function renderDashboardClientJs(): string {
     setLastUpdated(payload.generated_at || new Date().toISOString());
     if (source === 'stream') {
       setConnectionStatus('live', 'Streaming updates connected');
-      state.pollDelayMs = 4000;
+      state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
     }
   }
 
@@ -661,7 +677,7 @@ export function renderDashboardClientJs(): string {
       const payload = await fetchJson('/api/v1/state');
       applyPayload(payload, 'poll');
       setConnectionStatus(state.streamConnected ? 'live' : 'offline', state.streamConnected ? 'Streaming updates connected' : 'Polling fallback active');
-      state.pollDelayMs = 4000;
+      state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
     } catch (error) {
       setConnectionStatus('offline', 'Polling failed');
       setRefreshStatus('Polling failed: ' + String(error), true);
@@ -958,9 +974,14 @@ export function renderDashboardClientJs(): string {
   wireEvents();
   void loadUiState();
   void loadDiagnostics();
-  void loadStateViaPoll();
-  connectStream();
-  state.runtimeTicker = setInterval(updateRuntimeClock, 1000);
+  if (DASHBOARD_CONFIG.dashboard_enabled) {
+    void loadStateViaPoll();
+    connectStream();
+    state.runtimeTicker = setInterval(updateRuntimeClock, DASHBOARD_CONFIG.render_interval_ms);
+  } else {
+    setConnectionStatus('offline', 'Dashboard refresh disabled by configuration');
+    void loadStateViaPoll();
+  }
 })();`;
 }
 

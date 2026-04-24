@@ -421,7 +421,7 @@ describe('LocalApiServer', () => {
     expect(scriptPayload).toContain('/api/v1/state');
     expect(scriptPayload).toContain('/api/v1/refresh');
     expect(scriptPayload).toContain('/api/v1/events');
-    expect(scriptPayload).toContain('setInterval(updateRuntimeClock, 1000)');
+    expect(scriptPayload).toContain('setInterval(updateRuntimeClock, DASHBOARD_CONFIG.render_interval_ms)');
 
     const cssResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/styles.css`);
     const cssPayload = await cssResponse.text();
@@ -966,5 +966,31 @@ describe('LocalApiServer', () => {
     expect((await failedReloadResponse.json()) as { error: { code: string } }).toMatchObject({
       error: { code: 'workflow_reload_failed' }
     });
+  });
+
+  it('honors dashboard observability config for refresh/render cadence', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      dashboardConfig: {
+        dashboard_enabled: false,
+        refresh_ms: 1800,
+        render_interval_ms: 750
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/dashboard/client.js`);
+    const script = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(script).toContain('"dashboard_enabled":false');
+    expect(script).toContain('"refresh_ms":1800');
+    expect(script).toContain('"render_interval_ms":750');
   });
 });
