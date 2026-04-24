@@ -224,6 +224,18 @@ describe('ConfigValidator', () => {
     }
   });
 
+  it('accepts DNS hostname syntax for server.host', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.server = {
+      port: 3000,
+      host: 'symphony.internal'
+    };
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(true);
+  });
+
   it('rejects non-positive logging.max_files', () => {
     const validator = new ConfigValidator();
     const config = baseConfig();

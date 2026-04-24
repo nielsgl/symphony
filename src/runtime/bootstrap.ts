@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import dns from 'node:dns/promises';
 import path from 'node:path';
+import net from 'node:net';
 
 import { LocalApiServer } from '../api';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
@@ -88,6 +90,19 @@ function ensureWritableDirectory(directoryPath: string): void {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown filesystem error';
     throw new WorkflowConfigError('invalid_logging_root', `logging.root is not writable at ${directoryPath}: ${message}`);
+  }
+}
+
+async function assertResolvableServerHost(host: string): Promise<void> {
+  const trimmed = host.trim();
+  if (!trimmed || trimmed === 'localhost' || net.isIP(trimmed) !== 0) {
+    return;
+  }
+
+  try {
+    await dns.lookup(trimmed);
+  } catch {
+    throw new WorkflowConfigError('invalid_server_host', `server.host '${host}' is not resolvable`);
   }
 }
 
@@ -546,6 +561,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     });
 
     if (apiServer) {
+      await assertResolvableServerHost(resolvedHost);
       await apiServer.listen();
       const address = apiServer.address();
       logger.log({

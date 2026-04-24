@@ -38,7 +38,14 @@ function isValidServerHost(host: string): boolean {
   if (trimmed === 'localhost') {
     return true;
   }
-  return net.isIP(trimmed) !== 0;
+  if (net.isIP(trimmed) !== 0) {
+    return true;
+  }
+
+  // Allow resolvable DNS hostnames; resolvability is validated at runtime startup.
+  return /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)$/.test(
+    trimmed
+  );
 }
 
 export class ConfigValidator {

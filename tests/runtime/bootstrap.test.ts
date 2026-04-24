@@ -553,6 +553,26 @@ describe('createRuntimeEnvironment', () => {
     ).toThrow(/workflow file/i);
   });
 
+  it('fails startup with invalid_server_host when host is not resolvable', async () => {
+    const workflowPath = await makeWorkflowFile();
+    dirs.push(path.dirname(workflowPath));
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: {
+        fetch_candidate_issues: async () => [],
+        fetch_issues_by_states: async () => [],
+        fetch_issue_states_by_ids: async () => [],
+        create_comment: vi.fn(async () => undefined),
+        update_issue_state: vi.fn(async () => undefined)
+      },
+      host: 'nonexistent.invalid.symphony.local',
+      port: 0
+    });
+
+    await expect(runtime.start()).rejects.toThrow(/invalid_server_host|not resolvable/);
+  });
+
   it('supports runtime workflow path switch and preserves last-known-good config', async () => {
     const workflowPath = await makeWorkflowFile({ pollingIntervalMs: 1000 });
     const nextWorkflowPath = await makeWorkflowFile({ pollingIntervalMs: 4000 });
