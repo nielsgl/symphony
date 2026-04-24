@@ -81,6 +81,7 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
     running: new Map(),
     claimed: new Set(),
     retry_attempts: new Map(),
+    blocked_inputs: new Map(),
     completed: new Set(),
     codex_totals: {
       input_tokens: 0,
@@ -236,11 +237,13 @@ describe('LocalApiServer', () => {
     expect(payload).toHaveProperty('counts');
     expect(payload).toHaveProperty('running');
     expect(payload).toHaveProperty('retrying');
+    expect(payload).toHaveProperty('blocked');
     expect(payload).toHaveProperty('codex_totals');
     expect(payload).toHaveProperty('rate_limits');
     expect(payload).toHaveProperty('health');
-    expect((payload.counts as { running: number; retrying: number }).running).toBe(1);
-    expect((payload.counts as { running: number; retrying: number }).retrying).toBe(1);
+    expect((payload.counts as { running: number; retrying: number; blocked: number }).running).toBe(1);
+    expect((payload.counts as { running: number; retrying: number; blocked: number }).retrying).toBe(1);
+    expect((payload.counts as { running: number; retrying: number; blocked: number }).blocked).toBe(0);
     expect(
       (
         payload.running as Array<{
@@ -385,6 +388,85 @@ describe('LocalApiServer', () => {
     expect(missingResponse.status).toBe(404);
     expect(missingPayload.error.code).toBe('issue_not_found');
     expect(missingPayload.error.message).toContain('ABC-999');
+  });
+
+  it('projects blocked issues and resumes them via POST /api/v1/issues/:issue_identifier/resume', async () => {
+    const state = makeState({
+      blocked_inputs: new Map([
+        [
+          'issue-3',
+          {
+            issue_id: 'issue-3',
+            issue_identifier: 'ABC-3',
+            attempt: 2,
+            worker_host: 'build-2',
+            workspace_path: '/tmp/symphony/ABC-3',
+            provisioner_type: 'worktree',
+            branch_name: 'feature/ABC-3',
+            repo_root: '/tmp/source',
+            workspace_exists: true,
+            workspace_git_status: 'clean',
+            stop_reason_code: 'turn_input_required',
+            stop_reason_detail: 'operator input required',
+            previous_thread_id: 'thread-prev',
+            previous_session_id: 'thread-prev-turn-prev',
+            blocked_at_ms: Date.parse('2026-04-10T10:03:00.000Z'),
+            requires_manual_resume: true
+          }
+        ]
+      ])
+    });
+    const resumeBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as {
+      counts: { blocked: number };
+      blocked: Array<{ issue_identifier: string; requires_manual_resume: boolean }>;
+    };
+    expect(stateResponse.status).toBe(200);
+    expect(statePayload.counts.blocked).toBe(1);
+    expect(statePayload.blocked[0]).toMatchObject({
+      issue_identifier: 'ABC-3',
+      requires_manual_resume: true
+    });
+
+    const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-3`);
+    const issuePayload = (await issueResponse.json()) as {
+      status: string;
+      blocked: { stop_reason_code: string; requires_manual_resume: boolean };
+    };
+    expect(issueResponse.status).toBe(200);
+    expect(issuePayload.status).toBe('blocked');
+    expect(issuePayload.blocked).toMatchObject({
+      stop_reason_code: 'turn_input_required',
+      requires_manual_resume: true
+    });
+
+    const resumeResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/resume`, {
+      method: 'POST'
+    });
+    const resumePayload = (await resumeResponse.json()) as { resumed: boolean; issue_identifier: string };
+    expect(resumeResponse.status).toBe(202);
+    expect(resumePayload).toMatchObject({
+      resumed: true,
+      issue_identifier: 'ABC-3'
+    });
+    expect(resumeBlockedIssue).toHaveBeenCalledWith('ABC-3');
   });
 
   it('returns 405 for unsupported methods on defined routes', async () => {

@@ -654,6 +654,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               return result;
             }
           },
+          issueControlSource: {
+            resumeBlockedIssue: async (issueIdentifier) => orchestrator.resumeBlockedIssue(issueIdentifier)
+          },
           dashboardConfig: {
             dashboard_enabled: effectiveConfig.observability?.dashboard_enabled ?? true,
             refresh_ms: effectiveConfig.observability?.refresh_ms ?? 4000,

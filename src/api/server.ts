@@ -67,6 +67,7 @@ export class LocalApiServer {
   private readonly refreshCoalescer: RefreshCoalescer;
   private readonly diagnosticsSource?: LocalApiServerOptions['diagnosticsSource'];
   private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
+  private readonly issueControlSource?: LocalApiServerOptions['issueControlSource'];
   private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
   private readonly logger?: StructuredLogger;
 
@@ -84,6 +85,7 @@ export class LocalApiServer {
     this.snapshotSource = options.snapshotSource;
     this.diagnosticsSource = options.diagnosticsSource;
     this.workflowControlSource = options.workflowControlSource;
+    this.issueControlSource = options.issueControlSource;
     this.dashboardConfig = options.dashboardConfig ?? {
       dashboard_enabled: true,
       refresh_ms: 4000,
@@ -320,6 +322,7 @@ export class LocalApiServer {
                   context: {
                     running: payload.counts.running,
                     retrying: payload.counts.retrying,
+                    blocked: payload.counts.blocked,
                     dispatch_validation: payload.health.dispatch_validation
                   }
                 });
@@ -548,7 +551,7 @@ export class LocalApiServer {
               let parsed: {
                 state?: {
                   selected_issue?: string | null;
-                  filters?: { status?: 'all' | 'running' | 'retrying'; query?: string };
+                  filters?: { status?: 'all' | 'running' | 'retrying' | 'blocked'; query?: string };
                   event_feed_filter?: 'all' | 'warn' | 'error';
                   panels?: { throughput_open?: boolean; runtime_events_open?: boolean };
                   panel_state?: { issue_detail_open?: boolean };
@@ -558,7 +561,7 @@ export class LocalApiServer {
                 parsed = JSON.parse(payloadText) as {
                   state?: {
                     selected_issue?: string | null;
-                    filters?: { status?: 'all' | 'running' | 'retrying'; query?: string };
+                    filters?: { status?: 'all' | 'running' | 'retrying' | 'blocked'; query?: string };
                     event_feed_filter?: 'all' | 'warn' | 'error';
                     panels?: { throughput_open?: boolean; runtime_events_open?: boolean };
                     panel_state?: { issue_detail_open?: boolean };
@@ -590,6 +593,37 @@ export class LocalApiServer {
               });
 
               sendJson(response, 202, { saved: true });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/issues\/([^/]+)\/resume$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (_request, response, match) => {
+              if (!this.issueControlSource) {
+                throw new LocalApiError('resume_failed', 'Issue control source is not configured', 503);
+              }
+
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const result = await this.issueControlSource.resumeBlockedIssue(issueIdentifier);
+              if (!result.ok) {
+                const status =
+                  result.code === 'issue_not_found' || result.code === 'issue_not_blocked'
+                    ? 404
+                    : result.code === 'issue_not_active'
+                      ? 409
+                      : 422;
+                throw new LocalApiError(result.code, result.message, status);
+              }
+
+              sendJson(response, 202, {
+                resumed: true,
+                issue_identifier: issueIdentifier,
+                requested_at: new Date().toISOString()
+              });
             }
           }
         ]

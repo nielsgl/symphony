@@ -64,6 +64,7 @@ export interface ApiStateResponse {
   counts: {
     running: number;
     retrying: number;
+    blocked: number;
   };
   running: Array<{
     issue_id: string;
@@ -113,6 +114,24 @@ export interface ApiStateResponse {
     previous_thread_id: string | null;
     previous_session_id: string | null;
   }>;
+  blocked: Array<{
+    issue_id: string;
+    issue_identifier: string;
+    attempt: number;
+    blocked_at: string;
+    worker_host: string | null;
+    workspace_path: string | null;
+    provisioner_type: string | null;
+    branch_name: string | null;
+    repo_root: string | null;
+    workspace_exists: boolean;
+    workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    stop_reason_code: string;
+    stop_reason_detail: string | null;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
+    requires_manual_resume: true;
+  }>;
   codex_totals: {
     input_tokens: number;
     output_tokens: number;
@@ -159,7 +178,7 @@ export type ApiStateSnapshotResponse = ApiStateResponse | ApiStateErrorResponse;
 export interface ApiIssueResponse {
   issue_identifier: string;
   issue_id: string;
-  status: 'running' | 'retrying';
+  status: 'running' | 'retrying' | 'blocked';
   workspace: {
     path: string | null;
     host: string | null;
@@ -212,6 +231,22 @@ export interface ApiIssueResponse {
     previous_thread_id: string | null;
     previous_session_id: string | null;
   } | null;
+  blocked: {
+    attempt: number;
+    blocked_at: string;
+    worker_host: string | null;
+    workspace_path: string | null;
+    provisioner_type: string | null;
+    branch_name: string | null;
+    repo_root: string | null;
+    workspace_exists: boolean;
+    workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    stop_reason_code: string;
+    stop_reason_detail: string | null;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
+    requires_manual_resume: true;
+  } | null;
   recent_events: Array<{
     at: string;
     event: string;
@@ -257,6 +292,11 @@ export interface LocalApiServerOptions {
       applied: boolean;
       error?: string;
     }>;
+  };
+  issueControlSource?: {
+    resumeBlockedIssue: (issueIdentifier: string) => Promise<
+      { ok: true; issue_id: string } | { ok: false; code: string; message: string }
+    >;
   };
   dashboardConfig?: {
     dashboard_enabled: boolean;

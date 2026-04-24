@@ -14,7 +14,7 @@ export interface DurableRunHistoryRecord {
 export interface UiContinuityState {
   selected_issue: string | null;
   filters: {
-    status: 'all' | 'running' | 'retrying';
+    status: 'all' | 'running' | 'retrying' | 'blocked';
     query: string;
   };
   event_feed_filter?: 'all' | 'warn' | 'error';

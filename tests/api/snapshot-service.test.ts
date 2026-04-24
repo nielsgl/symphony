@@ -75,6 +75,7 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
     running: new Map(),
     claimed: new Set(),
     retry_attempts: new Map(),
+    blocked_inputs: new Map(),
     completed: new Set(),
     codex_totals: {
       input_tokens: 10,
@@ -142,6 +143,7 @@ describe('SnapshotService', () => {
 
     const projected = service.projectState(state);
     expect(projected.counts.running).toBe(1);
+    expect(projected.counts.blocked).toBe(0);
     expect(projected.codex_totals.seconds_running).toBe(100);
     expect(projected.health.dispatch_validation).toBe('ok');
     expect(projected.running[0]?.session_id).toBe('thread-1-turn-3');
@@ -161,6 +163,46 @@ describe('SnapshotService', () => {
     const state = makeState();
 
     expect(() => service.projectIssue(state, 'ABC-404')).toThrow('Issue ABC-404 is not in runtime state');
+  });
+
+  it('projects blocked issue payload with blocked status and details', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      blocked_inputs: new Map([
+        [
+          'issue-9',
+          {
+            issue_id: 'issue-9',
+            issue_identifier: 'ABC-9',
+            attempt: 4,
+            worker_host: 'build-9',
+            workspace_path: '/tmp/symphony/ABC-9',
+            provisioner_type: 'worktree',
+            branch_name: 'feature/ABC-9',
+            repo_root: '/tmp/source',
+            workspace_exists: true,
+            workspace_git_status: 'clean',
+            stop_reason_code: 'turn_input_required',
+            stop_reason_detail: 'operator input required',
+            previous_thread_id: 'thread-prev',
+            previous_session_id: 'thread-prev-turn-prev',
+            blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            requires_manual_resume: true
+          }
+        ]
+      ])
+    });
+
+    const projected = service.projectIssue(state, 'ABC-9');
+    expect(projected.status).toBe('blocked');
+    expect(projected.retry).toBeNull();
+    expect(projected.blocked).toMatchObject({
+      stop_reason_code: 'turn_input_required',
+      previous_session_id: 'thread-prev-turn-prev',
+      requires_manual_resume: true
+    });
   });
 
   it('projects failed health state and issue recent events for diagnostics', () => {

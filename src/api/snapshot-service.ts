@@ -78,6 +78,24 @@ export class SnapshotService {
       previous_thread_id: entry.previous_thread_id ?? null,
       previous_session_id: entry.previous_session_id ?? null
     }));
+    const blocked = Array.from(state.blocked_inputs.values()).map((entry) => ({
+      issue_id: entry.issue_id,
+      issue_identifier: entry.issue_identifier,
+      attempt: entry.attempt,
+      blocked_at: asIsoDate(entry.blocked_at_ms),
+      worker_host: entry.worker_host ?? null,
+      workspace_path: entry.workspace_path ?? null,
+      provisioner_type: entry.provisioner_type ?? null,
+      branch_name: entry.branch_name ?? null,
+      repo_root: entry.repo_root ?? null,
+      workspace_exists: entry.workspace_exists,
+      workspace_git_status: entry.workspace_git_status ?? null,
+      stop_reason_code: entry.stop_reason_code,
+      stop_reason_detail: entry.stop_reason_detail ?? null,
+      previous_thread_id: entry.previous_thread_id ?? null,
+      previous_session_id: entry.previous_session_id ?? null,
+      requires_manual_resume: true as const
+    }));
 
     const activeSeconds = Array.from(state.running.values()).reduce((total, entry) => {
       const seconds = Math.max(0, Math.floor((nowMs - entry.started_at_ms) / 1000));
@@ -88,10 +106,12 @@ export class SnapshotService {
       generated_at: asIsoDate(nowMs),
       counts: {
         running: running.length,
-        retrying: retrying.length
+        retrying: retrying.length,
+        blocked: blocked.length
       },
       running,
       retrying,
+      blocked,
       codex_totals: {
         input_tokens: state.codex_totals.input_tokens,
         output_tokens: state.codex_totals.output_tokens,
@@ -133,8 +153,9 @@ export class SnapshotService {
   projectIssue(state: OrchestratorState, issueIdentifier: string): ApiIssueResponse {
     const runningEntry = Array.from(state.running.entries()).find(([, entry]) => entry.identifier === issueIdentifier);
     const retryEntry = Array.from(state.retry_attempts.values()).find((entry) => entry.identifier === issueIdentifier);
+    const blockedEntry = Array.from(state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issueIdentifier);
 
-    if (!runningEntry && !retryEntry) {
+    if (!runningEntry && !retryEntry && !blockedEntry) {
       throw new LocalApiError(
         'issue_not_found',
         `Issue ${issueIdentifier} is not in runtime state`,
@@ -209,6 +230,24 @@ export class SnapshotService {
               previous_session_id: retryEntry.previous_session_id ?? null
             }
           : null,
+        blocked: blockedEntry
+          ? {
+              attempt: blockedEntry.attempt,
+              blocked_at: asIsoDate(blockedEntry.blocked_at_ms),
+              worker_host: blockedEntry.worker_host ?? null,
+              workspace_path: blockedEntry.workspace_path ?? null,
+              provisioner_type: blockedEntry.provisioner_type ?? null,
+              branch_name: blockedEntry.branch_name ?? null,
+              repo_root: blockedEntry.repo_root ?? null,
+              workspace_exists: blockedEntry.workspace_exists,
+              workspace_git_status: blockedEntry.workspace_git_status ?? null,
+              stop_reason_code: blockedEntry.stop_reason_code,
+              stop_reason_detail: blockedEntry.stop_reason_detail ?? null,
+              previous_thread_id: blockedEntry.previous_thread_id ?? null,
+              previous_session_id: blockedEntry.previous_session_id ?? null,
+              requires_manual_resume: true as const
+            }
+          : null,
         recent_events: entry.recent_events.map((event) => ({
           at: asIsoDate(event.at_ms),
           event: event.event,
@@ -222,8 +261,66 @@ export class SnapshotService {
       }) as ApiIssueResponse;
     }
 
-    const retryOnlyEntry = retryEntry;
-    if (!retryOnlyEntry) {
+    if (retryEntry) {
+      const retryOnlyEntry = retryEntry;
+      const issueId = retryOnlyEntry.issue_id;
+      return redactUnknown({
+        issue_identifier: issueIdentifier,
+        issue_id: issueId,
+        status: 'retrying',
+        workspace: {
+          path: retryOnlyEntry.workspace_path ?? null,
+          host: retryOnlyEntry.worker_host ?? null
+        },
+        attempts: {
+          restart_count: 0,
+          current_retry_attempt: retryOnlyEntry.attempt
+        },
+        running: null,
+        retry: {
+          attempt: retryOnlyEntry.attempt,
+          due_at: asIsoDate(retryOnlyEntry.due_at_ms),
+          error: retryOnlyEntry.error,
+          worker_host: retryOnlyEntry.worker_host ?? null,
+          workspace_path: retryOnlyEntry.workspace_path ?? null,
+          provisioner_type: retryOnlyEntry.provisioner_type ?? null,
+          branch_name: retryOnlyEntry.branch_name ?? null,
+          repo_root: retryOnlyEntry.repo_root ?? null,
+          workspace_exists: retryOnlyEntry.workspace_exists,
+          workspace_git_status: retryOnlyEntry.workspace_git_status ?? null,
+          stop_reason_code: retryOnlyEntry.stop_reason_code ?? null,
+          stop_reason_detail: retryOnlyEntry.stop_reason_detail ?? null,
+          previous_thread_id: retryOnlyEntry.previous_thread_id ?? null,
+          previous_session_id: retryOnlyEntry.previous_session_id ?? null
+        },
+        blocked: blockedEntry
+          ? {
+              attempt: blockedEntry.attempt,
+              blocked_at: asIsoDate(blockedEntry.blocked_at_ms),
+              worker_host: blockedEntry.worker_host ?? null,
+              workspace_path: blockedEntry.workspace_path ?? null,
+              provisioner_type: blockedEntry.provisioner_type ?? null,
+              branch_name: blockedEntry.branch_name ?? null,
+              repo_root: blockedEntry.repo_root ?? null,
+              workspace_exists: blockedEntry.workspace_exists,
+              workspace_git_status: blockedEntry.workspace_git_status ?? null,
+              stop_reason_code: blockedEntry.stop_reason_code,
+              stop_reason_detail: blockedEntry.stop_reason_detail ?? null,
+              previous_thread_id: blockedEntry.previous_thread_id ?? null,
+              previous_session_id: blockedEntry.previous_session_id ?? null,
+              requires_manual_resume: true as const
+            }
+          : null,
+        recent_events: [],
+        last_error: retryOnlyEntry.error,
+        logs: {
+          codex_session_logs: []
+        },
+        tracked: {}
+      }) as ApiIssueResponse;
+    }
+
+    if (!blockedEntry) {
       throw new LocalApiError(
         'issue_not_found',
         `Issue ${issueIdentifier} is not in runtime state`,
@@ -231,38 +328,39 @@ export class SnapshotService {
       );
     }
 
-    const issueId = retryOnlyEntry.issue_id;
+    const issueId = blockedEntry.issue_id;
     return redactUnknown({
       issue_identifier: issueIdentifier,
       issue_id: issueId,
-      status: 'retrying',
+      status: 'blocked',
       workspace: {
-        path: retryOnlyEntry.workspace_path ?? null,
-        host: retryOnlyEntry.worker_host ?? null
+        path: blockedEntry.workspace_path ?? null,
+        host: blockedEntry.worker_host ?? null
       },
       attempts: {
         restart_count: 0,
-        current_retry_attempt: retryOnlyEntry.attempt
+        current_retry_attempt: blockedEntry.attempt
       },
       running: null,
-      retry: {
-        attempt: retryOnlyEntry.attempt,
-        due_at: asIsoDate(retryOnlyEntry.due_at_ms),
-        error: retryOnlyEntry.error,
-        worker_host: retryOnlyEntry.worker_host ?? null,
-        workspace_path: retryOnlyEntry.workspace_path ?? null,
-        provisioner_type: retryOnlyEntry.provisioner_type ?? null,
-        branch_name: retryOnlyEntry.branch_name ?? null,
-        repo_root: retryOnlyEntry.repo_root ?? null,
-        workspace_exists: retryOnlyEntry.workspace_exists,
-        workspace_git_status: retryOnlyEntry.workspace_git_status ?? null,
-        stop_reason_code: retryOnlyEntry.stop_reason_code ?? null,
-        stop_reason_detail: retryOnlyEntry.stop_reason_detail ?? null,
-        previous_thread_id: retryOnlyEntry.previous_thread_id ?? null,
-        previous_session_id: retryOnlyEntry.previous_session_id ?? null
+      retry: null,
+      blocked: {
+        attempt: blockedEntry.attempt,
+        blocked_at: asIsoDate(blockedEntry.blocked_at_ms),
+        worker_host: blockedEntry.worker_host ?? null,
+        workspace_path: blockedEntry.workspace_path ?? null,
+        provisioner_type: blockedEntry.provisioner_type ?? null,
+        branch_name: blockedEntry.branch_name ?? null,
+        repo_root: blockedEntry.repo_root ?? null,
+        workspace_exists: blockedEntry.workspace_exists,
+        workspace_git_status: blockedEntry.workspace_git_status ?? null,
+        stop_reason_code: blockedEntry.stop_reason_code,
+        stop_reason_detail: blockedEntry.stop_reason_detail ?? null,
+        previous_thread_id: blockedEntry.previous_thread_id ?? null,
+        previous_session_id: blockedEntry.previous_session_id ?? null,
+        requires_manual_resume: true as const
       },
       recent_events: [],
-      last_error: retryOnlyEntry.error,
+      last_error: blockedEntry.stop_reason_detail ?? blockedEntry.stop_reason_code,
       logs: {
         codex_session_logs: []
       },
