@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { redactLogInput } from '../security/redaction';
 
 export type LogLevel = 'info' | 'warn' | 'error';
@@ -24,11 +27,83 @@ export interface StructuredLogger {
   }): void;
 }
 
-class StderrSink implements LogSink {
+export const DEFAULT_LOG_FILE_NAME = 'symphony.log';
+export const DEFAULT_LOG_ROTATION_MAX_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_LOG_ROTATION_MAX_FILES = 5;
+
+export class StderrSink implements LogSink {
   name = 'stderr';
 
   write(_entry: LogEntry, rendered: string): void {
     process.stderr.write(`${rendered}\n`);
+  }
+}
+
+function rotateFile(baseFilePath: string, maxFiles: number): void {
+  if (maxFiles <= 1) {
+    if (fs.existsSync(baseFilePath)) {
+      fs.unlinkSync(baseFilePath);
+    }
+    return;
+  }
+
+  const oldestArchivePath = `${baseFilePath}.${maxFiles - 1}`;
+  if (fs.existsSync(oldestArchivePath)) {
+    fs.unlinkSync(oldestArchivePath);
+  }
+
+  for (let index = maxFiles - 2; index >= 1; index -= 1) {
+    const sourcePath = `${baseFilePath}.${index}`;
+    const targetPath = `${baseFilePath}.${index + 1}`;
+    if (fs.existsSync(sourcePath)) {
+      fs.renameSync(sourcePath, targetPath);
+    }
+  }
+
+  if (fs.existsSync(baseFilePath)) {
+    fs.renameSync(baseFilePath, `${baseFilePath}.1`);
+  }
+}
+
+export class RotatingFileSink implements LogSink {
+  name = 'file';
+  private readonly baseFilePath: string;
+  private readonly maxBytes: number;
+  private readonly maxFiles: number;
+
+  constructor(options: {
+    root: string;
+    baseFileName?: string;
+    maxBytes?: number;
+    maxFiles?: number;
+  }) {
+    this.baseFilePath = path.join(options.root, options.baseFileName ?? DEFAULT_LOG_FILE_NAME);
+    this.maxBytes = options.maxBytes ?? DEFAULT_LOG_ROTATION_MAX_BYTES;
+    this.maxFiles = options.maxFiles ?? DEFAULT_LOG_ROTATION_MAX_FILES;
+  }
+
+  write(_entry: LogEntry, rendered: string): void {
+    const line = `${rendered}\n`;
+    this.rotateIfNeeded(Buffer.byteLength(line, 'utf8'));
+    fs.appendFileSync(this.baseFilePath, line, 'utf8');
+  }
+
+  private rotateIfNeeded(incomingBytes: number): void {
+    let currentSize = 0;
+    try {
+      currentSize = fs.statSync(this.baseFilePath).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return;
+      }
+      throw error;
+    }
+
+    if (currentSize + incomingBytes <= this.maxBytes) {
+      return;
+    }
+
+    rotateFile(this.baseFilePath, this.maxFiles);
   }
 }
 

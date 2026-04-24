@@ -47,6 +47,7 @@ export const CANONICAL_EVENT = {
   },
   runtime: {
     argsResolved: 'runtime.args.resolved',
+    loggingConfigured: 'runtime.logging.configured',
     securityProfileActive: 'runtime.security.profile.active',
     startupValidationBypassed: 'runtime.startup.validation.bypassed',
     startupStateInitialized: 'runtime.startup.state.initialized',

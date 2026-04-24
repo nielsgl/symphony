@@ -1,6 +1,16 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
-import { MultiSinkLogger, type LogEntry, type LogSink } from '../../src/observability';
+import {
+  MultiSinkLogger,
+  RotatingFileSink,
+  StderrSink,
+  type LogEntry,
+  type LogSink
+} from '../../src/observability';
 
 class MemorySink implements LogSink {
   name = 'memory';
@@ -77,5 +87,66 @@ describe('MultiSinkLogger', () => {
 
     expect(sink.entries[0]).toContain('api_key="***REDACTED***"');
     expect(sink.entries[0]).not.toContain('abcd1234');
+  });
+
+  it('writes redacted entries to rotating file sink', () => {
+    const logRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-log-test-'));
+    const logger = new MultiSinkLogger({
+      sinks: [
+        new StderrSink(),
+        new RotatingFileSink({
+          root: logRoot,
+          maxBytes: 1024,
+          maxFiles: 5
+        })
+      ],
+      nowIso: () => '2026-04-11T12:00:00.000Z'
+    });
+
+    logger.log({
+      level: 'error',
+      event: 'worker_event',
+      message: 'token=abc123',
+      context: {
+        issue_identifier: 'ABC-1',
+        api_key: 'secret'
+      }
+    });
+
+    const fileContent = fs.readFileSync(path.join(logRoot, 'symphony.log'), 'utf8');
+    expect(fileContent).toContain('issue_identifier="ABC-1"');
+    expect(fileContent).toContain('api_key="***REDACTED***"');
+    expect(fileContent).not.toContain('abc123');
+
+    fs.rmSync(logRoot, { recursive: true, force: true });
+  });
+
+  it('rotates log files when max bytes are exceeded and enforces retention cap', () => {
+    const logRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-log-rotate-'));
+    const logger = new MultiSinkLogger({
+      sinks: [
+        new RotatingFileSink({
+          root: logRoot,
+          maxBytes: 200,
+          maxFiles: 3
+        })
+      ],
+      nowIso: () => '2026-04-11T12:00:00.000Z'
+    });
+
+    for (let index = 0; index < 40; index += 1) {
+      logger.log({
+        level: 'info',
+        event: 'rotation.test',
+        message: `entry-${index}-${'x'.repeat(60)}`
+      });
+    }
+
+    expect(fs.existsSync(path.join(logRoot, 'symphony.log'))).toBe(true);
+    expect(fs.existsSync(path.join(logRoot, 'symphony.log.1'))).toBe(true);
+    expect(fs.existsSync(path.join(logRoot, 'symphony.log.2'))).toBe(true);
+    expect(fs.existsSync(path.join(logRoot, 'symphony.log.3'))).toBe(false);
+
+    fs.rmSync(logRoot, { recursive: true, force: true });
   });
 });
