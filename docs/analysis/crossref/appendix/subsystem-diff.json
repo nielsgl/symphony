@@ -170,6 +170,29 @@
       "recommendations": []
     },
     {
+      "id": "logging-substrate",
+      "status": "functionally-equivalent",
+      "classification": "extension",
+      "risk": "low",
+      "summary": "Reference rotating disk logs and logs-root behavior are aligned at operational intent while TypeScript intentionally diverges on path semantics (`--logs-root` direct target and workflow-scoped hidden default).",
+      "ours_anchors": [
+        "src/observability/logger.ts",
+        "src/runtime/cli.ts",
+        "src/runtime/bootstrap.ts",
+        "src/api/server.ts",
+        "tests/observability/logger.test.ts",
+        "tests/runtime/bootstrap.test.ts",
+        ".codex/skills/debug/SKILL.md"
+      ],
+      "ref_anchors": [
+        "elixir/lib/symphony_elixir/log_file.ex",
+        "elixir/lib/symphony_elixir/cli.ex",
+        "elixir/test/symphony_elixir/log_file_test.exs",
+        ".codex/skills/debug/SKILL.md"
+      ],
+      "recommendations": []
+    },
+    {
       "id": "persistence",
       "status": "missing-in-ref",
       "classification": "extension",

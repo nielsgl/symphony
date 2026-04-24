@@ -27,7 +27,7 @@
 | UI/observability surface | Terminal status dashboard + Phoenix LiveView, rich TPS/rate-limit rendering (`status_dashboard.ex`, `dashboard_live.ex`) | Browser dashboard + Tauri host integration + local observability APIs, now with throughput windows + runtime event feed + UI-state continuity for feed controls (`src/api/dashboard-assets.ts`, `src/orchestrator/core.ts`, `src/observability/throughput.ts`, `src-tauri/src/main.rs`) | `functionally-equivalent` | `extension` | Low-Medium UX/ops tradeoff | Keep browser/Tauri-first design; XR-06 closed in P12 |
 | Security/policy defaults | Safer-by-default approval object + explicit guardrail CLI acknowledgment (`cli.ex`, `config/schema.ex`) | Strict-by-default profile (`approval_policy=never`, read-only sandbox) and mandatory startup acknowledgment flag with deterministic block event (`src/security/profiles.ts`, `src/runtime/cli.ts`, `src/runtime/cli-runner.ts`) | `equivalent` safety posture intent | `spec-required` | Low | Keep strict defaults; XR-01/XR-07 closed in P11 |
 | Persistence/continuity | No dedicated durable run history/ui continuity store | SQLite durable history + ui-state + retention/integrity diagnostics (`src/persistence/store.ts`) | `missing-in-ref` (ours stronger for this requirement) | `spec-required` in our roadmap decisions | Low, favorable for ours | Preserve and treat as product baseline (`XR-00`) |
-| Runtime/CLI lifecycle | Escript CLI with workflow arg, guardrail flag, `--logs-root`, `--port` and clean halt behavior (`cli.ex`) | Node CLI with positional/flag/env precedence, mandatory guardrail ack flag, and deterministic lifecycle tests (`src/runtime/cli.ts`, `tests/cli/lifecycle.test.ts`) | `functionally-equivalent` | `spec-required` + `extension` | Low | Keep; guardrail parity closed in P11 |
+| Runtime/CLI lifecycle | Escript CLI with workflow arg, guardrail flag, `--logs-root`, `--port` and clean halt behavior (`cli.ex`) | Node CLI with positional/flag/env precedence, mandatory guardrail ack flag, `--logs-root`, and deterministic lifecycle tests (`src/runtime/cli.ts`, `src/runtime/bootstrap.ts`, `tests/cli/lifecycle.test.ts`) | `functionally-equivalent` with intentional path-semantics divergence | `spec-required` + `extension` | Low | Keep; divergence is intentional (`--logs-root` direct-target + workflow-scoped hidden default) |
 | Test harness and quality gates | Extensive ExUnit surface + live e2e + snapshot fixtures + Mix QA tasks (`test/**/*.exs`, `mix/tasks/*.ex`) | Extensive Vitest + Playwright + integration profile scripts + parity matrices + meta quality gate scripts (`tests/**/*.ts`, `scripts/check-meta.js`, `scripts/check-api-contract.js`, `scripts/check-pr-governance.js`) | `functionally-equivalent` with aligned governance gates | `spec-required` | Low | Keep; XR-08 closed in P11 |
 
 ## Interface-Level Parity
@@ -65,7 +65,8 @@
 2. Previously high-priority parity deltas XR-01, XR-02, XR-04, XR-05, and XR-08 are now closed in P11.
 3. Token accounting semantics alignment (XR-10) is closed in P13.
 4. Remaining deltas are mostly intentional product posture choices (`XR-00`, `XR-03`) rather than parity gaps.
-4. Our implementation remains stronger in intentionally productized areas:
+5. Logging substrate implementation is functionally equivalent for operational goals, with intentional path-semantics divergence from Elixir (`--logs-root` direct target and `<workflow_dir>/.symphony/log` default).
+6. Our implementation remains stronger in intentionally productized areas:
    - GitHub adapter,
    - SQLite persistence and UI continuity APIs,
    - desktop-native packaging path.

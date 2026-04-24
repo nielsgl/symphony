@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P14 logging parity closure.
-- Current phase: P1 (entry approved; implementation delivered through P14 closure evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P14b logging substrate closure with intentional path-semantics divergence.
+- Current phase: P1 (entry approved; implementation delivered through P14b evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P14`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P14b`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -182,6 +182,40 @@ Ownership evidence links:
 - [x] P11: Implement XR-01/XR-02/XR-04/XR-05/XR-08 with breaking defaults now.
 - [x] P12: Implement XR-06/XR-09 observability enrichment + canonical event vocabulary harmonization.
 - [x] P14: Implement logging lifecycle/context parity closure against reference logging contract.
+- [x] P14b: Implement logging substrate parity (rotating file sink + logs-root + diagnostics + debug-skill alignment).
+
+## Implementation Evidence (P14b)
+- Date: 2026-04-23
+- Scope delivered:
+  - Added rotating durable file sink (`symphony.log` with capped archives) while keeping default stderr visibility.
+  - Added runtime log-root resolution contract with precedence: CLI `--logs-root` > workflow `logging.root` > workflow-scoped default (`<workflow_dir>/.symphony/log`).
+  - Kept intentional path-semantics divergence from Elixir: TypeScript `--logs-root` is the direct directory containing `symphony.log*`.
+  - Added fail-fast startup behavior for non-writable logging root with typed config error (`invalid_logging_root`).
+  - Extended diagnostics contract with additive `logging` block (`root`, `active_file`, `rotation`, `sinks`).
+  - Added local debug skill contract and updated logging docs for operational discovery/query flows.
+  - Added meta check to prevent non-canonical `identifier` context-key regressions in issue-scoped log contexts.
+- Key outputs:
+  - `src/observability/logger.ts`
+  - `src/runtime/cli.ts`
+  - `src/runtime/cli-runner.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/workflow/types.ts`
+  - `src/workflow/resolver.ts`
+  - `src/api/types.ts`
+  - `src/api/server.ts`
+  - `scripts/check-log-context.js`
+  - `scripts/check-meta.js`
+  - `.codex/skills/debug/SKILL.md`
+  - `docs/logging.md`
+  - `docs/analysis/crossref/02-cross-reference-matrix.md`
+  - `docs/analysis/crossref/03-recommendations-and-migration-plan.md`
+  - `docs/analysis/crossref/appendix/subsystem-diff.json`
+  - `docs/prd/STATUS.md`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
 
 ## Implementation Evidence (P14)
 - Date: 2026-04-23

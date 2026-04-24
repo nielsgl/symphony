@@ -54,20 +54,46 @@ Codex lifecycle (worker stream):
 - Avoid large payload dumps; API diagnostics/snapshots are the canonical detail
   surface.
 
+## Log Transport and Retention
+- Runtime uses dual sinks by default: `stderr` and rotating file sink.
+- Default log root is workflow-scoped: `<workflow_dir>/.symphony/log`.
+- Overrides:
+  - CLI: `--logs-root=<path>` (or split form `--logs-root <path>`)
+  - workflow config: `logging.root`
+  - precedence: CLI > workflow > workflow-scoped default.
+- Intentional divergence from Elixir reference:
+  - TypeScript treats `--logs-root` as the direct directory containing `symphony.log*`,
+  - Elixir treats `--logs-root` as parent root and writes under `<logs_root>/log/`.
+- File naming and rotation:
+  - active file: `symphony.log`
+  - archives: `symphony.log.1`, `symphony.log.2`, ...
+  - max size: `10MB` default (`logging.max_bytes` override)
+  - max retained files: `5` default (`logging.max_files` override, active + archives)
+- Diagnostics exposure:
+  - `/api/v1/diagnostics.logging.root`
+  - `/api/v1/diagnostics.logging.active_file`
+  - `/api/v1/diagnostics.logging.rotation`
+  - `/api/v1/diagnostics.logging.sinks`
+
 ## Safety and Reliability
 - All logs flow through `redactLogInput`; secrets must not appear in message
   text or context values.
 - Sink failures must never crash orchestration; `log_sink_failure` is emitted to
   fallback sink.
+- Startup fails fast with typed config error `invalid_logging_root` when the
+  configured log root is not writable.
 
 ## Implementation Anchors
 - Logger and formatting: `src/observability/logger.ts`
 - Canonical event registry: `src/observability/events.ts`
+- Runtime log root resolution: `src/runtime/cli.ts`, `src/workflow/resolver.ts`, `src/runtime/bootstrap.ts`
 - Orchestrator lifecycle emitters: `src/orchestrator/core.ts`
 - Agent runner boundary emitters: `src/orchestrator/local-runner-bridge.ts`
 
 ## Verification Anchors
 - `tests/observability/logger.test.ts`
+- `tests/cli/cli-args.test.ts`
+- `tests/runtime/bootstrap.test.ts`
 - `tests/observability/events-vocabulary.test.ts`
 - `tests/orchestrator/core.test.ts`
 - `tests/orchestrator/local-runner-bridge.test.ts`

@@ -150,6 +150,28 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/tests/observability/events-vocabulary.test.ts`
   - `/Users/niels.van.Galen.last/code/symphony/docs/logging.md`
 
+### XR-12 — Logging substrate parity (durable file sink + logs-root diagnostics)
+- Priority: `P1`
+- Decision: `adopted` (closed in `P14b`, with intentional path-semantics divergence)
+- Delivered:
+  - rotating durable file sink (`symphony.log`, capped archive retention) while preserving default stderr sink visibility,
+  - log-root precedence and startup resolution contract (CLI `--logs-root` > workflow `logging.root` > `<workflow_dir>/.symphony/log` default),
+  - intentional divergence from Elixir path semantics: TypeScript `--logs-root` is the direct `symphony.log*` directory,
+  - fail-fast typed startup error for non-writable log root (`invalid_logging_root`),
+  - additive diagnostics logging block and debug-skill operator workflow alignment,
+  - meta guard against non-canonical `identifier` context key in issue-scoped log context blocks.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/observability/logger.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/cli.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/bootstrap.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/observability/logger.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/runtime/bootstrap.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/cli/cli-args.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/scripts/check-log-context.js`
+  - `/Users/niels.van.Galen.last/code/symphony/.codex/skills/debug/SKILL.md`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -164,7 +186,7 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-- None. Parity recommendations are closed through `P13`.
+- None. Parity recommendations are closed through `P14b`.
 - Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
 ## Suggested Rollout Order (Post-P12)
