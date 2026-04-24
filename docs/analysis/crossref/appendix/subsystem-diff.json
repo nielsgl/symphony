@@ -23,11 +23,13 @@
       "status": "equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; approval policy shape compatibility is now aligned.",
+      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; approval policy compatibility plus parity knobs (`tracker.assignee`, `server.host`, `observability.*`, prompt fallback) are now aligned.",
       "ours_anchors": [
         "src/workflow/resolver.ts",
+        "src/workflow/loader.ts",
         "src/workflow/validator.ts",
         "tests/workflow/resolver.test.ts",
+        "tests/workflow/loader.test.ts",
         "tests/workflow/validator.test.ts"
       ],
       "ref_anchors": [
@@ -99,11 +101,15 @@
       "status": "functionally-equivalent",
       "classification": "extension",
       "risk": "low",
-      "summary": "Reference is Linear-focused; ours includes Linear and GitHub adapters with parity tests.",
+      "summary": "Reference is Linear-focused; ours includes Linear/GitHub/Memory adapters with read+write tracker contract parity and assignee-based routing.",
       "ours_anchors": [
+        "src/tracker/types.ts",
         "src/tracker/linear-adapter.ts",
         "src/tracker/github-adapter.ts",
-        "tests/tracker/github-adapter.test.ts"
+        "src/tracker/memory-adapter.ts",
+        "tests/tracker/linear-adapter.test.ts",
+        "tests/tracker/github-adapter.test.ts",
+        "tests/tracker/memory-adapter.test.ts"
       ],
       "ref_anchors": [
         "elixir/lib/symphony_elixir/tracker.ex",
@@ -134,12 +140,13 @@
       "status": "different-safe",
       "classification": "extension",
       "risk": "low",
-      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, and now includes throughput + runtime-event feed observability enrichment.",
+      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, and runtime workflow path/reload controls.",
       "ours_anchors": [
         "src/api/server.ts",
         "src/api/types.ts",
         "src/api/snapshot-service.ts",
         "src/api/dashboard-assets.ts",
+        "src/runtime/bootstrap.ts",
         "tests/api/server.test.ts"
       ],
       "ref_anchors": [

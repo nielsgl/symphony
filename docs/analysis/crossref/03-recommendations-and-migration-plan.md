@@ -172,6 +172,34 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/scripts/check-log-context.js`
   - `/Users/niels.van.Galen.last/code/symphony/.codex/skills/debug/SKILL.md`
 
+### XR-13 — Functional parity uplift bundle (tracker/runtime/api/workflow knobs)
+- Priority: `P1`
+- Decision: `adopted` (closed in `P15b`)
+- Delivered:
+  - tracker write-path parity (`create_comment`, `update_issue_state`) across Linear, GitHub, and memory adapters,
+  - assignee-based tracker routing (`tracker.assignee`) with Linear `me` viewer resolution,
+  - runtime workflow controls (`POST /api/v1/workflow/path`, `POST /api/v1/workflow/reload`) with last-known-good semantics,
+  - configurable server host binding (`server.host` + CLI precedence),
+  - retry projection enrichment (`worker_host`, `workspace_path`),
+  - observability dashboard knobs (`dashboard_enabled`, `refresh_ms`, `render_interval_ms`),
+  - deterministic default prompt fallback and diagnostics marker for empty workflow body.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/tracker/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/tracker/linear-adapter.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/tracker/github-adapter.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/tracker/memory-adapter.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/resolver.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/loader.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/cli.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/bootstrap.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/dashboard-assets.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/tracker/linear-adapter.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/tracker/github-adapter.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/tracker/memory-adapter.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/runtime/bootstrap.test.ts`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -186,13 +214,13 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-- None. Parity recommendations are closed through `P14b`.
+- None. Parity recommendations are closed through `P15b`.
 - Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
 ## Suggested Rollout Order (Post-P12)
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, and `XR-11` are marked closed with concrete code/test anchors.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, and `XR-13` are marked closed with concrete code/test anchors.
 - Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.

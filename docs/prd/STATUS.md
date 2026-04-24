@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P15 logging hardening closure.
+- Program status: P0 governance is closed; implementation evidence is recorded through P15b functional parity uplift closure.
 - Current phase: P1 (entry approved; implementation delivered through P15 evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P15`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P15b`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -184,6 +184,41 @@ Ownership evidence links:
 - [x] P14: Implement logging lifecycle/context parity closure against reference logging contract.
 - [x] P14b: Implement logging substrate parity (rotating file sink + logs-root + diagnostics + debug-skill alignment).
 - [x] P15: Implement logging hardening (bootstrap API cleanup, CLI duplication guard regression, AST context governance).
+- [x] P15b: Implement functional parity uplift findings F1-F8 (tracker write paths, assignee routing, memory tracker, runtime workflow switching, host binding, retry projection enrichment, observability knobs, prompt fallback).
+
+## Implementation Evidence (P15b Functional Parity Uplift)
+- Date: 2026-04-24
+- Scope delivered:
+  - Added tracker write-path contract (`create_comment`, `update_issue_state`) across Linear, GitHub, and memory adapters.
+  - Added assignee-aware candidate routing (`tracker.assignee`) including `me` viewer resolution for Linear.
+  - Added `tracker.kind=memory` read/write adapter for deterministic local/dev routing.
+  - Added runtime workflow controls (`POST /api/v1/workflow/path`, `POST /api/v1/workflow/reload`) with last-known-good protection.
+  - Added `server.host` workflow+CLI resolution with typed validation and deterministic precedence.
+  - Enriched `/api/v1/state.retrying` rows with `worker_host` and `workspace_path`.
+  - Added observability dashboard knobs (`dashboard_enabled`, `refresh_ms`, `render_interval_ms`) with safe minimums.
+  - Added deterministic default prompt fallback for empty workflow prompt bodies and surfaced diagnostics marker (`workflow.prompt_fallback_active`).
+- Key outputs:
+  - `src/tracker/types.ts`
+  - `src/tracker/linear-adapter.ts`
+  - `src/tracker/github-adapter.ts`
+  - `src/tracker/memory-adapter.ts`
+  - `src/workflow/types.ts`
+  - `src/workflow/resolver.ts`
+  - `src/workflow/loader.ts`
+  - `src/runtime/cli.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/orchestrator/core.ts`
+  - `src/api/server.ts`
+  - `src/api/dashboard-assets.ts`
+  - `tests/tracker/*.test.ts`
+  - `tests/workflow/*.test.ts`
+  - `tests/api/server.test.ts`
+  - `tests/runtime/bootstrap.test.ts`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
 
 ## Implementation Evidence (P15)
 - Date: 2026-04-24
