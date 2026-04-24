@@ -14,7 +14,7 @@ function baseConfig(): EffectiveConfig {
       terminal_states: ['Done']
     },
     polling: { interval_ms: 30000 },
-    workspace: { root: '/tmp/symphony' },
+    workspace: { root: '/tmp/symphony', root_source: 'workflow' },
     hooks: { timeout_ms: 60000 },
     agent: {
       max_concurrent_agents: 10,

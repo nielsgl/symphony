@@ -633,7 +633,10 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       message: 'runtime environment started',
       context: {
         poll_interval_ms: effectiveConfig.polling.interval_ms,
-        http_server_enabled: apiServer !== null
+        http_server_enabled: apiServer !== null,
+        workflow_path: currentWorkflowPath,
+        workspace_root: effectiveConfig.workspace.root,
+        workspace_root_source: effectiveConfig.workspace.root_source
       }
     });
   };

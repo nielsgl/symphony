@@ -39,7 +39,7 @@ function makeConfig(): EffectiveConfig {
       terminal_states: ['Done']
     },
     polling: { interval_ms: 30000 },
-    workspace: { root: '/tmp/symphony' },
+    workspace: { root: '/tmp/symphony', root_source: 'workflow' },
     hooks: { timeout_ms: 1000 },
     agent: {
       max_concurrent_agents: 2,
@@ -402,7 +402,7 @@ describe('LocalRunnerBridge integration', () => {
       codexRunner,
       config: {
         ...makeConfig(),
-        workspace: { root: '/tmp/symphony' }
+        workspace: { root: '/tmp/symphony', root_source: 'workflow' }
       },
       promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
       onWorkerEvent: ({ event }) => {

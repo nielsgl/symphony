@@ -18,7 +18,7 @@ function makeSnapshotInputs() {
         terminal_states: ['Done']
       },
       polling: { interval_ms: 30000 },
-      workspace: { root: '/tmp/symphony' },
+      workspace: { root: '/tmp/symphony', root_source: 'workflow' as const },
       hooks: { timeout_ms: 60000 },
       agent: {
         max_concurrent_agents: 10,

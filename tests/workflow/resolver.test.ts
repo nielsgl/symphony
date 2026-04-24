@@ -22,6 +22,7 @@ describe('ConfigResolver', () => {
     expect(config.polling.interval_ms).toBe(30000);
     expect(config.tracker.active_states).toEqual(['Todo', 'In Progress']);
     expect(config.workspace.root).toBe('/tmp/symphony_workspaces');
+    expect(config.workspace.root_source).toBe('default');
     expect(config.codex.command).toBe('codex app-server');
     expect(config.persistence.enabled).toBe(true);
     expect(config.persistence.retention_days).toBe(14);
@@ -56,6 +57,7 @@ describe('ConfigResolver', () => {
 
     expect(config.tracker.api_key).toBe('secret-token');
     expect(config.workspace.root).toBe('/srv/workspaces');
+    expect(config.workspace.root_source).toBe('workflow');
   });
 
   it('uses github defaults for endpoint and token fallback', () => {
@@ -152,6 +154,7 @@ describe('ConfigResolver', () => {
     });
 
     expect(config.workspace.root).toBe(path.normalize('/home/tester/sym/workspaces'));
+    expect(config.workspace.root_source).toBe('workflow');
   });
 
   it('preserves bare path strings without separators', () => {
@@ -165,6 +168,24 @@ describe('ConfigResolver', () => {
     });
 
     expect(config.workspace.root).toBe('relativeRoot');
+    expect(config.workspace.root_source).toBe('workflow');
+  });
+
+  it('resolves relative workspace.root against workflow directory when workflow path is provided', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve(
+      {
+        config: {
+          workspace: { root: './.symphony/workspaces' }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.workspace.root).toBe(path.normalize('/workspace/projects/todo-app/.symphony/workspaces'));
+    expect(config.workspace.root_source).toBe('workflow');
   });
 
   it('normalizes per-state concurrency map and ignores invalid entries', () => {

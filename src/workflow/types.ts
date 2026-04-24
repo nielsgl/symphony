@@ -98,7 +98,7 @@ export interface LoggingConfig {
 export interface EffectiveConfig {
   tracker: TrackerConfig;
   polling: { interval_ms: number };
-  workspace: { root: string };
+  workspace: { root: string; root_source: 'workflow' | 'default' };
   hooks: HooksConfig;
   agent: AgentConfig;
   codex: CodexConfig;

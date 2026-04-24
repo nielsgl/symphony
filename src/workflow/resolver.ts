@@ -165,13 +165,25 @@ function hasPathSeparator(value: string): boolean {
   return value.includes('/') || value.includes('\\') || value === '~' || value.startsWith('~/') || value.startsWith('~\\');
 }
 
-function resolvePathLikeValue(value: unknown, env: NodeJS.ProcessEnv, homedir: string, fallback: string): string {
+function resolvePathLikeValue(
+  value: unknown,
+  env: NodeJS.ProcessEnv,
+  homedir: string,
+  fallback: string,
+  options?: {
+    relativeBaseDir?: string;
+  }
+): string {
   const raw = readString(value, fallback);
   const envResolved = resolveEnvToken(raw, env);
   const homeResolved = expandHome(envResolved, homedir);
 
   if (!hasPathSeparator(homeResolved)) {
     return homeResolved;
+  }
+
+  if (!path.isAbsolute(homeResolved) && options?.relativeBaseDir) {
+    return path.normalize(path.resolve(options.relativeBaseDir, homeResolved));
   }
 
   return path.normalize(homeResolved);
@@ -245,22 +257,29 @@ export class ConfigResolver {
     const trackerOwner = readString(tracker.owner, '');
     const trackerRepo = readString(tracker.repo, '');
 
-    const workspaceRoot = resolvePathLikeValue(
-      workspace.root,
-      this.env,
-      this.homedir(),
-      path.join(this.tmpdir(), 'symphony_workspaces')
-    );
-
-    const hooksTimeoutCandidate = readInt(hooks.timeout_ms, 60000);
-    const hooksTimeoutMs = hooksTimeoutCandidate > 0 ? hooksTimeoutCandidate : 60000;
-
-    const codexCommand = readString(codex.command, 'codex app-server');
     const workflowResolvedPath =
       typeof options.workflowPath === 'string' && options.workflowPath.trim().length > 0
         ? path.resolve(options.workflowPath)
         : null;
     const workflowDir = workflowResolvedPath ? path.dirname(workflowResolvedPath) : this.homedir();
+    const workspaceRoot = resolvePathLikeValue(
+      workspace.root,
+      this.env,
+      this.homedir(),
+      path.join(this.tmpdir(), 'symphony_workspaces'),
+      {
+        relativeBaseDir: workflowResolvedPath ? workflowDir : undefined
+      }
+    );
+    const workspaceRootSource =
+      typeof workspace.root === 'string' && workspace.root.trim().length > 0 && workspaceRoot.trim().length > 0
+        ? 'workflow'
+        : 'default';
+
+    const hooksTimeoutCandidate = readInt(hooks.timeout_ms, 60000);
+    const hooksTimeoutMs = hooksTimeoutCandidate > 0 ? hooksTimeoutCandidate : 60000;
+
+    const codexCommand = readString(codex.command, 'codex app-server');
     const workflowScopedPersistencePath =
       workflowResolvedPath !== null
         ? path.join(workflowDir, '.symphony', 'runtime.sqlite')
@@ -299,7 +318,8 @@ export class ConfigResolver {
         interval_ms: readInt(polling.interval_ms, 30000)
       },
       workspace: {
-        root: workspaceRoot
+        root: workspaceRoot,
+        root_source: workspaceRootSource
       },
       hooks: {
         after_create: readString(hooks.after_create, '') || undefined,
