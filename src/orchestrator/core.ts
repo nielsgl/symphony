@@ -12,6 +12,7 @@ import {
   sortCandidatesForDispatch
 } from './decisions';
 import type {
+  BlockedEntry,
   OrchestratorOptions,
   OrchestratorState,
   RetryDelayType,
@@ -87,6 +88,27 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
   };
 }
 
+function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
+  return {
+    issue_id: entry.issue_id,
+    issue_identifier: entry.issue_identifier,
+    attempt: entry.attempt,
+    worker_host: entry.worker_host,
+    workspace_path: entry.workspace_path,
+    provisioner_type: entry.provisioner_type,
+    branch_name: entry.branch_name,
+    repo_root: entry.repo_root,
+    workspace_exists: entry.workspace_exists,
+    workspace_git_status: entry.workspace_git_status,
+    stop_reason_code: entry.stop_reason_code,
+    stop_reason_detail: entry.stop_reason_detail,
+    previous_thread_id: entry.previous_thread_id,
+    previous_session_id: entry.previous_session_id,
+    blocked_at_ms: entry.blocked_at_ms,
+    requires_manual_resume: true
+  };
+}
+
 function humanizeWorkerEvent(event: WorkerObservabilityEvent): string {
   const base = event.event.replace(/[._/]+/g, ' ').trim();
   if (event.detail && event.detail.trim().length > 0) {
@@ -130,6 +152,7 @@ export class OrchestratorCore {
       running: new Map(),
       claimed: new Set(),
       retry_attempts: new Map(),
+      blocked_inputs: new Map(),
       completed: new Set(),
       codex_totals: {
         input_tokens: 0,
@@ -164,6 +187,9 @@ export class OrchestratorCore {
       claimed: new Set(this.state.claimed.values()),
       retry_attempts: new Map(
         Array.from(this.state.retry_attempts.entries()).map(([issueId, entry]) => [issueId, cloneRetryEntry(entry)])
+      ),
+      blocked_inputs: new Map(
+        Array.from(this.state.blocked_inputs.entries()).map(([issueId, entry]) => [issueId, cloneBlockedEntry(entry)])
       ),
       completed: new Set(this.state.completed.values()),
       codex_totals: { ...this.state.codex_totals },
@@ -201,6 +227,7 @@ export class OrchestratorCore {
 
   async tick(reason: TickReason): Promise<void> {
     await this.reconcileRunningIssues();
+    await this.reconcileBlockedInputs();
 
     const previousDispatchValidation = this.state.health.dispatch_validation;
     const preflight = this.ports.dispatchPreflight();
@@ -270,6 +297,10 @@ export class OrchestratorCore {
     for (const issue of sortedCandidates) {
       if (availableGlobalSlots(this.state) <= 0) {
         break;
+      }
+
+      if (this.state.blocked_inputs.has(issue.id)) {
+        continue;
       }
 
       const eligibility = shouldDispatchIssue(issue, this.state, this.config);
@@ -490,6 +521,42 @@ export class OrchestratorCore {
     } else {
       await this.completeRunRecord(running, 'failed', error ?? `worker exited: ${reason}`);
       this.state.health.last_error = `worker exited for ${running.identifier}`;
+      const stopReasonCode = this.inferStopReasonCode(error, 'worker_exit_abnormal');
+      if (stopReasonCode === 'turn_input_required') {
+        await this.scheduleBlockedInput({
+          issue_id,
+          issue_identifier: running.identifier,
+          attempt: running.retry_attempt + 1,
+          worker_host: running.worker_host ?? null,
+          workspace_path: running.workspace_path ?? null,
+          provisioner_type: running.provisioner_type ?? null,
+          branch_name: running.branch_name ?? null,
+          repo_root: running.repo_root ?? null,
+          workspace_exists: running.workspace_exists,
+          workspace_git_status: running.workspace_git_status,
+          stop_reason_code: 'turn_input_required',
+          stop_reason_detail: error ?? `worker exited: ${reason}`,
+          previous_thread_id: running.thread_id,
+          previous_session_id: running.session_id
+        });
+        this.logger?.log({
+          level: 'warn',
+          event: CANONICAL_EVENT.orchestration.workerExitHandled,
+          message: 'worker exit handled: blocked on operator input',
+          context: {
+            issue_id,
+            issue_identifier: running.identifier,
+            session_id: running.session_id,
+            reason,
+            outcome: 'blocked',
+            stop_reason_code: 'turn_input_required',
+            error: error ?? null
+          }
+        });
+        this.ports.notifyObservers?.();
+        return;
+      }
+
       await this.scheduleRetry({
         issue_id,
         identifier: running.identifier,
@@ -503,7 +570,7 @@ export class OrchestratorCore {
         repo_root: running.repo_root ?? null,
         workspace_exists: running.workspace_exists,
         workspace_git_status: running.workspace_git_status,
-        stop_reason_code: this.inferStopReasonCode(error, 'worker_exit_abnormal'),
+        stop_reason_code: stopReasonCode,
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
         previous_session_id: running.session_id
@@ -528,6 +595,10 @@ export class OrchestratorCore {
   }
 
   async onRetryTimer(issue_id: string): Promise<void> {
+    if (this.state.blocked_inputs.has(issue_id)) {
+      return;
+    }
+
     const retryEntry = this.state.retry_attempts.get(issue_id);
     if (!retryEntry) {
       return;
@@ -670,6 +741,42 @@ export class OrchestratorCore {
       }
 
       await this.terminateRunningIssue(refreshedIssue.id, false, 'non_active_state_transition');
+    }
+  }
+
+  async reconcileBlockedInputs(): Promise<void> {
+    if (this.state.blocked_inputs.size === 0) {
+      return;
+    }
+
+    const blockedIssueIds = Array.from(this.state.blocked_inputs.keys());
+    let refreshed: Issue[];
+    try {
+      refreshed = await this.ports.tracker.fetch_issue_states_by_ids(blockedIssueIds);
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+        message: 'failed to refresh tracker states for blocked issues',
+        context: {
+          issue_count: blockedIssueIds.length,
+          error: error instanceof Error ? error.message : 'unknown'
+        }
+      });
+      return;
+    }
+
+    const refreshedById = new Map(refreshed.map((issue) => [issue.id, issue]));
+    for (const issueId of blockedIssueIds) {
+      const blocked = this.state.blocked_inputs.get(issueId);
+      if (!blocked) {
+        continue;
+      }
+
+      const issue = refreshedById.get(issueId);
+      if (!issue || isTerminalState(issue.state, this.config) || !isActiveState(issue.state, this.config)) {
+        this.clearBlockedInput(issueId, issue ? 'issue_no_longer_active' : 'issue_not_found');
+      }
     }
   }
 
@@ -942,6 +1049,10 @@ export class OrchestratorCore {
   }
 
   private async scheduleRetry(params: ScheduleRetryParams): Promise<void> {
+    if (this.state.blocked_inputs.has(params.issue_id)) {
+      this.state.blocked_inputs.delete(params.issue_id);
+    }
+
     const existing = this.state.retry_attempts.get(params.issue_id);
     if (existing) {
       this.ports.cancelRetryTimer(existing.timer_handle);
@@ -998,6 +1109,187 @@ export class OrchestratorCore {
         stop_reason_code: params.stop_reason_code ?? null
       }
     });
+  }
+
+  private async scheduleBlockedInput(params: {
+    issue_id: string;
+    issue_identifier: string;
+    attempt: number;
+    worker_host: string | null;
+    workspace_path: string | null;
+    provisioner_type: string | null;
+    branch_name: string | null;
+    repo_root: string | null;
+    workspace_exists: boolean;
+    workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    stop_reason_code: string;
+    stop_reason_detail: string | null;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
+  }): Promise<void> {
+    const existingRetry = this.state.retry_attempts.get(params.issue_id);
+    if (existingRetry) {
+      this.ports.cancelRetryTimer(existingRetry.timer_handle);
+      this.state.retry_attempts.delete(params.issue_id);
+    }
+
+    this.state.blocked_inputs.set(params.issue_id, {
+      issue_id: params.issue_id,
+      issue_identifier: params.issue_identifier,
+      attempt: params.attempt,
+      worker_host: params.worker_host,
+      workspace_path: params.workspace_path,
+      provisioner_type: params.provisioner_type,
+      branch_name: params.branch_name,
+      repo_root: params.repo_root,
+      workspace_exists: params.workspace_exists,
+      workspace_git_status: params.workspace_git_status,
+      stop_reason_code: params.stop_reason_code,
+      stop_reason_detail: params.stop_reason_detail,
+      previous_thread_id: params.previous_thread_id,
+      previous_session_id: params.previous_session_id,
+      blocked_at_ms: this.nowMs(),
+      requires_manual_resume: true
+    });
+    this.state.claimed.add(params.issue_id);
+
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.blockedInputScheduled,
+      message: 'issue blocked: operator input required',
+      context: {
+        issue_id: params.issue_id,
+        issue_identifier: params.issue_identifier,
+        stop_reason_code: params.stop_reason_code,
+        previous_thread_id: params.previous_thread_id,
+        previous_session_id: params.previous_session_id
+      }
+    });
+  }
+
+  private clearBlockedInput(issue_id: string, reason: string): void {
+    const blocked = this.state.blocked_inputs.get(issue_id);
+    if (!blocked) {
+      return;
+    }
+
+    this.state.blocked_inputs.delete(issue_id);
+    this.state.claimed.delete(issue_id);
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.blockedInputCleared,
+      message: 'blocked issue cleared',
+      context: {
+        issue_id,
+        issue_identifier: blocked.issue_identifier,
+        reason
+      }
+    });
+  }
+
+  async resumeBlockedIssue(issue_identifier: string): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
+    const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
+    if (!blocked) {
+      return {
+        ok: false,
+        code: 'issue_not_blocked',
+        message: `Issue ${issue_identifier} is not blocked`
+      };
+    }
+
+    let refreshedIssues: Issue[];
+    try {
+      refreshedIssues = await this.ports.tracker.fetch_issue_states_by_ids([blocked.issue_id]);
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'resume_failed',
+        message: error instanceof Error ? error.message : 'failed to refresh issue state'
+      };
+    }
+
+    const issue = refreshedIssues.find((entry) => entry.id === blocked.issue_id);
+    if (!issue) {
+      this.clearBlockedInput(blocked.issue_id, 'issue_not_found');
+      return {
+        ok: false,
+        code: 'issue_not_found',
+        message: `Issue ${issue_identifier} no longer exists in tracker`
+      };
+    }
+
+    if (!isActiveState(issue.state, this.config)) {
+      this.clearBlockedInput(blocked.issue_id, 'issue_not_active');
+      return {
+        ok: false,
+        code: 'issue_not_active',
+        message: `Issue ${issue_identifier} is no longer in an active state`
+      };
+    }
+
+    this.state.blocked_inputs.delete(blocked.issue_id);
+    this.state.claimed.delete(blocked.issue_id);
+
+    const eligibility = shouldDispatchIssue(issue, this.state, this.config);
+    if (eligibility.eligible) {
+      await this.dispatchIssue(issue, blocked.attempt);
+    } else if (eligibility.reason === 'global_slots_exhausted' || eligibility.reason === 'state_slots_exhausted') {
+      await this.scheduleRetry({
+        issue_id: blocked.issue_id,
+        identifier: blocked.issue_identifier,
+        attempt: blocked.attempt,
+        delay_type: 'failure',
+        error: 'no available orchestrator slots',
+        worker_host: blocked.worker_host,
+        workspace_path: blocked.workspace_path,
+        provisioner_type: blocked.provisioner_type,
+        branch_name: blocked.branch_name,
+        repo_root: blocked.repo_root,
+        workspace_exists: blocked.workspace_exists,
+        workspace_git_status: blocked.workspace_git_status,
+        stop_reason_code: 'slots_exhausted',
+        stop_reason_detail: 'resume blocked by no available orchestrator slots',
+        previous_thread_id: blocked.previous_thread_id,
+        previous_session_id: blocked.previous_session_id
+      });
+    } else {
+      await this.scheduleRetry({
+        issue_id: blocked.issue_id,
+        identifier: blocked.issue_identifier,
+        attempt: blocked.attempt,
+        delay_type: 'continuation',
+        error: null,
+        worker_host: blocked.worker_host,
+        workspace_path: blocked.workspace_path,
+        provisioner_type: blocked.provisioner_type,
+        branch_name: blocked.branch_name,
+        repo_root: blocked.repo_root,
+        workspace_exists: blocked.workspace_exists,
+        workspace_git_status: blocked.workspace_git_status,
+        stop_reason_code: 'manual_resume',
+        stop_reason_detail: 'manual resume requested',
+        previous_thread_id: blocked.previous_thread_id,
+        previous_session_id: blocked.previous_session_id
+      });
+    }
+
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.blockedInputResumed,
+      message: 'blocked issue resumed',
+      context: {
+        issue_id: blocked.issue_id,
+        issue_identifier: blocked.issue_identifier,
+        previous_thread_id: blocked.previous_thread_id,
+        previous_session_id: blocked.previous_session_id
+      }
+    });
+
+    this.ports.notifyObservers?.();
+    return {
+      ok: true,
+      issue_id: blocked.issue_id
+    };
   }
 
   private inferStopReasonCode(error: string | undefined, fallback: string): string {

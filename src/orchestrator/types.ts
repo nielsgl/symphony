@@ -60,12 +60,32 @@ export interface RetryEntry {
   timer_handle: unknown;
 }
 
+export interface BlockedEntry {
+  issue_id: string;
+  issue_identifier: string;
+  attempt: number;
+  worker_host: string | null;
+  workspace_path: string | null;
+  provisioner_type: string | null;
+  branch_name: string | null;
+  repo_root: string | null;
+  workspace_exists: boolean;
+  workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+  stop_reason_code: string;
+  stop_reason_detail: string | null;
+  previous_thread_id: string | null;
+  previous_session_id: string | null;
+  blocked_at_ms: number;
+  requires_manual_resume: true;
+}
+
 export interface OrchestratorState {
   poll_interval_ms: number;
   max_concurrent_agents: number;
   running: Map<string, RunningEntry>;
   claimed: Set<string>;
   retry_attempts: Map<string, RetryEntry>;
+  blocked_inputs: Map<string, BlockedEntry>;
   completed: Set<string>;
   codex_totals: {
     input_tokens: number;

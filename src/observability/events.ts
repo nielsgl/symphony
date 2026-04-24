@@ -38,7 +38,10 @@ export const CANONICAL_EVENT = {
     workerTerminated: 'orchestration.worker.terminated',
     workerEvent: 'orchestration.worker.event',
     workerStalled: 'orchestration.worker.stalled',
-    workerHostSlotsExhausted: 'orchestration.worker.host_slots_exhausted'
+    workerHostSlotsExhausted: 'orchestration.worker.host_slots_exhausted',
+    blockedInputScheduled: 'orchestration.blocked_input.scheduled',
+    blockedInputResumed: 'orchestration.blocked_input.resumed',
+    blockedInputCleared: 'orchestration.blocked_input.cleared'
   },
   agentRunner: {
     attemptStarted: 'agent_runner.attempt.started',

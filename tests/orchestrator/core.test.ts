@@ -248,6 +248,61 @@ describe('OrchestratorCore', () => {
     expect(thirdRetry?.due_at_ms).toBe(harness.now.value + 25_000);
   });
 
+  it('moves turn_input_required exits into blocked input state without scheduling retries', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-blocked-input' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit(
+      'i-blocked-input',
+      'abnormal',
+      'tool requestUserInput could not be auto-answered (turn_input_required)'
+    );
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-blocked-input')).toBe(false);
+    expect(snapshot.blocked_inputs.get('i-blocked-input')?.stop_reason_code).toBe('turn_input_required');
+    expect(snapshot.blocked_inputs.get('i-blocked-input')?.requires_manual_resume).toBe(true);
+  });
+
+  it('resumes blocked issue via manual resume API path and dispatches immediately when eligible', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-resume', identifier: 'ABC-RESUME' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-resume',
+      'abnormal',
+      'tool requestUserInput could not be auto-answered (turn_input_required)'
+    );
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-resume', identifier: 'ABC-RESUME', state: 'In Progress' })
+    ]);
+
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-RESUME');
+    expect(resumed).toEqual({ ok: true, issue_id: 'i-resume' });
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-resume')).toBe(false);
+    expect(harness.spawned.map((entry) => entry.issue_id)).toContain('i-resume');
+  });
+
+  it('clears blocked issue state when tracker reports non-active or terminal state', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-clear', identifier: 'ABC-CLEAR' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-clear',
+      'abnormal',
+      'tool requestUserInput could not be auto-answered (turn_input_required)'
+    );
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-clear', identifier: 'ABC-CLEAR', state: 'Done' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-clear')).toBe(false);
+  });
+
   it('requeues retry with explicit slot exhaustion reason when no slots are available', async () => {
     const harness = createHarness({ configOverrides: { max_concurrent_agents: 1 } });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-busy' })]);
