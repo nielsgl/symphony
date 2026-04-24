@@ -229,6 +229,27 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/tests/cli/workspace-before-remove.test.ts`
   - `/Users/niels.van.Galen.last/code/symphony/tests/cli/public-api-contract-check.test.ts`
 
+### XR-15 — Test-behavior parity closure (non-terminal-dashboard scope)
+- Priority: `P1`
+- Decision: `adopted` (closed in `P17`)
+- Delivered:
+  - canonical malformed protocol-line diagnostics for Codex stdout framing (`codex.protocol.malformed_line`),
+  - canonical Codex stderr side-output diagnostics events (`codex.side_output`) with turn/session context when available,
+  - deterministic SSH target normalization + command-shaping tests for host/port/user/IPv6 forms,
+  - integration profile evidence uplift with explicit local + ssh lifecycle markers,
+  - expanded ops/meta edge-case tests for workspace cleanup, public API contract, and aggregate meta failures.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/codex/runner.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/codex/ssh-target.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/observability/events.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/scripts/validate-real-integration-profile.js`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/codex/runner.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/codex/ssh-target.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/cli/integration-profile-script.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/cli/workspace-before-remove.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/cli/public-api-contract-check.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/cli/meta-check-scripts.test.ts`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -243,13 +264,13 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-- None. Parity recommendations are closed through `P16`.
+- None. Parity recommendations are closed through `P17`.
 - Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
 ## Suggested Rollout Order (Post-P12)
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, and `XR-14` are marked closed with concrete code/test anchors.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, and `XR-15` are marked closed with concrete code/test anchors.
 - Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.

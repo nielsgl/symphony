@@ -62,12 +62,14 @@
       "status": "functionally-equivalent",
       "classification": "extension",
       "risk": "low-medium",
-      "summary": "Reference remote host scheduling/execution is now matched by host-aware dispatch and SSH execution path in ours.",
+      "summary": "Reference remote host scheduling/execution is now matched by host-aware dispatch and SSH execution path in ours, with deterministic SSH target normalization and parity tests for host/port/user/IPv6 forms.",
       "ours_anchors": [
         "src/orchestrator/core.ts",
         "src/orchestrator/local-runner-bridge.ts",
         "src/codex/runner.ts",
-        "tests/orchestrator/core.test.ts"
+        "src/codex/ssh-target.ts",
+        "tests/orchestrator/core.test.ts",
+        "tests/codex/ssh-target.test.ts"
       ],
       "ref_anchors": [
         "elixir/lib/symphony_elixir/agent_runner.ex",
@@ -81,10 +83,11 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implement robust app-server lifecycle and error mapping; ours now also aligns non-interactive input handling and method-specific approval decisions, with dynamic tools default-enabled and strict-canonical token accounting.",
+      "summary": "Both implement robust app-server lifecycle and error mapping; ours now also aligns non-interactive input handling, method-specific approval decisions, canonical malformed protocol-line diagnostics, codex side-output events, dynamic tools default-enabled, and strict-canonical token accounting.",
       "ours_anchors": [
         "src/codex/runner.ts",
         "src/codex/dynamic-tools.ts",
+        "src/observability/events.ts",
         "tests/codex/runner.test.ts",
         "docs/token-accounting.md"
       ],
@@ -221,14 +224,18 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Reference Mix-task quality gates are now mirrored by TS script-level meta checks and test coverage in ours, including public API contract checks and workspace cleanup helper parity.",
+      "summary": "Reference Mix-task quality gates are now mirrored by TS script-level meta checks and test coverage in ours, including public API contract checks, workspace cleanup helper parity, expanded negative-path diagnostics assertions, and integration profile lifecycle evidence for local+ssh modes.",
       "ours_anchors": [
         "scripts/check-meta.js",
         "scripts/check-api-contract.js",
         "scripts/check-pr-governance.js",
         "scripts/check-public-api-contract.js",
+        "scripts/validate-real-integration-profile.js",
         "scripts/workspace-before-remove.js",
-        "tests/cli/meta-check-scripts.test.ts"
+        "tests/cli/meta-check-scripts.test.ts",
+        "tests/cli/workspace-before-remove.test.ts",
+        "tests/cli/public-api-contract-check.test.ts",
+        "tests/cli/integration-profile-script.test.ts"
       ],
       "ref_anchors": [
         "elixir/lib/mix/tasks/specs.check.ex",

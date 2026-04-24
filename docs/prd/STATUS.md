@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P16 functional parity closure.
-- Current phase: P1 (entry approved; implementation delivered through P16 evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P17 test-parity closure.
+- Current phase: P1 (entry approved; implementation delivered through P17 evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P16`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P17`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -186,6 +186,35 @@ Ownership evidence links:
 - [x] P15: Implement logging hardening (bootstrap API cleanup, CLI duplication guard regression, AST context governance).
 - [x] P15b: Implement functional parity uplift findings F1-F8 (tracker write paths, assignee routing, memory tracker, runtime workflow switching, host binding, retry projection enrichment, observability knobs, prompt fallback).
 - [x] P16: Implement post-P15 functional parity closure findings F1-F6 (non-interactive approvals, method-specific approval mapping, continuation state-aware stop, workspace/worker payload parity, resolvable hostname validation, ops-helper parity scripts).
+- [x] P17: Implement test-parity closure findings F1-F6 (malformed protocol observability, codex side-output events, SSH normalization tests, local+ssh lifecycle profile markers, meta/ops edge-case depth, parity docs closeout).
+
+## Implementation Evidence (P17 Test-Parity Closure)
+- Date: 2026-04-24
+- Scope delivered:
+  - Added canonical malformed protocol diagnostics event (`codex.protocol.malformed_line`) for newline-framed stdout JSON parse failures in Codex runner, with bounded detail excerpts and non-stalling behavior.
+  - Added canonical codex side-output diagnostics event (`codex.side_output`) emitted from stderr framing with turn/session context when available.
+  - Added explicit SSH target normalization utility covering host/port/user + bracketed/unbracketed IPv6 parsing and deterministic spawn-arg shaping.
+  - Extended real integration profile evidence with explicit lifecycle markers for local and ssh paths (`P9B_EVIDENCE_LIFECYCLE_LOCAL`, `P9B_EVIDENCE_LIFECYCLE_SSH`).
+  - Expanded meta/ops edge-case tests:
+    - `workspace-before-remove` detached-branch/list-failure/partial-close paths,
+    - public API contract missing-module-index path,
+    - aggregate `check:meta` failure path for public API export violations.
+- Key outputs:
+  - `src/codex/runner.ts`
+  - `src/codex/ssh-target.ts`
+  - `src/observability/events.ts`
+  - `scripts/validate-real-integration-profile.js`
+  - `tests/codex/runner.test.ts`
+  - `tests/codex/ssh-target.test.ts`
+  - `tests/cli/integration-profile-script.test.ts`
+  - `tests/cli/workspace-before-remove.test.ts`
+  - `tests/cli/public-api-contract-check.test.ts`
+  - `tests/cli/meta-check-scripts.test.ts`
+- Validation commands:
+  - `npm test -- tests/codex/runner.test.ts tests/codex/ssh-target.test.ts`
+  - `npm test -- tests/cli/integration-profile-script.test.ts`
+  - `npm test -- tests/cli/workspace-before-remove.test.ts tests/cli/public-api-contract-check.test.ts tests/cli/meta-check-scripts.test.ts`
+  - `npm run build`
 
 ## Implementation Evidence (P16 Functional Parity Closure)
 - Date: 2026-04-24
