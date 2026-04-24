@@ -136,4 +136,36 @@ describe('CLI host lifecycle semantics', () => {
     expect(code).toBe(1);
     expect(stderr.join('')).toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
   });
+
+  it('does not wire default CLI logger as runtime observer', async () => {
+    const handlers: Array<() => void | Promise<void>> = [];
+    const createRuntimeCalls: Array<{ logObserver?: unknown }> = [];
+    const cliLogger = { log: () => undefined };
+
+    const runPromise = runDashboardCli([GUARDRAIL_ACK_FLAG], {
+      cwd: '/repo',
+      env: {},
+      stdout: () => undefined,
+      stderr: () => undefined,
+      logger: cliLogger,
+      onFatal: () => undefined,
+      onSignal: (_signal, handler) => {
+        handlers.push(handler);
+      },
+      createRuntime: (options) => {
+        createRuntimeCalls.push(options);
+        return {
+          apiServer: null,
+          start: async () => undefined,
+          stop: async () => undefined
+        };
+      }
+    });
+
+    await Promise.resolve();
+    expect(createRuntimeCalls).toHaveLength(1);
+    expect(createRuntimeCalls[0]?.logObserver).toBeUndefined();
+    await handlers[0]();
+    await runPromise;
+  });
 });

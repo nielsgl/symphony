@@ -21,12 +21,14 @@ async function makeWorkflowFile(options?: {
   includeTrackerCredentials?: boolean;
   includeServerPort?: boolean;
   serverPort?: number;
+  loggingRoot?: string;
 }): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-'));
   const workflowPath = path.join(dir, 'WORKFLOW.md');
   const includeTrackerCredentials = options?.includeTrackerCredentials ?? true;
   const includeServerPort = options?.includeServerPort ?? true;
   const serverPort = options?.serverPort ?? 0;
+  const loggingRoot = options?.loggingRoot;
   const trackerCredentialBlock = includeTrackerCredentials
     ? `  api_key: test-token
   project_slug: TEST
@@ -37,6 +39,12 @@ async function makeWorkflowFile(options?: {
   port: ${serverPort}
 `
     : '';
+  const loggingBlock =
+    typeof loggingRoot === 'string' && loggingRoot.trim().length > 0
+      ? `logging:
+  root: ${JSON.stringify(loggingRoot)}
+`
+      : '';
   const content = `---
 tracker:
   kind: linear
@@ -64,7 +72,7 @@ persistence:
   enabled: true
   db_path: ${JSON.stringify(path.join(dir, 'runtime.sqlite'))}
   retention_days: 14
-${serverBlock}---
+${serverBlock}${loggingBlock}---
 Issue {{ issue.identifier }} attempt {{ attempt }}
 `;
   await fs.writeFile(workflowPath, content, 'utf8');
@@ -400,12 +408,18 @@ describe('createRuntimeEnvironment', () => {
       fetch_issues_by_states: vi.fn(async () => []),
       fetch_issue_states_by_ids: vi.fn(async () => [])
     };
+    const entries: Array<{ event: string; context: Record<string, unknown> }> = [];
 
     const runtime = createRuntimeEnvironment({
       workflowPath,
       logsRoot: cliLogsRoot,
       trackerAdapter: tracker,
-      port: 0
+      port: 0,
+      logObserver: {
+        log: (params) => {
+          entries.push({ event: params.event, context: params.context ?? {} });
+        }
+      }
     });
     runtimes.push(runtime);
 
@@ -420,6 +434,57 @@ describe('createRuntimeEnvironment', () => {
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.logging.root).toBe(cliLogsRoot);
     expect(diagnosticsPayload.logging.active_file).toBe(path.join(cliLogsRoot, 'symphony.log'));
+    const loggingConfiguredEvent = entries.find((entry) => entry.event === CANONICAL_EVENT.runtime.loggingConfigured);
+    expect(loggingConfiguredEvent?.context.logs_root_source).toBe('cli');
+  });
+
+  it('uses workflow logging.root when CLI logsRoot is unset', async () => {
+    const workflowPath = await makeWorkflowFile({
+      loggingRoot: '$SYMPHONY_TEST_LOG_ROOT'
+    });
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+
+    const workflowLogsRoot = path.join(workflowDir, 'workflow-logs');
+    process.env.SYMPHONY_TEST_LOG_ROOT = workflowLogsRoot;
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [])
+    };
+    const entries: Array<{ event: string; context: Record<string, unknown> }> = [];
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0,
+      logObserver: {
+        log: (params) => {
+          entries.push({ event: params.event, context: params.context ?? {} });
+        }
+      }
+    });
+    runtimes.push(runtime);
+
+    try {
+      await runtime.start();
+      const address = requireApiAddress(runtime);
+
+      const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+      const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+        logging: { root: string; active_file: string; sinks: string[] };
+      };
+
+      expect(diagnosticsResponse.status).toBe(200);
+      expect(diagnosticsPayload.logging.root).toBe(workflowLogsRoot);
+      expect(diagnosticsPayload.logging.active_file).toBe(path.join(workflowLogsRoot, 'symphony.log'));
+      expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file', 'observer']);
+      const loggingConfiguredEvent = entries.find((entry) => entry.event === CANONICAL_EVENT.runtime.loggingConfigured);
+      expect(loggingConfiguredEvent?.context.logs_root_source).toBe('workflow');
+    } finally {
+      delete process.env.SYMPHONY_TEST_LOG_ROOT;
+    }
   });
 
   it('fails startup with typed workflow config error when logs root is not writable', async () => {

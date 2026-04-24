@@ -33,8 +33,6 @@ export interface RuntimeBootstrapOptions {
   port?: number;
   nowMs?: () => number;
   logObserver?: StructuredLogger;
-  // Backward-compatible alias: use logObserver for new call sites.
-  logger?: StructuredLogger;
   trackerAdapter?: TrackerAdapter;
   fetchFn?: typeof fetch;
 }
@@ -146,7 +144,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   ensureWritableDirectory(loggingResolution.logsRoot);
 
   const activeLogFile = path.join(loggingResolution.logsRoot, DEFAULT_LOG_FILE_NAME);
-  const observer = options.logObserver ?? options.logger;
+  const observer = options.logObserver;
   const activeSinks: LogSink[] = [
     new StderrSink(),
     new RotatingFileSink({
