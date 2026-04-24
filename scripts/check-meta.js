@@ -3,6 +3,7 @@ const { spawnSync } = require('node:child_process');
 
 const checks = [
   'scripts/check-api-contract.js',
+  'scripts/check-public-api-contract.js',
   'scripts/check-spec-coverage.js',
   'scripts/check-pr-governance.js',
   'scripts/check-log-context.js'

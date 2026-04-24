@@ -21,6 +21,7 @@
     "validate:integration-profile": "node scripts/validate-real-integration-profile.js",
     "validate:integration-profile:required": "SYMPHONY_REAL_INTEGRATION_REQUIRED=1 node scripts/validate-real-integration-profile.js",
     "check:api-contract": "node scripts/check-api-contract.js",
+    "check:public-api-contract": "node scripts/check-public-api-contract.js",
     "check:spec-coverage": "node scripts/check-spec-coverage.js",
     "check:pr-governance": "node scripts/check-pr-governance.js",
     "check:meta": "node scripts/check-meta.js",

@@ -20,6 +20,10 @@ describe('meta check scripts', () => {
     expect(api.status).toBe(0);
     expect(api.stdout).toContain('API contract check passed');
 
+    const publicApi = runNode(['scripts/check-public-api-contract.js'], root);
+    expect(publicApi.status).toBe(0);
+    expect(publicApi.stdout).toContain('Public API contract check passed');
+
     const governance = runNode(['scripts/check-pr-governance.js'], root);
     expect(governance.status).toBe(0);
     expect(governance.stdout).toContain('PR governance check passed');
