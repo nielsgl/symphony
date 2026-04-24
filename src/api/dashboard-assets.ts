@@ -516,7 +516,19 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stateCell.appendChild(createStateBadge(entry.state));
 
       const sessionCell = document.createElement('td');
-      sessionCell.textContent = entry.session_id || 'n/a';
+      const sessionValue = document.createElement('div');
+      sessionValue.textContent = entry.session_id || 'n/a';
+      const sessionMeta = document.createElement('div');
+      sessionMeta.className = 'muted';
+      const sessionMetaParts = [];
+      if (entry.worker_host) {
+        sessionMetaParts.push('Host ' + entry.worker_host);
+      }
+      if (entry.workspace_path) {
+        sessionMetaParts.push(entry.workspace_path);
+      }
+      sessionMeta.textContent = sessionMetaParts.length ? sessionMetaParts.join(' • ') : 'Host n/a';
+      sessionCell.append(sessionValue, sessionMeta);
 
       const runtimeCell = document.createElement('td');
       runtimeCell.className = 'runtime-cell';

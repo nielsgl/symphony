@@ -227,6 +227,9 @@ describe('LocalApiServer', () => {
     expect(payload).toHaveProperty('health');
     expect((payload.counts as { running: number; retrying: number }).running).toBe(1);
     expect((payload.counts as { running: number; retrying: number }).retrying).toBe(1);
+    expect((payload.running as Array<{ workspace_path: string }>)[0]).toMatchObject({
+      workspace_path: '/tmp/symphony/ABC-1'
+    });
     expect((payload.retrying as Array<{ worker_host: string; workspace_path: string }>)[0]).toMatchObject({
       worker_host: 'build-1',
       workspace_path: '/tmp/symphony/ABC-2'
@@ -311,6 +314,7 @@ describe('LocalApiServer', () => {
     expect((knownPayload.running as { thread_id: string | null }).thread_id).toBe('thread-1');
     expect((knownPayload.running as { turn_id: string | null }).turn_id).toBe('turn-1');
     expect((knownPayload.running as { codex_app_server_pid: string | null }).codex_app_server_pid).toBe('9999');
+    expect((knownPayload.running as { workspace_path: string | null }).workspace_path).toBe('/tmp/symphony/ABC-1');
     expect((knownPayload.logs as { codex_session_logs: unknown[] }).codex_session_logs).toEqual([]);
     expect(knownPayload.tracked).toEqual({});
 

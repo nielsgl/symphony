@@ -48,6 +48,7 @@ export interface ApiStateResponse {
     state: string;
     session_id: string | null;
     worker_host: string | null;
+    workspace_path: string | null;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -133,6 +134,7 @@ export interface ApiIssueResponse {
   running: {
     session_id: string | null;
     worker_host: string | null;
+    workspace_path: string | null;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -156,6 +158,8 @@ export interface ApiIssueResponse {
     attempt: number;
     due_at: string;
     error: string | null;
+    worker_host: string | null;
+    workspace_path: string | null;
   } | null;
   recent_events: Array<{
     at: string;

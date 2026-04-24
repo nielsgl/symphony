@@ -14,6 +14,7 @@ function toStateRunningRow(issueId: string, entry: RunningEntry): ApiStateRespon
     state: entry.issue.state,
     session_id: entry.session_id,
     worker_host: entry.worker_host ?? null,
+    workspace_path: entry.workspace_path ?? null,
     thread_id: entry.thread_id,
     turn_id: entry.turn_id,
     codex_app_server_pid: entry.codex_app_server_pid,
@@ -145,6 +146,7 @@ export class SnapshotService {
         running: {
           session_id: entry.session_id,
           worker_host: entry.worker_host ?? null,
+          workspace_path: entry.workspace_path ?? null,
           thread_id: entry.thread_id,
           turn_id: entry.turn_id,
           codex_app_server_pid: entry.codex_app_server_pid,
@@ -174,7 +176,9 @@ export class SnapshotService {
           ? {
               attempt: retryEntry.attempt,
               due_at: asIsoDate(retryEntry.due_at_ms),
-              error: retryEntry.error
+              error: retryEntry.error,
+              worker_host: retryEntry.worker_host ?? null,
+              workspace_path: retryEntry.workspace_path ?? null
             }
           : null,
         recent_events: entry.recent_events.map((event) => ({
@@ -205,8 +209,8 @@ export class SnapshotService {
       issue_id: issueId,
       status: 'retrying',
       workspace: {
-        path: null,
-        host: null
+        path: retryOnlyEntry.workspace_path ?? null,
+        host: retryOnlyEntry.worker_host ?? null
       },
       attempts: {
         restart_count: 0,
@@ -216,7 +220,9 @@ export class SnapshotService {
       retry: {
         attempt: retryOnlyEntry.attempt,
         due_at: asIsoDate(retryOnlyEntry.due_at_ms),
-        error: retryOnlyEntry.error
+        error: retryOnlyEntry.error,
+        worker_host: retryOnlyEntry.worker_host ?? null,
+        workspace_path: retryOnlyEntry.workspace_path ?? null
       },
       recent_events: [],
       last_error: retryOnlyEntry.error,

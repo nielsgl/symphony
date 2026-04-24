@@ -136,6 +136,7 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.codex_app_server_pid).toBe('12345');
     expect(projected.running[0]?.last_event_summary).toBe('codex turn completed: done');
     expect(projected.running[0]?.turn_count).toBe(3);
+    expect(projected.running[0]?.workspace_path).toBe('/tmp/symphony/ABC-1');
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
   });
@@ -195,6 +196,42 @@ describe('SnapshotService', () => {
     expect(issue.tracked).toEqual({});
   });
 
+  it('projects running issue retry metadata with worker and workspace context when queued', () => {
+    const service = new SnapshotService();
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry()
+        ]
+      ]),
+      retry_attempts: new Map([
+        [
+          'issue-1',
+          {
+            issue_id: 'issue-1',
+            identifier: 'ABC-1',
+            attempt: 1,
+            due_at_ms: Date.parse('2026-04-10T10:03:00.000Z'),
+            error: 'retrying',
+            worker_host: 'build-2',
+            workspace_path: '/tmp/symphony/ABC-1',
+            timer_handle: {}
+          }
+        ]
+      ])
+    });
+
+    const issue = service.projectIssue(state, 'ABC-1');
+    expect(issue.retry).toEqual({
+      attempt: 1,
+      due_at: '2026-04-10T10:03:00.000Z',
+      error: 'retrying',
+      worker_host: 'build-2',
+      workspace_path: '/tmp/symphony/ABC-1'
+    });
+  });
+
   it('projects enriched optional token dimensions without breaking baseline token fields', () => {
     const service = new SnapshotService({
       nowMs: () => Date.parse('2026-04-10T10:02:00.000Z')
@@ -235,5 +272,40 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.tokens.cached_input_tokens).toBe(2);
     expect(projected.running[0]?.tokens.reasoning_output_tokens).toBe(1);
     expect(projected.running[0]?.tokens.model_context_window).toBe(200000);
+  });
+
+  it('projects retry-only issue payload with retry workspace and host context', () => {
+    const service = new SnapshotService();
+    const state = makeState({
+      retry_attempts: new Map([
+        [
+          'issue-2',
+          {
+            issue_id: 'issue-2',
+            identifier: 'ABC-2',
+            attempt: 2,
+            due_at_ms: Date.parse('2026-04-10T10:02:30.000Z'),
+            error: 'retrying',
+            worker_host: 'build-1',
+            workspace_path: '/tmp/symphony/ABC-2',
+            timer_handle: {}
+          }
+        ]
+      ])
+    });
+
+    const projected = service.projectIssue(state, 'ABC-2');
+    expect(projected.status).toBe('retrying');
+    expect(projected.workspace).toEqual({
+      host: 'build-1',
+      path: '/tmp/symphony/ABC-2'
+    });
+    expect(projected.retry).toEqual({
+      attempt: 2,
+      due_at: '2026-04-10T10:02:30.000Z',
+      error: 'retrying',
+      worker_host: 'build-1',
+      workspace_path: '/tmp/symphony/ABC-2'
+    });
   });
 });
