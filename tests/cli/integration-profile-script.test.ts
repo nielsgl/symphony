@@ -192,9 +192,15 @@ describe('P9b integration profile script', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('P9B_MODE=LIVE');
+    expect(result.stdout).toContain('P9B_EVIDENCE_LIFECYCLE_LOCAL=PASS');
+    expect(result.stdout).toContain('P9B_EVIDENCE_LIFECYCLE_SSH=PASS');
     expect(result.stdout).toContain('P9B_EVIDENCE_OPERATIONAL_CHECKS=PASS');
     expect(result.stdout).toContain('P9B_EVIDENCE_REAL_TRACKER=PASS');
     expect(result.stdout).toContain('P9B_PROFILE_RESULT=PASS');
+    expect(result.stdout).toContain('P9B_COMMAND=npm test -- --run tests/orchestrator/local-runner-bridge.test.ts');
+    expect(result.stdout).toContain(
+      'P9B_COMMAND=npm test -- --run tests/codex/ssh-target.test.ts tests/orchestrator/core.test.ts'
+    );
     expect(result.stdout).toContain('P9B_COMMAND=npm test -- --run tests/cli/cli-args.test.ts');
     expect(result.stdout).toContain('P9B_COMMAND=npm test -- --run tests/workspace/workspace-manager.test.ts');
     expect(result.stdout).toContain(

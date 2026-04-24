@@ -114,18 +114,42 @@ async function main() {
 
   if (!skipOperational) {
     const operationalChecks = [
-      ['npm', ['test', '--', '--run', 'tests/cli/cli-args.test.ts']],
-      ['npm', ['test', '--', '--run', 'tests/workspace/workspace-manager.test.ts']],
-      ['npm', ['test', '--', '--run', 'tests/runtime/bootstrap.test.ts', 'tests/api/server.test.ts']]
+      {
+        evidence: 'EVIDENCE_LIFECYCLE_LOCAL',
+        command: 'npm',
+        args: ['test', '--', '--run', 'tests/orchestrator/local-runner-bridge.test.ts']
+      },
+      {
+        evidence: 'EVIDENCE_LIFECYCLE_SSH',
+        command: 'npm',
+        args: ['test', '--', '--run', 'tests/codex/ssh-target.test.ts', 'tests/orchestrator/core.test.ts']
+      },
+      {
+        evidence: 'EVIDENCE_BASELINE_CLI',
+        command: 'npm',
+        args: ['test', '--', '--run', 'tests/cli/cli-args.test.ts']
+      },
+      {
+        evidence: 'EVIDENCE_BASELINE_WORKSPACE',
+        command: 'npm',
+        args: ['test', '--', '--run', 'tests/workspace/workspace-manager.test.ts']
+      },
+      {
+        evidence: 'EVIDENCE_BASELINE_RUNTIME_API',
+        command: 'npm',
+        args: ['test', '--', '--run', 'tests/runtime/bootstrap.test.ts', 'tests/api/server.test.ts']
+      }
     ];
 
-    for (const [command, args] of operationalChecks) {
-      const ok = runCommand(command, args);
+    for (const check of operationalChecks) {
+      const ok = runCommand(check.command, check.args);
       if (!ok) {
+        printEvidence(check.evidence, 'FAIL');
         printEvidence('EVIDENCE_OPERATIONAL_CHECKS', 'FAIL');
         printEvidence('PROFILE_RESULT', 'FAIL');
         process.exit(1);
       }
+      printEvidence(check.evidence, 'PASS');
     }
 
     printEvidence('EVIDENCE_OPERATIONAL_CHECKS', 'PASS');
