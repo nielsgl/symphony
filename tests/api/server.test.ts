@@ -310,7 +310,20 @@ describe('LocalApiServer', () => {
           server: {
             host: '127.0.0.1',
             port: 3000
-          }
+          },
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null
+        }),
+        getWorkspaceProvisioner: () => ({
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null,
+          last_provision_result: null,
+          last_teardown_result: null,
+          last_error_code: null
         })
       }
     });
@@ -701,7 +714,20 @@ describe('LocalApiServer', () => {
           server: {
             host: '127.0.0.1',
             port: 3000
-          }
+          },
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null
+        }),
+        getWorkspaceProvisioner: () => ({
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null,
+          last_provision_result: null,
+          last_teardown_result: null,
+          last_error_code: null
         })
       }
     });
@@ -846,7 +872,20 @@ describe('LocalApiServer', () => {
           server: {
             host: '127.0.0.1',
             port: 3000
-          }
+          },
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null
+        }),
+        getWorkspaceProvisioner: () => ({
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null,
+          last_provision_result: null,
+          last_teardown_result: null,
+          last_error_code: null
         })
       }
     });
@@ -919,7 +958,20 @@ describe('LocalApiServer', () => {
           server: {
             host: '127.0.0.1',
             port: 3000
-          }
+          },
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null
+        }),
+        getWorkspaceProvisioner: () => ({
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null,
+          last_provision_result: null,
+          last_teardown_result: null,
+          last_error_code: null
         })
       }
     });

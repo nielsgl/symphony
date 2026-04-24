@@ -237,10 +237,102 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     update_issue_state: async (issue_id, state_name) => tracker.update_issue_state(issue_id, state_name)
   };
 
+  const workspaceProvisionState: {
+    last_provision_result: 'provisioned' | 'reused' | 'skipped' | 'failed' | null;
+    last_teardown_result: 'removed' | 'kept' | 'skipped' | 'failed' | null;
+    last_error_code: string | null;
+  } = {
+    last_provision_result: null,
+    last_teardown_result: null,
+    last_error_code: null
+  };
+
   const workspaceManager = new WorkspaceManager({
     root: effectiveConfig.workspace.root,
     hooks: effectiveConfig.hooks,
-    provisioner: createWorkspaceProvisioner(effectiveConfig.workspace.provisioner)
+    provisioner: createWorkspaceProvisioner(effectiveConfig.workspace.provisioner),
+    onProvisionerResult: (result) => {
+      const baseContext = {
+        issue_identifier: result.identifier,
+        workspace_path: result.workspace_path,
+        provisioner_type: result.provisioner_type,
+        repo_root: effectiveConfig.workspace.provisioner.repo_root ?? null,
+        base_ref: effectiveConfig.workspace.provisioner.base_ref,
+        branch_name_template: effectiveConfig.workspace.provisioner.branch_template
+      };
+
+      if (result.phase === 'provision') {
+        if (result.status === 'start') {
+          logger.log({
+            level: 'info',
+            event: CANONICAL_EVENT.workspace.provisionStart,
+            message: 'workspace provision started',
+            context: baseContext
+          });
+          return;
+        }
+        if (result.status === 'failed') {
+          workspaceProvisionState.last_provision_result = 'failed';
+          workspaceProvisionState.last_error_code = result.error_code ?? 'workspace_provision_failed';
+          logger.log({
+            level: 'error',
+            event: CANONICAL_EVENT.workspace.provisionFailed,
+            message: result.error_message ?? 'workspace provisioning failed',
+            context: {
+              ...baseContext,
+              error_code: workspaceProvisionState.last_error_code
+            }
+          });
+          return;
+        }
+        workspaceProvisionState.last_provision_result = result.status as 'provisioned' | 'reused' | 'skipped';
+        workspaceProvisionState.last_error_code = null;
+        logger.log({
+          level: 'info',
+          event:
+            result.status === 'reused'
+              ? CANONICAL_EVENT.workspace.provisionReused
+              : CANONICAL_EVENT.workspace.provisionSuccess,
+          message: `workspace provision ${result.status}`,
+          context: baseContext
+        });
+        return;
+      }
+
+      if (result.status === 'start') {
+        logger.log({
+          level: 'info',
+          event: CANONICAL_EVENT.workspace.teardownStart,
+          message: 'workspace teardown started',
+          context: baseContext
+        });
+        return;
+      }
+
+      if (result.status === 'failed') {
+        workspaceProvisionState.last_teardown_result = 'failed';
+        workspaceProvisionState.last_error_code = result.error_code ?? 'workspace_provision_failed';
+        logger.log({
+          level: 'error',
+          event: CANONICAL_EVENT.workspace.teardownFailed,
+          message: result.error_message ?? 'workspace teardown failed',
+          context: {
+            ...baseContext,
+            error_code: workspaceProvisionState.last_error_code
+          }
+        });
+        return;
+      }
+
+      workspaceProvisionState.last_teardown_result = result.status as 'removed' | 'kept' | 'skipped';
+      workspaceProvisionState.last_error_code = null;
+      logger.log({
+        level: 'info',
+        event: CANONICAL_EVENT.workspace.teardownSuccess,
+        message: `workspace teardown ${result.status}`,
+        context: baseContext
+      });
+    }
   });
 
   let activeProfile = resolveSecurityProfile(effectiveConfig.codex);
@@ -492,7 +584,20 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               server: {
                 host: apiServer?.address().host ?? resolvedHost,
                 port: apiServer?.address().port ?? (resolvedPort ?? null)
-              }
+              },
+              provisioner_type: effectiveConfig.workspace.provisioner.type,
+              repo_root: effectiveConfig.workspace.provisioner.repo_root ?? null,
+              base_ref: effectiveConfig.workspace.provisioner.base_ref ?? null,
+              branch_name_template: effectiveConfig.workspace.provisioner.branch_template ?? null
+            }),
+            getWorkspaceProvisioner: () => ({
+              provisioner_type: effectiveConfig.workspace.provisioner.type,
+              repo_root: effectiveConfig.workspace.provisioner.repo_root ?? null,
+              base_ref: effectiveConfig.workspace.provisioner.base_ref ?? null,
+              branch_name_template: effectiveConfig.workspace.provisioner.branch_template ?? null,
+              last_provision_result: workspaceProvisionState.last_provision_result,
+              last_teardown_result: workspaceProvisionState.last_teardown_result,
+              last_error_code: workspaceProvisionState.last_error_code
             })
           },
           workflowControlSource: {

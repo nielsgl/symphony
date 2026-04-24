@@ -74,6 +74,7 @@ export class WorkspaceManager {
   private readonly nowMs: () => number;
   private readonly runShell: NonNullable<WorkspaceManagerOptions['runShell']>;
   private readonly onHookResult?: WorkspaceManagerOptions['onHookResult'];
+  private readonly onProvisionerResult?: WorkspaceManagerOptions['onProvisionerResult'];
 
   constructor(options: WorkspaceManagerOptions) {
     this.root = path.resolve(options.root);
@@ -82,6 +83,7 @@ export class WorkspaceManager {
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.runShell = options.runShell ?? defaultRunShell;
     this.onHookResult = options.onHookResult;
+    this.onProvisionerResult = options.onProvisionerResult;
   }
 
   deriveWorkspaceKey(identifier: string): string {
@@ -114,10 +116,37 @@ export class WorkspaceManager {
 
     let provisionResult: Awaited<ReturnType<typeof this.provisioner.provision>> | null = null;
     if (created_now) {
-      provisionResult = await this.provisioner.provision({
-        identifier,
-        workspacePath
-      });
+      try {
+        this.onProvisionerResult?.({
+          phase: 'provision',
+          identifier,
+          workspace_path: workspacePath,
+          status: 'start',
+          provisioner_type: 'unknown'
+        });
+        provisionResult = await this.provisioner.provision({
+          identifier,
+          workspacePath
+        });
+        this.onProvisionerResult?.({
+          phase: 'provision',
+          identifier,
+          workspace_path: workspacePath,
+          status: provisionResult.status,
+          provisioner_type: provisionResult.provisioner_type
+        });
+      } catch (error) {
+        this.onProvisionerResult?.({
+          phase: 'provision',
+          identifier,
+          workspace_path: workspacePath,
+          status: 'failed',
+          provisioner_type: 'unknown',
+          error_code: error instanceof WorkspaceError ? error.code : 'workspace_provision_failed',
+          error_message: error instanceof Error ? error.message : 'unknown workspace provision failure'
+        });
+        throw error;
+      }
       await this.runHookOrThrow('after_create', workspacePath);
     }
 
@@ -163,10 +192,37 @@ export class WorkspaceManager {
     }
 
     await this.runHookBestEffort('before_remove', workspacePath);
-    await this.provisioner.teardown({
-      identifier,
-      workspacePath
-    });
+    try {
+      this.onProvisionerResult?.({
+        phase: 'teardown',
+        identifier,
+        workspace_path: workspacePath,
+        status: 'start',
+        provisioner_type: 'unknown'
+      });
+      const teardownResult = await this.provisioner.teardown({
+        identifier,
+        workspacePath
+      });
+      this.onProvisionerResult?.({
+        phase: 'teardown',
+        identifier,
+        workspace_path: workspacePath,
+        status: teardownResult.status,
+        provisioner_type: teardownResult.provisioner_type
+      });
+    } catch (error) {
+      this.onProvisionerResult?.({
+        phase: 'teardown',
+        identifier,
+        workspace_path: workspacePath,
+        status: 'failed',
+        provisioner_type: 'unknown',
+        error_code: error instanceof WorkspaceError ? error.code : 'workspace_provision_failed',
+        error_message: error instanceof Error ? error.message : 'unknown workspace teardown failure'
+      });
+      throw error;
+    }
 
     try {
       await fs.rm(workspacePath, { recursive: true, force: true });

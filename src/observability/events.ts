@@ -45,6 +45,15 @@ export const CANONICAL_EVENT = {
     attemptCompleted: 'agent_runner.attempt.completed',
     attemptFailed: 'agent_runner.attempt.failed'
   },
+  workspace: {
+    provisionStart: 'workspace.provision.start',
+    provisionSuccess: 'workspace.provision.success',
+    provisionFailed: 'workspace.provision.failed',
+    provisionReused: 'workspace.provision.reused',
+    teardownStart: 'workspace.teardown.start',
+    teardownSuccess: 'workspace.teardown.success',
+    teardownFailed: 'workspace.teardown.failed'
+  },
   tracker: {
     candidateFetchFailed: 'tracker.candidates.fetch_failed',
     retryFetchFailed: 'tracker.retry.fetch_failed',

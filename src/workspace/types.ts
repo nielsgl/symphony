@@ -31,6 +31,15 @@ export interface WorkspaceManagerOptions {
   root: string;
   hooks: WorkspaceHooksConfig;
   provisioner?: WorkspaceProvisioner;
+  onProvisionerResult?: (result: {
+    phase: 'provision' | 'teardown';
+    identifier: string;
+    workspace_path: string;
+    status: WorkspaceProvisionResult['status'] | WorkspaceTeardownResult['status'] | 'failed' | 'start';
+    provisioner_type: string;
+    error_code?: string;
+    error_message?: string;
+  }) => void;
   nowMs?: () => number;
   runShell?: (params: {
     cwd: string;

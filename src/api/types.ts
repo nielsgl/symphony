@@ -36,6 +36,19 @@ export interface DiagnosticsSource {
       host: string;
       port: number | null;
     };
+    provisioner_type: string;
+    repo_root: string | null;
+    base_ref: string | null;
+    branch_name_template: string | null;
+  };
+  getWorkspaceProvisioner(): {
+    provisioner_type: string;
+    repo_root: string | null;
+    base_ref: string | null;
+    branch_name_template: string | null;
+    last_provision_result: 'provisioned' | 'reused' | 'skipped' | 'failed' | null;
+    last_teardown_result: 'removed' | 'kept' | 'skipped' | 'failed' | null;
+    last_error_code: string | null;
   };
 }
 
@@ -277,5 +290,18 @@ export interface ApiDiagnosticsResponse {
       host: string;
       port: number | null;
     };
+    provisioner_type: string;
+    repo_root: string | null;
+    base_ref: string | null;
+    branch_name_template: string | null;
+  };
+  workspace_provisioner: {
+    provisioner_type: string;
+    repo_root: string | null;
+    base_ref: string | null;
+    branch_name_template: string | null;
+    last_provision_result: 'provisioned' | 'reused' | 'skipped' | 'failed' | null;
+    last_teardown_result: 'removed' | 'kept' | 'skipped' | 'failed' | null;
+    last_error_code: string | null;
   };
 }
