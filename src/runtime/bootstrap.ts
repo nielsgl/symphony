@@ -19,7 +19,7 @@ import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
 import { WorkflowConfigError } from '../workflow/errors';
-import { WorkflowLoader, ConfigResolver, ConfigValidator, type EffectiveConfig } from '../workflow';
+import { WorkflowLoader, ConfigResolver, ConfigValidator, type EffectiveConfig, type WorkflowDefinition } from '../workflow';
 import { WorkspaceManager } from '../workspace';
 
 interface RuntimeTimer {
@@ -132,8 +132,10 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   const workflowDefinition = workflowLoader.load({ explicitPath: resolvedWorkflowPath });
 
   const configResolver = new ConfigResolver();
-  const effectiveConfig = configResolver.resolve(workflowDefinition, { workflowPath: resolvedWorkflowPath });
-  const workflowDir = path.dirname(path.resolve(resolvedWorkflowPath));
+  let currentWorkflowPath = path.resolve(resolvedWorkflowPath);
+  let currentWorkflowDefinition: WorkflowDefinition = workflowDefinition;
+  let effectiveConfig = configResolver.resolve(workflowDefinition, { workflowPath: currentWorkflowPath });
+  let workflowDir = path.dirname(currentWorkflowPath);
   const loggingResolution = resolveRuntimeLogsRoot({
     cliLogsRoot: options.logsRoot,
     workflowLogsRoot: effectiveConfig.logging.root,
@@ -194,7 +196,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     });
   }
 
-  const tracker =
+  let tracker =
     options.trackerAdapter ??
     createTrackerAdapter(
       {
@@ -204,13 +206,20 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       },
       options.fetchFn
     );
+  const trackerProxy: TrackerAdapter = {
+    fetch_candidate_issues: async () => tracker.fetch_candidate_issues(),
+    fetch_issues_by_states: async (state_names) => tracker.fetch_issues_by_states(state_names),
+    fetch_issue_states_by_ids: async (issue_ids) => tracker.fetch_issue_states_by_ids(issue_ids),
+    create_comment: async (issue_id, body) => tracker.create_comment(issue_id, body),
+    update_issue_state: async (issue_id, state_name) => tracker.update_issue_state(issue_id, state_name)
+  };
 
   const workspaceManager = new WorkspaceManager({
     root: effectiveConfig.workspace.root,
     hooks: effectiveConfig.hooks
   });
 
-  const activeProfile = resolveSecurityProfile(effectiveConfig.codex);
+  let activeProfile = resolveSecurityProfile(effectiveConfig.codex);
   effectiveConfig.codex.security_profile = activeProfile.name;
   effectiveConfig.codex.approval_policy = activeProfile.approval_policy;
   effectiveConfig.codex.thread_sandbox = activeProfile.thread_sandbox;
@@ -249,6 +258,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   });
   let orchestrator: OrchestratorCore;
   let apiServer: LocalApiServer | null = null;
+  let runtimeStarted = false;
 
   const bridge = new LocalRunnerBridge({
     workspaceManager,
@@ -266,6 +276,80 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
   const retryTimers = new Map<string, RuntimeTimer>();
   let pollIntervalHandle: NodeJS.Timeout | null = null;
+
+  const applyRuntimeConfig = (nextConfig: EffectiveConfig, nextWorkflowPath: string, nextDefinition: WorkflowDefinition): void => {
+    let nextTracker = tracker;
+    if (!options.trackerAdapter) {
+      nextTracker = createTrackerAdapter(
+        {
+          ...nextConfig.tracker,
+          timeout_ms: 30_000,
+          page_size: 50
+        },
+        options.fetchFn
+      );
+    }
+
+    const nextProfile = resolveSecurityProfile(nextConfig.codex);
+    nextConfig.codex.security_profile = nextProfile.name;
+    nextConfig.codex.approval_policy = nextProfile.approval_policy;
+    nextConfig.codex.thread_sandbox = nextProfile.thread_sandbox;
+    nextConfig.codex.turn_sandbox_policy = nextProfile.turn_sandbox_policy.type;
+    nextConfig.codex.user_input_policy = nextProfile.user_input_policy;
+
+    tracker = nextTracker;
+    activeProfile = nextProfile;
+    currentWorkflowPath = nextWorkflowPath;
+    currentWorkflowDefinition = nextDefinition;
+    effectiveConfig = nextConfig;
+    workflowDir = path.dirname(nextWorkflowPath);
+
+    orchestrator.applyRuntimeConfig({
+      poll_interval_ms: nextConfig.polling.interval_ms,
+      max_concurrent_agents: nextConfig.agent.max_concurrent_agents,
+      max_concurrent_agents_by_state: nextConfig.agent.max_concurrent_agents_by_state,
+      max_retry_backoff_ms: nextConfig.agent.max_retry_backoff_ms,
+      active_states: nextConfig.tracker.active_states,
+      terminal_states: nextConfig.tracker.terminal_states,
+      stall_timeout_ms: nextConfig.codex.stall_timeout_ms,
+      worker_hosts: nextConfig.worker?.ssh_hosts ?? [],
+      max_concurrent_agents_per_host: nextConfig.worker?.max_concurrent_agents_per_host ?? null
+    });
+
+    bridge.setRuntimeConfig(nextConfig, nextDefinition.prompt_template);
+    if (runtimeStarted) {
+      if (pollIntervalHandle) {
+        clearInterval(pollIntervalHandle);
+      }
+      pollIntervalHandle = setInterval(() => {
+        void orchestrator.tick('interval');
+      }, Math.max(1000, nextConfig.polling.interval_ms));
+    }
+  };
+
+  const reloadWorkflow = async (workflowPath: string): Promise<{ workflow_path: string; applied: boolean; error?: string }> => {
+    try {
+      const nextPath = path.resolve(workflowPath);
+      const nextDefinition = workflowLoader.load({ explicitPath: nextPath });
+      const nextConfig = configResolver.resolve(nextDefinition, { workflowPath: nextPath });
+      const validation = validator.validate(nextConfig);
+      if (!validation.ok) {
+        throw new WorkflowConfigError(validation.error_code, validation.message);
+      }
+
+      applyRuntimeConfig(nextConfig, nextPath, nextDefinition);
+      return {
+        workflow_path: nextPath,
+        applied: true
+      };
+    } catch (error) {
+      return {
+        workflow_path: currentWorkflowPath,
+        applied: false,
+        error: error instanceof Error ? error.message : 'workflow reload failed'
+      };
+    }
+  };
 
   const dispatchPreflight = (): DispatchPreflightResult => {
     const result = validator.evaluateDispatchPreflight(effectiveConfig);
@@ -288,7 +372,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       max_concurrent_agents_per_host: effectiveConfig.worker?.max_concurrent_agents_per_host ?? null
     },
     ports: {
-      tracker,
+      tracker: trackerProxy,
       dispatchPreflight,
       spawnWorker: ({ issue, attempt, worker_host }) => bridge.spawnWorker({ issue, attempt, worker_host }),
       terminateWorker: ({ issue_id, worker_handle, cleanup_workspace }) =>
@@ -373,6 +457,60 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               persistenceStore?.saveUiState(state);
             }
           },
+          workflowControlSource: {
+            switchWorkflowPath: async (workflowPath) => {
+              const result = await reloadWorkflow(workflowPath);
+              if (!result.applied) {
+                logger.log({
+                  level: 'warn',
+                  event: CANONICAL_EVENT.workflow.reloadFailed,
+                  message: result.error ?? 'workflow path switch failed',
+                  context: {
+                    source: 'api_path_switch',
+                    workflow_path: workflowPath
+                  }
+                });
+                return result;
+              }
+
+              logger.log({
+                level: 'info',
+                event: CANONICAL_EVENT.workflow.pathSwitched,
+                message: 'workflow path switched',
+                context: {
+                  workflow_path: result.workflow_path
+                }
+              });
+              apiServer?.notifyStateChanged('workflow_path_switch');
+              return result;
+            },
+            forceReload: async () => {
+              const result = await reloadWorkflow(currentWorkflowPath);
+              if (!result.applied) {
+                logger.log({
+                  level: 'warn',
+                  event: CANONICAL_EVENT.workflow.reloadFailed,
+                  message: result.error ?? 'workflow force reload failed',
+                  context: {
+                    source: 'api_force_reload',
+                    workflow_path: currentWorkflowPath
+                  }
+                });
+                return result;
+              }
+
+              logger.log({
+                level: 'info',
+                event: CANONICAL_EVENT.workflow.reloadForced,
+                message: 'workflow force reload applied',
+                context: {
+                  workflow_path: result.workflow_path
+                }
+              });
+              apiServer?.notifyStateChanged('workflow_force_reload');
+              return result;
+            }
+          },
           logger,
           nowMs
         });
@@ -453,6 +591,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     pollIntervalHandle = setInterval(() => {
       void orchestrator.tick('interval');
     }, Math.max(1000, effectiveConfig.polling.interval_ms));
+    runtimeStarted = true;
 
     logger.log({
       level: 'info',
@@ -470,6 +609,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       clearInterval(pollIntervalHandle);
       pollIntervalHandle = null;
     }
+    runtimeStarted = false;
 
     for (const timer of retryTimers.values()) {
       clearTimeout(timer.timeout);

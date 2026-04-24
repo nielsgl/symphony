@@ -5,7 +5,9 @@ export type RuntimeEventSeverity = 'info' | 'warn' | 'error';
 export const CANONICAL_EVENT = {
   workflow: {
     reloadSucceeded: 'workflow.reload.succeeded',
-    reloadFailed: 'workflow.reload.failed'
+    reloadFailed: 'workflow.reload.failed',
+    pathSwitched: 'workflow.path.switched',
+    reloadForced: 'workflow.reload.forced'
   },
   codex: {
     sessionStarted: 'codex.session.started',

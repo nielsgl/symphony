@@ -22,6 +22,7 @@ async function makeWorkflowFile(options?: {
   includeServerPort?: boolean;
   serverPort?: number;
   loggingRoot?: string;
+  pollingIntervalMs?: number;
 }): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-'));
   const workflowPath = path.join(dir, 'WORKFLOW.md');
@@ -29,6 +30,7 @@ async function makeWorkflowFile(options?: {
   const includeServerPort = options?.includeServerPort ?? true;
   const serverPort = options?.serverPort ?? 0;
   const loggingRoot = options?.loggingRoot;
+  const pollingIntervalMs = options?.pollingIntervalMs ?? 1000;
   const trackerCredentialBlock = includeTrackerCredentials
     ? `  api_key: test-token
   project_slug: TEST
@@ -54,7 +56,7 @@ ${trackerCredentialBlock}  active_states:
   terminal_states:
     - Done
 polling:
-  interval_ms: 1000
+  interval_ms: ${pollingIntervalMs}
 workspace:
   root: ${JSON.stringify(path.join(dir, 'workspaces'))}
 hooks:
@@ -525,9 +527,9 @@ describe('createRuntimeEnvironment', () => {
           fetch_candidate_issues: async () => [],
           fetch_issues_by_states: async () => [],
           fetch_issue_states_by_ids: async () => [],
-      create_comment: vi.fn(async () => undefined),
-      update_issue_state: vi.fn(async () => undefined)
-    },
+          create_comment: vi.fn(async () => undefined),
+          update_issue_state: vi.fn(async () => undefined)
+        },
         port: 0
       })
     ).toThrow(/invalid_logging_root|logging\.root is not writable/i);
@@ -544,11 +546,51 @@ describe('createRuntimeEnvironment', () => {
           fetch_candidate_issues: async () => [],
           fetch_issues_by_states: async () => [],
           fetch_issue_states_by_ids: async () => [],
-      create_comment: vi.fn(async () => undefined),
-      update_issue_state: vi.fn(async () => undefined)
-    }
+          create_comment: vi.fn(async () => undefined),
+          update_issue_state: vi.fn(async () => undefined)
+        }
       })
     ).toThrow(/workflow file/i);
+  });
+
+  it('supports runtime workflow path switch and preserves last-known-good config', async () => {
+    const workflowPath = await makeWorkflowFile({ pollingIntervalMs: 1000 });
+    const nextWorkflowPath = await makeWorkflowFile({ pollingIntervalMs: 4000 });
+    dirs.push(path.dirname(workflowPath));
+    dirs.push(path.dirname(nextWorkflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+    await runtime.start();
+
+    const address = requireApiAddress(runtime);
+    const switchResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/workflow/path`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workflow_path: nextWorkflowPath })
+    });
+    expect(switchResponse.status).toBe(202);
+    expect(runtime.orchestrator.getStateSnapshot().poll_interval_ms).toBe(4000);
+
+    const invalidResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/workflow/path`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workflow_path: path.join(path.dirname(nextWorkflowPath), 'missing.md') })
+    });
+    expect(invalidResponse.status).toBe(422);
+    expect(runtime.orchestrator.getStateSnapshot().poll_interval_ms).toBe(4000);
   });
 
   it('emits startup cold-start and terminal cleanup diagnostics markers', async () => {

@@ -188,6 +188,18 @@ export interface LocalApiServerOptions {
   snapshotSource: RuntimeSnapshotSource;
   refreshSource: RefreshTickSource;
   diagnosticsSource?: DiagnosticsSource;
+  workflowControlSource?: {
+    switchWorkflowPath: (workflowPath: string) => Promise<{
+      workflow_path: string;
+      applied: boolean;
+      error?: string;
+    }>;
+    forceReload: () => Promise<{
+      workflow_path: string;
+      applied: boolean;
+      error?: string;
+    }>;
+  };
   nowMs?: () => number;
   logger?: StructuredLogger;
 }

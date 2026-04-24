@@ -66,6 +66,7 @@ export class LocalApiServer {
   private readonly snapshotSource: LocalApiServerOptions['snapshotSource'];
   private readonly refreshCoalescer: RefreshCoalescer;
   private readonly diagnosticsSource?: LocalApiServerOptions['diagnosticsSource'];
+  private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
   private readonly logger?: StructuredLogger;
 
   private readonly server: http.Server;
@@ -81,6 +82,7 @@ export class LocalApiServer {
     this.snapshotService = new SnapshotService({ nowMs: options.nowMs });
     this.snapshotSource = options.snapshotSource;
     this.diagnosticsSource = options.diagnosticsSource;
+    this.workflowControlSource = options.workflowControlSource;
     this.logger = options.logger;
     this.refreshCoalescer = new RefreshCoalescer({
       refreshSource: options.refreshSource,
@@ -352,6 +354,75 @@ export class LocalApiServer {
                 accepted: payload
               });
               sendJson(response, 202, payload);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/workflow\/path$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response) => {
+              if (!this.workflowControlSource) {
+                throw new LocalApiError('workflow_control_unavailable', 'Workflow control source is not configured', 503);
+              }
+
+              const chunks: Buffer[] = [];
+              for await (const chunk of request) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+              }
+
+              const payloadText = Buffer.concat(chunks).toString('utf8').trim();
+              if (!payloadText) {
+                throw new LocalApiError('invalid_workflow_path', 'Request body is required', 400);
+              }
+
+              let parsed: { workflow_path?: string };
+              try {
+                parsed = JSON.parse(payloadText) as { workflow_path?: string };
+              } catch {
+                throw new LocalApiError('invalid_workflow_path', 'Request body must be valid JSON', 400);
+              }
+
+              if (typeof parsed.workflow_path !== 'string' || parsed.workflow_path.trim().length === 0) {
+                throw new LocalApiError('invalid_workflow_path', 'workflow_path is required', 400);
+              }
+
+              const result = await this.workflowControlSource.switchWorkflowPath(parsed.workflow_path);
+              if (!result.applied) {
+                throw new LocalApiError(
+                  'workflow_reload_failed',
+                  result.error ?? 'workflow path switch failed',
+                  422
+                );
+              }
+
+              sendJson(response, 202, result);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/workflow\/reload$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (_request, response) => {
+              if (!this.workflowControlSource) {
+                throw new LocalApiError('workflow_control_unavailable', 'Workflow control source is not configured', 503);
+              }
+
+              const result = await this.workflowControlSource.forceReload();
+              if (!result.applied) {
+                throw new LocalApiError(
+                  'workflow_reload_failed',
+                  result.error ?? 'workflow reload failed',
+                  422
+                );
+              }
+
+              sendJson(response, 202, result);
             }
           }
         ]

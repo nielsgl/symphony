@@ -30,8 +30,8 @@ export interface LocalRunnerBridgeOptions {
 export class LocalRunnerBridge {
   private readonly workspaceManager: WorkspaceManager;
   private readonly codexRunner: CodexRunner;
-  private readonly config: EffectiveConfig;
-  private readonly renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
+  private config: EffectiveConfig;
+  private renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
   private readonly logger?: StructuredLogger;
   private readonly onWorkerExit?: LocalRunnerBridgeOptions['onWorkerExit'];
   private readonly onWorkerEvent?: LocalRunnerBridgeOptions['onWorkerEvent'];
@@ -51,6 +51,14 @@ export class LocalRunnerBridge {
     this.logger = options.logger;
     this.onWorkerExit = options.onWorkerExit;
     this.onWorkerEvent = options.onWorkerEvent;
+  }
+
+  setRuntimeConfig(config: EffectiveConfig, promptTemplate: string): void {
+    this.config = config;
+    const compiledTemplate: Template = new TemplateEngine().compile(promptTemplate);
+    this.renderPrompt = async ({ issue, attempt }) => {
+      return compiledTemplate.render({ issue: issue as unknown as Record<string, unknown>, attempt });
+    };
   }
 
   async spawnWorker(params: { issue: Issue; attempt: number | null; worker_host?: string | null }): Promise<SpawnWorkerResult> {

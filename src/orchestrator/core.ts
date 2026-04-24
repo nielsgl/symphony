@@ -152,6 +152,31 @@ export class OrchestratorCore {
     };
   }
 
+  applyRuntimeConfig(config: {
+    poll_interval_ms: number;
+    max_concurrent_agents: number;
+    max_concurrent_agents_by_state: Record<string, number>;
+    max_retry_backoff_ms: number;
+    active_states: string[];
+    terminal_states: string[];
+    stall_timeout_ms: number;
+    worker_hosts?: string[];
+    max_concurrent_agents_per_host?: number | null;
+  }): void {
+    this.config.poll_interval_ms = config.poll_interval_ms;
+    this.config.max_concurrent_agents = config.max_concurrent_agents;
+    this.config.max_concurrent_agents_by_state = { ...config.max_concurrent_agents_by_state };
+    this.config.max_retry_backoff_ms = config.max_retry_backoff_ms;
+    this.config.active_states = [...config.active_states];
+    this.config.terminal_states = [...config.terminal_states];
+    this.config.stall_timeout_ms = config.stall_timeout_ms;
+    this.config.worker_hosts = config.worker_hosts ? [...config.worker_hosts] : [];
+    this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
+
+    this.state.poll_interval_ms = config.poll_interval_ms;
+    this.state.max_concurrent_agents = config.max_concurrent_agents;
+  }
+
   async tick(reason: TickReason): Promise<void> {
     await this.reconcileRunningIssues();
 
