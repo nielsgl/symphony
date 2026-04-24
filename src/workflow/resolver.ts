@@ -240,7 +240,7 @@ export class ConfigResolver {
 
     const trackerKind = readString(tracker.kind, '');
     const trackerEndpoint =
-      readString(tracker.endpoint, '') ||
+      resolveEnvToken(readString(tracker.endpoint, ''), this.env) ||
       (trackerKind === 'linear'
         ? 'https://api.linear.app/graphql'
         : trackerKind === 'github'
@@ -261,10 +261,10 @@ export class ConfigResolver {
             : '';
     const trackerApiKey = resolveEnvToken(trackerApiKeySource, this.env);
 
-    const trackerProjectSlug = readString(tracker.project_slug, '');
-    const trackerAssignee = readString(tracker.assignee, '');
-    const trackerOwner = readString(tracker.owner, '');
-    const trackerRepo = readString(tracker.repo, '');
+    const trackerProjectSlug = resolveEnvToken(readString(tracker.project_slug, ''), this.env);
+    const trackerAssignee = resolveEnvToken(readString(tracker.assignee, ''), this.env);
+    const trackerOwner = resolveEnvToken(readString(tracker.owner, ''), this.env);
+    const trackerRepo = resolveEnvToken(readString(tracker.repo, ''), this.env);
 
     const workflowResolvedPath =
       typeof options.workflowPath === 'string' && options.workflowPath.trim().length > 0

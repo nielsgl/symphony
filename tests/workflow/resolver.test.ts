@@ -68,6 +68,25 @@ describe('ConfigResolver', () => {
     expect(config.workspace.root_source).toBe('workflow');
   });
 
+  it('resolves $VAR for tracker.project_slug', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        LINEAR_PROJECT_SLUG: 'SYMPHONY'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve({
+      config: {
+        tracker: { kind: 'linear', api_key: 'token', project_slug: '$LINEAR_PROJECT_SLUG' }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.tracker.project_slug).toBe('SYMPHONY');
+  });
+
   it('uses github defaults for endpoint and token fallback', () => {
     const resolver = new ConfigResolver({
       env: {
