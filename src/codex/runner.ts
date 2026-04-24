@@ -6,6 +6,7 @@ import path from 'node:path';
 import { CANONICAL_EVENT } from '../observability/events';
 import { CodexRunnerError } from './errors';
 import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
+import { buildSshSpawnArgs } from './ssh-target';
 import type { CodexRunnerEvent, CodexRunnerStartInput, CodexTurnResult, CodexUsageTotals } from './types';
 
 interface ProtocolMessage {
@@ -341,7 +342,7 @@ function defaultSpawnProcess(params: { command: string; cwd: string; workerHost?
   const workerHost = params.workerHost?.trim();
   if (workerHost) {
     const remoteCommand = `cd ${shellEscape(params.cwd)} && exec ${params.command}`;
-    const child: ChildProcessWithoutNullStreams = spawn('ssh', [workerHost, remoteCommand], {
+    const child: ChildProcessWithoutNullStreams = spawn('ssh', buildSshSpawnArgs(workerHost, remoteCommand), {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
