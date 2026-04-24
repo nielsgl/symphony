@@ -52,6 +52,13 @@ type EffectiveConfig = {
   hooks: HooksConfig
   agent: AgentConfig
   codex: CodexConfig
+  persistence: PersistenceConfig
+  logging: {
+    root: string
+    root_source: 'workflow' | 'default'
+    max_bytes: number
+    max_files: number
+  }
   server?: { port: number }
 }
 ```
@@ -72,6 +79,7 @@ Preflight required checks:
 - resolved tracker auth present.
 - tracker project scope present where required.
 - non-empty `codex.command`.
+- logging rotation limits are positive integers.
 
 ## State, Failure, and Recovery Behavior
 - Missing/invalid workflow at startup: fail startup with typed error.

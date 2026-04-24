@@ -1,6 +1,6 @@
 # Symphony PRD Execution Status
 
-Last updated: 2026-04-23
+Last updated: 2026-04-24
 Owner: orchestration planning
 
 ## How Agents Should Use This File
@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P14b logging substrate closure with intentional path-semantics divergence.
-- Current phase: P1 (entry approved; implementation delivered through P14b evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P15 logging hardening closure.
+- Current phase: P1 (entry approved; implementation delivered through P15 evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P14b`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P15`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -183,6 +183,31 @@ Ownership evidence links:
 - [x] P12: Implement XR-06/XR-09 observability enrichment + canonical event vocabulary harmonization.
 - [x] P14: Implement logging lifecycle/context parity closure against reference logging contract.
 - [x] P14b: Implement logging substrate parity (rotating file sink + logs-root + diagnostics + debug-skill alignment).
+- [x] P15: Implement logging hardening (bootstrap API cleanup, CLI duplication guard regression, AST context governance).
+
+## Implementation Evidence (P15)
+- Date: 2026-04-24
+- Scope delivered:
+  - Removed runtime bootstrap transitional observer alias and kept `logObserver` as the sole observer hook.
+  - Added CLI lifecycle regression proving default CLI startup does not wire default logger as runtime observer.
+  - Extended runtime logging source coverage to include explicit workflow-root source (`logs_root_source=workflow`) plus existing `default` and `cli` assertions.
+  - Upgraded `check-log-context` from line-window regex checks to TypeScript AST analysis with file/line diagnostics.
+  - Added dedicated script tests for canonical/pass and identifier/violation cases.
+  - Updated logging and workflow config docs with the breaking rename and typed logging config reference.
+- Key outputs:
+  - `src/runtime/bootstrap.ts`
+  - `tests/cli/lifecycle.test.ts`
+  - `tests/runtime/bootstrap.test.ts`
+  - `scripts/check-log-context.js`
+  - `tests/cli/check-log-context.test.ts`
+  - `docs/logging.md`
+  - `docs/prd/PRD-002-workflow-config-reload.md`
+  - `docs/prd/STATUS.md`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
 
 ## Implementation Evidence (P14b)
 - Date: 2026-04-23

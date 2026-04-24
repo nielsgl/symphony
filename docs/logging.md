@@ -69,11 +69,20 @@ Codex lifecycle (worker stream):
   - archives: `symphony.log.1`, `symphony.log.2`, ...
   - max size: `10MB` default (`logging.max_bytes` override)
   - max retained files: `5` default (`logging.max_files` override, active + archives)
+- Workflow config reference:
+  - see `docs/prd/PRD-002-workflow-config-reload.md` (`EffectiveConfig.logging`)
+    for typed config surface.
 - Diagnostics exposure:
   - `/api/v1/diagnostics.logging.root`
   - `/api/v1/diagnostics.logging.active_file`
   - `/api/v1/diagnostics.logging.rotation`
   - `/api/v1/diagnostics.logging.sinks`
+
+## Breaking Change (P15)
+- Runtime bootstrap no longer accepts `RuntimeBootstrapOptions.logger`.
+- Use `RuntimeBootstrapOptions.logObserver` as the only observer hook.
+- Default CLI startup path does not wire the default stderr logger as a runtime
+  observer, preventing duplicate stderr lines for the same runtime log entry.
 
 ## Safety and Reliability
 - All logs flow through `redactLogInput`; secrets must not appear in message
@@ -82,6 +91,9 @@ Codex lifecycle (worker stream):
   fallback sink.
 - Startup fails fast with typed config error `invalid_logging_root` when the
   configured log root is not writable.
+- Canonical log-context governance is enforced by AST checker
+  (`scripts/check-log-context.js`) and fails on generic `identifier` keys
+  inside logging `context` objects.
 
 ## Implementation Anchors
 - Logger and formatting: `src/observability/logger.ts`
