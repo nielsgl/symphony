@@ -23,7 +23,7 @@
       "status": "equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; approval policy compatibility plus parity knobs (`tracker.assignee`, `server.host`, `observability.*`, prompt fallback) are now aligned.",
+      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; approval policy compatibility plus parity knobs (`tracker.assignee`, `server.host`, `observability.*`, prompt fallback) are aligned, and workflow-relative workspace-root resolution semantics are now explicit in ours via `workspace.root_source` diagnostics metadata.",
       "ours_anchors": [
         "src/workflow/resolver.ts",
         "src/workflow/loader.ts",
@@ -143,7 +143,7 @@
       "status": "different-safe",
       "classification": "extension",
       "risk": "low",
-      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, runtime workflow path/reload controls, and full workspace/worker projection parity.",
+      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, runtime workflow path/reload controls, full workspace/worker projection parity, and additive retry-causality/thread-lineage plus runtime-resolution diagnostics fields for operator clarity.",
       "ours_anchors": [
         "src/api/server.ts",
         "src/api/types.ts",

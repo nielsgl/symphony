@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P17 test-parity closure.
-- Current phase: P1 (entry approved; implementation delivered through P17 evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P18 workspace-resolution and operator-clarity closure.
+- Current phase: P1 (entry approved; implementation delivered through P18 evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P17`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P18`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -187,6 +187,40 @@ Ownership evidence links:
 - [x] P15b: Implement functional parity uplift findings F1-F8 (tracker write paths, assignee routing, memory tracker, runtime workflow switching, host binding, retry projection enrichment, observability knobs, prompt fallback).
 - [x] P16: Implement post-P15 functional parity closure findings F1-F6 (non-interactive approvals, method-specific approval mapping, continuation state-aware stop, workspace/worker payload parity, resolvable hostname validation, ops-helper parity scripts).
 - [x] P17: Implement test-parity closure findings F1-F6 (malformed protocol observability, codex side-output events, SSH normalization tests, local+ssh lifecycle profile markers, meta/ops edge-case depth, parity docs closeout).
+- [x] P18: Close Observation 1 + Observation 5 (workflow-relative workspace root resolution + operator retry/runtime clarity in API/dashboard).
+
+## Implementation Evidence (P18 Observation Closure: Workspace Root + Operator Clarity)
+- Date: 2026-04-24
+- Scope delivered:
+  - Anchored path-like relative `workspace.root` values to workflow-file directory during config resolution, preventing process-CWD drift when Symphony runs outside target app repo.
+  - Added `workspace.root_source` on effective config and startup runtime logs for deterministic resolution visibility.
+  - Added retry causality metadata propagation (`stop_reason_code`, `stop_reason_detail`, `previous_thread_id`, `previous_session_id`) from orchestrator scheduling into state and issue projections.
+  - Extended diagnostics with additive `runtime_resolution` payload (`workflow_path`, `workflow_dir`, `workspace_root`, `workspace_root_source`, `server.host/port`).
+  - Upgraded dashboard operator surface with runtime-resolution panel and retry-cause/thread context (including copy actions), plus issue-detail summary context.
+- Key outputs:
+  - `src/workflow/resolver.ts`
+  - `src/workflow/types.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/orchestrator/core.ts`
+  - `src/orchestrator/types.ts`
+  - `src/api/types.ts`
+  - `src/api/snapshot-service.ts`
+  - `src/api/server.ts`
+  - `src/api/dashboard-assets.ts`
+  - `tests/workflow/resolver.test.ts`
+  - `tests/runtime/bootstrap.test.ts`
+  - `tests/orchestrator/core.test.ts`
+  - `tests/api/server.test.ts`
+  - `tests/api/snapshot-service.test.ts`
+- Validation commands:
+  - `npm test -- tests/workflow/resolver.test.ts tests/workflow/validator.test.ts tests/workflow/store.test.ts tests/orchestrator/local-runner-bridge.test.ts tests/runtime/bootstrap.test.ts`
+  - `npm test -- tests/orchestrator/core.test.ts tests/api/snapshot-service.test.ts tests/api/server.test.ts`
+  - `npm run build`
+  - `git diff --check`
+- Operator troubleshooting notes:
+  - If workspace path appears in the wrong repo, check `/api/v1/diagnostics.runtime_resolution.workspace_root` and `workspace_root_source`.
+  - If a run restarts in a new thread, inspect retry row fields `stop_reason_code` plus `previous_thread_id` / `previous_session_id`.
+  - Use the dashboard Runtime Resolution panel and Retry Queue stop-reason columns before drilling into Codex thread logs.
 
 ## Implementation Evidence (P17 Test-Parity Closure)
 - Date: 2026-04-24

@@ -250,6 +250,31 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/tests/cli/public-api-contract-check.test.ts`
   - `/Users/niels.van.Galen.last/code/symphony/tests/cli/meta-check-scripts.test.ts`
 
+### XR-16 — Workspace resolution + operator retry diagnostics clarity
+- Priority: `P1`
+- Decision: `adopted` (closed in `P18`)
+- Delivered:
+  - workflow-relative `workspace.root` resolution for path-like relative values,
+  - explicit workspace resolution source metadata (`workspace.root_source`),
+  - additive runtime diagnostics block (`runtime_resolution`) on `/api/v1/diagnostics`,
+  - additive retry causality/thread lineage metadata in `/api/v1/state.retrying[]` and `/api/v1/:issue_identifier.retry`,
+  - dashboard runtime-resolution panel and retry-cause/session/thread visibility + copy helpers.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/resolver.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/bootstrap.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/core.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/snapshot-service.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/dashboard-assets.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/workflow/resolver.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/runtime/bootstrap.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/orchestrator/core.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/snapshot-service.test.ts`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -271,6 +296,6 @@ Prioritization model:
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, and `XR-15` are marked closed with concrete code/test anchors.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, `XR-15`, and `XR-16` are marked closed with concrete code/test anchors.
 - Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.
