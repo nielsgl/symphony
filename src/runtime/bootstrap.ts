@@ -482,7 +482,17 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             setUiState: (state) => {
               persistenceStore?.saveUiState(state);
             },
-            getPromptFallbackActive: () => promptFallbackActive
+            getPromptFallbackActive: () => promptFallbackActive,
+            getRuntimeResolution: () => ({
+              workflow_path: currentWorkflowPath,
+              workflow_dir: workflowDir,
+              workspace_root: effectiveConfig.workspace.root,
+              workspace_root_source: effectiveConfig.workspace.root_source,
+              server: {
+                host: apiServer?.address().host ?? resolvedHost,
+                port: apiServer?.address().port ?? (resolvedPort ?? null)
+              }
+            })
           },
           workflowControlSource: {
             switchWorkflowPath: async (workflowPath) => {

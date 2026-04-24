@@ -484,7 +484,8 @@ export class LocalApiServer {
                 },
                 workflow: {
                   prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
-                }
+                },
+                runtime_resolution: this.diagnosticsSource.getRuntimeResolution()
               });
             }
           }

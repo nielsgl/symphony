@@ -30,6 +30,10 @@ interface ScheduleRetryParams {
   error?: string | null;
   worker_host?: string | null;
   workspace_path?: string | null;
+  stop_reason_code?: string | null;
+  stop_reason_detail?: string | null;
+  previous_thread_id?: string | null;
+  previous_session_id?: string | null;
 }
 
 function cloneIssue(issue: Issue): Issue {
@@ -65,6 +69,10 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     error: entry.error,
     worker_host: entry.worker_host,
     workspace_path: entry.workspace_path,
+    stop_reason_code: entry.stop_reason_code,
+    stop_reason_detail: entry.stop_reason_detail,
+    previous_thread_id: entry.previous_thread_id,
+    previous_session_id: entry.previous_session_id,
     timer_handle: entry.timer_handle
   };
 }
@@ -445,7 +453,11 @@ export class OrchestratorCore {
         delay_type: 'continuation',
         error: null,
         worker_host: running.worker_host ?? null,
-        workspace_path: running.workspace_path ?? null
+        workspace_path: running.workspace_path ?? null,
+        stop_reason_code: 'normal_completion',
+        stop_reason_detail: 'normal worker completion, continuing while issue is active',
+        previous_thread_id: running.thread_id,
+        previous_session_id: running.session_id
       });
       this.logger?.log({
         level: 'info',
@@ -470,7 +482,11 @@ export class OrchestratorCore {
         delay_type: 'failure',
         error: error ?? `worker exited: ${reason}`,
         worker_host: running.worker_host ?? null,
-        workspace_path: running.workspace_path ?? null
+        workspace_path: running.workspace_path ?? null,
+        stop_reason_code: this.inferStopReasonCode(error, 'worker_exit_abnormal'),
+        stop_reason_detail: error ?? `worker exited: ${reason}`,
+        previous_thread_id: running.thread_id,
+        previous_session_id: running.session_id
       });
       this.logger?.log({
         level: 'warn',
@@ -527,7 +543,11 @@ export class OrchestratorCore {
         delay_type: 'failure',
         error: 'retry poll failed',
         worker_host: retryEntry.worker_host ?? null,
-        workspace_path: retryEntry.workspace_path ?? null
+        workspace_path: retryEntry.workspace_path ?? null,
+        stop_reason_code: 'retry_fetch_failed',
+        stop_reason_detail: error instanceof Error ? error.message : 'unknown',
+        previous_thread_id: retryEntry.previous_thread_id ?? null,
+        previous_session_id: retryEntry.previous_session_id ?? null
       });
       return;
     }
@@ -556,7 +576,11 @@ export class OrchestratorCore {
           delay_type: 'failure',
           error: 'no available orchestrator slots',
           worker_host: retryEntry.worker_host ?? null,
-          workspace_path: retryEntry.workspace_path ?? null
+          workspace_path: retryEntry.workspace_path ?? null,
+          stop_reason_code: 'slots_exhausted',
+          stop_reason_detail: 'no available orchestrator slots',
+          previous_thread_id: retryEntry.previous_thread_id ?? null,
+          previous_session_id: retryEntry.previous_session_id ?? null
         });
       } else {
         this.state.claimed.delete(issue_id);
@@ -660,7 +684,11 @@ export class OrchestratorCore {
         delay_type: 'failure',
         error: 'worker stalled',
         worker_host: runningEntry.worker_host ?? null,
-        workspace_path: runningEntry.workspace_path ?? null
+        workspace_path: runningEntry.workspace_path ?? null,
+        stop_reason_code: 'worker_stalled',
+        stop_reason_detail: 'worker stalled',
+        previous_thread_id: runningEntry.thread_id,
+        previous_session_id: runningEntry.session_id
       });
       this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
       this.logger?.log({
@@ -719,7 +747,9 @@ export class OrchestratorCore {
         delay_type: 'failure',
         error: 'no available worker host slots',
         worker_host: workerHost,
-        workspace_path: null
+        workspace_path: null,
+        stop_reason_code: 'slots_exhausted',
+        stop_reason_detail: 'no available worker host slots'
       });
       return;
     }
@@ -746,7 +776,9 @@ export class OrchestratorCore {
         delay_type: 'failure',
         error: 'failed to spawn agent',
         worker_host: workerHost,
-        workspace_path: null
+        workspace_path: null,
+        stop_reason_code: 'spawn_failed',
+        stop_reason_detail: spawned.error
       });
       return;
     }
@@ -889,6 +921,10 @@ export class OrchestratorCore {
       error: params.error ?? null,
       worker_host: params.worker_host ?? null,
       workspace_path: params.workspace_path ?? null,
+      stop_reason_code: params.stop_reason_code ?? null,
+      stop_reason_detail: params.stop_reason_detail ?? null,
+      previous_thread_id: params.previous_thread_id ?? null,
+      previous_session_id: params.previous_session_id ?? null,
       timer_handle: timerHandle
     });
 
@@ -903,9 +939,32 @@ export class OrchestratorCore {
         attempt: params.attempt,
         delay_type: params.delay_type,
         due_at_ms: dueAtMs,
-        error: params.error ?? null
+        error: params.error ?? null,
+        stop_reason_code: params.stop_reason_code ?? null
       }
     });
+  }
+
+  private inferStopReasonCode(error: string | undefined, fallback: string): string {
+    if (!error) {
+      return fallback;
+    }
+
+    const normalized = error.toLowerCase();
+    if (normalized.includes('turn_input_required')) {
+      return 'turn_input_required';
+    }
+    if (normalized.includes('issue_state_refresh_failed')) {
+      return 'issue_state_refresh_failed';
+    }
+    if (normalized.includes('unsafe_workspace_root')) {
+      return 'unsafe_workspace_root';
+    }
+    if (normalized.includes('workspace_empty')) {
+      return 'workspace_empty';
+    }
+
+    return fallback;
   }
 
   private addRuntimeSecondsFromEntry(runningEntry: RunningEntry): void {

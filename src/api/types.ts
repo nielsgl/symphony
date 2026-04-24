@@ -27,6 +27,16 @@ export interface DiagnosticsSource {
   getUiState(): UiContinuityState | null;
   setUiState(state: UiContinuityState): void;
   getPromptFallbackActive(): boolean;
+  getRuntimeResolution(): {
+    workflow_path: string;
+    workflow_dir: string;
+    workspace_root: string;
+    workspace_root_source: 'workflow' | 'default';
+    server: {
+      host: string;
+      port: number | null;
+    };
+  };
 }
 
 export interface LocalApiErrorEnvelope {
@@ -75,6 +85,10 @@ export interface ApiStateResponse {
     error: string | null;
     worker_host: string | null;
     workspace_path: string | null;
+    stop_reason_code: string | null;
+    stop_reason_detail: string | null;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
   }>;
   codex_totals: {
     input_tokens: number;
@@ -160,6 +174,10 @@ export interface ApiIssueResponse {
     error: string | null;
     worker_host: string | null;
     workspace_path: string | null;
+    stop_reason_code: string | null;
+    stop_reason_detail: string | null;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
   } | null;
   recent_events: Array<{
     at: string;
@@ -249,5 +267,15 @@ export interface ApiDiagnosticsResponse {
   };
   workflow: {
     prompt_fallback_active: boolean;
+  };
+  runtime_resolution: {
+    workflow_path: string;
+    workflow_dir: string;
+    workspace_root: string;
+    workspace_root_source: 'workflow' | 'default';
+    server: {
+      host: string;
+      port: number | null;
+    };
   };
 }

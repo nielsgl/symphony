@@ -195,6 +195,10 @@ describe('LocalApiServer', () => {
             error: 'no available orchestrator slots',
             worker_host: 'build-1',
             workspace_path: '/tmp/symphony/ABC-2',
+            stop_reason_code: 'slots_exhausted',
+            stop_reason_detail: 'no available orchestrator slots',
+            previous_thread_id: 'thread-prev',
+            previous_session_id: 'thread-prev-turn-prev',
             timer_handle: {}
           }
         ]
@@ -297,7 +301,17 @@ describe('LocalApiServer', () => {
           panel_state: { issue_detail_open: true }
         }),
         setUiState: () => undefined,
-        getPromptFallbackActive: () => false
+        getPromptFallbackActive: () => false,
+        getRuntimeResolution: () => ({
+          workflow_path: '/tmp/WORKFLOW.md',
+          workflow_dir: '/tmp',
+          workspace_root: '/tmp/workspaces',
+          workspace_root_source: 'workflow',
+          server: {
+            host: '127.0.0.1',
+            port: 3000
+          }
+        })
       }
     });
 
@@ -678,7 +692,17 @@ describe('LocalApiServer', () => {
           panel_state: { issue_detail_open: false }
         }),
         setUiState,
-        getPromptFallbackActive: () => false
+        getPromptFallbackActive: () => false,
+        getRuntimeResolution: () => ({
+          workflow_path: '/tmp/WORKFLOW.md',
+          workflow_dir: '/tmp',
+          workspace_root: '/tmp/workspaces',
+          workspace_root_source: 'workflow',
+          server: {
+            host: '127.0.0.1',
+            port: 3000
+          }
+        })
       }
     });
 
@@ -721,6 +745,10 @@ describe('LocalApiServer', () => {
       'params.totalTokenUsage'
     ]);
     expect(diagnosticsPayload.token_accounting.observed_dimensions.cached_input_tokens).toBe(false);
+    expect((diagnosticsPayload as Record<string, unknown>).runtime_resolution).toMatchObject({
+      workflow_path: '/tmp/WORKFLOW.md',
+      workspace_root: '/tmp/workspaces'
+    });
 
     const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history?limit=1`);
     const historyPayload = (await historyResponse.json()) as { runs: Array<{ run_id: string }> };
@@ -809,7 +837,17 @@ describe('LocalApiServer', () => {
         listRunHistory: () => [],
         getUiState: () => null,
         setUiState: () => undefined,
-        getPromptFallbackActive: () => false
+        getPromptFallbackActive: () => false,
+        getRuntimeResolution: () => ({
+          workflow_path: '/tmp/WORKFLOW.md',
+          workflow_dir: '/tmp',
+          workspace_root: '/tmp/workspaces',
+          workspace_root_source: 'workflow',
+          server: {
+            host: '127.0.0.1',
+            port: 3000
+          }
+        })
       }
     });
 
@@ -831,6 +869,11 @@ describe('LocalApiServer', () => {
       cached_input_tokens: true,
       reasoning_output_tokens: true,
       model_context_window: true
+    });
+    expect((diagnosticsPayload as Record<string, unknown>).runtime_resolution).toMatchObject({
+      workflow_path: '/tmp/WORKFLOW.md',
+      workspace_root: '/tmp/workspaces',
+      workspace_root_source: 'workflow'
     });
   });
 
@@ -867,7 +910,17 @@ describe('LocalApiServer', () => {
         listRunHistory: () => [],
         getUiState: () => null,
         setUiState: () => undefined,
-        getPromptFallbackActive: () => false
+        getPromptFallbackActive: () => false,
+        getRuntimeResolution: () => ({
+          workflow_path: '/tmp/WORKFLOW.md',
+          workflow_dir: '/tmp',
+          workspace_root: '/tmp/workspaces',
+          workspace_root_source: 'workflow',
+          server: {
+            host: '127.0.0.1',
+            port: 3000
+          }
+        })
       }
     });
 

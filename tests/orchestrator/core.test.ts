@@ -197,6 +197,7 @@ describe('OrchestratorCore', () => {
     await harness.orchestrator.tick('interval');
     const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-capacity-2');
     expect(retryEntry?.error).toBe('no available worker host slots');
+    expect(retryEntry?.stop_reason_code).toBe('slots_exhausted');
     expect(harness.spawned).toEqual([{ issue_id: 'i-capacity-1', attempt: null, worker_host: 'build-1' }]);
   });
 
@@ -211,6 +212,7 @@ describe('OrchestratorCore', () => {
     const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-normal');
     expect(retryEntry?.attempt).toBe(1);
     expect(retryEntry?.error).toBeNull();
+    expect(retryEntry?.stop_reason_code).toBe('normal_completion');
     expect(retryEntry?.due_at_ms).toBe(harness.now.value + 1000);
   });
 
@@ -224,6 +226,7 @@ describe('OrchestratorCore', () => {
 
     const firstRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-abnormal');
     expect(firstRetry?.attempt).toBe(1);
+    expect(firstRetry?.stop_reason_code).toBe('worker_exit_abnormal');
     expect(firstRetry?.due_at_ms).toBe(harness.now.value + 10_000);
 
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
@@ -263,6 +266,7 @@ describe('OrchestratorCore', () => {
     const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-busy');
     expect(retryEntry?.attempt).toBe(2);
     expect(retryEntry?.error).toBe('no available orchestrator slots');
+    expect(retryEntry?.stop_reason_code).toBe('slots_exhausted');
   });
 
   it('releases claim if retry issue is no longer in candidate set', async () => {
@@ -380,6 +384,7 @@ describe('OrchestratorCore', () => {
     ]);
     expect(retryEntry?.attempt).toBe(1);
     expect(retryEntry?.error).toBe('worker stalled');
+    expect(retryEntry?.stop_reason_code).toBe('worker_stalled');
     expect(snapshot.codex_totals.seconds_running).toBe(3);
     const stalled = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerStalled);
     expect(stalled?.context.issue_id).toBe('i-stall');
@@ -499,6 +504,7 @@ describe('OrchestratorCore', () => {
     const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-retry-fetch-fail');
     expect(retryEntry?.attempt).toBe(2);
     expect(retryEntry?.error).toBe('retry poll failed');
+    expect(retryEntry?.stop_reason_code).toBe('retry_fetch_failed');
     expect(logs.some((entry) => entry.event === CANONICAL_EVENT.tracker.retryFetchFailed)).toBe(true);
     const failureLog = logs.find((entry) => entry.event === CANONICAL_EVENT.tracker.retryFetchFailed);
     expect(failureLog?.context.issue_identifier).toBe('ABC-1');

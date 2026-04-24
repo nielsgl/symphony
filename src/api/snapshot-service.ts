@@ -62,7 +62,11 @@ export class SnapshotService {
       due_at: asIsoDate(entry.due_at_ms),
       error: entry.error,
       worker_host: entry.worker_host ?? null,
-      workspace_path: entry.workspace_path ?? null
+      workspace_path: entry.workspace_path ?? null,
+      stop_reason_code: entry.stop_reason_code ?? null,
+      stop_reason_detail: entry.stop_reason_detail ?? null,
+      previous_thread_id: entry.previous_thread_id ?? null,
+      previous_session_id: entry.previous_session_id ?? null
     }));
 
     const activeSeconds = Array.from(state.running.values()).reduce((total, entry) => {
@@ -178,7 +182,11 @@ export class SnapshotService {
               due_at: asIsoDate(retryEntry.due_at_ms),
               error: retryEntry.error,
               worker_host: retryEntry.worker_host ?? null,
-              workspace_path: retryEntry.workspace_path ?? null
+              workspace_path: retryEntry.workspace_path ?? null,
+              stop_reason_code: retryEntry.stop_reason_code ?? null,
+              stop_reason_detail: retryEntry.stop_reason_detail ?? null,
+              previous_thread_id: retryEntry.previous_thread_id ?? null,
+              previous_session_id: retryEntry.previous_session_id ?? null
             }
           : null,
         recent_events: entry.recent_events.map((event) => ({
@@ -222,7 +230,11 @@ export class SnapshotService {
         due_at: asIsoDate(retryOnlyEntry.due_at_ms),
         error: retryOnlyEntry.error,
         worker_host: retryOnlyEntry.worker_host ?? null,
-        workspace_path: retryOnlyEntry.workspace_path ?? null
+        workspace_path: retryOnlyEntry.workspace_path ?? null,
+        stop_reason_code: retryOnlyEntry.stop_reason_code ?? null,
+        stop_reason_detail: retryOnlyEntry.stop_reason_detail ?? null,
+        previous_thread_id: retryOnlyEntry.previous_thread_id ?? null,
+        previous_session_id: retryOnlyEntry.previous_session_id ?? null
       },
       recent_events: [],
       last_error: retryOnlyEntry.error,

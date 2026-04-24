@@ -120,6 +120,10 @@ describe('SnapshotService', () => {
             error: 'retrying',
             worker_host: 'build-1',
             workspace_path: '/tmp/symphony/ABC-2',
+            stop_reason_code: 'turn_input_required',
+            stop_reason_detail: 'tool requestUserInput could not be auto-answered',
+            previous_thread_id: 'thread-prev',
+            previous_session_id: 'thread-prev-turn-prev',
             timer_handle: {}
           }
         ]
@@ -139,6 +143,7 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.workspace_path).toBe('/tmp/symphony/ABC-1');
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
+    expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');
   });
 
   it('throws issue_not_found for unknown issue projection', () => {
@@ -216,6 +221,10 @@ describe('SnapshotService', () => {
             error: 'retrying',
             worker_host: 'build-2',
             workspace_path: '/tmp/symphony/ABC-1',
+            stop_reason_code: 'turn_input_required',
+            stop_reason_detail: 'tool requestUserInput could not be auto-answered',
+            previous_thread_id: 'thread-prev',
+            previous_session_id: 'thread-prev-turn-prev',
             timer_handle: {}
           }
         ]
@@ -228,7 +237,11 @@ describe('SnapshotService', () => {
       due_at: '2026-04-10T10:03:00.000Z',
       error: 'retrying',
       worker_host: 'build-2',
-      workspace_path: '/tmp/symphony/ABC-1'
+      workspace_path: '/tmp/symphony/ABC-1',
+      stop_reason_code: 'turn_input_required',
+      stop_reason_detail: 'tool requestUserInput could not be auto-answered',
+      previous_thread_id: 'thread-prev',
+      previous_session_id: 'thread-prev-turn-prev'
     });
   });
 
@@ -288,6 +301,10 @@ describe('SnapshotService', () => {
             error: 'retrying',
             worker_host: 'build-1',
             workspace_path: '/tmp/symphony/ABC-2',
+            stop_reason_code: 'turn_input_required',
+            stop_reason_detail: 'tool requestUserInput could not be auto-answered',
+            previous_thread_id: 'thread-prev',
+            previous_session_id: 'thread-prev-turn-prev',
             timer_handle: {}
           }
         ]
@@ -305,7 +322,11 @@ describe('SnapshotService', () => {
       due_at: '2026-04-10T10:02:30.000Z',
       error: 'retrying',
       worker_host: 'build-1',
-      workspace_path: '/tmp/symphony/ABC-2'
+      workspace_path: '/tmp/symphony/ABC-2',
+      stop_reason_code: 'turn_input_required',
+      stop_reason_detail: 'tool requestUserInput could not be auto-answered',
+      previous_thread_id: 'thread-prev',
+      previous_session_id: 'thread-prev-turn-prev'
     });
   });
 });

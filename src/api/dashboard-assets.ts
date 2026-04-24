@@ -68,6 +68,13 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
 
     <section class="panel panel-wide">
       <div class="panel-head">
+        <h2>Runtime Resolution</h2>
+      </div>
+      <pre id="runtime-resolution-output" class="code-block">Runtime resolution unavailable.</pre>
+    </section>
+
+    <section class="panel panel-wide">
+      <div class="panel-head">
         <h2>Running Sessions</h2>
         <div class="toolbar">
           <select id="status-filter" aria-label="Status filter">
@@ -114,12 +121,14 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
               <th>Due At</th>
               <th>Host</th>
               <th>Workspace</th>
+              <th>Stop Reason</th>
+              <th>Previous Session</th>
               <th>Error</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="retry-rows">
-            <tr><td colspan="7" class="muted">No issues are waiting for retry.</td></tr>
+            <tr><td colspan="9" class="muted">No issues are waiting for retry.</td></tr>
           </tbody>
         </table>
       </div>
@@ -134,6 +143,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
             <button id="issue-load" type="button">Load</button>
             <button id="issue-open-json" type="button">Open JSON</button>
           </div>
+          <p id="issue-summary" class="muted">No issue selected.</p>
           <pre id="issue-output" class="code-block">Select a running issue or enter an issue identifier.</pre>
         </div>
       </details>
@@ -208,7 +218,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     panels: {
       throughputOpen: true,
       runtimeEventsOpen: true
-    }
+    },
+    runtimeResolution: null
   };
 
   const elements = {
@@ -225,6 +236,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     rateLimits: document.getElementById('rate-limits'),
     throughputPanel: document.getElementById('throughput-panel'),
     throughputOutput: document.getElementById('throughput-output'),
+    runtimeResolutionOutput: document.getElementById('runtime-resolution-output'),
     runningRows: document.getElementById('running-rows'),
     retryRows: document.getElementById('retry-rows'),
     statusFilter: document.getElementById('status-filter'),
@@ -233,6 +245,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     issueInput: document.getElementById('issue-input'),
     issueLoad: document.getElementById('issue-load'),
     issueOpenJson: document.getElementById('issue-open-json'),
+    issueSummary: document.getElementById('issue-summary'),
     issueOutput: document.getElementById('issue-output'),
     runtimeEventsPanel: document.getElementById('runtime-events-panel'),
     eventFeedFilter: document.getElementById('event-feed-filter'),
@@ -350,6 +363,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     );
   }
 
+  function renderRuntimeResolution(runtimeResolution) {
+    if (!runtimeResolution) {
+      elements.runtimeResolutionOutput.textContent = 'Runtime resolution unavailable.';
+      return;
+    }
+
+    elements.runtimeResolutionOutput.textContent = JSON.stringify(runtimeResolution, null, 2);
+  }
+
   function renderRuntimeEvents(payload) {
     const events = Array.isArray(payload && payload.recent_runtime_events) ? payload.recent_runtime_events : [];
     const filtered = events.filter(function (entry) {
@@ -401,7 +423,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
       const emptyRetryRow = document.createElement('tr');
       const retryCell = document.createElement('td');
-      retryCell.colSpan = 7;
+      retryCell.colSpan = 9;
       retryCell.className = 'muted';
       retryCell.textContent = 'No retry data while snapshot is unavailable.';
       emptyRetryRow.appendChild(retryCell);
@@ -600,7 +622,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     if (!payload.retrying.length) {
       const emptyRow = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 7;
+      cell.colSpan = 9;
       cell.className = 'muted';
       cell.textContent = 'No issues are waiting for retry.';
       emptyRow.appendChild(cell);
@@ -629,13 +651,45 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const workspaceCell = document.createElement('td');
       workspaceCell.textContent = entry.workspace_path || 'n/a';
 
+      const stopReasonCell = document.createElement('td');
+      const stopReasonCode = document.createElement('div');
+      stopReasonCode.textContent = entry.stop_reason_code || 'n/a';
+      const stopReasonDetail = document.createElement('div');
+      stopReasonDetail.className = 'muted';
+      stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
+      stopReasonCell.append(stopReasonCode, stopReasonDetail);
+
+      const previousSessionCell = document.createElement('td');
+      const previousSessionValue = document.createElement('div');
+      previousSessionValue.textContent = entry.previous_session_id || 'n/a';
+      const previousThreadValue = document.createElement('div');
+      previousThreadValue.className = 'muted';
+      previousThreadValue.textContent = entry.previous_thread_id ? 'Thread ' + entry.previous_thread_id : 'Thread n/a';
+      previousSessionCell.append(previousSessionValue, previousThreadValue);
+
       const actionsCell = document.createElement('td');
+      const copyPreviousSession = createActionButton('Copy Prev Session', 'ghost-button', function () {
+        copyText(entry.previous_session_id || '');
+      });
+      const copyPreviousThread = createActionButton('Copy Prev Thread', 'ghost-button', function () {
+        copyText(entry.previous_thread_id || '');
+      });
       const openJson = createActionButton('JSON', 'ghost-button', function () {
         window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
       });
-      actionsCell.appendChild(openJson);
+      actionsCell.append(copyPreviousSession, copyPreviousThread, openJson);
 
-      row.append(issueCell, attemptCell, dueAtCell, hostCell, workspaceCell, errorCell, actionsCell);
+      row.append(
+        issueCell,
+        attemptCell,
+        dueAtCell,
+        hostCell,
+        workspaceCell,
+        stopReasonCell,
+        previousSessionCell,
+        errorCell,
+        actionsCell
+      );
       return row;
     });
 
@@ -792,12 +846,28 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const payload = await fetchJson('/api/v1/' + encodeURIComponent(issueId));
       state.selectedIssue = issueId;
       elements.issueInput.value = issueId;
+      const summaryParts = [];
+      summaryParts.push('Status: ' + (payload.status || 'unknown'));
+      if (payload.workspace && payload.workspace.path) {
+        summaryParts.push('Workspace: ' + payload.workspace.path);
+      }
+      if (payload.retry && payload.retry.stop_reason_code) {
+        summaryParts.push('Stop reason: ' + payload.retry.stop_reason_code);
+      }
+      if (payload.retry && payload.retry.previous_session_id) {
+        summaryParts.push('Previous session: ' + payload.retry.previous_session_id);
+      }
+      if (state.runtimeResolution && state.runtimeResolution.workspace_root) {
+        summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);
+      }
+      elements.issueSummary.textContent = summaryParts.join(' • ');
       elements.issueOutput.textContent = JSON.stringify(payload, null, 2);
       if (state.payload) {
         renderRunning(state.payload);
       }
       scheduleStateSave();
     } catch (error) {
+      elements.issueSummary.textContent = 'Issue load failed.';
       elements.issueOutput.textContent = 'Issue load failed: ' + String(error);
     }
   }
@@ -815,9 +885,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   async function loadDiagnostics() {
     try {
       const diagnostics = await fetchJson('/api/v1/diagnostics');
+      state.runtimeResolution = diagnostics.runtime_resolution || null;
       elements.diagnosticsOutput.textContent = JSON.stringify(diagnostics, null, 2);
+      renderRuntimeResolution(state.runtimeResolution);
     } catch {
       elements.diagnosticsOutput.textContent = 'Diagnostics unavailable.';
+      state.runtimeResolution = null;
+      renderRuntimeResolution(null);
     }
 
     try {

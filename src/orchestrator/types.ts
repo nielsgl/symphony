@@ -43,6 +43,10 @@ export interface RetryEntry {
   error: string | null;
   worker_host: string | null;
   workspace_path: string | null;
+  stop_reason_code: string | null;
+  stop_reason_detail: string | null;
+  previous_thread_id: string | null;
+  previous_session_id: string | null;
   timer_handle: unknown;
 }
 
