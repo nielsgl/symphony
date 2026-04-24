@@ -358,6 +358,34 @@ describe('CodexRunner', () => {
     expect(result.status).toBe('completed');
   });
 
+  it('emits codex side-output events with turn context when available', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: Array<{ event: string; detail?: string; session_id?: string }> = [];
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        onEvent: (event) => events.push(event)
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.emitStderr('codex side-output line\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+    const sideOutput = events.filter((event) => event.event === CANONICAL_EVENT.codex.sideOutput);
+    expect(sideOutput).toHaveLength(1);
+    expect(sideOutput[0]?.detail).toContain('codex side-output line');
+    expect(sideOutput[0]?.session_id).toBe('thread-1-turn-1');
+  });
+
   it('maps read timeout to response_timeout', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

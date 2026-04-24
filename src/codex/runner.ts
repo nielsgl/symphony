@@ -944,6 +944,7 @@ class ProtocolClient {
         continue;
       }
       this.stderrLines.push(line);
+      this.emitCodexEvent(CANONICAL_EVENT.codex.sideOutput, line);
     }
   }
 
