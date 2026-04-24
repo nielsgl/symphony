@@ -33,6 +33,12 @@ interface WaitForTerminalResult {
   rate_limits: Record<string, unknown> | null;
 }
 
+interface TurnEventContext {
+  thread_id: string;
+  turn_id: string;
+  session_id: string;
+}
+
 const CONTINUATION_GUIDANCE = 'Continue working on the same issue thread. Provide concise progress and next actions.';
 const NON_INTERACTIVE_TOOL_INPUT_ANSWER = 'This is a non-interactive session. Operator input is unavailable.';
 
@@ -411,6 +417,7 @@ export class CodexRunner {
 
     const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor);
     const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
+    protocol.setEventEmitter(emit);
 
     try {
       await protocol.request(
@@ -495,6 +502,11 @@ export class CodexRunner {
 
         emit({
           event: CANONICAL_EVENT.codex.turnStarted,
+          thread_id,
+          turn_id,
+          session_id: `${thread_id}-${turn_id}`
+        });
+        protocol.setTurnContext({
           thread_id,
           turn_id,
           session_id: `${thread_id}-${turn_id}`
@@ -619,6 +631,8 @@ class ProtocolClient {
   private nextId = 1;
   private nextNotificationIndex = 0;
   private stderrLines: string[] = [];
+  private emitEvent?: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void;
+  private activeTurnContext: TurnEventContext | null = null;
   private static readonly TURN_WAITING_HEARTBEAT_MS = 5000;
 
   constructor(processHandle: RunnerProcess, dynamicToolExecutor: DynamicToolExecutor) {
@@ -644,6 +658,14 @@ class ProtocolClient {
 
   sawCodexNotFound(): boolean {
     return this.stderrLines.some((line) => /\bcodex\b.*(command not found|not found)/i.test(line));
+  }
+
+  setEventEmitter(emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void): void {
+    this.emitEvent = emit;
+  }
+
+  setTurnContext(context: TurnEventContext | null): void {
+    this.activeTurnContext = context;
   }
 
   notify(method: string, params: Record<string, unknown>): void {
@@ -842,6 +864,22 @@ class ProtocolClient {
     this.processHandle.stdin.write(`${JSON.stringify(payload)}\n`);
   }
 
+  private detailExcerpt(value: string, maxLength = 180): string {
+    if (value.length <= maxLength) {
+      return value;
+    }
+
+    return `${value.slice(0, maxLength)}...`;
+  }
+
+  private emitCodexEvent(event: string, detail: string): void {
+    this.emitEvent?.({
+      event,
+      detail: this.detailExcerpt(detail),
+      ...(this.activeTurnContext ? this.activeTurnContext : {})
+    });
+  }
+
   private onStdout(chunk: string): void {
     this.stdoutBuffer += chunk;
 
@@ -861,6 +899,7 @@ class ProtocolClient {
       try {
         parsed = JSON.parse(line) as ProtocolMessage;
       } catch {
+        this.emitCodexEvent(CANONICAL_EVENT.codex.protocolMalformedLine, line);
         continue;
       }
 

@@ -311,6 +311,34 @@ describe('CodexRunner', () => {
     expect(result.last_event).toBe(CANONICAL_EVENT.codex.turnCompleted);
   });
 
+  it('emits malformed protocol diagnostics without stalling turn completion', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: Array<{ event: string; detail?: string; session_id?: string }> = [];
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        onEvent: (event) => events.push(event)
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.emitStdout('{"method":"turn/completed"\n');
+    fake.emitStdout('{"method":"turn/completed","params":{}}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+    const malformed = events.filter((event) => event.event === CANONICAL_EVENT.codex.protocolMalformedLine);
+    expect(malformed).toHaveLength(1);
+    expect(malformed[0]?.detail).toContain('{"method":"turn/completed"');
+    expect(malformed[0]?.session_id).toBe('thread-1-turn-1');
+  });
+
   it('keeps stderr isolated from stdout protocol parsing', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

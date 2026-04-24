@@ -23,6 +23,7 @@ export const CANONICAL_EVENT = {
     toolCallFailed: 'codex.tool.failed',
     unsupportedToolCall: 'codex.tool.unsupported',
     unsupportedServerRequest: 'codex.protocol.unsupported_request',
+    protocolMalformedLine: 'codex.protocol.malformed_line',
     turnWaiting: 'codex.turn.waiting'
   },
   orchestration: {
