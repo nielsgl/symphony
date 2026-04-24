@@ -4,6 +4,11 @@ export interface WorkspaceInfo {
   path: string;
   workspace_key: string;
   created_now: boolean;
+  provisioner_type?: string;
+  branch_name?: string | null;
+  repo_root?: string | null;
+  workspace_exists?: boolean;
+  workspace_git_status?: 'clean' | 'dirty' | 'unknown';
 }
 
 export interface HookExecutionResult {
@@ -25,6 +30,7 @@ export interface WorkspaceHooksConfig {
 export interface WorkspaceManagerOptions {
   root: string;
   hooks: WorkspaceHooksConfig;
+  provisioner?: WorkspaceProvisioner;
   nowMs?: () => number;
   runShell?: (params: {
     cwd: string;
@@ -37,4 +43,33 @@ export interface WorkspaceManagerOptions {
 export interface CleanupWorkspacesResult {
   identifier: string;
   cleaned: boolean;
+}
+
+export interface WorkspaceProvisionContext {
+  identifier: string;
+  workspacePath: string;
+}
+
+export interface WorkspaceProvisionResult {
+  status: 'provisioned' | 'reused' | 'skipped';
+  provisioner_type: string;
+  branch_name?: string | null;
+  repo_root?: string | null;
+  workspace_exists?: boolean;
+  workspace_git_status?: 'clean' | 'dirty' | 'unknown';
+}
+
+export interface WorkspaceTeardownContext {
+  identifier: string;
+  workspacePath: string;
+}
+
+export interface WorkspaceTeardownResult {
+  status: 'removed' | 'kept' | 'skipped';
+  provisioner_type: string;
+}
+
+export interface WorkspaceProvisioner {
+  provision(params: WorkspaceProvisionContext): Promise<WorkspaceProvisionResult>;
+  teardown(params: WorkspaceTeardownContext): Promise<WorkspaceTeardownResult>;
 }

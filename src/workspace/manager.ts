@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { WorkspaceError } from './errors';
+import { NoopProvisioner } from './provisioner';
 import type {
   CleanupWorkspacesResult,
   HookExecutionResult,
@@ -69,6 +70,7 @@ async function defaultRunShell(params: {
 export class WorkspaceManager {
   private readonly root: string;
   private readonly hooks: WorkspaceManagerOptions['hooks'];
+  private readonly provisioner: NonNullable<WorkspaceManagerOptions['provisioner']>;
   private readonly nowMs: () => number;
   private readonly runShell: NonNullable<WorkspaceManagerOptions['runShell']>;
   private readonly onHookResult?: WorkspaceManagerOptions['onHookResult'];
@@ -76,6 +78,7 @@ export class WorkspaceManager {
   constructor(options: WorkspaceManagerOptions) {
     this.root = path.resolve(options.root);
     this.hooks = options.hooks;
+    this.provisioner = options.provisioner ?? new NoopProvisioner();
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.runShell = options.runShell ?? defaultRunShell;
     this.onHookResult = options.onHookResult;
@@ -109,14 +112,24 @@ export class WorkspaceManager {
       }
     }
 
+    let provisionResult: Awaited<ReturnType<typeof this.provisioner.provision>> | null = null;
     if (created_now) {
+      provisionResult = await this.provisioner.provision({
+        identifier,
+        workspacePath
+      });
       await this.runHookOrThrow('after_create', workspacePath);
     }
 
     return {
       path: workspacePath,
       workspace_key,
-      created_now
+      created_now,
+      provisioner_type: provisionResult?.provisioner_type ?? undefined,
+      branch_name: provisionResult?.branch_name ?? null,
+      repo_root: provisionResult?.repo_root ?? null,
+      workspace_exists: provisionResult?.workspace_exists ?? true,
+      workspace_git_status: provisionResult?.workspace_git_status ?? 'unknown'
     };
   }
 
@@ -150,6 +163,10 @@ export class WorkspaceManager {
     }
 
     await this.runHookBestEffort('before_remove', workspacePath);
+    await this.provisioner.teardown({
+      identifier,
+      workspacePath
+    });
 
     try {
       await fs.rm(workspacePath, { recursive: true, force: true });

@@ -230,6 +230,57 @@ describe('WorkspaceManager', () => {
     });
   });
 
+  it('provisions before after_create and tears down after before_remove', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+
+    const callOrder: string[] = [];
+    const manager = new WorkspaceManager({
+      root,
+      hooks: {
+        after_create: 'echo create',
+        before_remove: 'echo remove',
+        timeout_ms: 1000
+      },
+      provisioner: {
+        provision: async () => {
+          callOrder.push('provision');
+          return {
+            status: 'provisioned',
+            provisioner_type: 'worktree',
+            branch_name: 'feature/ABC-1',
+            repo_root: '/tmp/source',
+            workspace_exists: true,
+            workspace_git_status: 'clean'
+          };
+        },
+        teardown: async () => {
+          callOrder.push('teardown');
+          return {
+            status: 'removed',
+            provisioner_type: 'worktree'
+          };
+        }
+      },
+      runShell: async ({ script }) => {
+        if (script === 'echo create') {
+          callOrder.push('after_create');
+        }
+        if (script === 'echo remove') {
+          callOrder.push('before_remove');
+        }
+        return { timedOut: false };
+      }
+    });
+
+    const workspace = await manager.ensureWorkspace('ABC-1');
+    expect(workspace.provisioner_type).toBe('worktree');
+    expect(workspace.branch_name).toBe('feature/ABC-1');
+    await expect(manager.cleanupWorkspace('ABC-1')).resolves.toBe(true);
+
+    expect(callOrder).toEqual(['provision', 'after_create', 'before_remove', 'teardown']);
+  });
+
   it('returns false for non-directory entry at cleanup path and skips before_remove', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);

@@ -4,7 +4,8 @@ export class WorkspaceError extends Error {
     | 'workspace_non_directory_collision'
     | 'workspace_cwd_mismatch'
     | 'workspace_hook_failed'
-    | 'workspace_hook_timeout';
+    | 'workspace_hook_timeout'
+    | 'workspace_provision_failed';
 
   constructor(
     code:
@@ -12,7 +13,8 @@ export class WorkspaceError extends Error {
       | 'workspace_non_directory_collision'
       | 'workspace_cwd_mismatch'
       | 'workspace_hook_failed'
-      | 'workspace_hook_timeout',
+      | 'workspace_hook_timeout'
+      | 'workspace_provision_failed',
     message: string
   ) {
     super(message);
