@@ -137,6 +137,48 @@ export class ConfigValidator {
       };
     }
 
+    const provisionerType = effectiveConfig.workspace.provisioner.type;
+    if (provisionerType !== 'none' && provisionerType !== 'worktree' && provisionerType !== 'clone') {
+      return {
+        ok: false,
+        error_code: 'invalid_workspace_provisioner_type',
+        message: `workspace.provisioner.type '${provisionerType}' is not supported`,
+        at
+      };
+    }
+
+    const teardownMode = effectiveConfig.workspace.provisioner.teardown_mode;
+    if (teardownMode !== 'remove_worktree' && teardownMode !== 'keep') {
+      return {
+        ok: false,
+        error_code: 'invalid_workspace_provisioner_teardown_mode',
+        message: `workspace.provisioner.teardown_mode '${teardownMode}' is not supported`,
+        at
+      };
+    }
+
+    if (provisionerType === 'worktree' && !effectiveConfig.workspace.provisioner.repo_root?.trim()) {
+      return {
+        ok: false,
+        error_code: 'invalid_workspace_provisioner_repo_root',
+        message: 'workspace.provisioner.repo_root is required when workspace.provisioner.type=worktree',
+        at
+      };
+    }
+
+    if (
+      provisionerType === 'worktree' &&
+      !effectiveConfig.workspace.provisioner.branch_template.includes('{{ issue.identifier }}')
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_workspace_provisioner_branch_template',
+        message:
+          'workspace.provisioner.branch_template must include {{ issue.identifier }} when workspace.provisioner.type=worktree',
+        at
+      };
+    }
+
     const approvalPolicyValue = effectiveConfig.codex.approval_policy;
     const approvalPolicyLooksLikeObject =
       approvalPolicyValue !== undefined &&

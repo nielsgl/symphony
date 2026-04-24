@@ -39,7 +39,18 @@ function makeConfig(): EffectiveConfig {
       terminal_states: ['Done']
     },
     polling: { interval_ms: 30000 },
-    workspace: { root: '/tmp/symphony', root_source: 'workflow' },
+    workspace: {
+      root: '/tmp/symphony',
+      root_source: 'workflow',
+      provisioner: {
+        type: 'none',
+        base_ref: 'origin/main',
+        branch_template: 'feature/{{ issue.identifier }}',
+        teardown_mode: 'remove_worktree',
+        allow_dirty_repo: false,
+        fallback_to_clone_on_worktree_failure: false
+      }
+    },
     hooks: { timeout_ms: 1000 },
     agent: {
       max_concurrent_agents: 2,
@@ -402,7 +413,18 @@ describe('LocalRunnerBridge integration', () => {
       codexRunner,
       config: {
         ...makeConfig(),
-        workspace: { root: '/tmp/symphony', root_source: 'workflow' }
+        workspace: {
+          root: '/tmp/symphony',
+          root_source: 'workflow',
+          provisioner: {
+            type: 'none',
+            base_ref: 'origin/main',
+            branch_template: 'feature/{{ issue.identifier }}',
+            teardown_mode: 'remove_worktree',
+            allow_dirty_repo: false,
+            fallback_to_clone_on_worktree_failure: false
+          }
+        }
       },
       promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
       onWorkerEvent: ({ event }) => {

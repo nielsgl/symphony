@@ -220,6 +220,7 @@ export class ConfigResolver {
     const tracker = asRecord(config.tracker);
     const polling = asRecord(config.polling);
     const workspace = asRecord(config.workspace);
+    const provisioner = asRecord(workspace.provisioner);
     const hooks = asRecord(config.hooks);
     const agent = asRecord(config.agent);
     const codex = asRecord(config.codex);
@@ -275,6 +276,26 @@ export class ConfigResolver {
       typeof workspace.root === 'string' && workspace.root.trim().length > 0 && workspaceRoot.trim().length > 0
         ? 'workflow'
         : 'default';
+    const provisionerType = readString(provisioner.type, 'none').trim() || 'none';
+    const provisionerRepoRootCandidate = resolvePathLikeValue(
+      provisioner.repo_root,
+      this.env,
+      this.homedir(),
+      '',
+      {
+        relativeBaseDir: workflowResolvedPath ? workflowDir : undefined
+      }
+    );
+    const provisionerRepoRoot = provisionerRepoRootCandidate.trim().length > 0 ? provisionerRepoRootCandidate : undefined;
+    const provisionerBaseRef = readString(provisioner.base_ref, 'origin/main').trim() || 'origin/main';
+    const provisionerBranchTemplate =
+      readString(provisioner.branch_template, 'feature/{{ issue.identifier }}').trim() || 'feature/{{ issue.identifier }}';
+    const provisionerTeardownMode = readString(provisioner.teardown_mode, 'remove_worktree').trim() || 'remove_worktree';
+    const provisionerAllowDirtyRepo = readBoolean(provisioner.allow_dirty_repo, false);
+    const provisionerFallbackToCloneOnWorktreeFailure = readBoolean(
+      provisioner.fallback_to_clone_on_worktree_failure,
+      false
+    );
 
     const hooksTimeoutCandidate = readInt(hooks.timeout_ms, 60000);
     const hooksTimeoutMs = hooksTimeoutCandidate > 0 ? hooksTimeoutCandidate : 60000;
@@ -319,7 +340,16 @@ export class ConfigResolver {
       },
       workspace: {
         root: workspaceRoot,
-        root_source: workspaceRootSource
+        root_source: workspaceRootSource,
+        provisioner: {
+          type: provisionerType,
+          ...(provisionerRepoRoot ? { repo_root: provisionerRepoRoot } : {}),
+          base_ref: provisionerBaseRef,
+          branch_template: provisionerBranchTemplate,
+          teardown_mode: provisionerTeardownMode,
+          allow_dirty_repo: provisionerAllowDirtyRepo,
+          fallback_to_clone_on_worktree_failure: provisionerFallbackToCloneOnWorktreeFailure
+        }
       },
       hooks: {
         after_create: readString(hooks.after_create, '') || undefined,

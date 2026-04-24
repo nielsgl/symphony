@@ -14,7 +14,18 @@ function baseConfig(): EffectiveConfig {
       terminal_states: ['Done']
     },
     polling: { interval_ms: 30000 },
-    workspace: { root: '/tmp/symphony', root_source: 'workflow' },
+    workspace: {
+      root: '/tmp/symphony',
+      root_source: 'workflow',
+      provisioner: {
+        type: 'none',
+        base_ref: 'origin/main',
+        branch_template: 'feature/{{ issue.identifier }}',
+        teardown_mode: 'remove_worktree',
+        allow_dirty_repo: false,
+        fallback_to_clone_on_worktree_failure: false
+      }
+    },
     hooks: { timeout_ms: 60000 },
     agent: {
       max_concurrent_agents: 10,
@@ -245,6 +256,45 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('invalid_logging_max_files');
+    }
+  });
+
+  it('rejects unsupported workspace provisioner type', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.workspace.provisioner.type = 'custom';
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_workspace_provisioner_type');
+    }
+  });
+
+  it('rejects worktree provisioner without repo_root', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.workspace.provisioner.type = 'worktree';
+    delete config.workspace.provisioner.repo_root;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_workspace_provisioner_repo_root');
+    }
+  });
+
+  it('rejects worktree provisioner branch template without issue identifier token', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.workspace.provisioner.type = 'worktree';
+    config.workspace.provisioner.repo_root = '/tmp/source-repo';
+    config.workspace.provisioner.branch_template = 'feature/static';
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_workspace_provisioner_branch_template');
     }
   });
 });

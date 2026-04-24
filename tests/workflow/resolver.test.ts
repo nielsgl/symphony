@@ -23,6 +23,14 @@ describe('ConfigResolver', () => {
     expect(config.tracker.active_states).toEqual(['Todo', 'In Progress']);
     expect(config.workspace.root).toBe('/tmp/symphony_workspaces');
     expect(config.workspace.root_source).toBe('default');
+    expect(config.workspace.provisioner).toEqual({
+      type: 'none',
+      base_ref: 'origin/main',
+      branch_template: 'feature/{{ issue.identifier }}',
+      teardown_mode: 'remove_worktree',
+      allow_dirty_repo: false,
+      fallback_to_clone_on_worktree_failure: false
+    });
     expect(config.codex.command).toBe('codex app-server');
     expect(config.persistence.enabled).toBe(true);
     expect(config.persistence.retention_days).toBe(14);
@@ -186,6 +194,36 @@ describe('ConfigResolver', () => {
 
     expect(config.workspace.root).toBe(path.normalize('/workspace/projects/todo-app/.symphony/workspaces'));
     expect(config.workspace.root_source).toBe('workflow');
+  });
+
+  it('resolves relative workspace.provisioner.repo_root against workflow directory', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve(
+      {
+        config: {
+          workspace: {
+            provisioner: {
+              type: 'worktree',
+              repo_root: '../app',
+              base_ref: 'origin/main',
+              branch_template: 'feature/{{ issue.identifier }}',
+              teardown_mode: 'remove_worktree'
+            }
+          }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.workspace.provisioner).toMatchObject({
+      type: 'worktree',
+      repo_root: path.normalize('/workspace/projects/app'),
+      base_ref: 'origin/main',
+      branch_template: 'feature/{{ issue.identifier }}',
+      teardown_mode: 'remove_worktree'
+    });
   });
 
   it('normalizes per-state concurrency map and ignores invalid entries', () => {

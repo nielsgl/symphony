@@ -21,6 +21,10 @@ export type ValidationErrorCode =
   | 'invalid_codex_user_input_policy'
   | 'invalid_worker_max_concurrent_agents_per_host'
   | 'invalid_server_host'
+  | 'invalid_workspace_provisioner_type'
+  | 'invalid_workspace_provisioner_repo_root'
+  | 'invalid_workspace_provisioner_branch_template'
+  | 'invalid_workspace_provisioner_teardown_mode'
   | 'invalid_logging_root'
   | 'invalid_logging_max_bytes'
   | 'invalid_logging_max_files';
@@ -98,7 +102,19 @@ export interface LoggingConfig {
 export interface EffectiveConfig {
   tracker: TrackerConfig;
   polling: { interval_ms: number };
-  workspace: { root: string; root_source: 'workflow' | 'default' };
+  workspace: {
+    root: string;
+    root_source: 'workflow' | 'default';
+    provisioner: {
+      type: 'worktree' | 'clone' | 'none' | string;
+      repo_root?: string;
+      base_ref: string;
+      branch_template: string;
+      teardown_mode: 'remove_worktree' | 'keep' | string;
+      allow_dirty_repo: boolean;
+      fallback_to_clone_on_worktree_failure: boolean;
+    };
+  };
   hooks: HooksConfig;
   agent: AgentConfig;
   codex: CodexConfig;
