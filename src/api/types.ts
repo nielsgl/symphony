@@ -26,6 +26,7 @@ export interface DiagnosticsSource {
   };
   getUiState(): UiContinuityState | null;
   setUiState(state: UiContinuityState): void;
+  getPromptFallbackActive(): boolean;
 }
 
 export interface LocalApiErrorEnvelope {
@@ -241,5 +242,8 @@ export interface ApiDiagnosticsResponse {
       reasoning_output_tokens: boolean;
       model_context_window: boolean;
     };
+  };
+  workflow: {
+    prompt_fallback_active: boolean;
   };
 }

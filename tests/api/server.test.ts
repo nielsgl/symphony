@@ -293,7 +293,8 @@ describe('LocalApiServer', () => {
           filters: { status: 'all', query: '' },
           panel_state: { issue_detail_open: true }
         }),
-        setUiState: () => undefined
+        setUiState: () => undefined,
+        getPromptFallbackActive: () => false
       }
     });
 
@@ -672,7 +673,8 @@ describe('LocalApiServer', () => {
           filters: { status: 'all', query: 'ABC' },
           panel_state: { issue_detail_open: false }
         }),
-        setUiState
+        setUiState,
+        getPromptFallbackActive: () => false
       }
     });
 
@@ -685,6 +687,9 @@ describe('LocalApiServer', () => {
       persistence: { retention_days: number };
       logging: { root: string; active_file: string; sinks: string[] };
       event_vocabulary_version: string;
+      workflow: {
+        prompt_fallback_active: boolean;
+      };
       token_accounting: {
         mode: string;
         canonical_precedence: string[];
@@ -702,6 +707,7 @@ describe('LocalApiServer', () => {
     expect(diagnosticsPayload.logging.active_file).toBe('/tmp/log/symphony.log');
     expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file']);
     expect(diagnosticsPayload.event_vocabulary_version).toBe(EVENT_VOCABULARY_VERSION);
+    expect(diagnosticsPayload.workflow.prompt_fallback_active).toBe(false);
     expect(diagnosticsPayload.token_accounting.mode).toBe('strict_canonical');
     expect(diagnosticsPayload.token_accounting.canonical_precedence).toEqual([
       'thread/tokenUsage/updated.params.tokenUsage.total',
@@ -798,7 +804,8 @@ describe('LocalApiServer', () => {
         }),
         listRunHistory: () => [],
         getUiState: () => null,
-        setUiState: () => undefined
+        setUiState: () => undefined,
+        getPromptFallbackActive: () => false
       }
     });
 
@@ -855,7 +862,8 @@ describe('LocalApiServer', () => {
         }),
         listRunHistory: () => [],
         getUiState: () => null,
-        setUiState: () => undefined
+        setUiState: () => undefined,
+        getPromptFallbackActive: () => false
       }
     });
 

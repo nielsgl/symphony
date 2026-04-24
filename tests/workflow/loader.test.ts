@@ -3,7 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { WorkflowConfigError } from '../../src/workflow/errors';
-import { WorkflowLoader } from '../../src/workflow/loader';
+import { DEFAULT_PROMPT_TEMPLATE, WorkflowLoader } from '../../src/workflow/loader';
 import { createTempDir, writeWorkflowFile } from './helpers';
 
 describe('WorkflowLoader', () => {
@@ -37,6 +37,15 @@ describe('WorkflowLoader', () => {
 
     expect(definition.config).toEqual({});
     expect(definition.prompt_template).toBe('plain prompt');
+  });
+
+  it('uses deterministic default prompt when prompt body is empty', () => {
+    const loader = new WorkflowLoader();
+    const withFrontMatter = loader.parse('---\ntracker:\n  kind: linear\n---\n\n   \n');
+    const withoutFrontMatter = loader.parse('   \n');
+
+    expect(withFrontMatter.prompt_template).toBe(DEFAULT_PROMPT_TEMPLATE);
+    expect(withoutFrontMatter.prompt_template).toBe(DEFAULT_PROMPT_TEMPLATE);
   });
 
   it('rejects non-map front matter payload', () => {

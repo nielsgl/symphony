@@ -481,6 +481,9 @@ export class LocalApiServer {
                     'model_context_window'
                   ],
                   observed_dimensions: observedDimensions
+                },
+                workflow: {
+                  prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
                 }
               });
             }

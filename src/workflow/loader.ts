@@ -5,6 +5,15 @@ import YAML from 'js-yaml';
 import { WorkflowConfigError } from './errors';
 import type { WorkflowDefinition } from './types';
 
+export const DEFAULT_PROMPT_TEMPLATE = [
+  'You are Symphony working on issue {{ issue.identifier }} (attempt {{ attempt }}).',
+  '',
+  'Title: {{ issue.title }}',
+  'Description: {{ issue.description }}',
+  '',
+  'Implement the smallest correct change, run relevant tests, and summarize results.'
+].join('\n');
+
 export interface WorkflowLoaderInput {
   explicitPath?: string;
   cwd?: string;
@@ -37,9 +46,10 @@ export class WorkflowLoader {
 
   parse(content: string): WorkflowDefinition {
     if (!content.startsWith('---')) {
+      const trimmed = content.trim();
       return {
         config: {},
-        prompt_template: content.trim()
+        prompt_template: trimmed.length > 0 ? trimmed : DEFAULT_PROMPT_TEMPLATE
       };
     }
 
@@ -76,7 +86,7 @@ export class WorkflowLoader {
 
     return {
       config: parsed as Record<string, unknown>,
-      prompt_template: promptBody.trim()
+      prompt_template: promptBody.trim().length > 0 ? promptBody.trim() : DEFAULT_PROMPT_TEMPLATE
     };
   }
 }

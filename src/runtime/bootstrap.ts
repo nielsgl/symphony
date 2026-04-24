@@ -19,7 +19,14 @@ import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
 import { WorkflowConfigError } from '../workflow/errors';
-import { WorkflowLoader, ConfigResolver, ConfigValidator, type EffectiveConfig, type WorkflowDefinition } from '../workflow';
+import {
+  WorkflowLoader,
+  ConfigResolver,
+  ConfigValidator,
+  DEFAULT_PROMPT_TEMPLATE,
+  type EffectiveConfig,
+  type WorkflowDefinition
+} from '../workflow';
 import { WorkspaceManager } from '../workspace';
 
 interface RuntimeTimer {
@@ -134,6 +141,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   const configResolver = new ConfigResolver();
   let currentWorkflowPath = path.resolve(resolvedWorkflowPath);
   let currentWorkflowDefinition: WorkflowDefinition = workflowDefinition;
+  let promptFallbackActive = workflowDefinition.prompt_template === DEFAULT_PROMPT_TEMPLATE;
   let effectiveConfig = configResolver.resolve(workflowDefinition, { workflowPath: currentWorkflowPath });
   let workflowDir = path.dirname(currentWorkflowPath);
   const loggingResolution = resolveRuntimeLogsRoot({
@@ -301,6 +309,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     activeProfile = nextProfile;
     currentWorkflowPath = nextWorkflowPath;
     currentWorkflowDefinition = nextDefinition;
+    promptFallbackActive = nextDefinition.prompt_template === DEFAULT_PROMPT_TEMPLATE;
     effectiveConfig = nextConfig;
     workflowDir = path.dirname(nextWorkflowPath);
 
@@ -456,7 +465,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             getUiState: () => (persistenceStore ? persistenceStore.loadUiState() : null),
             setUiState: (state) => {
               persistenceStore?.saveUiState(state);
-            }
+            },
+            getPromptFallbackActive: () => promptFallbackActive
           },
           workflowControlSource: {
             switchWorkflowPath: async (workflowPath) => {
