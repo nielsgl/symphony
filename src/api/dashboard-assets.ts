@@ -81,6 +81,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
             <option value="all">All</option>
             <option value="running">Running</option>
             <option value="retrying">Retrying</option>
+            <option value="blocked">Blocked</option>
           </select>
           <input id="running-filter" type="search" placeholder="Filter issues (/)" aria-label="Filter running issues" />
         </div>
@@ -130,6 +131,31 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
           </thead>
           <tbody id="retry-rows">
             <tr><td colspan="10" class="muted">No issues are waiting for retry.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel panel-wide">
+      <div class="panel-head">
+        <h2>Blocked Input Required</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Issue</th>
+              <th>Attempt</th>
+              <th>Blocked At</th>
+              <th>Host</th>
+              <th>Workspace</th>
+              <th>Stop Reason</th>
+              <th>Previous Session</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="blocked-rows">
+            <tr><td colspan="8" class="muted">No issues are blocked on operator input.</td></tr>
           </tbody>
         </table>
       </div>
@@ -240,6 +266,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     runtimeResolutionOutput: document.getElementById('runtime-resolution-output'),
     runningRows: document.getElementById('running-rows'),
     retryRows: document.getElementById('retry-rows'),
+    blockedRows: document.getElementById('blocked-rows'),
     statusFilter: document.getElementById('status-filter'),
     runningFilter: document.getElementById('running-filter'),
     issuePanel: document.getElementById('issue-panel'),
@@ -328,6 +355,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.kpiGrid.replaceChildren(
       createMetricCard('Running', formatNumber(payload.counts.running)),
       createMetricCard('Retrying', formatNumber(payload.counts.retrying)),
+      createMetricCard('Blocked', formatNumber(payload.counts.blocked)),
       createMetricCard('Total Tokens', formatNumber(payload.codex_totals.total_tokens)),
       createMetricCard('Input Tokens', formatNumber(payload.codex_totals.input_tokens)),
       createMetricCard('Output Tokens', formatNumber(payload.codex_totals.output_tokens)),
@@ -424,11 +452,19 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
       const emptyRetryRow = document.createElement('tr');
       const retryCell = document.createElement('td');
-      retryCell.colSpan = 9;
+      retryCell.colSpan = 10;
       retryCell.className = 'muted';
       retryCell.textContent = 'No retry data while snapshot is unavailable.';
       emptyRetryRow.appendChild(retryCell);
       elements.retryRows.replaceChildren(emptyRetryRow);
+
+      const emptyBlockedRow = document.createElement('tr');
+      const blockedCell = document.createElement('td');
+      blockedCell.colSpan = 8;
+      blockedCell.className = 'muted';
+      blockedCell.textContent = 'No blocked-input data while snapshot is unavailable.';
+      emptyBlockedRow.appendChild(blockedCell);
+      elements.blockedRows.replaceChildren(emptyBlockedRow);
       return;
     }
 
@@ -437,6 +473,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     renderThroughput(state.lastGoodPayload);
     renderRunning(state.lastGoodPayload);
     renderRetry(state.lastGoodPayload);
+    renderBlocked(state.lastGoodPayload);
     renderRuntimeEvents(state.lastGoodPayload);
   }
 
@@ -504,6 +541,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       return false;
     }
     if (state.filter.status === 'retrying' && !entry.state.toLowerCase().includes('retry')) {
+      return false;
+    }
+    if (state.filter.status === 'blocked') {
       return false;
     }
     if (!state.filter.query) {
@@ -629,18 +669,31 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   }
 
   function renderRetry(payload) {
-    if (!payload.retrying.length) {
+    const rows = payload.retrying.filter(function (entry) {
+      if (state.filter.status === 'running' || state.filter.status === 'blocked') {
+        return false;
+      }
+      if (!state.filter.query) {
+        return true;
+      }
+      return entry.issue_identifier.toLowerCase().includes(state.filter.query.toLowerCase());
+    });
+
+    if (!rows.length) {
       const emptyRow = document.createElement('tr');
       const cell = document.createElement('td');
       cell.colSpan = 10;
       cell.className = 'muted';
-      cell.textContent = 'No issues are waiting for retry.';
+      cell.textContent =
+        state.filter.status === 'retrying'
+          ? 'No retrying issues match current filters.'
+          : 'No issues are waiting for retry.';
       emptyRow.appendChild(cell);
       elements.retryRows.replaceChildren(emptyRow);
       return;
     }
 
-    const nodes = payload.retrying.map((entry) => {
+    const nodes = rows.map((entry) => {
       const row = document.createElement('tr');
 
       const issueCell = document.createElement('td');
@@ -725,6 +778,96 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.retryRows.replaceChildren(...nodes);
   }
 
+  function renderBlocked(payload) {
+    const rows = (payload.blocked || []).filter(function (entry) {
+      if (state.filter.status === 'running' || state.filter.status === 'retrying') {
+        return false;
+      }
+      if (!state.filter.query) {
+        return true;
+      }
+      return entry.issue_identifier.toLowerCase().includes(state.filter.query.toLowerCase());
+    });
+
+    if (!rows.length) {
+      const emptyRow = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 8;
+      cell.className = 'muted';
+      cell.textContent =
+        state.filter.status === 'blocked'
+          ? 'No blocked issues match current filters.'
+          : 'No issues are blocked on operator input.';
+      emptyRow.appendChild(cell);
+      elements.blockedRows.replaceChildren(emptyRow);
+      return;
+    }
+
+    const nodes = rows.map((entry) => {
+      const row = document.createElement('tr');
+
+      const issueCell = document.createElement('td');
+      issueCell.textContent = entry.issue_identifier;
+
+      const attemptCell = document.createElement('td');
+      attemptCell.textContent = formatNumber(entry.attempt);
+
+      const blockedAtCell = document.createElement('td');
+      blockedAtCell.textContent = formatDate(entry.blocked_at);
+
+      const hostCell = document.createElement('td');
+      hostCell.textContent = entry.worker_host || 'n/a';
+
+      const workspaceCell = document.createElement('td');
+      workspaceCell.textContent = entry.workspace_path || 'n/a';
+
+      const stopReasonCell = document.createElement('td');
+      const stopReasonCode = document.createElement('div');
+      stopReasonCode.textContent = entry.stop_reason_code || 'n/a';
+      const stopReasonDetail = document.createElement('div');
+      stopReasonDetail.className = 'muted';
+      stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
+      stopReasonCell.append(stopReasonCode, stopReasonDetail);
+
+      const previousSessionCell = document.createElement('td');
+      const previousSessionValue = document.createElement('div');
+      previousSessionValue.textContent = entry.previous_session_id || 'n/a';
+      const previousThreadValue = document.createElement('div');
+      previousThreadValue.className = 'muted';
+      previousThreadValue.textContent = entry.previous_thread_id ? 'Thread ' + entry.previous_thread_id : 'Thread n/a';
+      previousSessionCell.append(previousSessionValue, previousThreadValue);
+
+      const actionsCell = document.createElement('td');
+      const resumeButton = createActionButton('Resume', 'ghost-button', function () {
+        void resumeBlockedIssue(entry.issue_identifier);
+      });
+      const copyPreviousSession = createActionButton('Copy Prev Session', 'ghost-button', function () {
+        copyText(entry.previous_session_id || '');
+      });
+      const copyWorkspace = createActionButton('Copy Workspace', 'ghost-button', function () {
+        copyText(entry.workspace_path || '');
+      });
+      const openJson = createActionButton('JSON', 'ghost-button', function () {
+        window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
+      });
+      actionsCell.append(resumeButton, copyPreviousSession, copyWorkspace, openJson);
+
+      row.append(
+        issueCell,
+        attemptCell,
+        blockedAtCell,
+        hostCell,
+        workspaceCell,
+        stopReasonCell,
+        previousSessionCell,
+        actionsCell
+      );
+      return row;
+    });
+
+    elements.blockedRows.replaceChildren(...nodes);
+  }
+
   function applyPayload(payload, source) {
     if (payload && payload.error) {
       renderSnapshotError(payload.error);
@@ -739,6 +882,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     renderThroughput(payload);
     renderRunning(payload);
     renderRetry(payload);
+    renderBlocked(payload);
     renderRuntimeEvents(payload);
     setLastUpdated(payload.generated_at || new Date().toISOString());
     if (source === 'stream') {
@@ -883,10 +1027,16 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if (payload.retry && payload.retry.stop_reason_code) {
         summaryParts.push('Stop reason: ' + payload.retry.stop_reason_code);
       }
+      if (payload.blocked && payload.blocked.stop_reason_code) {
+        summaryParts.push('Blocked reason: ' + payload.blocked.stop_reason_code);
+      }
       if (payload.retry && payload.retry.previous_session_id) {
         summaryParts.push('Previous session: ' + payload.retry.previous_session_id);
       }
-      const runningOrRetry = payload.running || payload.retry;
+      if (payload.blocked && payload.blocked.previous_session_id) {
+        summaryParts.push('Previous session: ' + payload.blocked.previous_session_id);
+      }
+      const runningOrRetry = payload.running || payload.retry || payload.blocked;
       if (runningOrRetry && runningOrRetry.provisioner_type) {
         summaryParts.push('Provisioner: ' + runningOrRetry.provisioner_type);
       }
@@ -908,6 +1058,21 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     } catch (error) {
       elements.issueSummary.textContent = 'Issue load failed.';
       elements.issueOutput.textContent = 'Issue load failed: ' + String(error);
+    }
+  }
+
+  async function resumeBlockedIssue(issueIdentifier) {
+    try {
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/resume', {
+        method: 'POST'
+      });
+      setRefreshStatus('Resume requested for ' + payload.issue_identifier, false);
+      await loadStateViaPoll();
+      if (state.selectedIssue === issueIdentifier) {
+        await loadIssue(issueIdentifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Resume failed: ' + String(error), true);
     }
   }
 
@@ -1050,6 +1215,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       state.filter.query = event.target && event.target.value ? event.target.value : '';
       if (state.payload) {
         renderRunning(state.payload);
+        renderRetry(state.payload);
+        renderBlocked(state.payload);
       }
       scheduleStateSave();
     });
@@ -1058,6 +1225,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       state.filter.status = event.target && event.target.value ? event.target.value : 'all';
       if (state.payload) {
         renderRunning(state.payload);
+        renderRetry(state.payload);
+        renderBlocked(state.payload);
       }
       scheduleStateSave();
     });
