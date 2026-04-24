@@ -705,8 +705,15 @@ class ProtocolClient {
         }
 
         if (this.isApprovalRequest(message)) {
-          this.write({ id: message.id, result: { approved: true } });
-          emit({ event: CANONICAL_EVENT.codex.approvalAutoApproved });
+          const method = message.method ?? '';
+          const decision = this.approvalDecision(method);
+          if (decision) {
+            this.write({ id: message.id, result: { decision } });
+            emit({ event: CANONICAL_EVENT.codex.approvalAutoApproved, detail: decision });
+          } else {
+            this.write({ id: message.id, result: { approved: true } });
+            emit({ event: CANONICAL_EVENT.codex.approvalAutoApproved, detail: 'approved_true' });
+          }
           continue;
         }
 
@@ -926,7 +933,27 @@ class ProtocolClient {
     }
 
     const method = (message.method ?? '').toLowerCase();
+    if (method === 'execcommandapproval' || method === 'applypatchapproval') {
+      return true;
+    }
     return method.includes('approval') && (method.includes('request') || method.includes('required'));
+  }
+
+  private approvalDecision(method: string): 'acceptForSession' | 'approved_for_session' | null {
+    const normalized = method.toLowerCase();
+    if (normalized === 'item/commandexecution/requestapproval') {
+      return 'acceptForSession';
+    }
+    if (normalized === 'item/filechange/requestapproval') {
+      return 'acceptForSession';
+    }
+    if (normalized === 'execcommandapproval') {
+      return 'approved_for_session';
+    }
+    if (normalized === 'applypatchapproval') {
+      return 'approved_for_session';
+    }
+    return null;
   }
 
   private isToolCallRequest(message: ProtocolMessage): boolean {

@@ -453,6 +453,33 @@ describe('CodexRunner', () => {
     );
   });
 
+  it('uses method-specific approval decisions for known approval request methods', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":81,"method":"item/commandExecution/requestApproval","params":{}}\n');
+    fake.emitStdout('{"id":82,"method":"item/fileChange/requestApproval","params":{}}\n');
+    fake.emitStdout('{"id":83,"method":"execCommandApproval","params":{}}\n');
+    fake.emitStdout('{"id":84,"method":"applyPatchApproval","params":{}}\n');
+    fake.emitStdout('{"id":85,"method":"approval/request","params":{"kind":"unknown"}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => typeof message.id === 'number' && 'result' in message);
+    expect(responses).toContainEqual({ id: 81, result: { decision: 'acceptForSession' } });
+    expect(responses).toContainEqual({ id: 82, result: { decision: 'acceptForSession' } });
+    expect(responses).toContainEqual({ id: 83, result: { decision: 'approved_for_session' } });
+    expect(responses).toContainEqual({ id: 84, result: { decision: 'approved_for_session' } });
+    expect(responses).toContainEqual({ id: 85, result: { approved: true } });
+  });
+
   it('executes supported dynamic tool calls and returns tool output payload', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
