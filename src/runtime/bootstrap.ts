@@ -29,7 +29,7 @@ import {
   type EffectiveConfig,
   type WorkflowDefinition
 } from '../workflow';
-import { WorkspaceManager } from '../workspace';
+import { WorkspaceManager, createWorkspaceProvisioner } from '../workspace';
 
 interface RuntimeTimer {
   timeout: NodeJS.Timeout;
@@ -239,7 +239,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
   const workspaceManager = new WorkspaceManager({
     root: effectiveConfig.workspace.root,
-    hooks: effectiveConfig.hooks
+    hooks: effectiveConfig.hooks,
+    provisioner: createWorkspaceProvisioner(effectiveConfig.workspace.provisioner)
   });
 
   let activeProfile = resolveSecurityProfile(effectiveConfig.codex);
