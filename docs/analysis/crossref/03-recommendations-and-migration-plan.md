@@ -302,6 +302,27 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
   - `/Users/niels.van.Galen.last/code/symphony/tests/api/snapshot-service.test.ts`
 
+### XR-18 — Non-interactive blocked-input operator control parity
+- Priority: `P1`
+- Decision: `adopted` (closed in `P20`)
+- Delivered:
+  - known non-interactive MCP elicitation approval prompts auto-answer with session-scoped decisions,
+  - unknown/unparseable input-required prompts transition to first-class blocked-input state (no retry churn),
+  - additive API blocked projections and manual resume endpoint,
+  - dashboard blocked-input panel with stop-reason and resume actions.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/codex/runner.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/core.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/snapshot-service.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/dashboard-assets.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/codex/runner.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/orchestrator/core.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/snapshot-service.test.ts`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -316,13 +337,13 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-- None. Parity recommendations are closed through `P19`.
+- None. Parity recommendations are closed through `P20`.
 - Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
 ## Suggested Rollout Order (Post-P12)
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, `XR-15`, `XR-16`, and `XR-17` are marked closed with concrete code/test anchors.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, `XR-15`, `XR-16`, `XR-17`, and `XR-18` are marked closed with concrete code/test anchors.
 - Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.

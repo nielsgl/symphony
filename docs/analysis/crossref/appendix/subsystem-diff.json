@@ -83,7 +83,7 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implement robust app-server lifecycle and error mapping; ours now also aligns non-interactive input handling, method-specific approval decisions, canonical malformed protocol-line diagnostics, codex side-output events, dynamic tools default-enabled, and strict-canonical token accounting.",
+      "summary": "Both implement robust app-server lifecycle and error mapping; ours aligns non-interactive input handling with known MCP approval auto-answer, keeps explicit blocked-input signaling for unknown prompts, preserves method-specific approval decisions, default dynamic tools, and strict-canonical token accounting.",
       "ours_anchors": [
         "src/codex/runner.ts",
         "src/codex/dynamic-tools.ts",
@@ -148,7 +148,7 @@
       "status": "different-safe",
       "classification": "extension",
       "risk": "low",
-      "summary": "Core `/api/v1` contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, runtime workflow path/reload controls, full workspace/worker projection parity, and additive retry-causality/thread-lineage plus runtime-resolution diagnostics fields for operator clarity.",
+      "summary": "Core /api/v1 contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, runtime workflow path/reload controls, full workspace/worker projection parity, additive blocked-input projections, and manual resume control endpoint for operator clarity.",
       "ours_anchors": [
         "src/api/server.ts",
         "src/api/types.ts",

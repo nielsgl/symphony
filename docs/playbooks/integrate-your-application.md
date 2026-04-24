@@ -77,13 +77,27 @@ Suggested hook patterns for Node repositories:
 3. Validate generated changes with project tests.
 4. Increase concurrency after stable runs.
 
-## 7. Production Hygiene
+## 7. Handle Blocked Input Deterministically
+
+When Codex cannot safely auto-answer a non-interactive input request:
+
+- The run is moved to blocked-input state (not retry loop).
+- Check dashboard **Blocked Input Required** panel or:
+  - `GET /api/v1/state` -> `counts.blocked` and `blocked[]`
+  - `GET /api/v1/:issue_identifier` -> `status: blocked`
+- Resume manually when safe:
+  - `POST /api/v1/issues/:issue_identifier/resume`
+
+Prefer this flow over thread-log spelunking; stop reason and previous
+thread/session are included in API and dashboard surfaces.
+
+## 8. Production Hygiene
 
 - Keep secrets in environment variables, not prompt templates.
 - Use persistence and history endpoints for auditability.
 - Keep tracker state naming aligned with workflow config.
 
-## 8. Suggested Adoption Milestones
+## 9. Suggested Adoption Milestones
 
 1. Local proof with 3-5 issues.
 2. Team pilot with controlled concurrency.

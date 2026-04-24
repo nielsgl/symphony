@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P19 first-class workspace provisioner closure.
-- Current phase: P1 (entry approved; implementation delivered through P19 evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P20 blocked-input operator control closure.
+- Current phase: P1 (entry approved; implementation delivered through P20 evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P19`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P20`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -189,6 +189,45 @@ Ownership evidence links:
 - [x] P17: Implement test-parity closure findings F1-F6 (malformed protocol observability, codex side-output events, SSH normalization tests, local+ssh lifecycle profile markers, meta/ops edge-case depth, parity docs closeout).
 - [x] P18: Close Observation 1 + Observation 5 (workflow-relative workspace root resolution + operator retry/runtime clarity in API/dashboard).
 - [x] P19: Implement first-class workspace provisioner (worktree/clone/none) with strict invariants and operator diagnostics.
+- [x] P20: Implement non-interactive approval auto-answer + blocked-input operator state with manual resume.
+
+## Implementation Evidence (P20 Blocked-Input Operator Control)
+- Date: 2026-04-24
+- Scope delivered:
+  - Added deterministic non-interactive MCP elicitation handling in codex runner:
+    - known approval prompts auto-answer with session-scoped approval,
+    - unknown/unparseable elicitation payloads remain `turn_input_required`.
+  - Added first-class orchestrator `blocked_inputs` lifecycle:
+    - `turn_input_required` no longer schedules retry loops,
+    - blocked entries include lineage/context metadata and require manual resume,
+    - blocked entries clear when issue is no longer active/terminal.
+  - Added additive API contract support:
+    - `/api/v1/state` now includes `counts.blocked` and `blocked[]`,
+    - `/api/v1/:issue_identifier` supports `status='blocked'` with `blocked` payload,
+    - new `POST /api/v1/issues/:issue_identifier/resume` manual resume endpoint.
+  - Added dashboard operator surface:
+    - blocked filter + blocked panel/table,
+    - stop-reason + lineage visibility,
+    - row-level `Resume` action and copy helpers.
+- Key outputs:
+  - `src/codex/runner.ts`
+  - `src/orchestrator/core.ts`
+  - `src/orchestrator/types.ts`
+  - `src/api/server.ts`
+  - `src/api/snapshot-service.ts`
+  - `src/api/types.ts`
+  - `src/api/dashboard-assets.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/observability/events.ts`
+  - `tests/codex/runner.test.ts`
+  - `tests/orchestrator/core.test.ts`
+  - `tests/api/server.test.ts`
+  - `tests/api/snapshot-service.test.ts`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
 
 ## Implementation Evidence (P19 First-Class Worktree Provisioner)
 - Date: 2026-04-24
