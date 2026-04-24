@@ -28,6 +28,10 @@ describe('meta check scripts', () => {
     expect(specCoverage.status).toBe(0);
     expect(specCoverage.stdout).toContain('SPEC coverage check passed');
 
+    const logContext = runNode(['scripts/check-log-context.js'], root);
+    expect(logContext.status).toBe(0);
+    expect(logContext.stdout).toContain('Log context check passed');
+
     const meta = runNode(['scripts/check-meta.js'], root);
     expect(meta.status).toBe(0);
     expect(meta.stdout).toContain('Meta checks passed');
