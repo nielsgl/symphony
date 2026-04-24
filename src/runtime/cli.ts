@@ -5,6 +5,7 @@ export type PortSource = 'cli' | 'env' | 'unset';
 export type OfflineModeSource = 'flag' | 'env' | 'default';
 export type GuardrailAckSource = 'flag' | 'missing';
 export type LogsRootSource = 'cli' | 'unset';
+export type HostSource = 'cli' | 'env' | 'default';
 
 export const GUARDRAIL_ACK_FLAG = '--i-understand-that-this-will-be-running-without-the-usual-guardrails';
 
@@ -26,6 +27,7 @@ export interface ParsedOfflineMode {
 export interface CliRuntimeOptions {
   workflow: ParsedWorkflowPath;
   port: ParsedPort;
+  host: ParsedHost;
   offline: ParsedOfflineMode;
   guardrails: ParsedGuardrailAck;
   logs: ParsedLogsRoot;
@@ -39,6 +41,11 @@ export interface ParsedGuardrailAck {
 export interface ParsedLogsRoot {
   logsRoot: string | undefined;
   source: LogsRootSource;
+}
+
+export interface ParsedHost {
+  host: string;
+  source: HostSource;
 }
 
 function parseInteger(raw: string | undefined): number | undefined {
@@ -75,7 +82,7 @@ function readFlagValue(argv: readonly string[], flag: string): string | undefine
 }
 
 function readPositionalWorkflowPath(argv: readonly string[]): string | undefined {
-  const flagsWithValue = new Set(['--workflow', '--port', '--logs-root']);
+  const flagsWithValue = new Set(['--workflow', '--port', '--logs-root', '--host']);
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -137,6 +144,20 @@ export function parsePort(argv: readonly string[], env: NodeJS.ProcessEnv): Pars
   return { port: undefined, source: 'unset' };
 }
 
+export function parseHost(argv: readonly string[], env: NodeJS.ProcessEnv): ParsedHost {
+  const cliHost = readFlagValue(argv, '--host');
+  if (typeof cliHost === 'string' && cliHost.trim().length > 0) {
+    return { host: cliHost.trim(), source: 'cli' };
+  }
+
+  const envHost = env.SYMPHONY_HOST;
+  if (typeof envHost === 'string' && envHost.trim().length > 0) {
+    return { host: envHost.trim(), source: 'env' };
+  }
+
+  return { host: '127.0.0.1', source: 'default' };
+}
+
 export function parseOfflineMode(argv: readonly string[], env: NodeJS.ProcessEnv): ParsedOfflineMode {
   if (argv.includes('--offline')) {
     return { offlineMode: true, source: 'flag' };
@@ -175,6 +196,7 @@ export function resolveCliRuntimeOptions(
   return {
     workflow: parseWorkflowPath(argv, env, cwd),
     port: parsePort(argv, env),
+    host: parseHost(argv, env),
     offline: parseOfflineMode(argv, env),
     guardrails: parseGuardrailAck(argv),
     logs: parseLogsRoot(argv)

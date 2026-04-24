@@ -1,3 +1,5 @@
+import net from 'node:net';
+
 import { nowIso } from './errors';
 import {
   isSupportedApprovalPolicy,
@@ -26,6 +28,17 @@ function mapGitHubStateNamesToEnums(stateNames: string[]): string[] {
   }
 
   return Array.from(mapped);
+}
+
+function isValidServerHost(host: string): boolean {
+  const trimmed = host.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed === 'localhost') {
+    return true;
+  }
+  return net.isIP(trimmed) !== 0;
 }
 
 export class ConfigValidator {
@@ -174,6 +187,15 @@ export class ConfigValidator {
         ok: false,
         error_code: 'invalid_worker_max_concurrent_agents_per_host',
         message: 'worker.max_concurrent_agents_per_host must be a positive integer when provided',
+        at
+      };
+    }
+
+    if (effectiveConfig.server?.host !== undefined && !isValidServerHost(effectiveConfig.server.host)) {
+      return {
+        ok: false,
+        error_code: 'invalid_server_host',
+        message: `server.host '${effectiveConfig.server.host}' is not a valid bind host`,
         at
       };
     }

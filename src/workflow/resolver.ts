@@ -350,7 +350,10 @@ export class ConfigResolver {
 
     const serverPort = readInt(server.port, NaN);
     if (Number.isFinite(serverPort)) {
-      resolved.server = { port: serverPort };
+      resolved.server = {
+        port: serverPort,
+        host: readString(server.host, '') || undefined
+      };
     }
 
     return resolved;

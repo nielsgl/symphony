@@ -417,11 +417,12 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   });
 
   const resolvedPort = options.port ?? effectiveConfig.server?.port;
+  const resolvedHost = options.host ?? effectiveConfig.server?.host ?? '127.0.0.1';
   apiServer =
     resolvedPort === undefined
       ? null
       : new LocalApiServer({
-          host: options.host ?? '127.0.0.1',
+          host: resolvedHost,
           port: resolvedPort,
           snapshotSource: {
             getStateSnapshot: () => orchestrator.getStateSnapshot()
@@ -538,7 +539,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         context: {
           host: address.host,
           port: address.port,
-          configured_port: resolvedPort
+          configured_port: resolvedPort,
+          configured_host: resolvedHost
         }
       });
     } else {

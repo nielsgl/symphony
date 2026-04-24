@@ -253,6 +253,24 @@ describe('ConfigResolver', () => {
     expect(config.logging.root_source).toBe('default');
   });
 
+  it('resolves optional server.host with server.port', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+    const config = resolver.resolve({
+      config: {
+        server: {
+          port: 3000,
+          host: '0.0.0.0'
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.server).toEqual({
+      port: 3000,
+      host: '0.0.0.0'
+    });
+  });
+
   it('resolves optional logging.root from workflow config', () => {
     const resolver = new ConfigResolver({
       env: {

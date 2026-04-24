@@ -93,6 +93,8 @@ export async function runDashboardCli(
     context: {
       workflow_path: resolved.workflow.workflowPath,
       workflow_path_source: resolved.workflow.source,
+      host: resolved.host.host,
+      host_source: resolved.host.source,
       port: resolved.port.port ?? null,
       port_source: resolved.port.source,
       offline_mode: offlineMode,
@@ -117,7 +119,7 @@ export async function runDashboardCli(
   let runtime: RuntimeLike;
   try {
     runtime = deps.createRuntime({
-      host: '127.0.0.1',
+      host: resolved.host.host,
       port: resolved.port.port,
       workflowPath: resolved.workflow.workflowPath,
       logsRoot: resolved.logs.logsRoot,
@@ -138,7 +140,7 @@ export async function runDashboardCli(
 
   if (runtime.apiServer) {
     const address = runtime.apiServer.address();
-    deps.stdout(`Symphony dashboard running at http://127.0.0.1:${address.port}/\n`);
+    deps.stdout(`Symphony dashboard running at http://${address.host}:${address.port}/\n`);
   } else {
     deps.stdout('Symphony runtime started without HTTP dashboard (set --port or server.port).\n');
   }

@@ -209,6 +209,21 @@ describe('ConfigValidator', () => {
     }
   });
 
+  it('rejects invalid server.host values', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.server = {
+      port: 3000,
+      host: 'not a host'
+    };
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_server_host');
+    }
+  });
+
   it('rejects non-positive logging.max_files', () => {
     const validator = new ConfigValidator();
     const config = baseConfig();

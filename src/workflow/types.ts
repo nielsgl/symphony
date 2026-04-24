@@ -20,6 +20,7 @@ export type ValidationErrorCode =
   | 'invalid_codex_turn_sandbox_policy'
   | 'invalid_codex_user_input_policy'
   | 'invalid_worker_max_concurrent_agents_per_host'
+  | 'invalid_server_host'
   | 'invalid_logging_root'
   | 'invalid_logging_max_bytes'
   | 'invalid_logging_max_files';
@@ -104,7 +105,7 @@ export interface EffectiveConfig {
   persistence: PersistenceConfig;
   logging: LoggingConfig;
   worker?: WorkerConfig;
-  server?: { port: number };
+  server?: { port: number; host?: string };
 }
 
 export type ValidationResult =

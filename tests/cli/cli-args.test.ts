@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   GUARDRAIL_ACK_FLAG,
   parseGuardrailAck,
+  parseHost,
   parseLogsRoot,
   parseOfflineMode,
   parsePort,
@@ -72,6 +73,17 @@ describe('runtime CLI argument resolution', () => {
     expect(unset.source).toBe('unset');
   });
 
+  it('resolves host from CLI, then env, then default loopback', () => {
+    const byCli = parseHost(['--host', '0.0.0.0'], { SYMPHONY_HOST: 'localhost' });
+    expect(byCli).toEqual({ host: '0.0.0.0', source: 'cli' });
+
+    const byEnv = parseHost([], { SYMPHONY_HOST: 'localhost' });
+    expect(byEnv).toEqual({ host: 'localhost', source: 'env' });
+
+    const byDefault = parseHost([], {});
+    expect(byDefault).toEqual({ host: '127.0.0.1', source: 'default' });
+  });
+
   it('supports split-form --port value syntax', () => {
     const parsed = parsePort(['--port', '3001'], {});
     expect(parsed.port).toBe(3001);
@@ -114,7 +126,7 @@ describe('runtime CLI argument resolution', () => {
 
   it('returns one cohesive runtime options object', () => {
     const parsed = resolveCliRuntimeOptions(
-      ['workflow.md', '--port=0', '--offline', '--logs-root', '/tmp/log-root', GUARDRAIL_ACK_FLAG],
+      ['workflow.md', '--host=0.0.0.0', '--port=0', '--offline', '--logs-root', '/tmp/log-root', GUARDRAIL_ACK_FLAG],
       {
         SYMPHONY_WORKFLOW_PATH: '/tmp/env/WORKFLOW.md',
         SYMPHONY_PORT: '3000'
@@ -126,6 +138,8 @@ describe('runtime CLI argument resolution', () => {
     expect(parsed.workflow.source).toBe('positional');
     expect(parsed.port.port).toBe(0);
     expect(parsed.port.source).toBe('cli');
+    expect(parsed.host.host).toBe('0.0.0.0');
+    expect(parsed.host.source).toBe('cli');
     expect(parsed.offline.offlineMode).toBe(true);
     expect(parsed.offline.source).toBe('flag');
     expect(parsed.logs.logsRoot).toBe('/tmp/log-root');
