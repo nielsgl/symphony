@@ -275,6 +275,33 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
   - `/Users/niels.van.Galen.last/code/symphony/tests/api/snapshot-service.test.ts`
 
+### XR-17 — First-class workspace provisioner parity (`worktree`/`clone`/`none`)
+- Priority: `P1`
+- Decision: `adopted` (closed in `P19`)
+- Delivered:
+  - typed `workspace.provisioner` workflow contract with deterministic defaults and validation.
+  - first-class provisioner subsystem (`WorktreeProvisioner`, `CloneProvisioner`, `NoopProvisioner`) wired into workspace lifecycle while preserving hook order.
+  - strict invariants for worktree mode (git-root checks, branch-template determinism, dirty-repo policy, conflict detection, idempotent reuse, safe teardown).
+  - additive observability + diagnostics for provision/teardown lifecycle and last-result metadata.
+  - additive running/retrying/issue projection context and dashboard visibility for branch/provision status.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/resolver.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/validator.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workspace/provisioner.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workspace/manager.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/runtime/bootstrap.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/core.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/orchestrator/local-runner-bridge.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/server.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/snapshot-service.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/api/dashboard-assets.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/workspace/provisioner.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/workspace/workspace-manager.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/orchestrator/local-runner-bridge.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/api/snapshot-service.test.ts`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -289,13 +316,13 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-- None. Parity recommendations are closed through `P17`.
+- None. Parity recommendations are closed through `P19`.
 - Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
 ## Suggested Rollout Order (Post-P12)
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, `XR-15`, and `XR-16` are marked closed with concrete code/test anchors.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, `XR-15`, `XR-16`, and `XR-17` are marked closed with concrete code/test anchors.
 - Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.

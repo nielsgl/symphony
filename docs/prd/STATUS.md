@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P18 workspace-resolution and operator-clarity closure.
-- Current phase: P1 (entry approved; implementation delivered through P18 evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P19 first-class workspace provisioner closure.
+- Current phase: P1 (entry approved; implementation delivered through P19 evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P18`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P19`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -188,6 +188,53 @@ Ownership evidence links:
 - [x] P16: Implement post-P15 functional parity closure findings F1-F6 (non-interactive approvals, method-specific approval mapping, continuation state-aware stop, workspace/worker payload parity, resolvable hostname validation, ops-helper parity scripts).
 - [x] P17: Implement test-parity closure findings F1-F6 (malformed protocol observability, codex side-output events, SSH normalization tests, local+ssh lifecycle profile markers, meta/ops edge-case depth, parity docs closeout).
 - [x] P18: Close Observation 1 + Observation 5 (workflow-relative workspace root resolution + operator retry/runtime clarity in API/dashboard).
+- [x] P19: Implement first-class workspace provisioner (worktree/clone/none) with strict invariants and operator diagnostics.
+
+## Implementation Evidence (P19 First-Class Worktree Provisioner)
+- Date: 2026-04-24
+- Scope delivered:
+  - Added typed `workspace.provisioner` workflow contract (`type`, `repo_root`, `base_ref`, `branch_template`, `teardown_mode`, `allow_dirty_repo`, `fallback_to_clone_on_worktree_failure`) with deterministic defaults and validation errors.
+  - Added provisioner subsystem with `NoopProvisioner`, `WorktreeProvisioner`, and `CloneProvisioner`, wired through workspace lifecycle while preserving hook ordering and safety invariants.
+  - Added runtime wiring that instantiates provisioners from effective workflow config and threads metadata into running/retry state.
+  - Added provisioning observability lifecycle events and diagnostics payloads:
+    - `workspace.provision.start|success|failed|reused`
+    - `workspace.teardown.start|success|failed`
+    - `/api/v1/diagnostics.workspace_provisioner` with last result/error metadata.
+  - Extended API/dashboard projections with additive provisioning context (`provisioner_type`, `branch_name`, `repo_root`, `workspace_exists`, `workspace_git_status`) for running/retrying and issue detail views.
+  - Added workflow/playbook examples for node-centric setup and teardown patterns using hooks.
+- Key outputs:
+  - `src/workflow/types.ts`
+  - `src/workflow/resolver.ts`
+  - `src/workflow/validator.ts`
+  - `src/workspace/provisioner.ts`
+  - `src/workspace/manager.ts`
+  - `src/workspace/types.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/orchestrator/types.ts`
+  - `src/orchestrator/core.ts`
+  - `src/orchestrator/local-runner-bridge.ts`
+  - `src/api/types.ts`
+  - `src/api/server.ts`
+  - `src/api/snapshot-service.ts`
+  - `src/api/dashboard-assets.ts`
+  - `tests/workflow/resolver.test.ts`
+  - `tests/workflow/validator.test.ts`
+  - `tests/workflow/store.test.ts`
+  - `tests/workspace/provisioner.test.ts`
+  - `tests/workspace/workspace-manager.test.ts`
+  - `tests/orchestrator/local-runner-bridge.test.ts`
+  - `tests/api/server.test.ts`
+  - `tests/api/snapshot-service.test.ts`
+  - `WORKFLOW.example.md`
+  - `docs/examples/workflow-presets/linear-todo-workflow.md`
+  - `docs/examples/workflow-presets/github-todo-workflow.md`
+  - `docs/playbooks/integrate-your-application.md`
+  - `docs/tutorials/todo-app-end-to-end.md`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
 
 ## Implementation Evidence (P18 Observation Closure: Workspace Root + Operator Clarity)
 - Date: 2026-04-24

@@ -119,16 +119,21 @@
         "elixir/lib/symphony_elixir/linear/adapter.ex",
         "elixir/lib/symphony_elixir/linear/client.ex"
       ],
-      "recommendations": ["XR-00"]
+      "recommendations": [
+        "XR-00"
+      ]
     },
     {
       "id": "workspace-safety",
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Containment invariants and hook semantics are aligned; reference additionally supports remote hook execution details.",
+      "summary": "Containment invariants and hook semantics are aligned; ours now includes first-class workspace provisioner strategies (worktree/clone/none) with deterministic branch templating, strict git-root/dirty-repo safeguards, idempotent reuse, and additive provisioning diagnostics/eventing.",
       "ours_anchors": [
         "src/workspace/manager.ts",
+        "src/workspace/provisioner.ts",
+        "src/runtime/bootstrap.ts",
+        "tests/workspace/provisioner.test.ts",
         "tests/workspace/workspace-manager.test.ts"
       ],
       "ref_anchors": [
@@ -157,7 +162,9 @@
         "elixir/lib/symphony_elixir_web/controllers/observability_api_controller.ex",
         "elixir/lib/symphony_elixir_web/presenter.ex"
       ],
-      "recommendations": ["XR-03"]
+      "recommendations": [
+        "XR-03"
+      ]
     },
     {
       "id": "security-policy",
@@ -217,7 +224,9 @@
         "elixir/lib/symphony_elixir/orchestrator.ex",
         "elixir/lib/symphony_elixir/status_dashboard.ex"
       ],
-      "recommendations": ["XR-00"]
+      "recommendations": [
+        "XR-00"
+      ]
     },
     {
       "id": "quality-gates",
