@@ -34,8 +34,11 @@ export class WorkflowWatcher {
   private readonly validator: ConfigValidator;
   private readonly store: EffectiveConfigStore;
 
-  private watcher?: fs.FSWatcher;
+  private directoryWatcher?: fs.FSWatcher;
+  private fileWatcher?: fs.FSWatcher;
   private timer?: NodeJS.Timeout;
+  private watchedPath?: string;
+  private watchedFile?: string;
 
   constructor(options: WorkflowWatcherOptions = {}) {
     this.explicitPath = options.explicitPath;
@@ -59,29 +62,25 @@ export class WorkflowWatcher {
       throw new WorkflowConfigError(startupResult.error_code!, startupResult.message!);
     }
 
-    const watchedPath = this.loader.resolvePath({ explicitPath: this.explicitPath, cwd: this.cwd });
-    const watchedDir = path.dirname(watchedPath);
-    const watchedFile = path.basename(watchedPath);
+    this.watchedPath = this.loader.resolvePath({ explicitPath: this.explicitPath, cwd: this.cwd });
+    this.watchedFile = path.basename(this.watchedPath);
+    const watchedDir = path.dirname(this.watchedPath);
 
-    this.watcher = fs.watch(watchedDir, (eventType, filename) => {
-      if (filename != null) {
+    this.directoryWatcher = fs.watch(watchedDir, (eventType, filename) => {
+      if (filename != null && this.watchedFile) {
         const changedName = filename.toString();
         // Atomic-save flows can report rename with transient filenames. Accept all
         // rename events in the watched directory and keep strict filtering for
         // non-rename updates.
-        if (eventType !== 'rename' && changedName !== watchedFile) {
+        if (eventType !== 'rename' && changedName !== this.watchedFile) {
           return;
         }
       }
 
-      if (this.timer) {
-        clearTimeout(this.timer);
-      }
-
-      this.timer = setTimeout(() => {
-        this.reloadTransaction('watch', false);
-      }, this.debounceMs);
+      this.scheduleWatchReload();
     });
+
+    this.attachFileWatcher();
   }
 
   stop(): void {
@@ -90,10 +89,11 @@ export class WorkflowWatcher {
       this.timer = undefined;
     }
 
-    if (this.watcher) {
-      this.watcher.close();
-      this.watcher = undefined;
-    }
+    this.fileWatcher?.close();
+    this.fileWatcher = undefined;
+
+    this.directoryWatcher?.close();
+    this.directoryWatcher = undefined;
   }
 
   validateForDispatch(): ReturnType<ConfigValidator['evaluateDispatchPreflight']> {
@@ -210,5 +210,38 @@ export class WorkflowWatcher {
       error_code: errorCode,
       message
     });
+  }
+
+  private scheduleWatchReload(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+
+    this.timer = setTimeout(() => {
+      this.reloadTransaction('watch', false);
+    }, this.debounceMs);
+  }
+
+  private attachFileWatcher(): void {
+    if (!this.watchedPath) {
+      return;
+    }
+
+    try {
+      this.fileWatcher = fs.watch(this.watchedPath, (eventType) => {
+        this.scheduleWatchReload();
+
+        // Atomic save can swap inode and invalidate the file watcher.
+        // Re-arm after rename so subsequent writes remain observable.
+        if (eventType === 'rename') {
+          this.fileWatcher?.close();
+          this.fileWatcher = undefined;
+          setTimeout(() => this.attachFileWatcher(), this.debounceMs);
+        }
+      });
+    } catch {
+      // Best-effort only; directory watcher remains authoritative fallback.
+      this.fileWatcher = undefined;
+    }
   }
 }
