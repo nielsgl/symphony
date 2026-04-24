@@ -34,6 +34,7 @@ export interface TrackerConfig {
   endpoint: string;
   api_key: string;
   project_slug: string;
+  assignee?: string;
   owner?: string;
   repo?: string;
   active_states: string[];

@@ -5,6 +5,7 @@ interface LinearAdapterOptions {
   endpoint: string;
   apiKey: string;
   projectSlug: string;
+  assignee?: string;
   activeStates: string[];
   pageSize?: number;
   timeoutMs?: number;
@@ -162,6 +163,57 @@ query Issues($projectSlug: String!, $stateNames: [String!], $after: String, $fir
 }`;
 }
 
+export function buildIssuesByAssigneeQuery(): string {
+  return `
+query IssuesByAssignee($projectSlug: String!, $stateNames: [String!], $assigneeId: String!, $after: String, $first: Int!) {
+  issues(
+    filter: {
+      project: { slugId: { eq: $projectSlug } }
+      state: { name: { in: $stateNames } }
+      assignee: { id: { eq: $assigneeId } }
+    }
+    after: $after
+    first: $first
+  ) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      url
+      branchName
+      createdAt
+      updatedAt
+      state {
+        name
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+      inverseRelations {
+        nodes {
+          type
+          issue {
+            id
+            identifier
+            state {
+              name
+            }
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}`;
+}
+
 export function buildIssueStatesByIdsQuery(): string {
   return `
 query IssuesByIds($issueIds: [ID!]!) {
@@ -226,6 +278,15 @@ query IssueStateOptions($issueId: String!) {
 }`;
 }
 
+export function buildViewerQuery(): string {
+  return `
+query Viewer {
+  viewer {
+    id
+  }
+}`;
+}
+
 export function buildUpdateIssueStateMutation(): string {
   return `
 mutation UpdateIssueState($issueId: String!, $stateId: String!) {
@@ -239,19 +300,23 @@ export class LinearTrackerAdapter implements TrackerAdapter {
   private readonly endpoint: string;
   private readonly apiKey: string;
   private readonly projectSlug: string;
+  private readonly assignee: string | null;
   private readonly activeStates: string[];
   private readonly pageSize: number;
   private readonly timeoutMs: number;
   private readonly fetchFn: typeof fetch;
+  private assigneeIdCache: string | null;
 
   constructor(options: LinearAdapterOptions) {
     this.endpoint = options.endpoint;
     this.apiKey = options.apiKey;
     this.projectSlug = options.projectSlug;
+    this.assignee = options.assignee?.trim() ? options.assignee.trim() : null;
     this.activeStates = [...options.activeStates];
     this.pageSize = options.pageSize ?? DEFAULT_PAGE_SIZE;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchFn = options.fetchFn ?? fetch;
+    this.assigneeIdCache = null;
   }
 
   async fetch_candidate_issues(): Promise<Issue[]> {
@@ -304,11 +369,14 @@ export class LinearTrackerAdapter implements TrackerAdapter {
   private async fetchIssuesByStateFilter(stateNames: string[]): Promise<Issue[]> {
     const issues: Issue[] = [];
     let cursor: string | null = null;
+    const assigneeId = await this.resolveAssigneeId();
+    const query = assigneeId ? buildIssuesByAssigneeQuery() : buildIssuesQuery();
 
     while (true) {
-      const payload = await this.graphqlRequest(buildIssuesQuery(), {
+      const payload = await this.graphqlRequest(query, {
         projectSlug: this.projectSlug,
         stateNames,
+        ...(assigneeId ? { assigneeId } : {}),
         after: cursor,
         first: this.pageSize
       });
@@ -409,6 +477,30 @@ export class LinearTrackerAdapter implements TrackerAdapter {
       );
     }
     return stateId;
+  }
+
+  private async resolveAssigneeId(): Promise<string | null> {
+    if (!this.assignee) {
+      return null;
+    }
+
+    if (this.assignee.toLowerCase() !== 'me' && this.assignee.toLowerCase() !== 'viewer') {
+      return this.assignee;
+    }
+
+    if (this.assigneeIdCache) {
+      return this.assigneeIdCache;
+    }
+
+    const payload = await this.graphqlRequest(buildViewerQuery(), {});
+    const data = readObject(payload.data);
+    const viewer = data ? readObject(data.viewer) : null;
+    const viewerId = viewer ? readString(viewer.id, '') : '';
+    if (!viewerId) {
+      throw new TrackerAdapterError('linear_unknown_payload', 'Linear payload missing data.viewer.id');
+    }
+    this.assigneeIdCache = viewerId;
+    return viewerId;
   }
 
   private extractIssuesObject(payload: GraphqlSuccess): Record<string, unknown> {

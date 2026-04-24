@@ -44,7 +44,11 @@ function makeIssueNode(overrides: Record<string, unknown> = {}): Record<string, 
   };
 }
 
-function createAdapterWithQueuedResponses(responses: Array<Response | Error>, requests: FakeRequest[]) {
+function createAdapterWithQueuedResponses(
+  responses: Array<Response | Error>,
+  requests: FakeRequest[],
+  options: { assignee?: string } = {}
+) {
   const fetchFn: typeof fetch = async (_input, init) => {
     if (!init || typeof init.body !== 'string') {
       throw new Error('missing request body');
@@ -68,6 +72,7 @@ function createAdapterWithQueuedResponses(responses: Array<Response | Error>, re
     endpoint: 'https://api.linear.app/graphql',
     apiKey: 'token',
     projectSlug: 'PRJ',
+    assignee: options.assignee,
     activeStates: ['Todo', 'In Progress'],
     fetchFn
   });
@@ -322,6 +327,74 @@ describe('LinearTrackerAdapter', () => {
 
     await expect(adapter.update_issue_state('issue-1', 'Done')).rejects.toMatchObject({
       code: 'linear_state_not_found'
+    });
+  });
+
+  it('applies assignee filter with explicit assignee id', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [
+        new Response(
+          JSON.stringify({
+            data: {
+              issues: {
+                nodes: [makeIssueNode()],
+                pageInfo: { hasNextPage: false, endCursor: null }
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      requests,
+      { assignee: 'user-123' }
+    );
+
+    await adapter.fetch_candidate_issues();
+
+    expect(requests[0].query).toContain('query IssuesByAssignee');
+    expect(requests[0].variables).toMatchObject({
+      assigneeId: 'user-123'
+    });
+  });
+
+  it('resolves assignee=me via viewer query before fetching candidates', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [
+        new Response(
+          JSON.stringify({
+            data: {
+              viewer: {
+                id: 'viewer-1'
+              }
+            }
+          }),
+          { status: 200 }
+        ),
+        new Response(
+          JSON.stringify({
+            data: {
+              issues: {
+                nodes: [makeIssueNode()],
+                pageInfo: { hasNextPage: false, endCursor: null }
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      requests,
+      { assignee: 'me' }
+    );
+
+    await adapter.fetch_candidate_issues();
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].query).toContain('query Viewer');
+    expect(requests[1].query).toContain('query IssuesByAssignee');
+    expect(requests[1].variables).toMatchObject({
+      assigneeId: 'viewer-1'
     });
   });
 });

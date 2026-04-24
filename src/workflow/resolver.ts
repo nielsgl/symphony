@@ -236,6 +236,7 @@ export class ConfigResolver {
     const trackerApiKey = resolveEnvToken(trackerApiKeySource, this.env);
 
     const trackerProjectSlug = readString(tracker.project_slug, '');
+    const trackerAssignee = readString(tracker.assignee, '');
     const trackerOwner = readString(tracker.owner, '');
     const trackerRepo = readString(tracker.repo, '');
 
@@ -283,6 +284,7 @@ export class ConfigResolver {
         endpoint: trackerEndpoint,
         api_key: trackerApiKey,
         project_slug: trackerProjectSlug,
+        assignee: trackerAssignee || undefined,
         owner: trackerOwner,
         repo: trackerRepo,
         active_states: readStringList(tracker.active_states, getDefaultActiveStates(trackerKind)),

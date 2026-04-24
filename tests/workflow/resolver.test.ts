@@ -94,6 +94,24 @@ describe('ConfigResolver', () => {
     expect(config.tracker.api_key).toBe('');
   });
 
+  it('resolves optional tracker.assignee from workflow config', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        tracker: {
+          kind: 'linear',
+          api_key: 'token',
+          project_slug: 'ABC',
+          assignee: 'me'
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.tracker.assignee).toBe('me');
+  });
+
   it('expands ~ for path-intended fields', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 

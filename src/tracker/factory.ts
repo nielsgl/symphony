@@ -21,6 +21,7 @@ export function createTrackerAdapter(config: TrackerRuntimeConfig, fetchFn?: typ
       endpoint: config.endpoint,
       apiKey: config.api_key,
       projectSlug: config.project_slug,
+      assignee: config.assignee,
       activeStates: config.active_states,
       pageSize: config.page_size,
       timeoutMs: config.timeout_ms,
