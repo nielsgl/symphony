@@ -16,10 +16,12 @@ interface RunnerDependencies {
     host: string;
     port: number | undefined;
     workflowPath: string;
-    logger: StructuredLogger;
+    logsRoot: string | undefined;
+    logObserver?: StructuredLogger;
     trackerAdapter?: TrackerAdapter;
   }) => RuntimeLike;
   logger: StructuredLogger;
+  runtimeLogObserver?: StructuredLogger;
   onSignal: (signal: 'SIGINT' | 'SIGTERM', handler: () => void | Promise<void>) => void;
   onFatal: (event: 'uncaughtException' | 'unhandledRejection', handler: (error: unknown) => void) => void;
   stdout: (text: string) => void;
@@ -94,7 +96,9 @@ export async function runDashboardCli(
       offline_mode: offlineMode,
       offline_mode_source: resolved.offline.source,
       guardrails_acknowledged: resolved.guardrails.acknowledged,
-      guardrails_ack_source: resolved.guardrails.source
+      guardrails_ack_source: resolved.guardrails.source,
+      logs_root: resolved.logs.logsRoot ?? null,
+      logs_root_source: resolved.logs.source
     }
   });
 
@@ -114,7 +118,8 @@ export async function runDashboardCli(
       host: '127.0.0.1',
       port: resolved.port.port,
       workflowPath: resolved.workflow.workflowPath,
-      logger: deps.logger,
+      logsRoot: resolved.logs.logsRoot,
+      ...(deps.runtimeLogObserver ? { logObserver: deps.runtimeLogObserver } : {}),
       trackerAdapter: offlineMode ? createNoopTrackerAdapter() : undefined
     });
   } catch (error) {

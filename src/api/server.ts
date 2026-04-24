@@ -385,6 +385,7 @@ export class LocalApiServer {
               sendJson(response, 200, {
                 active_profile: this.diagnosticsSource.getActiveProfile(),
                 persistence: this.diagnosticsSource.getPersistenceHealth(),
+                logging: this.diagnosticsSource.getLoggingHealth(),
                 event_vocabulary_version: EVENT_VOCABULARY_VERSION,
                 token_accounting: {
                   mode: 'strict_canonical',

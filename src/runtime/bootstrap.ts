@@ -1,12 +1,24 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { LocalApiServer } from '../api';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
-import { MultiSinkLogger, type StructuredLogger } from '../observability';
+import {
+  DEFAULT_LOG_FILE_NAME,
+  type LogEntry,
+  type LogSink,
+  MultiSinkLogger,
+  RotatingFileSink,
+  StderrSink,
+  type StructuredLogger
+} from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { SqlitePersistenceStore } from '../persistence';
 import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult } from '../orchestrator';
 import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
+import { WorkflowConfigError } from '../workflow/errors';
 import { WorkflowLoader, ConfigResolver, ConfigValidator, type EffectiveConfig } from '../workflow';
 import { WorkspaceManager } from '../workspace';
 
@@ -16,12 +28,80 @@ interface RuntimeTimer {
 
 export interface RuntimeBootstrapOptions {
   workflowPath?: string;
+  logsRoot?: string;
   host?: string;
   port?: number;
   nowMs?: () => number;
+  logObserver?: StructuredLogger;
+  // Backward-compatible alias: use logObserver for new call sites.
   logger?: StructuredLogger;
   trackerAdapter?: TrackerAdapter;
   fetchFn?: typeof fetch;
+}
+
+type LogsRootSource = 'cli' | 'workflow' | 'default';
+
+function resolveRuntimeLogsRoot(params: {
+  cliLogsRoot?: string;
+  workflowLogsRoot: string;
+  workflowLogsRootSource: 'workflow' | 'default';
+  workflowDir: string;
+}): { logsRoot: string; source: LogsRootSource } {
+  if (params.cliLogsRoot && params.cliLogsRoot.trim().length > 0) {
+    return {
+      logsRoot: path.resolve(params.cliLogsRoot),
+      source: 'cli'
+    };
+  }
+
+  if (params.workflowLogsRootSource === 'workflow' && params.workflowLogsRoot.trim().length > 0) {
+    const resolvedWorkflowLogsRoot = path.isAbsolute(params.workflowLogsRoot)
+      ? params.workflowLogsRoot
+      : path.resolve(params.workflowDir, params.workflowLogsRoot);
+    return {
+      logsRoot: resolvedWorkflowLogsRoot,
+      source: 'workflow'
+    };
+  }
+
+  return {
+    logsRoot: path.join(params.workflowDir, '.symphony', 'log'),
+    source: 'default'
+  };
+}
+
+function ensureWritableDirectory(directoryPath: string): void {
+  try {
+    fs.mkdirSync(directoryPath, { recursive: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown filesystem error';
+    throw new WorkflowConfigError('invalid_logging_root', `logging.root is not writable at ${directoryPath}: ${message}`);
+  }
+
+  try {
+    fs.accessSync(directoryPath, fs.constants.W_OK);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown filesystem error';
+    throw new WorkflowConfigError('invalid_logging_root', `logging.root is not writable at ${directoryPath}: ${message}`);
+  }
+}
+
+class StructuredLoggerObserverSink implements LogSink {
+  name = 'observer';
+  private readonly observer: StructuredLogger;
+
+  constructor(observer: StructuredLogger) {
+    this.observer = observer;
+  }
+
+  write(entry: LogEntry, _rendered: string): void {
+    this.observer.log({
+      level: entry.level,
+      event: entry.event,
+      message: entry.message,
+      context: entry.context
+    });
+  }
 }
 
 export interface RuntimeBootstrapResult {
@@ -49,14 +129,51 @@ function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObservabil
 
 export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}): RuntimeBootstrapResult {
   const nowMs = options.nowMs ?? (() => Date.now());
-  const logger = options.logger ?? new MultiSinkLogger();
-
   const workflowLoader = new WorkflowLoader();
   const resolvedWorkflowPath = workflowLoader.resolvePath({ explicitPath: options.workflowPath });
   const workflowDefinition = workflowLoader.load({ explicitPath: resolvedWorkflowPath });
 
   const configResolver = new ConfigResolver();
   const effectiveConfig = configResolver.resolve(workflowDefinition, { workflowPath: resolvedWorkflowPath });
+  const workflowDir = path.dirname(path.resolve(resolvedWorkflowPath));
+  const loggingResolution = resolveRuntimeLogsRoot({
+    cliLogsRoot: options.logsRoot,
+    workflowLogsRoot: effectiveConfig.logging.root,
+    workflowLogsRootSource: effectiveConfig.logging.root_source,
+    workflowDir
+  });
+
+  ensureWritableDirectory(loggingResolution.logsRoot);
+
+  const activeLogFile = path.join(loggingResolution.logsRoot, DEFAULT_LOG_FILE_NAME);
+  const observer = options.logObserver ?? options.logger;
+  const activeSinks: LogSink[] = [
+    new StderrSink(),
+    new RotatingFileSink({
+      root: loggingResolution.logsRoot,
+      baseFileName: DEFAULT_LOG_FILE_NAME,
+      maxBytes: effectiveConfig.logging.max_bytes,
+      maxFiles: effectiveConfig.logging.max_files
+    })
+  ];
+  if (observer) {
+    activeSinks.push(new StructuredLoggerObserverSink(observer));
+  }
+  const activeSinkNames = activeSinks.map((sink) => sink.name);
+  const logger = new MultiSinkLogger({ sinks: activeSinks });
+
+  logger.log({
+    level: 'info',
+    event: CANONICAL_EVENT.runtime.loggingConfigured,
+    message: 'configured runtime log sinks',
+    context: {
+      logs_root: loggingResolution.logsRoot,
+      logs_root_source: loggingResolution.source,
+      active_log_file: activeLogFile,
+      rotation_max_bytes: effectiveConfig.logging.max_bytes,
+      rotation_max_files: effectiveConfig.logging.max_files
+    }
+  });
 
   const validator = new ConfigValidator();
   const startupValidation = validator.validate(effectiveConfig);
@@ -244,6 +361,15 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
                     integrity_ok: true
                   },
             listRunHistory: (limit) => (persistenceStore ? persistenceStore.listRunHistory(limit) : []),
+            getLoggingHealth: () => ({
+              root: loggingResolution.logsRoot,
+              active_file: activeLogFile,
+              rotation: {
+                max_bytes: effectiveConfig.logging.max_bytes,
+                max_files: effectiveConfig.logging.max_files
+              },
+              sinks: activeSinkNames
+            }),
             getUiState: () => (persistenceStore ? persistenceStore.loadUiState() : null),
             setUiState: (state) => {
               persistenceStore?.saveUiState(state);

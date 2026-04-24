@@ -264,6 +264,12 @@ describe('LocalApiServer', () => {
           last_pruned_at: null,
           integrity_ok: true
         }),
+        getLoggingHealth: () => ({
+          root: '/tmp/log',
+          active_file: '/tmp/log/symphony.log',
+          rotation: { max_bytes: 10485760, max_files: 5 },
+          sinks: ['stderr', 'file']
+        }),
         listRunHistory: () => [
           {
             run_id: 'run-1',
@@ -637,6 +643,12 @@ describe('LocalApiServer', () => {
           last_pruned_at: '2026-04-11T00:00:00.000Z',
           integrity_ok: true
         }),
+        getLoggingHealth: () => ({
+          root: '/tmp/log',
+          active_file: '/tmp/log/symphony.log',
+          rotation: { max_bytes: 10485760, max_files: 5 },
+          sinks: ['stderr', 'file']
+        }),
         listRunHistory: () => [
           {
             run_id: 'run-1',
@@ -665,6 +677,7 @@ describe('LocalApiServer', () => {
     const diagnosticsPayload = (await diagnosticsResponse.json()) as {
       active_profile: { name: string };
       persistence: { retention_days: number };
+      logging: { root: string; active_file: string; sinks: string[] };
       event_vocabulary_version: string;
       token_accounting: {
         mode: string;
@@ -679,6 +692,9 @@ describe('LocalApiServer', () => {
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.active_profile.name).toBe('balanced');
     expect(diagnosticsPayload.persistence.retention_days).toBe(14);
+    expect(diagnosticsPayload.logging.root).toBe('/tmp/log');
+    expect(diagnosticsPayload.logging.active_file).toBe('/tmp/log/symphony.log');
+    expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file']);
     expect(diagnosticsPayload.event_vocabulary_version).toBe(EVENT_VOCABULARY_VERSION);
     expect(diagnosticsPayload.token_accounting.mode).toBe('strict_canonical');
     expect(diagnosticsPayload.token_accounting.canonical_precedence).toEqual([
@@ -768,6 +784,12 @@ describe('LocalApiServer', () => {
           last_pruned_at: null,
           integrity_ok: true
         }),
+        getLoggingHealth: () => ({
+          root: '/tmp/log',
+          active_file: '/tmp/log/symphony.log',
+          rotation: { max_bytes: 10485760, max_files: 5 },
+          sinks: ['stderr', 'file']
+        }),
         listRunHistory: () => [],
         getUiState: () => null,
         setUiState: () => undefined
@@ -818,6 +840,12 @@ describe('LocalApiServer', () => {
           run_count: 0,
           last_pruned_at: null,
           integrity_ok: true
+        }),
+        getLoggingHealth: () => ({
+          root: '/tmp/log',
+          active_file: '/tmp/log/symphony.log',
+          rotation: { max_bytes: 10485760, max_files: 5 },
+          sinks: ['stderr', 'file']
         }),
         listRunHistory: () => [],
         getUiState: () => null,

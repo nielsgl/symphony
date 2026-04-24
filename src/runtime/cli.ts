@@ -4,6 +4,7 @@ export type WorkflowPathSource = 'positional' | 'flag' | 'env' | 'default';
 export type PortSource = 'cli' | 'env' | 'unset';
 export type OfflineModeSource = 'flag' | 'env' | 'default';
 export type GuardrailAckSource = 'flag' | 'missing';
+export type LogsRootSource = 'cli' | 'unset';
 
 export const GUARDRAIL_ACK_FLAG = '--i-understand-that-this-will-be-running-without-the-usual-guardrails';
 
@@ -27,11 +28,17 @@ export interface CliRuntimeOptions {
   port: ParsedPort;
   offline: ParsedOfflineMode;
   guardrails: ParsedGuardrailAck;
+  logs: ParsedLogsRoot;
 }
 
 export interface ParsedGuardrailAck {
   acknowledged: boolean;
   source: GuardrailAckSource;
+}
+
+export interface ParsedLogsRoot {
+  logsRoot: string | undefined;
+  source: LogsRootSource;
 }
 
 function parseInteger(raw: string | undefined): number | undefined {
@@ -68,7 +75,7 @@ function readFlagValue(argv: readonly string[], flag: string): string | undefine
 }
 
 function readPositionalWorkflowPath(argv: readonly string[]): string | undefined {
-  const flagsWithValue = new Set(['--workflow', '--port']);
+  const flagsWithValue = new Set(['--workflow', '--port', '--logs-root']);
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -151,6 +158,15 @@ export function parseGuardrailAck(argv: readonly string[]): ParsedGuardrailAck {
   return { acknowledged: false, source: 'missing' };
 }
 
+export function parseLogsRoot(argv: readonly string[]): ParsedLogsRoot {
+  const cliValue = readFlagValue(argv, '--logs-root');
+  if (cliValue) {
+    return { logsRoot: cliValue, source: 'cli' };
+  }
+
+  return { logsRoot: undefined, source: 'unset' };
+}
+
 export function resolveCliRuntimeOptions(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
@@ -160,6 +176,7 @@ export function resolveCliRuntimeOptions(
     workflow: parseWorkflowPath(argv, env, cwd),
     port: parsePort(argv, env),
     offline: parseOfflineMode(argv, env),
-    guardrails: parseGuardrailAck(argv)
+    guardrails: parseGuardrailAck(argv),
+    logs: parseLogsRoot(argv)
   };
 }

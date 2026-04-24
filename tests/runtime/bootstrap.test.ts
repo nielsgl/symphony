@@ -229,6 +229,12 @@ describe('createRuntimeEnvironment', () => {
     const payload = (await response.json()) as {
       active_profile: { name: string; approval_policy: string };
       persistence: { enabled: boolean; integrity_ok: boolean };
+      logging: {
+        root: string;
+        active_file: string;
+        sinks: string[];
+        rotation: { max_bytes: number; max_files: number };
+      };
     };
 
     expect(response.status).toBe(200);
@@ -236,6 +242,10 @@ describe('createRuntimeEnvironment', () => {
     expect(payload.active_profile.approval_policy).toBe('never');
     expect(payload.persistence.enabled).toBe(true);
     expect(payload.persistence.integrity_ok).toBe(true);
+    expect(payload.logging.root).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log'));
+    expect(payload.logging.active_file).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log', 'symphony.log'));
+    expect(payload.logging.sinks).toEqual(['stderr', 'file']);
+    expect(payload.logging.rotation.max_files).toBe(5);
   });
 
   it('restores durable history on restart without restoring running or retry state', async () => {
@@ -357,7 +367,7 @@ describe('createRuntimeEnvironment', () => {
       workflowPath,
       trackerAdapter: tracker,
       port: 0,
-      logger
+      logObserver: logger
     });
     runtimes.push(runtime);
 
@@ -366,6 +376,72 @@ describe('createRuntimeEnvironment', () => {
     const enabledEvent = entries.find((entry) => entry.event === CANONICAL_EVENT.runtime.httpEnabled);
     expect(enabledEvent).toBeDefined();
     expect(enabledEvent?.context.configured_port).toBe(0);
+    const loggingConfiguredEvent = entries.find((entry) => entry.event === CANONICAL_EVENT.runtime.loggingConfigured);
+    expect(loggingConfiguredEvent).toBeDefined();
+    expect(loggingConfiguredEvent?.context.logs_root_source).toBe('default');
+
+    const address = requireApiAddress(runtime);
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      logging: { sinks: string[] };
+    };
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file', 'observer']);
+  });
+
+  it('uses explicit logsRoot option precedence over workflow logging.root', async () => {
+    const workflowPath = await makeWorkflowFile();
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    const cliLogsRoot = path.join(workflowDir, 'custom-logs');
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [])
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      logsRoot: cliLogsRoot,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      logging: { root: string; active_file: string };
+    };
+
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.logging.root).toBe(cliLogsRoot);
+    expect(diagnosticsPayload.logging.active_file).toBe(path.join(cliLogsRoot, 'symphony.log'));
+  });
+
+  it('fails startup with typed workflow config error when logs root is not writable', async () => {
+    const workflowPath = await makeWorkflowFile();
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+
+    const blockedPath = path.join(workflowDir, 'blocked-log-root');
+    await fs.writeFile(blockedPath, 'not-a-directory', 'utf8');
+
+    expect(() =>
+      createRuntimeEnvironment({
+        workflowPath,
+        logsRoot: blockedPath,
+        trackerAdapter: {
+          fetch_candidate_issues: async () => [],
+          fetch_issues_by_states: async () => [],
+          fetch_issue_states_by_ids: async () => []
+        },
+        port: 0
+      })
+    ).toThrow(/invalid_logging_root|logging\.root is not writable/i);
   });
 
   it('throws startup failure for nonexistent explicit workflow path', () => {
@@ -417,7 +493,7 @@ describe('createRuntimeEnvironment', () => {
       workflowPath,
       trackerAdapter: tracker,
       port: 0,
-      logger: {
+      logObserver: {
         log: (params) => {
           logs.push({ event: params.event, context: params.context ?? {} });
         }

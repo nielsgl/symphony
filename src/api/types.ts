@@ -15,6 +15,15 @@ export interface DiagnosticsSource {
   getActiveProfile(): SecurityProfile;
   getPersistenceHealth(): PersistenceHealth;
   listRunHistory(limit?: number): DurableRunHistoryRecord[];
+  getLoggingHealth(): {
+    root: string;
+    active_file: string;
+    rotation: {
+      max_bytes: number;
+      max_files: number;
+    };
+    sinks: string[];
+  };
   getUiState(): UiContinuityState | null;
   setUiState(state: UiContinuityState): void;
 }
@@ -186,10 +195,25 @@ export interface LocalApiServerOptions {
 export interface ApiDiagnosticsResponse {
   active_profile: SecurityProfile;
   persistence: PersistenceHealth;
+  logging: {
+    root: string;
+    active_file: string;
+    rotation: {
+      max_bytes: number;
+      max_files: number;
+    };
+    sinks: string[];
+  };
   event_vocabulary_version: string;
   token_accounting: {
     mode: 'strict_canonical';
-    canonical_precedence: ['thread/tokenUsage/updated.params.tokenUsage.total', 'params.total_token_usage', 'params.totalTokenUsage'];
+    canonical_precedence: [
+      'thread/tokenUsage/updated.params.tokenUsage.total',
+      'params.info.total_token_usage',
+      'params.info.totalTokenUsage',
+      'params.total_token_usage',
+      'params.totalTokenUsage'
+    ];
     excludes_generic_usage_for_totals: true;
     excludes_last_usage_for_totals: true;
     optional_dimensions: ['cached_input_tokens', 'reasoning_output_tokens', 'model_context_window'];
