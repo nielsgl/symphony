@@ -121,6 +121,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
               <th>Due At</th>
               <th>Host</th>
               <th>Workspace</th>
+              <th>Provisioning</th>
               <th>Stop Reason</th>
               <th>Previous Session</th>
               <th>Error</th>
@@ -128,7 +129,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
             </tr>
           </thead>
           <tbody id="retry-rows">
-            <tr><td colspan="9" class="muted">No issues are waiting for retry.</td></tr>
+            <tr><td colspan="10" class="muted">No issues are waiting for retry.</td></tr>
           </tbody>
         </table>
       </div>
@@ -549,6 +550,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if (entry.workspace_path) {
         sessionMetaParts.push(entry.workspace_path);
       }
+      if (entry.provisioner_type) {
+        sessionMetaParts.push('Provisioner ' + entry.provisioner_type);
+      }
+      if (entry.branch_name) {
+        sessionMetaParts.push('Branch ' + entry.branch_name);
+      }
+      if (entry.workspace_git_status) {
+        sessionMetaParts.push('Git ' + entry.workspace_git_status);
+      }
       sessionMeta.textContent = sessionMetaParts.length ? sessionMetaParts.join(' • ') : 'Host n/a';
       sessionCell.append(sessionValue, sessionMeta);
 
@@ -622,7 +632,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     if (!payload.retrying.length) {
       const emptyRow = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 9;
+      cell.colSpan = 10;
       cell.className = 'muted';
       cell.textContent = 'No issues are waiting for retry.';
       emptyRow.appendChild(cell);
@@ -650,6 +660,24 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
       const workspaceCell = document.createElement('td');
       workspaceCell.textContent = entry.workspace_path || 'n/a';
+
+      const provisioningCell = document.createElement('td');
+      const provisioningType = document.createElement('div');
+      provisioningType.textContent = entry.provisioner_type || 'n/a';
+      const provisioningDetail = document.createElement('div');
+      provisioningDetail.className = 'muted';
+      const provisioningParts = [];
+      if (entry.branch_name) {
+        provisioningParts.push('Branch ' + entry.branch_name);
+      }
+      if (entry.workspace_git_status) {
+        provisioningParts.push('Git ' + entry.workspace_git_status);
+      }
+      if (entry.workspace_exists === false) {
+        provisioningParts.push('Missing workspace');
+      }
+      provisioningDetail.textContent = provisioningParts.length ? provisioningParts.join(' • ') : 'n/a';
+      provisioningCell.append(provisioningType, provisioningDetail);
 
       const stopReasonCell = document.createElement('td');
       const stopReasonCode = document.createElement('div');
@@ -685,6 +713,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         dueAtCell,
         hostCell,
         workspaceCell,
+        provisioningCell,
         stopReasonCell,
         previousSessionCell,
         errorCell,
@@ -856,6 +885,16 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
       if (payload.retry && payload.retry.previous_session_id) {
         summaryParts.push('Previous session: ' + payload.retry.previous_session_id);
+      }
+      const runningOrRetry = payload.running || payload.retry;
+      if (runningOrRetry && runningOrRetry.provisioner_type) {
+        summaryParts.push('Provisioner: ' + runningOrRetry.provisioner_type);
+      }
+      if (runningOrRetry && runningOrRetry.branch_name) {
+        summaryParts.push('Branch: ' + runningOrRetry.branch_name);
+      }
+      if (runningOrRetry && runningOrRetry.workspace_git_status) {
+        summaryParts.push('Workspace git: ' + runningOrRetry.workspace_git_status);
       }
       if (state.runtimeResolution && state.runtimeResolution.workspace_root) {
         summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);

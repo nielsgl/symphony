@@ -16,6 +16,11 @@ export interface RunningEntry {
   retry_attempt: number;
   workspace_path: string | null;
   worker_host?: string | null;
+  provisioner_type: string | null;
+  branch_name: string | null;
+  repo_root: string | null;
+  workspace_exists: boolean;
+  workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
   session_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
@@ -43,6 +48,11 @@ export interface RetryEntry {
   error: string | null;
   worker_host: string | null;
   workspace_path: string | null;
+  provisioner_type: string | null;
+  branch_name: string | null;
+  repo_root: string | null;
+  workspace_exists: boolean;
+  workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
   stop_reason_code: string | null;
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
@@ -99,6 +109,11 @@ export interface SpawnWorkerResultSuccess {
   monitor_handle: unknown;
   workspace_path?: string | null;
   worker_host?: string | null;
+  provisioner_type?: string | null;
+  branch_name?: string | null;
+  repo_root?: string | null;
+  workspace_exists?: boolean;
+  workspace_git_status?: 'clean' | 'dirty' | 'unknown' | null;
 }
 
 export interface SpawnWorkerResultFailure {

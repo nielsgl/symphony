@@ -72,6 +72,11 @@ export interface ApiStateResponse {
     session_id: string | null;
     worker_host: string | null;
     workspace_path: string | null;
+    provisioner_type: string | null;
+    branch_name: string | null;
+    repo_root: string | null;
+    workspace_exists: boolean;
+    workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -98,6 +103,11 @@ export interface ApiStateResponse {
     error: string | null;
     worker_host: string | null;
     workspace_path: string | null;
+    provisioner_type: string | null;
+    branch_name: string | null;
+    repo_root: string | null;
+    workspace_exists: boolean;
+    workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     stop_reason_code: string | null;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -162,6 +172,11 @@ export interface ApiIssueResponse {
     session_id: string | null;
     worker_host: string | null;
     workspace_path: string | null;
+    provisioner_type: string | null;
+    branch_name: string | null;
+    repo_root: string | null;
+    workspace_exists: boolean;
+    workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -187,6 +202,11 @@ export interface ApiIssueResponse {
     error: string | null;
     worker_host: string | null;
     workspace_path: string | null;
+    provisioner_type: string | null;
+    branch_name: string | null;
+    repo_root: string | null;
+    workspace_exists: boolean;
+    workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     stop_reason_code: string | null;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;

@@ -15,6 +15,11 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     monitor_handle: {},
     retry_attempt: 0,
     workspace_path: '/tmp/symphony/ABC-1',
+    provisioner_type: 'none',
+    branch_name: null,
+    repo_root: null,
+    workspace_exists: true,
+    workspace_git_status: 'unknown' as const,
     session_id: 'thread-1-turn-1',
     thread_id: 'thread-1',
     turn_id: 'turn-1',
@@ -195,6 +200,11 @@ describe('LocalApiServer', () => {
             error: 'no available orchestrator slots',
             worker_host: 'build-1',
             workspace_path: '/tmp/symphony/ABC-2',
+            provisioner_type: 'worktree',
+            branch_name: 'feature/ABC-2',
+            repo_root: '/tmp/source',
+            workspace_exists: true,
+            workspace_git_status: 'clean',
             stop_reason_code: 'slots_exhausted',
             stop_reason_detail: 'no available orchestrator slots',
             previous_thread_id: 'thread-prev',
@@ -231,12 +241,37 @@ describe('LocalApiServer', () => {
     expect(payload).toHaveProperty('health');
     expect((payload.counts as { running: number; retrying: number }).running).toBe(1);
     expect((payload.counts as { running: number; retrying: number }).retrying).toBe(1);
-    expect((payload.running as Array<{ workspace_path: string }>)[0]).toMatchObject({
-      workspace_path: '/tmp/symphony/ABC-1'
+    expect(
+      (
+        payload.running as Array<{
+          workspace_path: string;
+          provisioner_type: string;
+          workspace_git_status: string;
+          workspace_exists: boolean;
+        }>
+      )[0]
+    ).toMatchObject({
+      workspace_path: '/tmp/symphony/ABC-1',
+      provisioner_type: 'none',
+      workspace_git_status: 'unknown',
+      workspace_exists: true
     });
-    expect((payload.retrying as Array<{ worker_host: string; workspace_path: string }>)[0]).toMatchObject({
+    expect(
+      (
+        payload.retrying as Array<{
+          worker_host: string;
+          workspace_path: string;
+          provisioner_type: string;
+          branch_name: string;
+          repo_root: string;
+        }>
+      )[0]
+    ).toMatchObject({
       worker_host: 'build-1',
-      workspace_path: '/tmp/symphony/ABC-2'
+      workspace_path: '/tmp/symphony/ABC-2',
+      provisioner_type: 'worktree',
+      branch_name: 'feature/ABC-2',
+      repo_root: '/tmp/source'
     });
   });
 

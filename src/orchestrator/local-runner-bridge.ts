@@ -66,6 +66,15 @@ export class LocalRunnerBridge {
 
   async spawnWorker(params: { issue: Issue; attempt: number | null; worker_host?: string | null }): Promise<SpawnWorkerResult> {
     const workerHost = params.worker_host ?? null;
+    let workspace;
+    try {
+      workspace = await this.workspaceManager.ensureWorkspace(params.issue.identifier);
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'workspace provisioning failed'
+      };
+    }
     const workerPromise = this.startWorker(params.issue, params.attempt, workerHost);
     const worker_handle: WorkerHandle = {
       issue_id: params.issue.id,
@@ -78,7 +87,13 @@ export class LocalRunnerBridge {
       ok: true,
       worker_handle,
       monitor_handle: worker_handle,
-      worker_host: workerHost
+      worker_host: workerHost,
+      workspace_path: workspace.path,
+      provisioner_type: workspace.provisioner_type ?? null,
+      branch_name: workspace.branch_name ?? null,
+      repo_root: workspace.repo_root ?? null,
+      workspace_exists: workspace.workspace_exists ?? true,
+      workspace_git_status: workspace.workspace_git_status ?? 'unknown'
     };
   }
 

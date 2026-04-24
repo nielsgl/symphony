@@ -30,6 +30,11 @@ interface ScheduleRetryParams {
   error?: string | null;
   worker_host?: string | null;
   workspace_path?: string | null;
+  provisioner_type?: string | null;
+  branch_name?: string | null;
+  repo_root?: string | null;
+  workspace_exists?: boolean;
+  workspace_git_status?: 'clean' | 'dirty' | 'unknown' | null;
   stop_reason_code?: string | null;
   stop_reason_detail?: string | null;
   previous_thread_id?: string | null;
@@ -69,6 +74,11 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     error: entry.error,
     worker_host: entry.worker_host,
     workspace_path: entry.workspace_path,
+    provisioner_type: entry.provisioner_type,
+    branch_name: entry.branch_name,
+    repo_root: entry.repo_root,
+    workspace_exists: entry.workspace_exists,
+    workspace_git_status: entry.workspace_git_status,
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
@@ -454,6 +464,11 @@ export class OrchestratorCore {
         error: null,
         worker_host: running.worker_host ?? null,
         workspace_path: running.workspace_path ?? null,
+        provisioner_type: running.provisioner_type ?? null,
+        branch_name: running.branch_name ?? null,
+        repo_root: running.repo_root ?? null,
+        workspace_exists: running.workspace_exists,
+        workspace_git_status: running.workspace_git_status,
         stop_reason_code: 'normal_completion',
         stop_reason_detail: 'normal worker completion, continuing while issue is active',
         previous_thread_id: running.thread_id,
@@ -483,6 +498,11 @@ export class OrchestratorCore {
         error: error ?? `worker exited: ${reason}`,
         worker_host: running.worker_host ?? null,
         workspace_path: running.workspace_path ?? null,
+        provisioner_type: running.provisioner_type ?? null,
+        branch_name: running.branch_name ?? null,
+        repo_root: running.repo_root ?? null,
+        workspace_exists: running.workspace_exists,
+        workspace_git_status: running.workspace_git_status,
         stop_reason_code: this.inferStopReasonCode(error, 'worker_exit_abnormal'),
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
@@ -544,6 +564,11 @@ export class OrchestratorCore {
         error: 'retry poll failed',
         worker_host: retryEntry.worker_host ?? null,
         workspace_path: retryEntry.workspace_path ?? null,
+        provisioner_type: retryEntry.provisioner_type ?? null,
+        branch_name: retryEntry.branch_name ?? null,
+        repo_root: retryEntry.repo_root ?? null,
+        workspace_exists: retryEntry.workspace_exists,
+        workspace_git_status: retryEntry.workspace_git_status,
         stop_reason_code: 'retry_fetch_failed',
         stop_reason_detail: error instanceof Error ? error.message : 'unknown',
         previous_thread_id: retryEntry.previous_thread_id ?? null,
@@ -577,6 +602,11 @@ export class OrchestratorCore {
           error: 'no available orchestrator slots',
           worker_host: retryEntry.worker_host ?? null,
           workspace_path: retryEntry.workspace_path ?? null,
+          provisioner_type: retryEntry.provisioner_type ?? null,
+          branch_name: retryEntry.branch_name ?? null,
+          repo_root: retryEntry.repo_root ?? null,
+          workspace_exists: retryEntry.workspace_exists,
+          workspace_git_status: retryEntry.workspace_git_status,
           stop_reason_code: 'slots_exhausted',
           stop_reason_detail: 'no available orchestrator slots',
           previous_thread_id: retryEntry.previous_thread_id ?? null,
@@ -685,6 +715,11 @@ export class OrchestratorCore {
         error: 'worker stalled',
         worker_host: runningEntry.worker_host ?? null,
         workspace_path: runningEntry.workspace_path ?? null,
+        provisioner_type: runningEntry.provisioner_type ?? null,
+        branch_name: runningEntry.branch_name ?? null,
+        repo_root: runningEntry.repo_root ?? null,
+        workspace_exists: runningEntry.workspace_exists,
+        workspace_git_status: runningEntry.workspace_git_status,
         stop_reason_code: 'worker_stalled',
         stop_reason_detail: 'worker stalled',
         previous_thread_id: runningEntry.thread_id,
@@ -748,6 +783,11 @@ export class OrchestratorCore {
         error: 'no available worker host slots',
         worker_host: workerHost,
         workspace_path: null,
+        provisioner_type: null,
+        branch_name: null,
+        repo_root: null,
+        workspace_exists: false,
+        workspace_git_status: null,
         stop_reason_code: 'slots_exhausted',
         stop_reason_detail: 'no available worker host slots'
       });
@@ -777,6 +817,11 @@ export class OrchestratorCore {
         error: 'failed to spawn agent',
         worker_host: workerHost,
         workspace_path: null,
+        provisioner_type: null,
+        branch_name: null,
+        repo_root: null,
+        workspace_exists: false,
+        workspace_git_status: null,
         stop_reason_code: 'spawn_failed',
         stop_reason_detail: spawned.error
       });
@@ -802,6 +847,11 @@ export class OrchestratorCore {
       retry_attempt: attempt ?? 0,
       workspace_path: spawned.workspace_path ?? null,
       worker_host: spawned.worker_host ?? workerHost ?? null,
+      provisioner_type: spawned.provisioner_type ?? null,
+      branch_name: spawned.branch_name ?? null,
+      repo_root: spawned.repo_root ?? null,
+      workspace_exists: spawned.workspace_exists ?? false,
+      workspace_git_status: spawned.workspace_git_status ?? null,
       session_id: null,
       thread_id: null,
       turn_id: null,
@@ -921,6 +971,11 @@ export class OrchestratorCore {
       error: params.error ?? null,
       worker_host: params.worker_host ?? null,
       workspace_path: params.workspace_path ?? null,
+      provisioner_type: params.provisioner_type ?? null,
+      branch_name: params.branch_name ?? null,
+      repo_root: params.repo_root ?? null,
+      workspace_exists: params.workspace_exists ?? false,
+      workspace_git_status: params.workspace_git_status ?? null,
       stop_reason_code: params.stop_reason_code ?? null,
       stop_reason_detail: params.stop_reason_detail ?? null,
       previous_thread_id: params.previous_thread_id ?? null,
