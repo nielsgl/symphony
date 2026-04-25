@@ -12,6 +12,7 @@ import type {
 } from './types';
 
 type RunGit = (params: { cwd: string; args: string[] }) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+const PROVISION_SENTINEL_NAME = '.symphony-provision.json';
 
 async function defaultRunGit(params: { cwd: string; args: string[] }): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
@@ -52,6 +53,37 @@ async function pathExists(targetPath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function readDirectoryEntries(targetPath: string): Promise<string[]> {
+  try {
+    return await fs.readdir(targetPath);
+  } catch {
+    return [];
+  }
+}
+
+function isSafeForReprovision(entries: string[]): boolean {
+  if (entries.length === 0) {
+    return true;
+  }
+  return entries.every((entry) => entry === PROVISION_SENTINEL_NAME);
+}
+
+async function writeProvisionSentinel(params: {
+  workspacePath: string;
+  provisionerType: 'worktree' | 'clone';
+  repoRoot: string;
+  branchName?: string | null;
+}): Promise<void> {
+  const sentinelPath = path.join(params.workspacePath, PROVISION_SENTINEL_NAME);
+  const payload = {
+    provisioner_type: params.provisionerType,
+    repo_root: params.repoRoot,
+    branch_name: params.branchName ?? null,
+    written_at: new Date().toISOString()
+  };
+  await fs.writeFile(sentinelPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 }
 
 async function assertGitRepoRoot(repoRoot: string): Promise<void> {
@@ -134,32 +166,55 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
       }
     }
 
-    const gitMarker = path.join(params.workspacePath, '.git');
-    if (
-      await pathExists(gitMarker)
-    ) {
-      const branch = await this.runGit({
-        cwd: params.workspacePath,
-        args: ['rev-parse', '--abbrev-ref', 'HEAD']
-      });
-      if (!branch.ok) {
+    const existingWorkspaceStat = await this.statPath(params.workspacePath).catch(() => null);
+    if (existingWorkspaceStat?.isDirectory()) {
+      const gitMarker = path.join(params.workspacePath, '.git');
+      if (await pathExists(gitMarker)) {
+        const topLevel = await this.runGit({
+          cwd: params.workspacePath,
+          args: ['rev-parse', '--show-toplevel']
+        });
+        if (!topLevel.ok || path.resolve(topLevel.stdout.trim()) !== path.resolve(params.workspacePath)) {
+          throw new WorkspaceError('workspace_unprovisioned_conflict', 'workspace path is not a managed git worktree');
+        }
+
+        const branch = await this.runGit({
+          cwd: params.workspacePath,
+          args: ['rev-parse', '--abbrev-ref', 'HEAD']
+        });
+        if (!branch.ok) {
+          throw new WorkspaceError(
+            'workspace_unprovisioned_conflict',
+            `workspace path exists but branch cannot be inspected: ${branch.stderr.trim() || 'unknown'}`
+          );
+        }
+        const currentBranch = branch.stdout.trim();
+        if (currentBranch !== branchName) {
+          throw new WorkspaceError('workspace_unprovisioned_conflict', 'worktree_branch_conflict');
+        }
+        await writeProvisionSentinel({
+          workspacePath: params.workspacePath,
+          provisionerType: 'worktree',
+          repoRoot: this.repoRoot,
+          branchName
+        });
+        return {
+          status: 'reused',
+          provisioner_type: 'worktree',
+          branch_name: branchName,
+          repo_root: this.repoRoot,
+          workspace_exists: true,
+          workspace_git_status: 'unknown'
+        };
+      }
+
+      const entries = await readDirectoryEntries(params.workspacePath);
+      if (!isSafeForReprovision(entries)) {
         throw new WorkspaceError(
-          'workspace_provision_failed',
-          `workspace path exists but branch cannot be inspected: ${branch.stderr.trim() || 'unknown'}`
+          'workspace_unprovisioned_conflict',
+          'workspace path exists but is not a managed git worktree and is not safe to reprovision'
         );
       }
-      const currentBranch = branch.stdout.trim();
-      if (currentBranch !== branchName) {
-        throw new WorkspaceError('workspace_provision_failed', 'worktree_branch_conflict');
-      }
-      return {
-        status: 'reused',
-        provisioner_type: 'worktree',
-        branch_name: branchName,
-        repo_root: this.repoRoot,
-        workspace_exists: true,
-        workspace_git_status: 'unknown'
-      };
     }
 
     await this.rmPath(params.workspacePath, { recursive: true, force: true });
@@ -170,6 +225,13 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
     if (!add.ok) {
       throw new WorkspaceError('workspace_provision_failed', add.stderr.trim() || 'worktree_add_failed');
     }
+
+    await writeProvisionSentinel({
+      workspacePath: params.workspacePath,
+      provisionerType: 'worktree',
+      repoRoot: this.repoRoot,
+      branchName
+    });
 
     return {
       status: 'provisioned',
@@ -230,6 +292,48 @@ export class CloneProvisioner implements WorkspaceProvisioner {
   }
 
   async provision(params: WorkspaceProvisionContext): Promise<WorkspaceProvisionResult> {
+    await assertGitRepoRoot(this.repoRoot);
+    const existingWorkspaceStat = await fs.stat(params.workspacePath).catch(() => null);
+    if (existingWorkspaceStat?.isDirectory()) {
+      const gitMarker = path.join(params.workspacePath, '.git');
+      if (await pathExists(gitMarker)) {
+        const topLevel = await this.runGit({
+          cwd: params.workspacePath,
+          args: ['rev-parse', '--show-toplevel']
+        });
+        const remote = await this.runGit({
+          cwd: params.workspacePath,
+          args: ['config', '--get', 'remote.origin.url']
+        });
+        if (topLevel.ok && remote.ok) {
+          const remoteValue = remote.stdout.trim();
+          const resolvedRemote = path.resolve(remoteValue);
+          if (remoteValue === this.repoRoot || resolvedRemote === this.repoRoot) {
+            await writeProvisionSentinel({
+              workspacePath: params.workspacePath,
+              provisionerType: 'clone',
+              repoRoot: this.repoRoot
+            });
+            return {
+              status: 'reused',
+              provisioner_type: 'clone',
+              repo_root: this.repoRoot,
+              workspace_exists: true,
+              workspace_git_status: 'unknown'
+            };
+          }
+        }
+      }
+
+      const entries = await readDirectoryEntries(params.workspacePath);
+      if (!isSafeForReprovision(entries)) {
+        throw new WorkspaceError(
+          'workspace_unprovisioned_conflict',
+          'workspace path exists but is not a managed clone and is not safe to reprovision'
+        );
+      }
+    }
+
     await this.rmPath(params.workspacePath, { recursive: true, force: true });
     const clone = await this.runGit({
       cwd: process.cwd(),
@@ -238,6 +342,12 @@ export class CloneProvisioner implements WorkspaceProvisioner {
     if (!clone.ok) {
       throw new WorkspaceError('workspace_provision_failed', clone.stderr.trim() || 'clone_failed');
     }
+
+    await writeProvisionSentinel({
+      workspacePath: params.workspacePath,
+      provisionerType: 'clone',
+      repoRoot: this.repoRoot
+    });
 
     return {
       status: 'provisioned',
