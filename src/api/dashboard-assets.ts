@@ -499,6 +499,32 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return badge;
   }
 
+  function createProvisioningBadge(label, ok) {
+    const badge = document.createElement('span');
+    badge.className = 'mini-badge ' + (ok ? 'mini-badge-good' : 'mini-badge-bad');
+    badge.textContent = label + ': ' + (ok ? 'yes' : 'no');
+    return badge;
+  }
+
+  function formatInputDecisionContext(detail) {
+    if (!detail) {
+      return null;
+    }
+    if (detail.includes('input_required_unanswerable')) {
+      return 'Input handling: unanswerable schema (manual resume required)';
+    }
+    if (detail.includes('non_interactive_fallback')) {
+      return 'Input handling: non-interactive fallback answer';
+    }
+    if (detail.includes('approval_option_permissive')) {
+      return 'Input handling: permissive approval option selected';
+    }
+    if (detail.includes('approval_option_exact')) {
+      return 'Input handling: exact approval option selected';
+    }
+    return null;
+  }
+
   function createActionButton(text, className, onClick) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -730,7 +756,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         provisioningParts.push('Missing workspace');
       }
       provisioningDetail.textContent = provisioningParts.length ? provisioningParts.join(' • ') : 'n/a';
-      provisioningCell.append(provisioningType, provisioningDetail);
+      const provisioningFlags = document.createElement('div');
+      provisioningFlags.className = 'inline-badges';
+      provisioningFlags.append(
+        createProvisioningBadge('Provisioned', Boolean(entry.workspace_provisioned)),
+        createProvisioningBadge('Git worktree', Boolean(entry.workspace_is_git_worktree))
+      );
+      provisioningCell.append(provisioningType, provisioningDetail, provisioningFlags);
 
       const stopReasonCell = document.createElement('td');
       const stopReasonCode = document.createElement('div');
@@ -739,6 +771,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.className = 'muted';
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      const inputDecision = formatInputDecisionContext(entry.stop_reason_detail || '');
+      if (inputDecision) {
+        const decisionLine = document.createElement('div');
+        decisionLine.className = 'muted';
+        decisionLine.textContent = inputDecision;
+        stopReasonCell.append(decisionLine);
+      }
 
       const previousSessionCell = document.createElement('td');
       const previousSessionValue = document.createElement('div');
@@ -820,6 +859,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
       const workspaceCell = document.createElement('td');
       workspaceCell.textContent = entry.workspace_path || 'n/a';
+      const provisioningFlags = document.createElement('div');
+      provisioningFlags.className = 'inline-badges';
+      provisioningFlags.append(
+        createProvisioningBadge('Provisioned', Boolean(entry.workspace_provisioned)),
+        createProvisioningBadge('Git worktree', Boolean(entry.workspace_is_git_worktree))
+      );
+      workspaceCell.append(provisioningFlags);
 
       const stopReasonCell = document.createElement('td');
       const stopReasonCode = document.createElement('div');
@@ -828,6 +874,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.className = 'muted';
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      const inputDecision = formatInputDecisionContext(entry.stop_reason_detail || '');
+      if (inputDecision) {
+        const decisionLine = document.createElement('div');
+        decisionLine.className = 'muted';
+        decisionLine.textContent = inputDecision;
+        stopReasonCell.append(decisionLine);
+      }
 
       const previousSessionCell = document.createElement('td');
       const previousSessionValue = document.createElement('div');
@@ -1045,6 +1098,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
       if (runningOrRetry && runningOrRetry.workspace_git_status) {
         summaryParts.push('Workspace git: ' + runningOrRetry.workspace_git_status);
+      }
+      if (runningOrRetry && typeof runningOrRetry.workspace_provisioned === 'boolean') {
+        summaryParts.push('Provisioned: ' + (runningOrRetry.workspace_provisioned ? 'yes' : 'no'));
+      }
+      if (runningOrRetry && typeof runningOrRetry.workspace_is_git_worktree === 'boolean') {
+        summaryParts.push('Git worktree: ' + (runningOrRetry.workspace_is_git_worktree ? 'yes' : 'no'));
       }
       if (state.runtimeResolution && state.runtimeResolution.workspace_root) {
         summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);
@@ -1581,6 +1640,31 @@ td {
 .state-neutral {
   background: #f2efe6;
   color: #6c5c2e;
+}
+
+.inline-badges {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mini-badge {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.mini-badge-good {
+  background: #e3f4ea;
+  color: #1a6e3e;
+}
+
+.mini-badge-bad {
+  background: #f8e8e8;
+  color: #8a2f2f;
 }
 
 .action-cell {
