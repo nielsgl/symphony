@@ -173,7 +173,9 @@ export class WorkspaceManager {
       branch_name: provisionResult?.branch_name ?? null,
       repo_root: provisionResult?.repo_root ?? null,
       workspace_exists: provisionResult?.workspace_exists ?? true,
-      workspace_git_status: provisionResult?.workspace_git_status ?? 'unknown'
+      workspace_git_status: provisionResult?.workspace_git_status ?? 'unknown',
+      workspace_provisioned: provisionResult?.workspace_provisioned ?? false,
+      workspace_is_git_worktree: provisionResult?.workspace_is_git_worktree ?? false
     };
   }
 

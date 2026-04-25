@@ -21,6 +21,8 @@ export interface RunningEntry {
   repo_root: string | null;
   workspace_exists: boolean;
   workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+  workspace_provisioned: boolean;
+  workspace_is_git_worktree: boolean;
   session_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
@@ -53,6 +55,8 @@ export interface RetryEntry {
   repo_root: string | null;
   workspace_exists: boolean;
   workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+  workspace_provisioned: boolean;
+  workspace_is_git_worktree: boolean;
   stop_reason_code: string | null;
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
@@ -71,6 +75,8 @@ export interface BlockedEntry {
   repo_root: string | null;
   workspace_exists: boolean;
   workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+  workspace_provisioned: boolean;
+  workspace_is_git_worktree: boolean;
   stop_reason_code: string;
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
@@ -134,6 +140,8 @@ export interface SpawnWorkerResultSuccess {
   repo_root?: string | null;
   workspace_exists?: boolean;
   workspace_git_status?: 'clean' | 'dirty' | 'unknown' | null;
+  workspace_provisioned?: boolean;
+  workspace_is_git_worktree?: boolean;
 }
 
 export interface SpawnWorkerResultFailure {

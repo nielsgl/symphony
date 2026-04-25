@@ -49,6 +49,9 @@ export interface DiagnosticsSource {
     last_provision_result: 'provisioned' | 'reused' | 'skipped' | 'failed' | null;
     last_teardown_result: 'removed' | 'kept' | 'skipped' | 'failed' | null;
     last_error_code: string | null;
+    last_verification_result: 'verified' | 'reprovisioned' | 'failed' | null;
+    last_cleanup_on_failure_result: 'cleaned' | 'cleanup_failed' | 'not_attempted' | null;
+    verification_mode: 'strict' | 'none';
   };
 }
 
@@ -78,6 +81,8 @@ export interface ApiStateResponse {
     repo_root: string | null;
     workspace_exists: boolean;
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    workspace_provisioned: boolean;
+    workspace_is_git_worktree: boolean;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -109,6 +114,8 @@ export interface ApiStateResponse {
     repo_root: string | null;
     workspace_exists: boolean;
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    workspace_provisioned: boolean;
+    workspace_is_git_worktree: boolean;
     stop_reason_code: string | null;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -126,6 +133,8 @@ export interface ApiStateResponse {
     repo_root: string | null;
     workspace_exists: boolean;
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    workspace_provisioned: boolean;
+    workspace_is_git_worktree: boolean;
     stop_reason_code: string;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -196,6 +205,8 @@ export interface ApiIssueResponse {
     repo_root: string | null;
     workspace_exists: boolean;
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    workspace_provisioned: boolean;
+    workspace_is_git_worktree: boolean;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -226,6 +237,8 @@ export interface ApiIssueResponse {
     repo_root: string | null;
     workspace_exists: boolean;
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    workspace_provisioned: boolean;
+    workspace_is_git_worktree: boolean;
     stop_reason_code: string | null;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -241,6 +254,8 @@ export interface ApiIssueResponse {
     repo_root: string | null;
     workspace_exists: boolean;
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    workspace_provisioned: boolean;
+    workspace_is_git_worktree: boolean;
     stop_reason_code: string;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -363,5 +378,8 @@ export interface ApiDiagnosticsResponse {
     last_provision_result: 'provisioned' | 'reused' | 'skipped' | 'failed' | null;
     last_teardown_result: 'removed' | 'kept' | 'skipped' | 'failed' | null;
     last_error_code: string | null;
+    last_verification_result: 'verified' | 'reprovisioned' | 'failed' | null;
+    last_cleanup_on_failure_result: 'cleaned' | 'cleanup_failed' | 'not_attempted' | null;
+    verification_mode: 'strict' | 'none';
   };
 }

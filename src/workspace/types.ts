@@ -9,6 +9,8 @@ export interface WorkspaceInfo {
   repo_root?: string | null;
   workspace_exists?: boolean;
   workspace_git_status?: 'clean' | 'dirty' | 'unknown';
+  workspace_provisioned?: boolean;
+  workspace_is_git_worktree?: boolean;
 }
 
 export interface HookExecutionResult {
@@ -69,6 +71,8 @@ export interface WorkspaceProvisionResult {
   repo_root?: string | null;
   workspace_exists?: boolean;
   workspace_git_status?: 'clean' | 'dirty' | 'unknown';
+  workspace_provisioned?: boolean;
+  workspace_is_git_worktree?: boolean;
 }
 
 export interface WorkspaceTeardownContext {

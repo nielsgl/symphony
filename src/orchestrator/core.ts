@@ -36,6 +36,8 @@ interface ScheduleRetryParams {
   repo_root?: string | null;
   workspace_exists?: boolean;
   workspace_git_status?: 'clean' | 'dirty' | 'unknown' | null;
+  workspace_provisioned?: boolean;
+  workspace_is_git_worktree?: boolean;
   stop_reason_code?: string | null;
   stop_reason_detail?: string | null;
   previous_thread_id?: string | null;
@@ -80,6 +82,8 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     repo_root: entry.repo_root,
     workspace_exists: entry.workspace_exists,
     workspace_git_status: entry.workspace_git_status,
+    workspace_provisioned: entry.workspace_provisioned,
+    workspace_is_git_worktree: entry.workspace_is_git_worktree,
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
@@ -100,6 +104,8 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     repo_root: entry.repo_root,
     workspace_exists: entry.workspace_exists,
     workspace_git_status: entry.workspace_git_status,
+    workspace_provisioned: entry.workspace_provisioned,
+    workspace_is_git_worktree: entry.workspace_is_git_worktree,
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
@@ -500,6 +506,8 @@ export class OrchestratorCore {
         repo_root: running.repo_root ?? null,
         workspace_exists: running.workspace_exists,
         workspace_git_status: running.workspace_git_status,
+        workspace_provisioned: running.workspace_provisioned,
+        workspace_is_git_worktree: running.workspace_is_git_worktree,
         stop_reason_code: 'normal_completion',
         stop_reason_detail: 'normal worker completion, continuing while issue is active',
         previous_thread_id: running.thread_id,
@@ -535,6 +543,8 @@ export class OrchestratorCore {
           repo_root: running.repo_root ?? null,
           workspace_exists: running.workspace_exists,
           workspace_git_status: running.workspace_git_status,
+          workspace_provisioned: running.workspace_provisioned,
+          workspace_is_git_worktree: running.workspace_is_git_worktree,
           stop_reason_code: 'turn_input_required',
           stop_reason_detail: stopReasonDetail,
           previous_thread_id: running.thread_id,
@@ -571,6 +581,8 @@ export class OrchestratorCore {
         repo_root: running.repo_root ?? null,
         workspace_exists: running.workspace_exists,
         workspace_git_status: running.workspace_git_status,
+        workspace_provisioned: running.workspace_provisioned,
+        workspace_is_git_worktree: running.workspace_is_git_worktree,
         stop_reason_code: stopReasonCode,
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
@@ -641,6 +653,8 @@ export class OrchestratorCore {
         repo_root: retryEntry.repo_root ?? null,
         workspace_exists: retryEntry.workspace_exists,
         workspace_git_status: retryEntry.workspace_git_status,
+        workspace_provisioned: retryEntry.workspace_provisioned,
+        workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
         stop_reason_code: 'retry_fetch_failed',
         stop_reason_detail: error instanceof Error ? error.message : 'unknown',
         previous_thread_id: retryEntry.previous_thread_id ?? null,
@@ -679,6 +693,8 @@ export class OrchestratorCore {
           repo_root: retryEntry.repo_root ?? null,
           workspace_exists: retryEntry.workspace_exists,
           workspace_git_status: retryEntry.workspace_git_status,
+          workspace_provisioned: retryEntry.workspace_provisioned,
+          workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
           stop_reason_code: 'slots_exhausted',
           stop_reason_detail: 'no available orchestrator slots',
           previous_thread_id: retryEntry.previous_thread_id ?? null,
@@ -828,6 +844,8 @@ export class OrchestratorCore {
         repo_root: runningEntry.repo_root ?? null,
         workspace_exists: runningEntry.workspace_exists,
         workspace_git_status: runningEntry.workspace_git_status,
+        workspace_provisioned: runningEntry.workspace_provisioned,
+        workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
         stop_reason_code: 'worker_stalled',
         stop_reason_detail: 'worker stalled',
         previous_thread_id: runningEntry.thread_id,
@@ -896,6 +914,8 @@ export class OrchestratorCore {
         repo_root: null,
         workspace_exists: false,
         workspace_git_status: null,
+        workspace_provisioned: false,
+        workspace_is_git_worktree: false,
         stop_reason_code: 'slots_exhausted',
         stop_reason_detail: 'no available worker host slots'
       });
@@ -930,6 +950,8 @@ export class OrchestratorCore {
         repo_root: null,
         workspace_exists: false,
         workspace_git_status: null,
+        workspace_provisioned: false,
+        workspace_is_git_worktree: false,
         stop_reason_code: 'spawn_failed',
         stop_reason_detail: spawned.error
       });
@@ -960,6 +982,8 @@ export class OrchestratorCore {
       repo_root: spawned.repo_root ?? null,
       workspace_exists: spawned.workspace_exists ?? false,
       workspace_git_status: spawned.workspace_git_status ?? null,
+      workspace_provisioned: spawned.workspace_provisioned ?? false,
+      workspace_is_git_worktree: spawned.workspace_is_git_worktree ?? false,
       session_id: null,
       thread_id: null,
       turn_id: null,
@@ -1088,6 +1112,8 @@ export class OrchestratorCore {
       repo_root: params.repo_root ?? null,
       workspace_exists: params.workspace_exists ?? false,
       workspace_git_status: params.workspace_git_status ?? null,
+      workspace_provisioned: params.workspace_provisioned ?? false,
+      workspace_is_git_worktree: params.workspace_is_git_worktree ?? false,
       stop_reason_code: params.stop_reason_code ?? null,
       stop_reason_detail: params.stop_reason_detail ?? null,
       previous_thread_id: params.previous_thread_id ?? null,
@@ -1123,6 +1149,8 @@ export class OrchestratorCore {
     repo_root: string | null;
     workspace_exists: boolean;
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
+    workspace_provisioned: boolean;
+    workspace_is_git_worktree: boolean;
     stop_reason_code: string;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -1145,6 +1173,8 @@ export class OrchestratorCore {
       repo_root: params.repo_root,
       workspace_exists: params.workspace_exists,
       workspace_git_status: params.workspace_git_status,
+      workspace_provisioned: params.workspace_provisioned,
+      workspace_is_git_worktree: params.workspace_is_git_worktree,
       stop_reason_code: params.stop_reason_code,
       stop_reason_detail: params.stop_reason_detail,
       previous_thread_id: params.previous_thread_id,
@@ -1248,6 +1278,8 @@ export class OrchestratorCore {
         repo_root: blocked.repo_root,
         workspace_exists: blocked.workspace_exists,
         workspace_git_status: blocked.workspace_git_status,
+        workspace_provisioned: blocked.workspace_provisioned,
+        workspace_is_git_worktree: blocked.workspace_is_git_worktree,
         stop_reason_code: 'slots_exhausted',
         stop_reason_detail: 'resume blocked by no available orchestrator slots',
         previous_thread_id: blocked.previous_thread_id,
@@ -1267,6 +1299,8 @@ export class OrchestratorCore {
         repo_root: blocked.repo_root,
         workspace_exists: blocked.workspace_exists,
         workspace_git_status: blocked.workspace_git_status,
+        workspace_provisioned: blocked.workspace_provisioned,
+        workspace_is_git_worktree: blocked.workspace_is_git_worktree,
         stop_reason_code: 'manual_resume',
         stop_reason_detail: 'manual resume requested',
         previous_thread_id: blocked.previous_thread_id,

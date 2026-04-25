@@ -93,7 +93,9 @@ export class LocalRunnerBridge {
       branch_name: workspace.branch_name ?? null,
       repo_root: workspace.repo_root ?? null,
       workspace_exists: workspace.workspace_exists ?? true,
-      workspace_git_status: workspace.workspace_git_status ?? 'unknown'
+      workspace_git_status: workspace.workspace_git_status ?? 'unknown',
+      workspace_provisioned: workspace.workspace_provisioned ?? false,
+      workspace_is_git_worktree: workspace.workspace_is_git_worktree ?? false
     };
   }
 

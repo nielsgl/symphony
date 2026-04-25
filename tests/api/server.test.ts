@@ -20,6 +20,8 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     repo_root: null,
     workspace_exists: true,
     workspace_git_status: 'unknown' as const,
+    workspace_provisioned: false,
+    workspace_is_git_worktree: false,
     session_id: 'thread-1-turn-1',
     thread_id: 'thread-1',
     turn_id: 'turn-1',
@@ -206,6 +208,8 @@ describe('LocalApiServer', () => {
             repo_root: '/tmp/source',
             workspace_exists: true,
             workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
             stop_reason_code: 'slots_exhausted',
             stop_reason_detail: 'no available orchestrator slots',
             previous_thread_id: 'thread-prev',
@@ -361,7 +365,10 @@ describe('LocalApiServer', () => {
           branch_name_template: null,
           last_provision_result: null,
           last_teardown_result: null,
-          last_error_code: null
+          last_error_code: null,
+          last_verification_result: null,
+          last_cleanup_on_failure_result: null,
+          verification_mode: 'none'
         })
       }
     });
@@ -406,6 +413,8 @@ describe('LocalApiServer', () => {
             repo_root: '/tmp/source',
             workspace_exists: true,
             workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
             stop_reason_code: 'turn_input_required',
             stop_reason_detail: 'operator input required',
             previous_thread_id: 'thread-prev',
@@ -844,7 +853,10 @@ describe('LocalApiServer', () => {
           branch_name_template: null,
           last_provision_result: null,
           last_teardown_result: null,
-          last_error_code: null
+          last_error_code: null,
+          last_verification_result: null,
+          last_cleanup_on_failure_result: null,
+          verification_mode: 'none'
         })
       }
     });
@@ -1002,7 +1014,10 @@ describe('LocalApiServer', () => {
           branch_name_template: null,
           last_provision_result: null,
           last_teardown_result: null,
-          last_error_code: null
+          last_error_code: null,
+          last_verification_result: null,
+          last_cleanup_on_failure_result: null,
+          verification_mode: 'none'
         })
       }
     });
@@ -1088,7 +1103,10 @@ describe('LocalApiServer', () => {
           branch_name_template: null,
           last_provision_result: null,
           last_teardown_result: null,
-          last_error_code: null
+          last_error_code: null,
+          last_verification_result: null,
+          last_cleanup_on_failure_result: null,
+          verification_mode: 'none'
         })
       }
     });

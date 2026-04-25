@@ -241,10 +241,16 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     last_provision_result: 'provisioned' | 'reused' | 'skipped' | 'failed' | null;
     last_teardown_result: 'removed' | 'kept' | 'skipped' | 'failed' | null;
     last_error_code: string | null;
+    last_verification_result: 'verified' | 'reprovisioned' | 'failed' | null;
+    last_cleanup_on_failure_result: 'cleaned' | 'cleanup_failed' | 'not_attempted' | null;
+    verification_mode: 'strict' | 'none';
   } = {
     last_provision_result: null,
     last_teardown_result: null,
-    last_error_code: null
+    last_error_code: null,
+    last_verification_result: null,
+    last_cleanup_on_failure_result: null,
+    verification_mode: effectiveConfig.workspace.provisioner.type === 'none' ? 'none' : 'strict'
   };
 
   const workspaceManager = new WorkspaceManager({
@@ -274,6 +280,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         if (result.status === 'failed') {
           workspaceProvisionState.last_provision_result = 'failed';
           workspaceProvisionState.last_error_code = result.error_code ?? 'workspace_provision_failed';
+          workspaceProvisionState.last_verification_result = 'failed';
           logger.log({
             level: 'error',
             event: CANONICAL_EVENT.workspace.provisionFailed,
@@ -284,6 +291,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             }
           });
           if (result.cleanup_attempted) {
+            workspaceProvisionState.last_cleanup_on_failure_result = result.cleanup_succeeded ? 'cleaned' : 'cleanup_failed';
             logger.log({
               level: result.cleanup_succeeded ? 'info' : 'error',
               event: result.cleanup_succeeded
@@ -298,10 +306,15 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               }
             });
           }
+          if (!result.cleanup_attempted) {
+            workspaceProvisionState.last_cleanup_on_failure_result = 'not_attempted';
+          }
           return;
         }
         workspaceProvisionState.last_provision_result = result.status as 'provisioned' | 'reused' | 'skipped';
         workspaceProvisionState.last_error_code = null;
+        workspaceProvisionState.last_verification_result = result.status === 'reused' ? 'verified' : 'reprovisioned';
+        workspaceProvisionState.last_cleanup_on_failure_result = null;
         logger.log({
           level: 'info',
           event:
@@ -612,7 +625,10 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               branch_name_template: effectiveConfig.workspace.provisioner.branch_template ?? null,
               last_provision_result: workspaceProvisionState.last_provision_result,
               last_teardown_result: workspaceProvisionState.last_teardown_result,
-              last_error_code: workspaceProvisionState.last_error_code
+              last_error_code: workspaceProvisionState.last_error_code,
+              last_verification_result: workspaceProvisionState.last_verification_result,
+              last_cleanup_on_failure_result: workspaceProvisionState.last_cleanup_on_failure_result,
+              verification_mode: workspaceProvisionState.verification_mode
             })
           },
           workflowControlSource: {

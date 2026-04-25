@@ -106,7 +106,9 @@ export class NoopProvisioner implements WorkspaceProvisioner {
       status: 'skipped',
       provisioner_type: 'none',
       workspace_exists: true,
-      workspace_git_status: 'unknown'
+      workspace_git_status: 'unknown',
+      workspace_provisioned: false,
+      workspace_is_git_worktree: false
     };
   }
 
@@ -204,7 +206,9 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
           branch_name: branchName,
           repo_root: this.repoRoot,
           workspace_exists: true,
-          workspace_git_status: 'unknown'
+          workspace_git_status: 'unknown',
+          workspace_provisioned: true,
+          workspace_is_git_worktree: true
         };
       }
 
@@ -239,7 +243,9 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
       branch_name: branchName,
       repo_root: this.repoRoot,
       workspace_exists: true,
-      workspace_git_status: this.allowDirtyRepo ? 'unknown' : 'clean'
+      workspace_git_status: this.allowDirtyRepo ? 'unknown' : 'clean',
+      workspace_provisioned: true,
+      workspace_is_git_worktree: true
     };
   }
 
@@ -319,7 +325,9 @@ export class CloneProvisioner implements WorkspaceProvisioner {
               provisioner_type: 'clone',
               repo_root: this.repoRoot,
               workspace_exists: true,
-              workspace_git_status: 'unknown'
+              workspace_git_status: 'unknown',
+              workspace_provisioned: true,
+              workspace_is_git_worktree: false
             };
           }
         }
@@ -354,7 +362,9 @@ export class CloneProvisioner implements WorkspaceProvisioner {
       provisioner_type: 'clone',
       repo_root: this.repoRoot,
       workspace_exists: true,
-      workspace_git_status: 'unknown'
+      workspace_git_status: 'unknown',
+      workspace_provisioned: true,
+      workspace_is_git_worktree: false
     };
   }
 
