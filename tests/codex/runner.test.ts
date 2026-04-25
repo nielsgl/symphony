@@ -701,6 +701,66 @@ describe('CodexRunner', () => {
     });
   });
 
+  it('auto-answers mcp elicitation approvals using permissive option matching', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"id":111,"method":"mcpServer/elicitation/request","params":{"questions":[{"id":"mcp_approval","options":[{"label":"Cancel"},{"label":"Allow for this session"}]}]}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 111);
+    expect(responses).toContainEqual({
+      id: 111,
+      result: {
+        answers: {
+          mcp_approval: {
+            answers: ['Allow for this session']
+          }
+        }
+      }
+    });
+  });
+
+  it('auto-answers mcp elicitation with non-interactive fallback when no approval options exist', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"id":112,"method":"mcpServer/elicitation/request","params":{"questions":[{"id":"mcp_reason","options":[{"label":"Use default"},{"label":"Skip"}]}]}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 112);
+    expect(responses).toContainEqual({
+      id: 112,
+      result: {
+        answers: {
+          mcp_reason: {
+            answers: ['This is a non-interactive session. Operator input is unavailable.']
+          }
+        }
+      }
+    });
+  });
+
   it('auto-answers tool requestUserInput approvals when approval options are present', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

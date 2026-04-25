@@ -51,6 +51,24 @@ function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function normalizeOptionText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function optionCandidateStrings(option: Record<string, unknown> | null): string[] {
+  if (!option) {
+    return [];
+  }
+  const candidates: string[] = [];
+  for (const key of ['label', 'value', 'title', 'name', 'text']) {
+    const parsed = readString(option[key]);
+    if (parsed) {
+      candidates.push(parsed);
+    }
+  }
+  return candidates;
+}
+
 function describeProtocolError(error: unknown): string {
   const record = asRecord(error);
   if (!record) {
@@ -164,27 +182,73 @@ function readNestedString(payload: Record<string, unknown> | null, paths: string
 }
 
 function selectApprovalOptionLabel(options: unknown[]): string | null {
-  const labels = options
-    .map((option) => asRecord(option))
-    .map((record) => readString(record?.label))
-    .filter((label): label is string => Boolean(label));
+  const optionRecords = options.map((option) => asRecord(option));
+  const denyPatterns = [/\bdeny\b/i, /\breject\b/i, /\bcancel\b/i, /\bblock\b/i, /\bstop\b/i, /\bno\b/i];
+  const exactApprovalLabels = ['Approve this Session', 'Approve Once'];
+  const permissiveApprovalPatterns = [/\bapprove\b/i, /\ballow\b/i, /\brun\b/i, /\bcontinue\b/i, /\byes\b/i, /\bok\b/i];
 
-  for (const preferred of ['Approve this Session', 'Approve Once']) {
-    const exact = labels.find((label) => label === preferred);
-    if (exact) {
-      return exact;
+  for (const preferred of exactApprovalLabels) {
+    for (const option of optionRecords) {
+      const candidates = optionCandidateStrings(option);
+      if (candidates.some((candidate) => candidate === preferred)) {
+        return readString(option?.label) ?? preferred;
+      }
     }
   }
 
-  const fallback = labels.find((label) => {
-    const normalized = label.trim().toLowerCase();
-    return normalized.startsWith('approve') || normalized.startsWith('allow');
-  });
+  interface Candidate {
+    answerLabel: string;
+    rank: number;
+  }
 
-  return fallback ?? null;
+  let best: Candidate | null = null;
+  for (const option of optionRecords) {
+    const answerLabel = readString(option?.label);
+    if (!answerLabel) {
+      continue;
+    }
+    const candidates = optionCandidateStrings(option);
+    if (candidates.length === 0) {
+      continue;
+    }
+    if (candidates.some((candidate) => denyPatterns.some((pattern) => pattern.test(candidate)))) {
+      continue;
+    }
+
+    const normalized = candidates.map(normalizeOptionText);
+    let rank = Number.POSITIVE_INFINITY;
+    normalized.forEach((candidate) => {
+      permissiveApprovalPatterns.forEach((pattern, index) => {
+        if (pattern.test(candidate) && index < rank) {
+          rank = index;
+        }
+      });
+    });
+    if (!Number.isFinite(rank)) {
+      continue;
+    }
+    if (!best || rank < best.rank) {
+      best = {
+        answerLabel,
+        rank
+      };
+    }
+  }
+
+  return best?.answerLabel ?? null;
 }
 
-function buildToolRequestUserInputAnswers(params: Record<string, unknown>): { answers: Record<string, { answers: string[] }> } | null {
+type NonInteractiveInputAnswerMode =
+  | 'approval_option_exact'
+  | 'approval_option_permissive'
+  | 'non_interactive_fallback';
+
+interface NonInteractiveInputAnswers {
+  answers: Record<string, { answers: string[] }>;
+  mode: NonInteractiveInputAnswerMode;
+}
+
+function buildNonInteractiveInputAnswers(params: Record<string, unknown>): NonInteractiveInputAnswers | null {
   const questions = Array.isArray(params.questions) ? params.questions : null;
   if (!questions || questions.length === 0) {
     return null;
@@ -192,6 +256,8 @@ function buildToolRequestUserInputAnswers(params: Record<string, unknown>): { an
 
   const answers: Record<string, { answers: string[] }> = {};
   let validQuestionCount = 0;
+  let usedFallback = false;
+  let usedPermissiveApproval = false;
 
   for (const question of questions) {
     const questionRecord = asRecord(question);
@@ -204,6 +270,11 @@ function buildToolRequestUserInputAnswers(params: Record<string, unknown>): { an
     const options = Array.isArray(questionRecord?.options) ? questionRecord.options : null;
     const approvalLabel = options ? selectApprovalOptionLabel(options) : null;
     const answerLabel = approvalLabel ?? NON_INTERACTIVE_TOOL_INPUT_ANSWER;
+    if (!approvalLabel) {
+      usedFallback = true;
+    } else if (approvalLabel !== 'Approve this Session' && approvalLabel !== 'Approve Once') {
+      usedPermissiveApproval = true;
+    }
     answers[questionId] = { answers: [answerLabel] };
   }
 
@@ -211,46 +282,14 @@ function buildToolRequestUserInputAnswers(params: Record<string, unknown>): { an
     return null;
   }
 
-  return { answers };
-}
-
-function buildMcpElicitationApprovalAnswers(
-  params: Record<string, unknown>
-): { answers: Record<string, { answers: string[] }> } | null {
-  const questions = Array.isArray(params.questions) ? params.questions : null;
-  if (!questions || questions.length === 0) {
-    return null;
+  if (usedFallback) {
+    return { answers, mode: 'non_interactive_fallback' };
+  }
+  if (usedPermissiveApproval) {
+    return { answers, mode: 'approval_option_permissive' };
   }
 
-  const answers: Record<string, { answers: string[] }> = {};
-  let validQuestionCount = 0;
-
-  for (const question of questions) {
-    const questionRecord = asRecord(question);
-    const questionId = readString(questionRecord?.id);
-    if (!questionId) {
-      return null;
-    }
-
-    const options = Array.isArray(questionRecord?.options) ? questionRecord.options : null;
-    if (!options) {
-      return null;
-    }
-
-    const approvalLabel = selectApprovalOptionLabel(options);
-    if (!approvalLabel) {
-      return null;
-    }
-
-    answers[questionId] = { answers: [approvalLabel] };
-    validQuestionCount += 1;
-  }
-
-  if (validQuestionCount === 0) {
-    return null;
-  }
-
-  return { answers };
+  return { answers, mode: 'approval_option_exact' };
 }
 
 function parseTokenTotals(payload: Record<string, unknown> | null): CodexUsageTotals | null {
@@ -797,22 +836,17 @@ class ProtocolClient {
 
         if (this.isToolRequestUserInput(message)) {
           const params = asRecord(message.params);
-          const response = params ? buildToolRequestUserInputAnswers(params) : null;
+          const response = params ? buildNonInteractiveInputAnswers(params) : null;
           if (response) {
-            const usedApprovalOption = Object.values(response.answers).some(
-              (entry) =>
-                Array.isArray(entry.answers) &&
-                entry.answers.some((answer) => answer !== NON_INTERACTIVE_TOOL_INPUT_ANSWER)
-            );
-            this.write({ id: message.id, result: response });
+            this.write({ id: message.id, result: { answers: response.answers } });
             emit({
               event: CANONICAL_EVENT.codex.toolInputAutoAnswered,
-              detail: usedApprovalOption ? 'approval_option' : 'non_interactive_fallback'
+              detail: response.mode
             });
             continue;
           }
 
-          emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'tool requestUserInput could not be auto-answered' });
+          emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'tool requestUserInput input_required_unanswerable' });
           return {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
@@ -822,17 +856,17 @@ class ProtocolClient {
 
         if (this.isMcpElicitationRequest(message)) {
           const params = asRecord(message.params);
-          const response = params ? buildMcpElicitationApprovalAnswers(params) : null;
+          const response = params ? buildNonInteractiveInputAnswers(params) : null;
           if (response) {
-            this.write({ id: message.id, result: response });
+            this.write({ id: message.id, result: { answers: response.answers } });
             emit({
-              event: CANONICAL_EVENT.codex.approvalAutoApproved,
-              detail: 'acceptForSession'
+              event: CANONICAL_EVENT.codex.toolInputAutoAnswered,
+              detail: response.mode
             });
             continue;
           }
 
-          emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'mcp elicitation request requires operator input' });
+          emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'mcp elicitation request input_required_unanswerable' });
           return {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
