@@ -32,6 +32,7 @@ interface WaitForTerminalResult {
   terminal: 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required';
   usage: CodexUsageTotals;
   rate_limits: Record<string, unknown> | null;
+  input_required_detail?: string;
 }
 
 interface TurnEventContext {
@@ -662,6 +663,7 @@ export class CodexRunner {
           session_id,
           last_event: CANONICAL_EVENT.codex.turnInputRequired,
           error_code: 'turn_input_required',
+          error_detail: waitResult.input_required_detail ?? 'input_required_unanswerable',
           turns_completed: turnsCompleted,
           usage,
           rate_limits
@@ -850,7 +852,8 @@ class ProtocolClient {
           return {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
-            rate_limits: this.latestRateLimits
+            rate_limits: this.latestRateLimits,
+            input_required_detail: 'tool requestUserInput input_required_unanswerable'
           };
         }
 
@@ -870,7 +873,8 @@ class ProtocolClient {
           return {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
-            rate_limits: this.latestRateLimits
+            rate_limits: this.latestRateLimits,
+            input_required_detail: 'mcp elicitation request input_required_unanswerable'
           };
         }
 

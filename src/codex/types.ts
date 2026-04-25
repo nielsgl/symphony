@@ -53,6 +53,7 @@ export interface CodexTurnResult {
   session_id: string;
   last_event: string;
   error_code?: CodexTurnErrorCode;
+  error_detail?: string;
   turns_completed: number;
   usage?: CodexUsageTotals;
   rate_limits?: Record<string, unknown> | null;

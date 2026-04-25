@@ -663,7 +663,10 @@ describe('CodexRunner', () => {
     fakeElicitation.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
     fakeElicitation.emitStdout('{"id":77,"method":"mcpServer/elicitation/request","params":{"threadId":"thread-1"}}\n');
 
-    await expect(elicitationPromise).resolves.toMatchObject({ error_code: 'turn_input_required' });
+    await expect(elicitationPromise).resolves.toMatchObject({
+      error_code: 'turn_input_required',
+      error_detail: 'mcp elicitation request input_required_unanswerable'
+    });
 
     const responses = parseWrittenMessages(fakeElicitation).filter(
       (message) => typeof message.id === 'number' && 'result' in message

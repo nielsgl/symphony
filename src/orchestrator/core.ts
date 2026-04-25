@@ -523,6 +523,7 @@ export class OrchestratorCore {
       this.state.health.last_error = `worker exited for ${running.identifier}`;
       const stopReasonCode = this.inferStopReasonCode(error, 'worker_exit_abnormal');
       if (stopReasonCode === 'turn_input_required') {
+        const stopReasonDetail = this.inferInputRequiredDetail(error, reason);
         await this.scheduleBlockedInput({
           issue_id,
           issue_identifier: running.identifier,
@@ -535,7 +536,7 @@ export class OrchestratorCore {
           workspace_exists: running.workspace_exists,
           workspace_git_status: running.workspace_git_status,
           stop_reason_code: 'turn_input_required',
-          stop_reason_detail: error ?? `worker exited: ${reason}`,
+          stop_reason_detail: stopReasonDetail,
           previous_thread_id: running.thread_id,
           previous_session_id: running.session_id
         });
@@ -550,7 +551,7 @@ export class OrchestratorCore {
             reason,
             outcome: 'blocked',
             stop_reason_code: 'turn_input_required',
-            error: error ?? null
+            error: stopReasonDetail
           }
         });
         this.ports.notifyObservers?.();
@@ -1312,6 +1313,17 @@ export class OrchestratorCore {
     }
 
     return fallback;
+  }
+
+  private inferInputRequiredDetail(error: string | undefined, fallbackReason: string): string {
+    if (!error) {
+      return `worker exited: ${fallbackReason}`;
+    }
+    const prefix = 'turn_input_required:';
+    if (error.toLowerCase().startsWith(prefix)) {
+      return error.slice(prefix.length).trim() || 'input_required_unanswerable';
+    }
+    return error;
   }
 
   private addRuntimeSecondsFromEntry(runningEntry: RunningEntry): void {

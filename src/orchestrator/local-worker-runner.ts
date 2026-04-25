@@ -81,10 +81,14 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       });
 
       if (turnResult.status !== 'completed') {
+        const error =
+          turnResult.error_code === 'turn_input_required'
+            ? `${turnResult.error_code}: ${turnResult.error_detail ?? 'input_required_unanswerable'}`
+            : (turnResult.error_code ?? turnResult.last_event);
         return {
           reason: 'abnormal',
           session_id: turnResult.session_id,
-          error: turnResult.error_code ?? turnResult.last_event
+          error
         };
       }
       lastSessionId = turnResult.session_id;
