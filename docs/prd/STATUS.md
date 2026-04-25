@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P20 blocked-input operator control closure.
-- Current phase: P1 (entry approved; implementation delivered through P20 evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P20b MCP reliability + workspace provisioning integrity closure.
+- Current phase: P1 (entry approved; implementation delivered through P20b evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P20`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P20b`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -190,6 +190,7 @@ Ownership evidence links:
 - [x] P18: Close Observation 1 + Observation 5 (workflow-relative workspace root resolution + operator retry/runtime clarity in API/dashboard).
 - [x] P19: Implement first-class workspace provisioner (worktree/clone/none) with strict invariants and operator diagnostics.
 - [x] P20: Implement non-interactive approval auto-answer + blocked-input operator state with manual resume.
+- [x] P20b: Close MCP reliability + workspace provisioning integrity gaps (permissive elicitation, strict provision verification, additive integrity signals).
 
 ## Implementation Evidence (P20 Blocked-Input Operator Control)
 - Date: 2026-04-24
@@ -221,6 +222,53 @@ Ownership evidence links:
   - `src/observability/events.ts`
   - `tests/codex/runner.test.ts`
   - `tests/orchestrator/core.test.ts`
+  - `tests/api/server.test.ts`
+  - `tests/api/snapshot-service.test.ts`
+- Validation commands:
+  - `npm test`
+  - `npm run build`
+  - `npm run check:meta`
+  - `git diff --check`
+
+## Implementation Evidence (P20b MCP Reliability + Workspace Integrity)
+- Date: 2026-04-25
+- Scope delivered:
+  - Hardened non-interactive MCP/input handling with a unified handler for `item/tool/requestUserInput` and `mcpServer/elicitation/request`:
+    - exact approval label preference, permissive allow-list fallback, deterministic non-interactive fallback answers, and `turn_input_required` only for truly unanswerable payloads.
+    - structured decision-mode classification for operator diagnostics (`approval_option_exact`, `approval_option_permissive`, `non_interactive_fallback`, `input_required_unanswerable`).
+  - Improved blocked-input reason precision by threading runner-level classification/detail into orchestrator stop-reason metadata.
+  - Added atomic cleanup on workspace provision failure for freshly created directories with explicit cleanup result telemetry.
+  - Enforced strict provisioned-dir verification for `worktree`/`clone` reuse:
+    - worktree validation rejects false positives where directory is not an actual git worktree for expected repo/branch.
+    - clone validation requires local `.git`, origin-remote parity, and sane git status.
+    - invalid non-empty directories now fail hard with typed `workspace_unprovisioned_conflict`; empty/sentinel-only directories can be safely reprovisioned.
+    - added deterministic provisioning sentinel metadata (`.symphony-provision.json`).
+  - Added additive API integrity signals across state and issue projections:
+    - `workspace_provisioned`
+    - `workspace_is_git_worktree`
+  - Added diagnostics enrichment for provision verification and cleanup outcomes:
+    - `last_verification_result`
+    - `last_cleanup_on_failure_result`
+    - `verification_mode`
+  - Dashboard now surfaces provisioning integrity and MCP decision context directly in retry/blocked/operator detail views.
+- Key outputs:
+  - `src/codex/runner.ts`
+  - `src/codex/types.ts`
+  - `src/orchestrator/core.ts`
+  - `src/orchestrator/local-worker-runner.ts`
+  - `src/workspace/manager.ts`
+  - `src/workspace/provisioner.ts`
+  - `src/workspace/errors.ts`
+  - `src/workspace/types.ts`
+  - `src/runtime/bootstrap.ts`
+  - `src/observability/events.ts`
+  - `src/api/types.ts`
+  - `src/api/snapshot-service.ts`
+  - `src/api/dashboard-assets.ts`
+  - `tests/codex/runner.test.ts`
+  - `tests/orchestrator/core.test.ts`
+  - `tests/workspace/workspace-manager.test.ts`
+  - `tests/workspace/provisioner.test.ts`
   - `tests/api/server.test.ts`
   - `tests/api/snapshot-service.test.ts`
 - Validation commands:

@@ -83,7 +83,7 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implement robust app-server lifecycle and error mapping; ours aligns non-interactive input handling with known MCP approval auto-answer, keeps explicit blocked-input signaling for unknown prompts, preserves method-specific approval decisions, default dynamic tools, and strict-canonical token accounting.",
+      "summary": "Both implement robust app-server lifecycle and error mapping; ours aligns non-interactive input handling with unified permissive MCP/tool elicitation auto-answer routing (exact + permissive approval selection), keeps explicit blocked-input signaling for truly unanswerable prompts, preserves method-specific approval decisions, default dynamic tools, and strict-canonical token accounting.",
       "ours_anchors": [
         "src/codex/runner.ts",
         "src/codex/dynamic-tools.ts",
@@ -128,7 +128,7 @@
       "status": "functionally-equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Containment invariants and hook semantics are aligned; ours now includes first-class workspace provisioner strategies (worktree/clone/none) with deterministic branch templating, strict git-root/dirty-repo safeguards, idempotent reuse, and additive provisioning diagnostics/eventing.",
+      "summary": "Containment invariants and hook semantics are aligned; ours now includes first-class workspace provisioner strategies (worktree/clone/none) with deterministic branch templating, strict git-root/dirty-repo safeguards, idempotent reuse, strict existing-dir verification with typed hard-fail conflicts, atomic cleanup rollback on failed fresh provisioning, and additive provisioning diagnostics/eventing.",
       "ours_anchors": [
         "src/workspace/manager.ts",
         "src/workspace/provisioner.ts",
@@ -148,7 +148,7 @@
       "status": "different-safe",
       "classification": "extension",
       "risk": "low",
-      "summary": "Core /api/v1 contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, runtime workflow path/reload controls, full workspace/worker projection parity, additive blocked-input projections, and manual resume control endpoint for operator clarity.",
+      "summary": "Core /api/v1 contracts align; ours adds explicit SSE, typed snapshot error envelopes, diagnostics/history/ui-state endpoints, throughput + runtime-event feed, runtime workflow path/reload controls, full workspace/worker projection parity, additive blocked-input projections with manual resume, and explicit workspace integrity booleans (`workspace_provisioned`, `workspace_is_git_worktree`) for operator clarity.",
       "ours_anchors": [
         "src/api/server.ts",
         "src/api/types.ts",
