@@ -39,6 +39,9 @@ export interface WorkspaceManagerOptions {
     provisioner_type: string;
     error_code?: string;
     error_message?: string;
+    cleanup_attempted?: boolean;
+    cleanup_succeeded?: boolean;
+    cleanup_error?: string;
   }) => void;
   nowMs?: () => number;
   runShell?: (params: {

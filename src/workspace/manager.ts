@@ -136,6 +136,18 @@ export class WorkspaceManager {
           provisioner_type: provisionResult.provisioner_type
         });
       } catch (error) {
+        let cleanupAttempted = false;
+        let cleanupSucceeded = false;
+        let cleanupError: string | undefined;
+        if (created_now) {
+          cleanupAttempted = true;
+          try {
+            await fs.rm(workspacePath, { recursive: true, force: true });
+            cleanupSucceeded = true;
+          } catch (cleanupFailure) {
+            cleanupError = cleanupFailure instanceof Error ? cleanupFailure.message : 'unknown cleanup error';
+          }
+        }
         this.onProvisionerResult?.({
           phase: 'provision',
           identifier,
@@ -143,7 +155,10 @@ export class WorkspaceManager {
           status: 'failed',
           provisioner_type: 'unknown',
           error_code: error instanceof WorkspaceError ? error.code : 'workspace_provision_failed',
-          error_message: error instanceof Error ? error.message : 'unknown workspace provision failure'
+          error_message: error instanceof Error ? error.message : 'unknown workspace provision failure',
+          cleanup_attempted: cleanupAttempted,
+          cleanup_succeeded: cleanupSucceeded,
+          ...(cleanupError ? { cleanup_error: cleanupError } : {})
         });
         throw error;
       }

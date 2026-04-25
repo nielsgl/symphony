@@ -281,6 +281,39 @@ describe('WorkspaceManager', () => {
     expect(callOrder).toEqual(['provision', 'after_create', 'before_remove', 'teardown']);
   });
 
+  it('removes freshly created workspace dir when provisioning fails', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const onProvisionerResult = vi.fn();
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 },
+      provisioner: {
+        provision: async () => {
+          throw new WorkspaceError('workspace_provision_failed', 'forced failure');
+        },
+        teardown: async () => ({ status: 'skipped', provisioner_type: 'worktree' })
+      },
+      onProvisionerResult
+    });
+
+    await expect(manager.ensureWorkspace('ABC-FAIL')).rejects.toMatchObject({
+      code: 'workspace_provision_failed'
+    });
+
+    const workspacePath = path.join(root, 'ABC-FAIL');
+    await expect(exists(workspacePath)).resolves.toBe(false);
+    expect(onProvisionerResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: 'provision',
+        identifier: 'ABC-FAIL',
+        status: 'failed',
+        cleanup_attempted: true,
+        cleanup_succeeded: true
+      })
+    );
+  });
+
   it('returns false for non-directory entry at cleanup path and skips before_remove', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);

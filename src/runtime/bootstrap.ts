@@ -283,6 +283,21 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               error_code: workspaceProvisionState.last_error_code
             }
           });
+          if (result.cleanup_attempted) {
+            logger.log({
+              level: result.cleanup_succeeded ? 'info' : 'error',
+              event: result.cleanup_succeeded
+                ? CANONICAL_EVENT.workspace.provisionFailureCleanupSucceeded
+                : CANONICAL_EVENT.workspace.provisionFailureCleanupFailed,
+              message: result.cleanup_succeeded
+                ? 'workspace provision failure cleanup succeeded'
+                : 'workspace provision failure cleanup failed',
+              context: {
+                ...baseContext,
+                cleanup_error: result.cleanup_error ?? null
+              }
+            });
+          }
           return;
         }
         workspaceProvisionState.last_provision_result = result.status as 'provisioned' | 'reused' | 'skipped';
