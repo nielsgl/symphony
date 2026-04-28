@@ -37,7 +37,9 @@ async function makeWorkflowFile(options?: {
     ? `  api_key: test-token
   project_slug: TEST
 `
-    : '';
+    : `  api_key: ''
+  project_slug: ''
+`;
   const serverBlock = includeServerPort
     ? `server:
   port: ${serverPort}
