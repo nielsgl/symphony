@@ -275,7 +275,7 @@ describe('ConfigResolver', () => {
     });
   });
 
-  it('normalizes per-state concurrency map and ignores invalid entries', () => {
+  it('normalizes per-state concurrency map and preserves invalid entries for validation', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 
     const config = resolver.resolve({
@@ -293,7 +293,10 @@ describe('ConfigResolver', () => {
     });
 
     expect(config.agent.max_concurrent_agents_by_state).toEqual({
-      'in progress': 3
+      'in progress': 3,
+      todo: 0,
+      blocked: -1,
+      review: Number.NaN
     });
   });
 
@@ -310,7 +313,7 @@ describe('ConfigResolver', () => {
     expect(config.codex.command).toBe('codex app-server --profile danger-full-access');
   });
 
-  it('falls back hooks timeout to default when configured non-positive', () => {
+  it('preserves configured hooks timeout when provided for strict validation', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 
     const config = resolver.resolve({
@@ -320,7 +323,7 @@ describe('ConfigResolver', () => {
       prompt_template: 'prompt'
     });
 
-    expect(config.hooks.timeout_ms).toBe(60000);
+    expect(config.hooks.timeout_ms).toBe(0);
   });
 
   it('resolves codex profile overrides and persistence path', () => {

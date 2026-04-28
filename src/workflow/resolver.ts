@@ -102,6 +102,18 @@ function readInt(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function readIntStrict(value: unknown, fallback: number): number {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  if (typeof value === 'string' && value.trim().length === 0) {
+    return fallback;
+  }
+
+  return readInt(value, Number.NaN);
+}
+
 function readString(value: unknown, fallback = ''): string {
   if (typeof value === 'string') {
     return value;
@@ -202,10 +214,8 @@ function normalizePerStateMap(value: unknown): Record<string, number> {
   const out: Record<string, number> = {};
 
   for (const [key, raw] of Object.entries(record)) {
-    const parsed = readInt(raw, NaN);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      out[key.toLowerCase()] = parsed;
-    }
+    const parsed = readIntStrict(raw, Number.NaN);
+    out[key.toLowerCase()] = parsed;
   }
 
   return out;
@@ -305,8 +315,7 @@ export class ConfigResolver {
       false
     );
 
-    const hooksTimeoutCandidate = readInt(hooks.timeout_ms, 60000);
-    const hooksTimeoutMs = hooksTimeoutCandidate > 0 ? hooksTimeoutCandidate : 60000;
+    const hooksTimeoutMs = readIntStrict(hooks.timeout_ms, 60000);
 
     const codexCommand = readString(codex.command, 'codex app-server');
     const workflowScopedPersistencePath =
@@ -344,7 +353,7 @@ export class ConfigResolver {
         terminal_states: readStringList(tracker.terminal_states, getDefaultTerminalStates(trackerKind))
       },
       polling: {
-        interval_ms: readInt(polling.interval_ms, 30000)
+        interval_ms: readIntStrict(polling.interval_ms, 30000)
       },
       workspace: {
         root: workspaceRoot,
@@ -367,9 +376,9 @@ export class ConfigResolver {
         timeout_ms: hooksTimeoutMs
       },
       agent: {
-        max_concurrent_agents: readInt(agent.max_concurrent_agents, 10),
-        max_retry_backoff_ms: readInt(agent.max_retry_backoff_ms, 300000),
-        max_turns: readInt(agent.max_turns, 20),
+        max_concurrent_agents: readIntStrict(agent.max_concurrent_agents, 10),
+        max_retry_backoff_ms: readIntStrict(agent.max_retry_backoff_ms, 300000),
+        max_turns: readIntStrict(agent.max_turns, 20),
         max_concurrent_agents_by_state: normalizePerStateMap(agent.max_concurrent_agents_by_state)
       },
       codex: {
@@ -379,9 +388,9 @@ export class ConfigResolver {
         thread_sandbox: readString(codex.thread_sandbox, '') || undefined,
         turn_sandbox_policy: readString(codex.turn_sandbox_policy, '') || undefined,
         user_input_policy: readString(codex.user_input_policy, '') || undefined,
-        turn_timeout_ms: readInt(codex.turn_timeout_ms, 3600000),
-        read_timeout_ms: readInt(codex.read_timeout_ms, 5000),
-        stall_timeout_ms: readInt(codex.stall_timeout_ms, 300000)
+        turn_timeout_ms: readIntStrict(codex.turn_timeout_ms, 3600000),
+        read_timeout_ms: readIntStrict(codex.read_timeout_ms, 5000),
+        stall_timeout_ms: readIntStrict(codex.stall_timeout_ms, 300000)
       },
       persistence: {
         enabled: readBoolean(persistence.enabled, true),

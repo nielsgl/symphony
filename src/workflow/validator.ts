@@ -137,6 +137,89 @@ export class ConfigValidator {
       };
     }
 
+    if (!Number.isFinite(effectiveConfig.polling.interval_ms) || effectiveConfig.polling.interval_ms <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_polling_interval_ms',
+        message: 'polling.interval_ms must be a positive integer',
+        at
+      };
+    }
+
+    if (!Number.isFinite(effectiveConfig.hooks.timeout_ms) || effectiveConfig.hooks.timeout_ms <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_hooks_timeout_ms',
+        message: 'hooks.timeout_ms must be a positive integer when provided',
+        at
+      };
+    }
+
+    if (!Number.isFinite(effectiveConfig.agent.max_concurrent_agents) || effectiveConfig.agent.max_concurrent_agents <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_max_concurrent_agents',
+        message: 'agent.max_concurrent_agents must be a positive integer',
+        at
+      };
+    }
+
+    if (!Number.isFinite(effectiveConfig.agent.max_turns) || effectiveConfig.agent.max_turns <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_max_turns',
+        message: 'agent.max_turns must be a positive integer',
+        at
+      };
+    }
+
+    if (!Number.isFinite(effectiveConfig.agent.max_retry_backoff_ms) || effectiveConfig.agent.max_retry_backoff_ms <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_max_retry_backoff_ms',
+        message: 'agent.max_retry_backoff_ms must be a positive integer',
+        at
+      };
+    }
+
+    for (const [stateName, limit] of Object.entries(effectiveConfig.agent.max_concurrent_agents_by_state)) {
+      if (!Number.isFinite(limit) || limit <= 0) {
+        return {
+          ok: false,
+          error_code: 'invalid_agent_max_concurrent_agents_by_state',
+          message: `agent.max_concurrent_agents_by_state['${stateName}'] must be a positive integer`,
+          at
+        };
+      }
+    }
+
+    if (!Number.isFinite(effectiveConfig.codex.turn_timeout_ms) || effectiveConfig.codex.turn_timeout_ms <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_turn_timeout_ms',
+        message: 'codex.turn_timeout_ms must be a positive integer',
+        at
+      };
+    }
+
+    if (!Number.isFinite(effectiveConfig.codex.read_timeout_ms) || effectiveConfig.codex.read_timeout_ms <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_read_timeout_ms',
+        message: 'codex.read_timeout_ms must be a positive integer',
+        at
+      };
+    }
+
+    if (!Number.isFinite(effectiveConfig.codex.stall_timeout_ms) || effectiveConfig.codex.stall_timeout_ms <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_stall_timeout_ms',
+        message: 'codex.stall_timeout_ms must be a positive integer',
+        at
+      };
+    }
+
     const provisionerType = effectiveConfig.workspace.provisioner.type;
     if (provisionerType !== 'none' && provisionerType !== 'worktree' && provisionerType !== 'clone') {
       return {
