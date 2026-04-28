@@ -23,7 +23,7 @@
       "status": "equivalent",
       "classification": "spec-required",
       "risk": "low",
-      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; approval policy compatibility plus parity knobs (`tracker.assignee`, `server.host`, `observability.*`, prompt fallback) are aligned, and workflow-relative workspace-root resolution semantics are now explicit in ours via `workspace.root_source` diagnostics metadata.",
+      "summary": "Both implementations enforce typed workflow contracts, defaults, and validation; approval policy compatibility plus parity knobs (`tracker.assignee`, `server.host`, `observability.*`, prompt fallback) are aligned, workflow-relative workspace-root resolution semantics are explicit in ours via `workspace.root_source`, and strict fail-fast handling for provided invalid core numeric config values is aligned.",
       "ours_anchors": [
         "src/workflow/resolver.ts",
         "src/workflow/loader.ts",

@@ -1,6 +1,6 @@
 # Symphony PRD Execution Status
 
-Last updated: 2026-04-24
+Last updated: 2026-04-28
 Owner: orchestration planning
 
 ## How Agents Should Use This File
@@ -20,11 +20,11 @@ Owner: orchestration planning
    skip task-level planning because a phase item is already checked.
 
 ## Overall State
-- Program status: P0 governance is closed; implementation evidence is recorded through P20b MCP reliability + workspace provisioning integrity closure.
-- Current phase: P1 (entry approved; implementation delivered through P20b evidence below).
+- Program status: P0 governance is closed; implementation evidence is recorded through P21 upstream reference-delta closure.
+- Current phase: P1 (entry approved; implementation delivered through P21 evidence below).
 - Next phase after P0: P1 (`WorkflowConfig` + validation contract).
 - Execution routing source: `Next Queue` (P1 baseline is complete; route from the first unchecked queue item).
-- Next-agent routing: queue is fully closed through `P20b`; route new work from governance backlog updates.
+- Next-agent routing: queue is fully closed through `P21`; route new work from governance backlog updates.
 - P0 governance remaining after this update: none.
 - Blockers: None currently recorded.
 
@@ -191,6 +191,35 @@ Ownership evidence links:
 - [x] P19: Implement first-class workspace provisioner (worktree/clone/none) with strict invariants and operator diagnostics.
 - [x] P20: Implement non-interactive approval auto-answer + blocked-input operator state with manual resume.
 - [x] P20b: Close MCP reliability + workspace provisioning integrity gaps (permissive elicitation, strict provision verification, additive integrity signals).
+- [x] P21: Close upstream reference delta (app-server model command shape + strict numeric validation parity + docs refresh).
+
+## Implementation Evidence (P21 Upstream Reference Delta Closure)
+- Date: 2026-04-28
+- Scope delivered:
+  - Closed model-command parity delta from upstream `58cf97d` by replacing root `--model ... app-server` usage in canonical local workflow examples with config-based model selection (`--config 'model="..."'`).
+  - Added deterministic guard test to prevent reintroduction of root `--model` app-server patterns in canonical workflow examples.
+  - Adopted stricter validation semantics clarified by upstream `eaa457d`:
+    - invalid provided numeric values now fail fast with deterministic typed errors instead of silently falling back.
+    - applied to core fields across polling, hooks timeout, agent limits, per-state limits, and codex timeout settings.
+  - Updated resolver behavior to preserve present-invalid numeric inputs for validator fail-fast handling while keeping defaults for missing optional values.
+  - Added conformance coverage:
+    - unit-level validator/resolver cases for all strict numeric rules,
+    - integration-level startup failure assertion for invalid numeric config.
+- Key outputs:
+  - `WORKFLOW.md`
+  - `src/workflow/types.ts`
+  - `src/workflow/resolver.ts`
+  - `src/workflow/validator.ts`
+  - `tests/workflow/workflow-command-examples.test.ts`
+  - `tests/workflow/resolver.test.ts`
+  - `tests/workflow/validator.test.ts`
+  - `tests/runtime/bootstrap.test.ts`
+- Validation commands:
+  - `npm run build`
+  - `npm run check:meta`
+  - `npm test -- tests/workflow/validator.test.ts tests/workflow/resolver.test.ts`
+  - `npm test -- tests/workflow/validator.test.ts tests/workflow/resolver.test.ts tests/runtime/bootstrap.test.ts -t "fails startup on strict numeric validation errors"`
+  - `git diff --check`
 
 ## Implementation Evidence (P20 Blocked-Input Operator Control)
 - Date: 2026-04-24

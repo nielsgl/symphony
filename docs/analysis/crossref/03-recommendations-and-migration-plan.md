@@ -352,6 +352,25 @@ Prioritization model:
   - `/Users/niels.van.Galen.last/code/symphony/tests/api/server.test.ts`
   - `/Users/niels.van.Galen.last/code/symphony/tests/api/snapshot-service.test.ts`
 
+### XR-20 — Upstream reference delta closure (`58cf97d`, `eaa457d`)
+- Priority: `P1`
+- Decision: `adopted` (closed in `P21`)
+- Delivered:
+  - codex app-server model command examples aligned to config-based model selection (`--config 'model="..."'`) instead of root `--model`.
+  - deterministic guard test added for canonical workflow command examples to prevent root `--model ... app-server` regression.
+  - strict fail-fast numeric validation adopted for provided invalid core config values (polling, hooks timeout, agent limits, per-state limits, codex timeout values).
+  - resolver behavior updated so present-invalid numeric values are preserved for validator rejection while missing optional values continue to default.
+  - integration-level startup assertion added for strict numeric validation failure path.
+- Anchors:
+  - `/Users/niels.van.Galen.last/code/symphony/WORKFLOW.md`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/types.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/resolver.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/src/workflow/validator.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/workflow/workflow-command-examples.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/workflow/resolver.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/workflow/validator.test.ts`
+  - `/Users/niels.van.Galen.last/code/symphony/tests/runtime/bootstrap.test.ts`
+
 ## Intentional Divergences to Preserve
 ### XR-03 — Preserve diagnostics/history/ui-state API surface
 - Priority: `P1`
@@ -366,13 +385,13 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-- None. Parity recommendations are closed through `P20b`.
+- None. Parity recommendations are closed through `P21`.
 - Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
 ## Suggested Rollout Order (Post-P12)
 1. `XR-00` and `XR-03` preservation checks (regression guard only)
 
 ## Acceptance Criteria for This Plan
-- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, `XR-15`, `XR-16`, `XR-17`, `XR-18`, and `XR-19` are marked closed with concrete code/test anchors.
+- `XR-01`, `XR-02`, `XR-04`, `XR-05`, `XR-06`, `XR-08`, `XR-09`, `XR-10`, `XR-11`, `XR-12`, `XR-13`, `XR-14`, `XR-15`, `XR-16`, `XR-17`, `XR-18`, `XR-19`, and `XR-20` are marked closed with concrete code/test anchors.
 - Open recommendations are none, except explicit preservation items.
 - No conflicting recommendation state across this file, `02-cross-reference-matrix.md`, and `appendix/subsystem-diff.json`.
