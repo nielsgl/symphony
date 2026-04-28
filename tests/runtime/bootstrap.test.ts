@@ -297,10 +297,11 @@ describe('createRuntimeEnvironment', () => {
     dirs.push(workflowDir);
     const dbPath = path.join(workflowDir, 'runtime.sqlite');
 
+    const seededAtMs = Date.now();
     const seedStore = new SqlitePersistenceStore({
       dbPath,
       retentionDays: 14,
-      nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
+      nowMs: () => seededAtMs
     });
     const runId = seedStore.startRun({ issue_id: 'issue-1', issue_identifier: 'ABC-1' });
     seedStore.recordSession(runId, 'thread-1-turn-1');
