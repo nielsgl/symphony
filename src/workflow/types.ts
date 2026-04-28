@@ -34,6 +34,7 @@ export type ValidationErrorCode =
   | 'invalid_workspace_provisioner_repo_root'
   | 'invalid_workspace_provisioner_branch_template'
   | 'invalid_workspace_provisioner_teardown_mode'
+  | 'invalid_worktree_sandbox_policy'
   | 'invalid_logging_root'
   | 'invalid_logging_max_bytes'
   | 'invalid_logging_max_files';

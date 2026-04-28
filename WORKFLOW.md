@@ -43,8 +43,8 @@ codex:
   # command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
   approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy: workspace-write
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy: danger-full-access
 server:
   port: 3000
 ---

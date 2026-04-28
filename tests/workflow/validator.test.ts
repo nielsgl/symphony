@@ -193,6 +193,32 @@ describe('ConfigValidator', () => {
     }
   });
 
+  it('rejects worktree provisioner when sandbox is not danger-full-access', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.workspace.provisioner.type = 'worktree';
+    config.workspace.provisioner.repo_root = '/tmp/symphony';
+    config.codex.thread_sandbox = 'workspace-write';
+    config.codex.turn_sandbox_policy = 'workspace-write';
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_worktree_sandbox_policy');
+    }
+  });
+
+  it('accepts worktree provisioner with danger-full-access sandbox', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.workspace.provisioner.type = 'worktree';
+    config.workspace.provisioner.repo_root = '/tmp/symphony';
+    config.codex.thread_sandbox = 'danger-full-access';
+    config.codex.turn_sandbox_policy = 'danger-full-access';
+
+    expect(validator.validate(config)).toEqual({ ok: true, at: expect.any(String) });
+  });
+
   it('rejects non-positive worker max_concurrent_agents_per_host when provided', () => {
     const validator = new ConfigValidator();
     const config = baseConfig();

@@ -299,6 +299,20 @@ export class ConfigValidator {
     }
 
     if (
+      provisionerType === 'worktree' &&
+      (effectiveConfig.codex.thread_sandbox !== 'danger-full-access' ||
+        effectiveConfig.codex.turn_sandbox_policy !== 'danger-full-access')
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_worktree_sandbox_policy',
+        message:
+          'workspace.provisioner.type=worktree requires codex.thread_sandbox=danger-full-access and codex.turn_sandbox_policy=danger-full-access',
+        at
+      };
+    }
+
+    if (
       effectiveConfig.codex.user_input_policy !== undefined &&
       effectiveConfig.codex.user_input_policy !== 'fail_attempt'
     ) {
