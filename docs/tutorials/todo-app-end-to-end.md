@@ -88,13 +88,13 @@ Copy preset front matter and prompt template into your local `WORKFLOW.md`.
 ## Step 3: Start Symphony
 
 ```bash
-npm run start:dashboard -- --workflow=./WORKFLOW.md
+npm run start:dashboard -- --workflow=./WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 Optional offline mode for UI-only validation:
 
 ```bash
-npm run start:dashboard -- --offline
+npm run start:dashboard -- --offline --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 ## Step 4: Observe Dispatch and Runs
@@ -164,6 +164,8 @@ For deterministic repository-backed workspaces, configure:
 - `workspace.provisioner.type: worktree`
 - `workspace.provisioner.repo_root: <your-repo-root>`
 - `workspace.provisioner.branch_template: feature/{{ issue.identifier }}`
+- `codex.thread_sandbox: danger-full-access`
+- `codex.turn_sandbox_policy: danger-full-access`
 
 Use your normal verification flow in the sample app:
 

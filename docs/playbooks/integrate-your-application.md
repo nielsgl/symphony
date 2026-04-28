@@ -44,6 +44,11 @@ Use first-class workspace provisioning for deterministic per-issue workspaces:
   - `keep` for manual post-run debugging.
 - Keep `allow_dirty_repo: false` in normal operation.
 
+Important for worktree mode:
+
+- Set `codex.thread_sandbox: danger-full-access` and `codex.turn_sandbox_policy: danger-full-access`.
+- Worktree git operations write metadata under `<repo_root>/.git/worktrees/*`, so `workspace-write` sandbox is insufficient and will fail validation/startup.
+
 For diagnostics, verify:
 
 - `/api/v1/diagnostics.runtime_resolution.provisioner_type`

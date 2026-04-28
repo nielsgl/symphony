@@ -10,9 +10,8 @@ execution, and a local observability API with an embedded dashboard.
 
 ## Current Status
 
-- P1-P5 delivery is implemented in the `p5-observability-ui` worktree branch.
-- P6 and P7 are not started.
-- Canonical requirements live in `SPEC.md` and `docs/prd/`.
+- Core implementation and parity hardening phases are merged on `main`.
+- Canonical requirements and governance evidence live in `SPEC.md` and `docs/prd/`.
 
 ## Quick Start
 
@@ -81,7 +80,7 @@ The dashboard and API are served by the same local process.
 ### Standard Start
 
 ```bash
-npm run start:dashboard
+npm run start:dashboard -- --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 Default bind:
@@ -96,13 +95,13 @@ Open:
 ### Dynamic Port
 
 ```bash
-npm run start:dashboard -- --port=0
+npm run start:dashboard -- --port=0 --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 or
 
 ```bash
-SYMPHONY_PORT=5050 npm run start:dashboard
+SYMPHONY_PORT=5050 npm run start:dashboard -- --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 ### Project Wrapper (Recommended for Multi-Project)
@@ -183,11 +182,12 @@ Notes:
 
 Returns current runtime summary:
 
-- running and retrying counts
+- running, retrying, and blocked counts
 - running session telemetry
 - aggregate token and runtime totals
 - latest rate-limit snapshot
 - health banner fields (`dispatch_validation`, `last_error`)
+- workspace provisioning integrity (`workspace_provisioned`, `workspace_is_git_worktree`)
 
 ### GET `/api/v1/:issue_identifier`
 
@@ -196,6 +196,7 @@ Returns issue-specific runtime diagnostics:
 - running or retrying status
 - session fields and recent events
 - retry metadata
+- blocked-input metadata when status is `blocked`
 - last known error
 
 Unknown issue identifiers return `404` with typed error envelope.
@@ -203,6 +204,18 @@ Unknown issue identifiers return `404` with typed error envelope.
 ### POST `/api/v1/refresh`
 
 Queues manual poll and reconciliation trigger. Burst requests are coalesced.
+
+### GET `/api/v1/events`
+
+Server-Sent Events stream for realtime state snapshots and runtime health changes.
+
+### GET `/api/v1/diagnostics`
+
+Runtime diagnostics including logging, persistence health, runtime resolution, and workspace provisioner state.
+
+### POST `/api/v1/issues/:issue_identifier/resume`
+
+Resumes an issue in blocked-input state and returns it to dispatch lifecycle.
 
 ## Project Structure
 

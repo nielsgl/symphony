@@ -111,7 +111,7 @@ export SYMPHONY_PORT=3000
 ~~~bash
 cd "$SYMPHONY_REPO"
 npm install
-npm run start:dashboard -- --workflow="$APP_REPO/WORKFLOW.md"
+npm run start:dashboard -- --workflow="$APP_REPO/WORKFLOW.md" --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ~~~
 
 Validation checkpoint:
@@ -199,7 +199,7 @@ Set:
 ~~~bash
 cd "$SYMPHONY_REPO"
 export GITHUB_TOKEN=your_real_token
-npm run start:dashboard -- --workflow="$APP_REPO/WORKFLOW.md"
+npm run start:dashboard -- --workflow="$APP_REPO/WORKFLOW.md" --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ~~~
 
 4. Validate same checkpoints via API/dashboard

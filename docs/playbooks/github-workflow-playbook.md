@@ -111,6 +111,8 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy: danger-full-access
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
@@ -125,24 +127,25 @@ Important behavior:
 - tracker.active_states must include at least Open or Closed.
 - tracker.api_key supports env token syntax like $GITHUB_TOKEN.
 - If server.port is omitted and no CLI/env port is provided, HTTP API is disabled.
+- If you use `workspace.provisioner.type: worktree`, both sandbox values must be `danger-full-access`.
 
 ## 7. Start Symphony (CLI and Desktop)
 
 Run dashboard and API (recommended):
 
 ```bash
-npm run start:dashboard
+npm run start:dashboard -- --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 Useful variants:
 
 ```bash
-npm run start:dashboard -- --port=0
-npm run start:dashboard -- --workflow=./WORKFLOW.md
-npm run start:dashboard -- ./WORKFLOW.md
-SYMPHONY_PORT=5050 npm run start:dashboard
-SYMPHONY_WORKFLOW_PATH=./WORKFLOW.md npm run start:dashboard
-SYMPHONY_OFFLINE=1 npm run start:dashboard
+npm run start:dashboard -- --port=0 --i-understand-that-this-will-be-running-without-the-usual-guardrails
+npm run start:dashboard -- --workflow=./WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
+npm run start:dashboard -- ./WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
+SYMPHONY_PORT=5050 npm run start:dashboard -- --i-understand-that-this-will-be-running-without-the-usual-guardrails
+SYMPHONY_WORKFLOW_PATH=./WORKFLOW.md npm run start:dashboard -- --i-understand-that-this-will-be-running-without-the-usual-guardrails
+SYMPHONY_OFFLINE=1 npm run start:dashboard -- --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
 Desktop mode:

@@ -36,6 +36,8 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy: danger-full-access
   turn_timeout_ms: 1800000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
