@@ -23,6 +23,7 @@ async function makeWorkflowFile(options?: {
   serverPort?: number;
   loggingRoot?: string;
   pollingIntervalMs?: number;
+  hooksTimeoutMs?: number;
 }): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-'));
   const workflowPath = path.join(dir, 'WORKFLOW.md');
@@ -31,6 +32,7 @@ async function makeWorkflowFile(options?: {
   const serverPort = options?.serverPort ?? 0;
   const loggingRoot = options?.loggingRoot;
   const pollingIntervalMs = options?.pollingIntervalMs ?? 1000;
+  const hooksTimeoutMs = options?.hooksTimeoutMs ?? 1000;
   const trackerCredentialBlock = includeTrackerCredentials
     ? `  api_key: test-token
   project_slug: TEST
@@ -60,7 +62,7 @@ polling:
 workspace:
   root: ${JSON.stringify(path.join(dir, 'workspaces'))}
 hooks:
-  timeout_ms: 1000
+  timeout_ms: ${hooksTimeoutMs}
 agent:
   max_concurrent_agents: 1
   max_retry_backoff_ms: 10000
@@ -221,6 +223,27 @@ describe('createRuntimeEnvironment', () => {
     expect(response.status).toBe(200);
     expect(payload.health.dispatch_validation).toBe('failed');
     expect(payload.health.last_error).toContain('tracker.api_key is required');
+  });
+
+  it('fails startup on strict numeric validation errors', async () => {
+    const workflowPath = await makeWorkflowFile({ hooksTimeoutMs: 0 });
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    expect(() =>
+      createRuntimeEnvironment({
+        workflowPath,
+        trackerAdapter: tracker,
+        port: 0
+      })
+    ).toThrow('hooks.timeout_ms must be a positive integer');
   });
 
   it('exposes diagnostics profile and persistence status endpoints', async () => {

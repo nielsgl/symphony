@@ -208,6 +208,114 @@ describe('ConfigValidator', () => {
     }
   });
 
+  it('rejects non-positive polling.interval_ms', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.polling.interval_ms = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_polling_interval_ms');
+    }
+  });
+
+  it('rejects non-positive hooks.timeout_ms when provided', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.hooks.timeout_ms = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_hooks_timeout_ms');
+    }
+  });
+
+  it('rejects non-positive agent.max_concurrent_agents', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.agent.max_concurrent_agents = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_agent_max_concurrent_agents');
+    }
+  });
+
+  it('rejects non-positive agent.max_turns', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.agent.max_turns = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_agent_max_turns');
+    }
+  });
+
+  it('rejects non-positive agent.max_retry_backoff_ms', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.agent.max_retry_backoff_ms = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_agent_max_retry_backoff_ms');
+    }
+  });
+
+  it('rejects invalid agent.max_concurrent_agents_by_state entries', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.agent.max_concurrent_agents_by_state = { todo: 0 };
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_agent_max_concurrent_agents_by_state');
+    }
+  });
+
+  it('rejects non-positive codex.turn_timeout_ms', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.codex.turn_timeout_ms = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_codex_turn_timeout_ms');
+    }
+  });
+
+  it('rejects non-positive codex.read_timeout_ms', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.codex.read_timeout_ms = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_codex_read_timeout_ms');
+    }
+  });
+
+  it('rejects non-positive codex.stall_timeout_ms', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.codex.stall_timeout_ms = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_codex_stall_timeout_ms');
+    }
+  });
+
   it('rejects non-positive logging.max_bytes', () => {
     const validator = new ConfigValidator();
     const config = baseConfig();

@@ -326,6 +326,39 @@ describe('ConfigResolver', () => {
     expect(config.hooks.timeout_ms).toBe(0);
   });
 
+  it('keeps default numeric values when optional fields are missing', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {},
+      prompt_template: 'prompt'
+    });
+
+    expect(config.polling.interval_ms).toBe(30000);
+    expect(config.hooks.timeout_ms).toBe(60000);
+    expect(config.agent.max_concurrent_agents).toBe(10);
+    expect(config.agent.max_turns).toBe(20);
+    expect(config.agent.max_retry_backoff_ms).toBe(300000);
+    expect(config.codex.turn_timeout_ms).toBe(3600000);
+    expect(config.codex.read_timeout_ms).toBe(5000);
+    expect(config.codex.stall_timeout_ms).toBe(300000);
+  });
+
+  it('preserves invalid configured numeric values for fail-fast validation', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        polling: { interval_ms: 'abc' },
+        hooks: { timeout_ms: 'abc' }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(Number.isNaN(config.polling.interval_ms)).toBe(true);
+    expect(Number.isNaN(config.hooks.timeout_ms)).toBe(true);
+  });
+
   it('resolves codex profile overrides and persistence path', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 
