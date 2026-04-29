@@ -1,0 +1,19 @@
+# Symphony .worktreeinclude example
+# Copy only gitignored artifacts that speed up local builds.
+# Paths are relative to the source repository root.
+
+# Node package cache (large but safe when gitignored)
+node_modules/**
+
+# Python virtual environment
+.venv/**
+
+# Rust target cache
+target/**
+
+# Local build cache
+.cache/**
+
+# Secrets are denied by default, including .env*.
+# To copy env files, set workspace.copy_ignored.allow_patterns explicitly
+# and review the security implications first.

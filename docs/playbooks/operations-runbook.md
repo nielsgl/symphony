@@ -53,6 +53,39 @@ Issue check example:
 curl -sS http://127.0.0.1:3000/api/v1/SYM-101
 ```
 
+### Workspace Copy-Ignored Failures
+
+If provisioning succeeds but copy step fails:
+
+- Check `/api/v1/diagnostics.workspace_copy_ignored`:
+  - `last_status`
+  - `last_error_code`
+  - `last_error_message`
+- Common failure classes:
+  - `workspace_copy_ignored_invalid_config`
+  - `workspace_copy_ignored_denied_path`
+  - `workspace_copy_ignored_limits_exceeded`
+  - `workspace_copy_ignored_source_not_found`
+- Verify `.worktreeinclude` path is inside your workflow/repo root and contains only relative paths.
+- Keep `conflict_policy: skip` for autonomous runs unless overwrite is explicitly required.
+
+### Script Bootstrap Preview (Dry Run)
+
+When using hook-based bootstrap (`scripts/worktree_bootstrap.py`), preview copy behavior without mutation:
+
+```bash
+python3 /Users/niels.van.Galen.last/code/symphony/scripts/worktree_bootstrap.py \
+  --source /absolute/repo/root \
+  --target /absolute/workspace/path \
+  --dry-run
+```
+
+Output is structured JSON lines:
+
+- `action=copy` with `reason=dry-run` for would-copy paths
+- `action=skip` for existing/sensitive paths
+- final `action=summary` with `selected`, `copied`, and `skipped_sensitive`
+
 ### Refresh Needed After External State Change
 
 ```bash

@@ -28,20 +28,19 @@ workspace:
     teardown_mode: remove_worktree
     allow_dirty_repo: false
     fallback_to_clone_on_worktree_failure: false
-# hooks:
-#   after_create: |
-#     git clone --depth 1 https://github.com/openai/symphony .
-#     if command -v mise >/dev/null 2>&1; then
-#       cd elixir && mise trust && mise exec -- mix deps.get
-#     fi
-#   before_remove: |
-#     cd elixir && mise exec -- mix workspace.before_remove
+
+hooks:
+  after_create: |
+    python3 /Users/niels.van.Galen.last/code/symphony/scripts/worktree_bootstrap.py --source /Users/niels.van.Galen.last/code/symphony
+  before_remove: |
+    node /Users/niels.van.Galen.last/code/symphony/scripts/workspace-before-remove.js
+  timeout_ms: 60000
 agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
   # command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
+  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.3-codex"' --config model_reasoning_effort=medium app-server
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy: danger-full-access

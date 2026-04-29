@@ -54,6 +54,52 @@ For diagnostics, verify:
 - `/api/v1/diagnostics.runtime_resolution.provisioner_type`
 - `/api/v1/diagnostics.workspace_provisioner.last_provision_result`
 - `/api/v1/diagnostics.workspace_provisioner.last_error_code`
+- `/api/v1/diagnostics.workspace_copy_ignored.last_status`
+- `/api/v1/diagnostics.workspace_copy_ignored.last_error_code`
+
+## 4b. Optional `.worktreeinclude` copy engine
+
+For dependency-heavy repos you can copy selected gitignored artifacts from a source worktree into each newly provisioned workspace.
+
+Recommended baseline:
+
+- `workspace.copy_ignored.enabled: true`
+- `workspace.copy_ignored.include_file: .worktreeinclude`
+- `workspace.copy_ignored.from: primary_worktree`
+- `workspace.copy_ignored.conflict_policy: skip`
+- `workspace.copy_ignored.require_gitignored: true`
+
+Safety model:
+
+- File must match `.worktreeinclude`.
+- File must be gitignored (default).
+- Hard denylist always applies (`.git`, `.ssh`, cloud creds, `.env*`, keys/certs).
+
+## 4c. Script-only bootstrap mode (current recommended fallback)
+
+If you prefer explicit control (or want dry-run previews), disable built-in copy and run the Python bootstrap script in `after_create`.
+
+Workflow pattern:
+
+- `workspace.copy_ignored.enabled: false`
+- `hooks.after_create: python3 <repo>/scripts/worktree_bootstrap.py --source <repo-root>`
+
+Behavior:
+
+- target defaults to hook working directory (the workspace), so `--target` is optional.
+- reads `<source>/.worktreeinclude`.
+- copies only gitignored/untracked matches.
+- skips existing files unless `--force`.
+- refuses sensitive-looking files unless `--allow-sensitive`.
+
+Dry-run preview:
+
+```bash
+python3 /Users/niels.van.Galen.last/code/symphony/scripts/worktree_bootstrap.py \
+  --source /absolute/repo/root \
+  --target /absolute/workspace/path \
+  --dry-run
+```
 
 ## 5. Configure Hooks Carefully
 

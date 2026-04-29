@@ -1,0 +1,4 @@
+# Symphony .worktreeinclude example
+# Copy only gitignored artifacts that speed up local builds.
+# Paths are relative to the source repository root.
+.env
