@@ -25,7 +25,7 @@ workspace:
     repo_root: .
     base_ref: origin/main
     branch_template: feature/{{ issue.identifier }}
-    teardown_mode: remove_worktree
+    teardown_mode: keep
     allow_dirty_repo: false
     fallback_to_clone_on_worktree_failure: false
 
@@ -78,6 +78,8 @@ Instructions:
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
 2. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
+4. Never move an issue to `Done` from `Todo`, `In Progress`, or `Rework`. `Done` is only allowed after PR merge is confirmed in the `Merging` flow.
+5. Never report completion without explicit finalization evidence: commit SHA, pushed branch name, and PR URL.
 
 Work only in the provided repository copy. Do not touch any other path.
 
@@ -229,6 +231,7 @@ Use this only when completion is blocked by missing required tools or missing au
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
+    - If there is no PR URL, treat the run as incomplete and do not move state forward.
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
@@ -236,11 +239,17 @@ Use this only when completion is blocked by missing required tools or missing au
     - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
     - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
     - Do not post any additional completion summary comment.
+    - Add a `### Finalization Evidence` section containing:
+      - commit SHA(s),
+      - pushed branch name,
+      - PR URL,
+      - confirmation that PR checks are green.
 11. Before moving to `Human Review`, poll PR feedback and checks:
     - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
     - Run the full PR feedback sweep protocol.
     - Confirm PR checks are passing (green) after the latest changes.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
+    - Confirm `Finalization Evidence` is present and complete (commit + push + PR URL).
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `Human Review`.
@@ -258,6 +267,7 @@ Use this only when completion is blocked by missing required tools or missing au
 4. If approved, human moves the issue to `Merging`.
 5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
 6. After merge is complete, move the issue to `Done`.
+7. If merge is not complete, do not move to `Done`; keep state at `Merging` or move back to `Rework` with blocker details in the workpad.
 
 ## Step 4: Rework handling
 
