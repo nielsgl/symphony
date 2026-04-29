@@ -36,6 +36,8 @@ tracker:
   project_slug: SYMPHONY
   owner: ""            # github only (optional for linear)
   repo: ""             # github only (optional for linear)
+  github_linking:
+    mode: off          # off | warn | required
   active_states:
     - Todo
     - In Progress
@@ -144,6 +146,7 @@ Return a concise summary with changed files and verification output.
 | `tracker.assignee` | string | unset | optional assignee routing filter for `linear`; supports `me`/`viewer` | No |
 | `tracker.owner` | string | `""` | GitHub org/user owner | Required for `github` |
 | `tracker.repo` | string | `""` | GitHub repo name | Required for `github` |
+| `tracker.github_linking.mode` | string | `off` | `off`, `warn`, `required`; `required` skips dispatch when issue has no linked GitHub issue | No |
 | `tracker.active_states` | string[] | by kind | `linear`: `Todo`, `In Progress`; `github`: `Open` | No, but see github rule |
 | `tracker.terminal_states` | string[] | by kind | `linear`: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`; `github`: `Closed` | No |
 
