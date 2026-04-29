@@ -153,7 +153,11 @@ export class WorkspaceManager {
           identifier,
           workspace_path: workspacePath,
           status: provisionResult.status,
-          provisioner_type: provisionResult.provisioner_type
+          provisioner_type: provisionResult.provisioner_type,
+          workspace_integrity_status: provisionResult.workspace_integrity_status,
+          workspace_integrity_reason: provisionResult.workspace_integrity_reason ?? null,
+          workspace_integrity_checked_at: provisionResult.workspace_integrity_checked_at ?? null,
+          workspace_integrity_reconciled_at: provisionResult.workspace_integrity_reconciled_at ?? null
         });
       } catch (error) {
         let cleanupAttempted = false;
@@ -215,6 +219,10 @@ export class WorkspaceManager {
             workspace_git_status: provisionResult?.workspace_git_status ?? 'unknown',
             workspace_provisioned: provisionResult?.workspace_provisioned ?? false,
             workspace_is_git_worktree: provisionResult?.workspace_is_git_worktree ?? false,
+            workspace_integrity_status: provisionResult?.workspace_integrity_status ?? undefined,
+            workspace_integrity_reason: provisionResult?.workspace_integrity_reason ?? null,
+            workspace_integrity_checked_at: provisionResult?.workspace_integrity_checked_at ?? null,
+            workspace_integrity_reconciled_at: provisionResult?.workspace_integrity_reconciled_at ?? null,
             copy_ignored_applied: copyIgnoredApplied,
             copy_ignored_status: copyIgnoredStatus,
             copy_ignored_summary: copyIgnoredSummary
@@ -283,6 +291,10 @@ export class WorkspaceManager {
       workspace_git_status: provisionResult?.workspace_git_status ?? 'unknown',
       workspace_provisioned: provisionResult?.workspace_provisioned ?? false,
       workspace_is_git_worktree: provisionResult?.workspace_is_git_worktree ?? false,
+      workspace_integrity_status: provisionResult?.workspace_integrity_status ?? undefined,
+      workspace_integrity_reason: provisionResult?.workspace_integrity_reason ?? null,
+      workspace_integrity_checked_at: provisionResult?.workspace_integrity_checked_at ?? null,
+      workspace_integrity_reconciled_at: provisionResult?.workspace_integrity_reconciled_at ?? null,
       copy_ignored_applied: copyIgnoredApplied,
       copy_ignored_status: copyIgnoredStatus,
       copy_ignored_summary: copyIgnoredSummary
@@ -336,8 +348,19 @@ export class WorkspaceManager {
         identifier,
         workspace_path: workspacePath,
         status: teardownResult.status,
-        provisioner_type: teardownResult.provisioner_type
+        provisioner_type: teardownResult.provisioner_type,
+        workspace_integrity_status: teardownResult.workspace_integrity_status,
+        workspace_integrity_reason: teardownResult.workspace_integrity_reason ?? null,
+        workspace_integrity_checked_at: teardownResult.workspace_integrity_checked_at ?? null,
+        workspace_integrity_reconciled_at: teardownResult.workspace_integrity_reconciled_at ?? null,
+        error_code:
+          teardownResult.workspace_integrity_status === 'failed'
+            ? teardownResult.workspace_integrity_reason ?? 'workspace_integrity_reconcile_failed'
+            : undefined
       });
+      if (teardownResult.status === 'kept') {
+        return true;
+      }
     } catch (error) {
       this.onProvisionerResult?.({
         phase: 'teardown',

@@ -281,6 +281,23 @@ describe('WorkspaceManager', () => {
     expect(callOrder).toEqual(['provision', 'after_create', 'before_remove', 'teardown']);
   });
 
+  it('does not remove workspace directory when teardown result is kept', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 },
+      provisioner: {
+        provision: async () => ({ status: 'provisioned', provisioner_type: 'worktree' }),
+        teardown: async () => ({ status: 'kept', provisioner_type: 'worktree' })
+      }
+    });
+
+    const workspace = await manager.ensureWorkspace('ABC-KEEP');
+    await expect(manager.cleanupWorkspace('ABC-KEEP')).resolves.toBe(true);
+    await expect(exists(workspace.path)).resolves.toBe(true);
+  });
+
   it('removes freshly created workspace dir when provisioning fails', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);

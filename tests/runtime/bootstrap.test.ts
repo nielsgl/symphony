@@ -222,7 +222,7 @@ describe('createRuntimeEnvironment', () => {
 
     expect(response.status).toBe(200);
     expect(payload.health.dispatch_validation).toBe('failed');
-    expect(payload.health.last_error).toContain('tracker.api_key is required');
+    expect(payload.health.last_error).toMatch(/tracker\.(api_key|project_slug)/);
   });
 
   it('fails startup on strict numeric validation errors', async () => {

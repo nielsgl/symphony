@@ -35,6 +35,9 @@ describe('WorkspaceProvisioner', () => {
     const workspacePath = path.join(workspaceRoot, 'ABC_12');
     await fs.mkdir(path.join(repoRoot, '.git'));
     const runGit = vi.fn(async ({ args }: { args: string[] }) => {
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return { ok: true, stdout: '', stderr: '' };
+      }
       if (args[0] === 'worktree' && args[1] === 'add') {
         const workspacePath = args[4];
         await fs.mkdir(workspacePath, { recursive: true });
@@ -64,9 +67,13 @@ describe('WorkspaceProvisioner', () => {
 
     expect(runGit).toHaveBeenNthCalledWith(1, {
       cwd: repoRoot,
-      args: ['status', '--porcelain']
+      args: ['worktree', 'list', '--porcelain']
     });
     expect(runGit).toHaveBeenNthCalledWith(2, {
+      cwd: repoRoot,
+      args: ['status', '--porcelain']
+    });
+    expect(runGit).toHaveBeenNthCalledWith(3, {
       cwd: repoRoot,
       args: ['worktree', 'add', '-b', 'feature/ABC/12', workspacePath, 'origin/main']
     });
@@ -106,6 +113,47 @@ describe('WorkspaceProvisioner', () => {
       })
     ).rejects.toMatchObject({ code: 'workspace_provision_failed' });
     await fs.rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it('worktree provisioner prunes stale metadata before provisioning', async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-provisioner-repo-'));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-provisioner-ws-'));
+    const workspacePath = path.join(workspaceRoot, 'ABC-STALE');
+    await fs.mkdir(path.join(repoRoot, '.git'));
+
+    let listCalls = 0;
+    const runGit = vi.fn(async ({ args }: { args: string[] }) => {
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        listCalls += 1;
+        if (listCalls === 1) {
+          return { ok: true, stdout: `worktree ${workspacePath}\nprunable gitdir file points to non-existent location\n`, stderr: '' };
+        }
+        return { ok: true, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        await fs.mkdir(workspacePath, { recursive: true });
+        await fs.writeFile(path.join(workspacePath, '.git'), `gitdir: ${path.join(repoRoot, '.git', 'worktrees', 'abc')}\n`);
+      }
+      return { ok: true, stdout: '', stderr: '' };
+    });
+
+    const provisioner = new WorktreeProvisioner({
+      repoRoot,
+      baseRef: 'origin/main',
+      branchTemplate: 'feature/{{ issue.identifier }}',
+      teardownMode: 'remove_worktree',
+      allowDirtyRepo: true,
+      runGit,
+      fsOps: { stat: fs.stat, rm: fs.rm }
+    });
+
+    const result = await provisioner.provision({ identifier: 'ABC-STALE', workspacePath });
+    expect(result.workspace_integrity_status).toBe('reconciled');
+    expect(result.workspace_integrity_reason).toBe('stale_worktree_metadata');
+    expect(runGit).toHaveBeenCalledWith({ cwd: repoRoot, args: ['worktree', 'prune'] });
+
+    await fs.rm(repoRoot, { recursive: true, force: true });
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
   });
 
   it('clone provisioner clones repo and supports keep teardown mode', async () => {
@@ -184,7 +232,7 @@ describe('WorkspaceProvisioner', () => {
       })
     ).rejects.toMatchObject({ code: 'workspace_unprovisioned_conflict' });
 
-    expect(runGit).toHaveBeenCalledTimes(1);
+    expect(runGit).toHaveBeenCalledTimes(2);
     await fs.rm(repoRoot, { recursive: true, force: true });
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   });

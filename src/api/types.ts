@@ -52,6 +52,10 @@ export interface DiagnosticsSource {
     last_verification_result: 'verified' | 'reprovisioned' | 'failed' | null;
     last_cleanup_on_failure_result: 'cleaned' | 'cleanup_failed' | 'not_attempted' | null;
     verification_mode: 'strict' | 'none';
+    last_integrity_status: 'ok' | 'reconciled' | 'failed' | null;
+    last_integrity_reason_code: string | null;
+    last_integrity_checked_at: string | null;
+    last_integrity_reconciled_at: string | null;
   };
   getWorkspaceCopyIgnored(): {
     enabled: boolean;
