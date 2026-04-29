@@ -252,11 +252,33 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     last_cleanup_on_failure_result: null,
     verification_mode: effectiveConfig.workspace.provisioner.type === 'none' ? 'none' : 'strict'
   };
+  const workspaceCopyIgnoredState: {
+    last_status: 'start' | 'success' | 'skipped' | 'failed' | null;
+    last_error_code: string | null;
+    last_error_message: string | null;
+    source_path: string | null;
+    copied_files: number;
+    skipped_existing: number;
+    blocked_files: number;
+    bytes_copied: number;
+    duration_ms: number;
+  } = {
+    last_status: null,
+    last_error_code: null,
+    last_error_message: null,
+    source_path: null,
+    copied_files: 0,
+    skipped_existing: 0,
+    blocked_files: 0,
+    bytes_copied: 0,
+    duration_ms: 0
+  };
 
   const workspaceManager = new WorkspaceManager({
     root: effectiveConfig.workspace.root,
     hooks: effectiveConfig.hooks,
     provisioner: createWorkspaceProvisioner(effectiveConfig.workspace.provisioner),
+    copyIgnored: effectiveConfig.workspace.copy_ignored,
     onProvisionerResult: (result) => {
       const baseContext = {
         issue_identifier: result.identifier,
@@ -359,6 +381,64 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         event: CANONICAL_EVENT.workspace.teardownSuccess,
         message: `workspace teardown ${result.status}`,
         context: baseContext
+      });
+    },
+    onCopyIgnoredResult: (result) => {
+      const baseContext = {
+        issue_identifier: result.identifier,
+        workspace_path: result.workspace_path,
+        include_file: result.include_file ?? effectiveConfig.workspace.copy_ignored.include_file,
+        conflict_policy: result.conflict_policy ?? effectiveConfig.workspace.copy_ignored.conflict_policy
+      };
+      workspaceCopyIgnoredState.last_status = result.status;
+
+      if (result.status === 'start') {
+        logger.log({
+          level: 'info',
+          event: CANONICAL_EVENT.workspace.copyIgnoredStart,
+          message: 'workspace copy-ignored started',
+          context: baseContext
+        });
+        return;
+      }
+
+      if (result.status === 'failed') {
+        workspaceCopyIgnoredState.last_error_code = result.error_code ?? 'workspace_copy_ignored_invalid_config';
+        workspaceCopyIgnoredState.last_error_message = result.error_message ?? 'workspace copy-ignored failed';
+        logger.log({
+          level: 'error',
+          event: CANONICAL_EVENT.workspace.copyIgnoredFailed,
+          message: workspaceCopyIgnoredState.last_error_message,
+          context: {
+            ...baseContext,
+            error_code: workspaceCopyIgnoredState.last_error_code
+          }
+        });
+        return;
+      }
+
+      workspaceCopyIgnoredState.last_error_code = null;
+      workspaceCopyIgnoredState.last_error_message = null;
+      workspaceCopyIgnoredState.source_path = result.source_path ?? null;
+      workspaceCopyIgnoredState.copied_files = result.copied_files ?? 0;
+      workspaceCopyIgnoredState.skipped_existing = result.skipped_existing ?? 0;
+      workspaceCopyIgnoredState.blocked_files = result.blocked_files ?? 0;
+      workspaceCopyIgnoredState.bytes_copied = result.bytes_copied ?? 0;
+      workspaceCopyIgnoredState.duration_ms = result.duration_ms ?? 0;
+      logger.log({
+        level: 'info',
+        event: CANONICAL_EVENT.workspace.copyIgnoredSuccess,
+        message: `workspace copy-ignored ${result.status}`,
+        context: {
+          ...baseContext,
+          source_path: result.source_path ?? null,
+          copied_files: result.copied_files ?? 0,
+          skipped_existing: result.skipped_existing ?? 0,
+          blocked_files: result.blocked_files ?? 0,
+          bytes_copied: result.bytes_copied ?? 0,
+          duration_ms: result.duration_ms ?? 0,
+          warning: result.warning ?? null
+        }
       });
     }
   });
@@ -463,6 +543,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     });
 
     bridge.setRuntimeConfig(nextConfig, nextDefinition.prompt_template);
+    workspaceManager.setCopyIgnoredConfig(nextConfig.workspace.copy_ignored);
     if (runtimeStarted) {
       if (pollIntervalHandle) {
         clearInterval(pollIntervalHandle);
@@ -629,6 +710,31 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               last_verification_result: workspaceProvisionState.last_verification_result,
               last_cleanup_on_failure_result: workspaceProvisionState.last_cleanup_on_failure_result,
               verification_mode: workspaceProvisionState.verification_mode
+            }),
+            getWorkspaceCopyIgnored: () => ({
+              enabled: effectiveConfig.workspace.copy_ignored.enabled,
+              include_file: effectiveConfig.workspace.copy_ignored.include_file,
+              from:
+                effectiveConfig.workspace.copy_ignored.from === 'repo_root'
+                  ? 'repo_root'
+                  : 'primary_worktree',
+              conflict_policy:
+                effectiveConfig.workspace.copy_ignored.conflict_policy === 'overwrite' ||
+                effectiveConfig.workspace.copy_ignored.conflict_policy === 'fail'
+                  ? effectiveConfig.workspace.copy_ignored.conflict_policy
+                  : 'skip',
+              require_gitignored: effectiveConfig.workspace.copy_ignored.require_gitignored,
+              max_files: effectiveConfig.workspace.copy_ignored.max_files,
+              max_total_bytes: effectiveConfig.workspace.copy_ignored.max_total_bytes,
+              last_status: workspaceCopyIgnoredState.last_status,
+              last_error_code: workspaceCopyIgnoredState.last_error_code,
+              last_error_message: workspaceCopyIgnoredState.last_error_message,
+              source_path: workspaceCopyIgnoredState.source_path,
+              copied_files: workspaceCopyIgnoredState.copied_files,
+              skipped_existing: workspaceCopyIgnoredState.skipped_existing,
+              blocked_files: workspaceCopyIgnoredState.blocked_files,
+              bytes_copied: workspaceCopyIgnoredState.bytes_copied,
+              duration_ms: workspaceCopyIgnoredState.duration_ms
             })
           },
           workflowControlSource: {

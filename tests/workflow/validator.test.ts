@@ -24,6 +24,17 @@ function baseConfig(): EffectiveConfig {
         teardown_mode: 'remove_worktree',
         allow_dirty_repo: false,
         fallback_to_clone_on_worktree_failure: false
+      },
+      copy_ignored: {
+        enabled: false,
+        include_file: '/tmp/symphony/.worktreeinclude',
+        from: 'primary_worktree',
+        conflict_policy: 'skip',
+        require_gitignored: true,
+        max_files: 10_000,
+        max_total_bytes: 5 * 1024 * 1024 * 1024,
+        allow_patterns: [],
+        deny_patterns: []
       }
     },
     hooks: { timeout_ms: 60000 },
@@ -429,6 +440,32 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('invalid_workspace_provisioner_branch_template');
+    }
+  });
+
+  it('rejects unsupported workspace.copy_ignored conflict_policy', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.workspace.copy_ignored.enabled = true;
+    config.workspace.copy_ignored.conflict_policy = 'merge';
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_workspace_copy_ignored_conflict_policy');
+    }
+  });
+
+  it('rejects non-positive workspace.copy_ignored limits', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.workspace.copy_ignored.enabled = true;
+    config.workspace.copy_ignored.max_files = 0;
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_workspace_copy_ignored_limits');
     }
   });
 });

@@ -35,6 +35,10 @@ export type ValidationErrorCode =
   | 'invalid_workspace_provisioner_branch_template'
   | 'invalid_workspace_provisioner_teardown_mode'
   | 'invalid_worktree_sandbox_policy'
+  | 'invalid_workspace_copy_ignored_include_file'
+  | 'invalid_workspace_copy_ignored_from'
+  | 'invalid_workspace_copy_ignored_conflict_policy'
+  | 'invalid_workspace_copy_ignored_limits'
   | 'invalid_logging_root'
   | 'invalid_logging_max_bytes'
   | 'invalid_logging_max_files';
@@ -123,6 +127,17 @@ export interface EffectiveConfig {
       teardown_mode: 'remove_worktree' | 'keep' | string;
       allow_dirty_repo: boolean;
       fallback_to_clone_on_worktree_failure: boolean;
+    };
+    copy_ignored: {
+      enabled: boolean;
+      include_file: string;
+      from: 'primary_worktree' | 'repo_root' | string;
+      conflict_policy: 'skip' | 'overwrite' | 'fail' | string;
+      require_gitignored: boolean;
+      max_files: number;
+      max_total_bytes: number;
+      allow_patterns: string[];
+      deny_patterns: string[];
     };
   };
   hooks: HooksConfig;

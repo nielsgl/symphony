@@ -1,4 +1,5 @@
 import net from 'node:net';
+import path from 'node:path';
 
 import { nowIso } from './errors';
 import {
@@ -310,6 +311,54 @@ export class ConfigValidator {
           'workspace.provisioner.type=worktree requires codex.thread_sandbox=danger-full-access and codex.turn_sandbox_policy=danger-full-access',
         at
       };
+    }
+
+    const copyIgnored = effectiveConfig.workspace.copy_ignored;
+    if (copyIgnored.enabled) {
+      if (!path.isAbsolute(copyIgnored.include_file) || copyIgnored.include_file.trim().length === 0) {
+        return {
+          ok: false,
+          error_code: 'invalid_workspace_copy_ignored_include_file',
+          message: 'workspace.copy_ignored.include_file must resolve to a non-empty absolute path',
+          at
+        };
+      }
+
+      if (copyIgnored.from !== 'primary_worktree' && copyIgnored.from !== 'repo_root') {
+        return {
+          ok: false,
+          error_code: 'invalid_workspace_copy_ignored_from',
+          message: `workspace.copy_ignored.from '${copyIgnored.from}' is not supported`,
+          at
+        };
+      }
+
+      if (
+        copyIgnored.conflict_policy !== 'skip' &&
+        copyIgnored.conflict_policy !== 'overwrite' &&
+        copyIgnored.conflict_policy !== 'fail'
+      ) {
+        return {
+          ok: false,
+          error_code: 'invalid_workspace_copy_ignored_conflict_policy',
+          message: `workspace.copy_ignored.conflict_policy '${copyIgnored.conflict_policy}' is not supported`,
+          at
+        };
+      }
+
+      if (
+        !Number.isFinite(copyIgnored.max_files) ||
+        copyIgnored.max_files <= 0 ||
+        !Number.isFinite(copyIgnored.max_total_bytes) ||
+        copyIgnored.max_total_bytes <= 0
+      ) {
+        return {
+          ok: false,
+          error_code: 'invalid_workspace_copy_ignored_limits',
+          message: 'workspace.copy_ignored.max_files and max_total_bytes must be positive integers',
+          at
+        };
+      }
     }
 
     if (

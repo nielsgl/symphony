@@ -95,7 +95,10 @@ export class LocalRunnerBridge {
       workspace_exists: workspace.workspace_exists ?? true,
       workspace_git_status: workspace.workspace_git_status ?? 'unknown',
       workspace_provisioned: workspace.workspace_provisioned ?? false,
-      workspace_is_git_worktree: workspace.workspace_is_git_worktree ?? false
+      workspace_is_git_worktree: workspace.workspace_is_git_worktree ?? false,
+      copy_ignored_applied: workspace.copy_ignored_applied ?? false,
+      copy_ignored_status: workspace.copy_ignored_status ?? null,
+      copy_ignored_summary: workspace.copy_ignored_summary ?? null
     };
   }
 

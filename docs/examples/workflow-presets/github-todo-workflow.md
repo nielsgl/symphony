@@ -21,6 +21,16 @@ workspace:
     teardown_mode: remove_worktree
     allow_dirty_repo: false
     fallback_to_clone_on_worktree_failure: false
+  copy_ignored:
+    enabled: false
+    include_file: .worktreeinclude
+    from: primary_worktree
+    conflict_policy: skip
+    require_gitignored: true
+    max_files: 10000
+    max_total_bytes: 5368709120
+    allow_patterns: []
+    deny_patterns: []
 hooks:
   after_create: |
     corepack enable && pnpm install --frozen-lockfile || npm ci

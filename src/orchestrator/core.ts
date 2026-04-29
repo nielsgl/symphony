@@ -38,6 +38,17 @@ interface ScheduleRetryParams {
   workspace_git_status?: 'clean' | 'dirty' | 'unknown' | null;
   workspace_provisioned?: boolean;
   workspace_is_git_worktree?: boolean;
+  copy_ignored_applied?: boolean;
+  copy_ignored_status?: 'skipped' | 'success' | 'failed' | null;
+  copy_ignored_summary?:
+    | {
+        copied_files: number;
+        skipped_existing: number;
+        blocked_files: number;
+        bytes_copied: number;
+        duration_ms: number;
+      }
+    | null;
   stop_reason_code?: string | null;
   stop_reason_detail?: string | null;
   previous_thread_id?: string | null;
@@ -64,7 +75,8 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     issue: cloneIssue(entry.issue),
     tokens: { ...entry.tokens },
     last_reported_tokens: { ...entry.last_reported_tokens },
-    recent_events: entry.recent_events.map((event) => ({ ...event }))
+    recent_events: entry.recent_events.map((event) => ({ ...event })),
+    copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null
   };
 }
 
@@ -84,6 +96,9 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     workspace_git_status: entry.workspace_git_status,
     workspace_provisioned: entry.workspace_provisioned,
     workspace_is_git_worktree: entry.workspace_is_git_worktree,
+    copy_ignored_applied: entry.copy_ignored_applied,
+    copy_ignored_status: entry.copy_ignored_status,
+    copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null,
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
@@ -106,6 +121,9 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     workspace_git_status: entry.workspace_git_status,
     workspace_provisioned: entry.workspace_provisioned,
     workspace_is_git_worktree: entry.workspace_is_git_worktree,
+    copy_ignored_applied: entry.copy_ignored_applied,
+    copy_ignored_status: entry.copy_ignored_status,
+    copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null,
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
@@ -506,8 +524,11 @@ export class OrchestratorCore {
         repo_root: running.repo_root ?? null,
         workspace_exists: running.workspace_exists,
         workspace_git_status: running.workspace_git_status,
-        workspace_provisioned: running.workspace_provisioned,
-        workspace_is_git_worktree: running.workspace_is_git_worktree,
+      workspace_provisioned: running.workspace_provisioned,
+      workspace_is_git_worktree: running.workspace_is_git_worktree,
+      copy_ignored_applied: running.copy_ignored_applied,
+      copy_ignored_status: running.copy_ignored_status,
+      copy_ignored_summary: running.copy_ignored_summary,
         stop_reason_code: 'normal_completion',
         stop_reason_detail: 'normal worker completion, continuing while issue is active',
         previous_thread_id: running.thread_id,
@@ -545,6 +566,9 @@ export class OrchestratorCore {
           workspace_git_status: running.workspace_git_status,
           workspace_provisioned: running.workspace_provisioned,
           workspace_is_git_worktree: running.workspace_is_git_worktree,
+          copy_ignored_applied: running.copy_ignored_applied,
+          copy_ignored_status: running.copy_ignored_status,
+          copy_ignored_summary: running.copy_ignored_summary,
           stop_reason_code: 'turn_input_required',
           stop_reason_detail: stopReasonDetail,
           previous_thread_id: running.thread_id,
@@ -583,6 +607,9 @@ export class OrchestratorCore {
         workspace_git_status: running.workspace_git_status,
         workspace_provisioned: running.workspace_provisioned,
         workspace_is_git_worktree: running.workspace_is_git_worktree,
+        copy_ignored_applied: running.copy_ignored_applied,
+        copy_ignored_status: running.copy_ignored_status,
+        copy_ignored_summary: running.copy_ignored_summary,
         stop_reason_code: stopReasonCode,
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
@@ -655,6 +682,9 @@ export class OrchestratorCore {
         workspace_git_status: retryEntry.workspace_git_status,
         workspace_provisioned: retryEntry.workspace_provisioned,
         workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
+        copy_ignored_applied: retryEntry.copy_ignored_applied,
+        copy_ignored_status: retryEntry.copy_ignored_status,
+        copy_ignored_summary: retryEntry.copy_ignored_summary,
         stop_reason_code: 'retry_fetch_failed',
         stop_reason_detail: error instanceof Error ? error.message : 'unknown',
         previous_thread_id: retryEntry.previous_thread_id ?? null,
@@ -695,6 +725,9 @@ export class OrchestratorCore {
           workspace_git_status: retryEntry.workspace_git_status,
           workspace_provisioned: retryEntry.workspace_provisioned,
           workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
+          copy_ignored_applied: retryEntry.copy_ignored_applied,
+          copy_ignored_status: retryEntry.copy_ignored_status,
+          copy_ignored_summary: retryEntry.copy_ignored_summary,
           stop_reason_code: 'slots_exhausted',
           stop_reason_detail: 'no available orchestrator slots',
           previous_thread_id: retryEntry.previous_thread_id ?? null,
@@ -846,6 +879,9 @@ export class OrchestratorCore {
         workspace_git_status: runningEntry.workspace_git_status,
         workspace_provisioned: runningEntry.workspace_provisioned,
         workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
+        copy_ignored_applied: runningEntry.copy_ignored_applied,
+        copy_ignored_status: runningEntry.copy_ignored_status,
+        copy_ignored_summary: runningEntry.copy_ignored_summary,
         stop_reason_code: 'worker_stalled',
         stop_reason_detail: 'worker stalled',
         previous_thread_id: runningEntry.thread_id,
@@ -916,6 +952,9 @@ export class OrchestratorCore {
         workspace_git_status: null,
         workspace_provisioned: false,
         workspace_is_git_worktree: false,
+        copy_ignored_applied: false,
+        copy_ignored_status: null,
+        copy_ignored_summary: null,
         stop_reason_code: 'slots_exhausted',
         stop_reason_detail: 'no available worker host slots'
       });
@@ -952,6 +991,9 @@ export class OrchestratorCore {
         workspace_git_status: null,
         workspace_provisioned: false,
         workspace_is_git_worktree: false,
+        copy_ignored_applied: false,
+        copy_ignored_status: null,
+        copy_ignored_summary: null,
         stop_reason_code: 'spawn_failed',
         stop_reason_detail: spawned.error
       });
@@ -984,6 +1026,9 @@ export class OrchestratorCore {
       workspace_git_status: spawned.workspace_git_status ?? null,
       workspace_provisioned: spawned.workspace_provisioned ?? false,
       workspace_is_git_worktree: spawned.workspace_is_git_worktree ?? false,
+      copy_ignored_applied: spawned.copy_ignored_applied ?? false,
+      copy_ignored_status: spawned.copy_ignored_status ?? null,
+      copy_ignored_summary: spawned.copy_ignored_summary ?? null,
       session_id: null,
       thread_id: null,
       turn_id: null,
@@ -1114,6 +1159,9 @@ export class OrchestratorCore {
       workspace_git_status: params.workspace_git_status ?? null,
       workspace_provisioned: params.workspace_provisioned ?? false,
       workspace_is_git_worktree: params.workspace_is_git_worktree ?? false,
+      copy_ignored_applied: params.copy_ignored_applied ?? false,
+      copy_ignored_status: params.copy_ignored_status ?? null,
+      copy_ignored_summary: params.copy_ignored_summary ?? null,
       stop_reason_code: params.stop_reason_code ?? null,
       stop_reason_detail: params.stop_reason_detail ?? null,
       previous_thread_id: params.previous_thread_id ?? null,
@@ -1151,6 +1199,17 @@ export class OrchestratorCore {
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     workspace_provisioned: boolean;
     workspace_is_git_worktree: boolean;
+    copy_ignored_applied?: boolean;
+    copy_ignored_status?: 'skipped' | 'success' | 'failed' | null;
+    copy_ignored_summary?:
+      | {
+          copied_files: number;
+          skipped_existing: number;
+          blocked_files: number;
+          bytes_copied: number;
+          duration_ms: number;
+        }
+      | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -1175,6 +1234,9 @@ export class OrchestratorCore {
       workspace_git_status: params.workspace_git_status,
       workspace_provisioned: params.workspace_provisioned,
       workspace_is_git_worktree: params.workspace_is_git_worktree,
+      copy_ignored_applied: params.copy_ignored_applied ?? false,
+      copy_ignored_status: params.copy_ignored_status ?? null,
+      copy_ignored_summary: params.copy_ignored_summary ?? null,
       stop_reason_code: params.stop_reason_code,
       stop_reason_detail: params.stop_reason_detail,
       previous_thread_id: params.previous_thread_id,
@@ -1280,6 +1342,9 @@ export class OrchestratorCore {
         workspace_git_status: blocked.workspace_git_status,
         workspace_provisioned: blocked.workspace_provisioned,
         workspace_is_git_worktree: blocked.workspace_is_git_worktree,
+        copy_ignored_applied: blocked.copy_ignored_applied,
+        copy_ignored_status: blocked.copy_ignored_status,
+        copy_ignored_summary: blocked.copy_ignored_summary,
         stop_reason_code: 'slots_exhausted',
         stop_reason_detail: 'resume blocked by no available orchestrator slots',
         previous_thread_id: blocked.previous_thread_id,
@@ -1301,6 +1366,9 @@ export class OrchestratorCore {
         workspace_git_status: blocked.workspace_git_status,
         workspace_provisioned: blocked.workspace_provisioned,
         workspace_is_git_worktree: blocked.workspace_is_git_worktree,
+        copy_ignored_applied: blocked.copy_ignored_applied,
+        copy_ignored_status: blocked.copy_ignored_status,
+        copy_ignored_summary: blocked.copy_ignored_summary,
         stop_reason_code: 'manual_resume',
         stop_reason_detail: 'manual resume requested',
         previous_thread_id: blocked.previous_thread_id,

@@ -11,6 +11,15 @@ export interface WorkspaceInfo {
   workspace_git_status?: 'clean' | 'dirty' | 'unknown';
   workspace_provisioned?: boolean;
   workspace_is_git_worktree?: boolean;
+  copy_ignored_applied?: boolean;
+  copy_ignored_status?: 'skipped' | 'success' | 'failed';
+  copy_ignored_summary?: {
+    copied_files: number;
+    skipped_existing: number;
+    blocked_files: number;
+    bytes_copied: number;
+    duration_ms: number;
+  };
 }
 
 export interface HookExecutionResult {
@@ -33,6 +42,7 @@ export interface WorkspaceManagerOptions {
   root: string;
   hooks: WorkspaceHooksConfig;
   provisioner?: WorkspaceProvisioner;
+  copyIgnored?: WorkspaceCopyIgnoredConfig;
   onProvisionerResult?: (result: {
     phase: 'provision' | 'teardown';
     identifier: string;
@@ -44,6 +54,22 @@ export interface WorkspaceManagerOptions {
     cleanup_attempted?: boolean;
     cleanup_succeeded?: boolean;
     cleanup_error?: string;
+  }) => void;
+  onCopyIgnoredResult?: (result: {
+    identifier: string;
+    workspace_path: string;
+    status: 'start' | 'success' | 'skipped' | 'failed';
+    source_path?: string;
+    include_file?: string;
+    conflict_policy?: 'skip' | 'overwrite' | 'fail';
+    copied_files?: number;
+    skipped_existing?: number;
+    blocked_files?: number;
+    bytes_copied?: number;
+    duration_ms?: number;
+    error_code?: string;
+    error_message?: string;
+    warning?: string;
   }) => void;
   nowMs?: () => number;
   runShell?: (params: {
@@ -88,4 +114,16 @@ export interface WorkspaceTeardownResult {
 export interface WorkspaceProvisioner {
   provision(params: WorkspaceProvisionContext): Promise<WorkspaceProvisionResult>;
   teardown(params: WorkspaceTeardownContext): Promise<WorkspaceTeardownResult>;
+}
+
+export interface WorkspaceCopyIgnoredConfig {
+  enabled: boolean;
+  include_file: string;
+  from: 'primary_worktree' | 'repo_root' | string;
+  conflict_policy: 'skip' | 'overwrite' | 'fail' | string;
+  require_gitignored: boolean;
+  max_files: number;
+  max_total_bytes: number;
+  allow_patterns: string[];
+  deny_patterns: string[];
 }

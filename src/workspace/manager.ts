@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { WorkspaceError } from './errors';
+import { copyIgnoredArtifacts } from './copy-ignored';
 import { NoopProvisioner } from './provisioner';
 import type {
   CleanupWorkspacesResult,
@@ -75,6 +76,8 @@ export class WorkspaceManager {
   private readonly runShell: NonNullable<WorkspaceManagerOptions['runShell']>;
   private readonly onHookResult?: WorkspaceManagerOptions['onHookResult'];
   private readonly onProvisionerResult?: WorkspaceManagerOptions['onProvisionerResult'];
+  private copyIgnored: WorkspaceManagerOptions['copyIgnored'];
+  private readonly onCopyIgnoredResult?: WorkspaceManagerOptions['onCopyIgnoredResult'];
 
   constructor(options: WorkspaceManagerOptions) {
     this.root = path.resolve(options.root);
@@ -84,6 +87,12 @@ export class WorkspaceManager {
     this.runShell = options.runShell ?? defaultRunShell;
     this.onHookResult = options.onHookResult;
     this.onProvisionerResult = options.onProvisionerResult;
+    this.copyIgnored = options.copyIgnored;
+    this.onCopyIgnoredResult = options.onCopyIgnoredResult;
+  }
+
+  setCopyIgnoredConfig(config: WorkspaceManagerOptions['copyIgnored']): void {
+    this.copyIgnored = config;
   }
 
   deriveWorkspaceKey(identifier: string): string {
@@ -115,6 +124,17 @@ export class WorkspaceManager {
     }
 
     let provisionResult: Awaited<ReturnType<typeof this.provisioner.provision>> | null = null;
+    let copyIgnoredApplied = false;
+    let copyIgnoredStatus: 'skipped' | 'success' | 'failed' | undefined;
+    let copyIgnoredSummary:
+      | {
+          copied_files: number;
+          skipped_existing: number;
+          blocked_files: number;
+          bytes_copied: number;
+          duration_ms: number;
+        }
+      | undefined;
     if (created_now) {
       try {
         this.onProvisionerResult?.({
@@ -162,6 +182,93 @@ export class WorkspaceManager {
         });
         throw error;
       }
+      if (this.copyIgnored?.enabled) {
+        copyIgnoredApplied = true;
+        if (
+          this.hooks.after_create &&
+          /(worktreeinclude|copy[-_ ]ignored|copy[-_ ]worktree)/i.test(this.hooks.after_create)
+        ) {
+          this.onCopyIgnoredResult?.({
+            identifier,
+            workspace_path: workspacePath,
+            status: 'skipped',
+            warning: 'custom_copy_hook_detected'
+          });
+        }
+        if (provisionResult?.provisioner_type === 'none') {
+          this.onCopyIgnoredResult?.({
+            identifier,
+            workspace_path: workspacePath,
+            status: 'skipped',
+            warning: 'copy_ignored_skipped_for_none_provisioner'
+          });
+          copyIgnoredStatus = 'skipped';
+          await this.runHookOrThrow('after_create', workspacePath);
+          return {
+            path: workspacePath,
+            workspace_key,
+            created_now,
+            provisioner_type: provisionResult?.provisioner_type ?? undefined,
+            branch_name: provisionResult?.branch_name ?? null,
+            repo_root: provisionResult?.repo_root ?? null,
+            workspace_exists: provisionResult?.workspace_exists ?? true,
+            workspace_git_status: provisionResult?.workspace_git_status ?? 'unknown',
+            workspace_provisioned: provisionResult?.workspace_provisioned ?? false,
+            workspace_is_git_worktree: provisionResult?.workspace_is_git_worktree ?? false,
+            copy_ignored_applied: copyIgnoredApplied,
+            copy_ignored_status: copyIgnoredStatus,
+            copy_ignored_summary: copyIgnoredSummary
+          };
+        }
+        this.onCopyIgnoredResult?.({
+          identifier,
+          workspace_path: workspacePath,
+          status: 'start'
+        });
+        try {
+          const copyResult = await copyIgnoredArtifacts({
+            identifier,
+            workspacePath,
+            provisionRepoRoot: provisionResult?.repo_root ?? null,
+            config: this.copyIgnored,
+            nowMs: this.nowMs
+          });
+          this.onCopyIgnoredResult?.({
+            identifier,
+            workspace_path: workspacePath,
+            status: copyResult.status,
+            source_path: copyResult.source_path,
+            include_file: copyResult.include_file,
+            conflict_policy: copyResult.conflict_policy,
+            copied_files: copyResult.copied_files,
+            skipped_existing: copyResult.skipped_existing,
+            blocked_files: copyResult.blocked_files,
+            bytes_copied: copyResult.bytes_copied,
+            duration_ms: copyResult.duration_ms,
+            warning: copyResult.warning
+          });
+          copyIgnoredStatus = copyResult.status;
+          copyIgnoredSummary = {
+            copied_files: copyResult.copied_files,
+            skipped_existing: copyResult.skipped_existing,
+            blocked_files: copyResult.blocked_files,
+            bytes_copied: copyResult.bytes_copied,
+            duration_ms: copyResult.duration_ms
+          };
+        } catch (error) {
+          this.onCopyIgnoredResult?.({
+            identifier,
+            workspace_path: workspacePath,
+            status: 'failed',
+            error_code:
+              error instanceof WorkspaceError ? error.code : 'workspace_copy_ignored_invalid_config',
+            error_message: error instanceof Error ? error.message : 'workspace copy ignored failed'
+          });
+          copyIgnoredStatus = 'failed';
+          throw error;
+        }
+      }
+
       await this.runHookOrThrow('after_create', workspacePath);
     }
 
@@ -175,7 +282,10 @@ export class WorkspaceManager {
       workspace_exists: provisionResult?.workspace_exists ?? true,
       workspace_git_status: provisionResult?.workspace_git_status ?? 'unknown',
       workspace_provisioned: provisionResult?.workspace_provisioned ?? false,
-      workspace_is_git_worktree: provisionResult?.workspace_is_git_worktree ?? false
+      workspace_is_git_worktree: provisionResult?.workspace_is_git_worktree ?? false,
+      copy_ignored_applied: copyIgnoredApplied,
+      copy_ignored_status: copyIgnoredStatus,
+      copy_ignored_summary: copyIgnoredSummary
     };
   }
 

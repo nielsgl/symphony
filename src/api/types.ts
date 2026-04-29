@@ -53,6 +53,24 @@ export interface DiagnosticsSource {
     last_cleanup_on_failure_result: 'cleaned' | 'cleanup_failed' | 'not_attempted' | null;
     verification_mode: 'strict' | 'none';
   };
+  getWorkspaceCopyIgnored(): {
+    enabled: boolean;
+    include_file: string;
+    from: 'primary_worktree' | 'repo_root';
+    conflict_policy: 'skip' | 'overwrite' | 'fail';
+    require_gitignored: boolean;
+    max_files: number;
+    max_total_bytes: number;
+    last_status: 'start' | 'success' | 'skipped' | 'failed' | null;
+    last_error_code: string | null;
+    last_error_message: string | null;
+    source_path: string | null;
+    copied_files: number;
+    skipped_existing: number;
+    blocked_files: number;
+    bytes_copied: number;
+    duration_ms: number;
+  };
 }
 
 export interface LocalApiErrorEnvelope {
@@ -83,6 +101,15 @@ export interface ApiStateResponse {
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     workspace_provisioned: boolean;
     workspace_is_git_worktree: boolean;
+    copy_ignored_applied: boolean;
+    copy_ignored_status: 'skipped' | 'success' | 'failed' | null;
+    copy_ignored_summary: {
+      copied_files: number;
+      skipped_existing: number;
+      blocked_files: number;
+      bytes_copied: number;
+      duration_ms: number;
+    } | null;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -116,6 +143,15 @@ export interface ApiStateResponse {
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     workspace_provisioned: boolean;
     workspace_is_git_worktree: boolean;
+    copy_ignored_applied: boolean;
+    copy_ignored_status: 'skipped' | 'success' | 'failed' | null;
+    copy_ignored_summary: {
+      copied_files: number;
+      skipped_existing: number;
+      blocked_files: number;
+      bytes_copied: number;
+      duration_ms: number;
+    } | null;
     stop_reason_code: string | null;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -135,6 +171,15 @@ export interface ApiStateResponse {
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     workspace_provisioned: boolean;
     workspace_is_git_worktree: boolean;
+    copy_ignored_applied: boolean;
+    copy_ignored_status: 'skipped' | 'success' | 'failed' | null;
+    copy_ignored_summary: {
+      copied_files: number;
+      skipped_existing: number;
+      blocked_files: number;
+      bytes_copied: number;
+      duration_ms: number;
+    } | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -207,6 +252,15 @@ export interface ApiIssueResponse {
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     workspace_provisioned: boolean;
     workspace_is_git_worktree: boolean;
+    copy_ignored_applied: boolean;
+    copy_ignored_status: 'skipped' | 'success' | 'failed' | null;
+    copy_ignored_summary: {
+      copied_files: number;
+      skipped_existing: number;
+      blocked_files: number;
+      bytes_copied: number;
+      duration_ms: number;
+    } | null;
     thread_id: string | null;
     turn_id: string | null;
     codex_app_server_pid: string | null;
@@ -239,6 +293,15 @@ export interface ApiIssueResponse {
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     workspace_provisioned: boolean;
     workspace_is_git_worktree: boolean;
+    copy_ignored_applied: boolean;
+    copy_ignored_status: 'skipped' | 'success' | 'failed' | null;
+    copy_ignored_summary: {
+      copied_files: number;
+      skipped_existing: number;
+      blocked_files: number;
+      bytes_copied: number;
+      duration_ms: number;
+    } | null;
     stop_reason_code: string | null;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -256,6 +319,15 @@ export interface ApiIssueResponse {
     workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
     workspace_provisioned: boolean;
     workspace_is_git_worktree: boolean;
+    copy_ignored_applied: boolean;
+    copy_ignored_status: 'skipped' | 'success' | 'failed' | null;
+    copy_ignored_summary: {
+      copied_files: number;
+      skipped_existing: number;
+      blocked_files: number;
+      bytes_copied: number;
+      duration_ms: number;
+    } | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
@@ -381,5 +453,23 @@ export interface ApiDiagnosticsResponse {
     last_verification_result: 'verified' | 'reprovisioned' | 'failed' | null;
     last_cleanup_on_failure_result: 'cleaned' | 'cleanup_failed' | 'not_attempted' | null;
     verification_mode: 'strict' | 'none';
+  };
+  workspace_copy_ignored: {
+    enabled: boolean;
+    include_file: string;
+    from: 'primary_worktree' | 'repo_root';
+    conflict_policy: 'skip' | 'overwrite' | 'fail';
+    require_gitignored: boolean;
+    max_files: number;
+    max_total_bytes: number;
+    last_status: 'start' | 'success' | 'skipped' | 'failed' | null;
+    last_error_code: string | null;
+    last_error_message: string | null;
+    source_path: string | null;
+    copied_files: number;
+    skipped_existing: number;
+    blocked_files: number;
+    bytes_copied: number;
+    duration_ms: number;
   };
 }

@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DEFAULT_LOG_ROTATION_MAX_BYTES, DEFAULT_LOG_ROTATION_MAX_FILES } from '../observability';
+import { WorkflowConfigError } from './errors';
 import type { EffectiveConfig, WorkflowDefinition } from './types';
 
 interface ResolverOptions {
@@ -140,6 +141,11 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+function isContainedPath(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 function readStringList(value: unknown, fallback: string[]): string[] {
   if (!Array.isArray(value)) {
     return [...fallback];
@@ -239,6 +245,7 @@ export class ConfigResolver {
     const polling = asRecord(config.polling);
     const workspace = asRecord(config.workspace);
     const provisioner = asRecord(workspace.provisioner);
+    const copyIgnored = asRecord(workspace.copy_ignored);
     const hooks = asRecord(config.hooks);
     const agent = asRecord(config.agent);
     const codex = asRecord(config.codex);
@@ -314,6 +321,24 @@ export class ConfigResolver {
       provisioner.fallback_to_clone_on_worktree_failure,
       false
     );
+    const copyIgnoredEnabled = readBoolean(copyIgnored.enabled, false);
+    const copyIgnoredIncludeFileRaw = readString(copyIgnored.include_file, '.worktreeinclude').trim() || '.worktreeinclude';
+    const copyIgnoredIncludeFile = path.isAbsolute(copyIgnoredIncludeFileRaw)
+      ? copyIgnoredIncludeFileRaw
+      : path.resolve(workflowDir, copyIgnoredIncludeFileRaw);
+    const copyIgnoredFrom = readString(copyIgnored.from, 'primary_worktree').trim() || 'primary_worktree';
+    const copyIgnoredConflictPolicy = readString(copyIgnored.conflict_policy, 'skip').trim() || 'skip';
+    const copyIgnoredRequireGitignored = readBoolean(copyIgnored.require_gitignored, true);
+    const copyIgnoredMaxFiles = readInt(copyIgnored.max_files, 10_000);
+    const copyIgnoredMaxTotalBytes = readInt(copyIgnored.max_total_bytes, 5 * 1024 * 1024 * 1024);
+    const copyIgnoredAllowPatterns = readStringList(copyIgnored.allow_patterns, []);
+    const copyIgnoredDenyPatterns = readStringList(copyIgnored.deny_patterns, []);
+    if (copyIgnoredEnabled && !isContainedPath(workflowDir, copyIgnoredIncludeFile)) {
+      throw new WorkflowConfigError(
+        'invalid_workspace_copy_ignored_include_file',
+        'workspace.copy_ignored.include_file must be contained in the workflow directory'
+      );
+    }
 
     const hooksTimeoutMs = readIntStrict(hooks.timeout_ms, 60000);
 
@@ -366,6 +391,17 @@ export class ConfigResolver {
           teardown_mode: provisionerTeardownMode,
           allow_dirty_repo: provisionerAllowDirtyRepo,
           fallback_to_clone_on_worktree_failure: provisionerFallbackToCloneOnWorktreeFailure
+        },
+        copy_ignored: {
+          enabled: copyIgnoredEnabled,
+          include_file: copyIgnoredIncludeFile,
+          from: copyIgnoredFrom,
+          conflict_policy: copyIgnoredConflictPolicy,
+          require_gitignored: copyIgnoredRequireGitignored,
+          max_files: copyIgnoredMaxFiles,
+          max_total_bytes: copyIgnoredMaxTotalBytes,
+          allow_patterns: copyIgnoredAllowPatterns,
+          deny_patterns: copyIgnoredDenyPatterns
         }
       },
       hooks: {

@@ -489,7 +489,8 @@ export class LocalApiServer {
                   prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
                 },
                 runtime_resolution: this.diagnosticsSource.getRuntimeResolution(),
-                workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner()
+                workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner(),
+                workspace_copy_ignored: this.diagnosticsSource.getWorkspaceCopyIgnored()
               });
             }
           }

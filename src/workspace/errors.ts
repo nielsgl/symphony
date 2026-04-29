@@ -6,7 +6,11 @@ export class WorkspaceError extends Error {
     | 'workspace_hook_failed'
     | 'workspace_hook_timeout'
     | 'workspace_provision_failed'
-    | 'workspace_unprovisioned_conflict';
+    | 'workspace_unprovisioned_conflict'
+    | 'workspace_copy_ignored_invalid_config'
+    | 'workspace_copy_ignored_denied_path'
+    | 'workspace_copy_ignored_limits_exceeded'
+    | 'workspace_copy_ignored_source_not_found';
 
   constructor(
     code:
@@ -16,7 +20,11 @@ export class WorkspaceError extends Error {
       | 'workspace_hook_failed'
       | 'workspace_hook_timeout'
       | 'workspace_provision_failed'
-      | 'workspace_unprovisioned_conflict',
+      | 'workspace_unprovisioned_conflict'
+      | 'workspace_copy_ignored_invalid_config'
+      | 'workspace_copy_ignored_denied_path'
+      | 'workspace_copy_ignored_limits_exceeded'
+      | 'workspace_copy_ignored_source_not_found',
     message: string
   ) {
     super(message);

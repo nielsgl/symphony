@@ -55,6 +55,9 @@ export const CANONICAL_EVENT = {
     provisionReused: 'workspace.provision.reused',
     provisionFailureCleanupSucceeded: 'workspace.provision.failure_cleanup.succeeded',
     provisionFailureCleanupFailed: 'workspace.provision.failure_cleanup.failed',
+    copyIgnoredStart: 'workspace.copy_ignored.start',
+    copyIgnoredSuccess: 'workspace.copy_ignored.success',
+    copyIgnoredFailed: 'workspace.copy_ignored.failed',
     teardownStart: 'workspace.teardown.start',
     teardownSuccess: 'workspace.teardown.success',
     teardownFailed: 'workspace.teardown.failed'

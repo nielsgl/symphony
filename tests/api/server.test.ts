@@ -369,6 +369,24 @@ describe('LocalApiServer', () => {
           last_verification_result: null,
           last_cleanup_on_failure_result: null,
           verification_mode: 'none'
+        }),
+        getWorkspaceCopyIgnored: () => ({
+          enabled: false,
+          include_file: '/tmp/.worktreeinclude',
+          from: 'primary_worktree',
+          conflict_policy: 'skip',
+          require_gitignored: true,
+          max_files: 10000,
+          max_total_bytes: 5 * 1024 * 1024 * 1024,
+          last_status: null,
+          last_error_code: null,
+          last_error_message: null,
+          source_path: null,
+          copied_files: 0,
+          skipped_existing: 0,
+          blocked_files: 0,
+          bytes_copied: 0,
+          duration_ms: 0
         })
       }
     });
@@ -857,6 +875,24 @@ describe('LocalApiServer', () => {
           last_verification_result: null,
           last_cleanup_on_failure_result: null,
           verification_mode: 'none'
+        }),
+        getWorkspaceCopyIgnored: () => ({
+          enabled: false,
+          include_file: '/tmp/.worktreeinclude',
+          from: 'primary_worktree',
+          conflict_policy: 'skip',
+          require_gitignored: true,
+          max_files: 10000,
+          max_total_bytes: 5 * 1024 * 1024 * 1024,
+          last_status: null,
+          last_error_code: null,
+          last_error_message: null,
+          source_path: null,
+          copied_files: 0,
+          skipped_existing: 0,
+          blocked_files: 0,
+          bytes_copied: 0,
+          duration_ms: 0
         })
       }
     });
@@ -1018,6 +1054,24 @@ describe('LocalApiServer', () => {
           last_verification_result: null,
           last_cleanup_on_failure_result: null,
           verification_mode: 'none'
+        }),
+        getWorkspaceCopyIgnored: () => ({
+          enabled: false,
+          include_file: '/tmp/.worktreeinclude',
+          from: 'primary_worktree',
+          conflict_policy: 'skip',
+          require_gitignored: true,
+          max_files: 10000,
+          max_total_bytes: 5 * 1024 * 1024 * 1024,
+          last_status: null,
+          last_error_code: null,
+          last_error_message: null,
+          source_path: null,
+          copied_files: 0,
+          skipped_existing: 0,
+          blocked_files: 0,
+          bytes_copied: 0,
+          duration_ms: 0
         })
       }
     });
@@ -1107,6 +1161,24 @@ describe('LocalApiServer', () => {
           last_verification_result: null,
           last_cleanup_on_failure_result: null,
           verification_mode: 'none'
+        }),
+        getWorkspaceCopyIgnored: () => ({
+          enabled: false,
+          include_file: '/tmp/.worktreeinclude',
+          from: 'primary_worktree',
+          conflict_policy: 'skip',
+          require_gitignored: true,
+          max_files: 10000,
+          max_total_bytes: 5 * 1024 * 1024 * 1024,
+          last_status: null,
+          last_error_code: null,
+          last_error_message: null,
+          source_path: null,
+          copied_files: 0,
+          skipped_existing: 0,
+          blocked_files: 0,
+          bytes_copied: 0,
+          duration_ms: 0
         })
       }
     });

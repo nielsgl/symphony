@@ -49,6 +49,17 @@ function makeConfig(): EffectiveConfig {
         teardown_mode: 'remove_worktree',
         allow_dirty_repo: false,
         fallback_to_clone_on_worktree_failure: false
+      },
+      copy_ignored: {
+        enabled: false,
+        include_file: '/tmp/symphony/.worktreeinclude',
+        from: 'primary_worktree',
+        conflict_policy: 'skip',
+        require_gitignored: true,
+        max_files: 10_000,
+        max_total_bytes: 5 * 1024 * 1024 * 1024,
+        allow_patterns: [],
+        deny_patterns: []
       }
     },
     hooks: { timeout_ms: 1000 },
@@ -423,6 +434,17 @@ describe('LocalRunnerBridge integration', () => {
             teardown_mode: 'remove_worktree',
             allow_dirty_repo: false,
             fallback_to_clone_on_worktree_failure: false
+          },
+          copy_ignored: {
+            enabled: false,
+            include_file: '/tmp/symphony/.worktreeinclude',
+            from: 'primary_worktree',
+            conflict_policy: 'skip',
+            require_gitignored: true,
+            max_files: 10_000,
+            max_total_bytes: 5 * 1024 * 1024 * 1024,
+            allow_patterns: [],
+            deny_patterns: []
           }
         }
       },

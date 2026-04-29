@@ -326,6 +326,53 @@ describe('ConfigResolver', () => {
     expect(config.hooks.timeout_ms).toBe(0);
   });
 
+  it('resolves workspace.copy_ignored defaults and include path', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve(
+      {
+        config: {
+          workspace: {
+            copy_ignored: {
+              enabled: true
+            }
+          }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.workspace.copy_ignored).toMatchObject({
+      enabled: true,
+      include_file: path.normalize('/workspace/projects/todo-app/.worktreeinclude'),
+      from: 'primary_worktree',
+      conflict_policy: 'skip',
+      require_gitignored: true
+    });
+  });
+
+  it('rejects workspace.copy_ignored.include_file outside workflow directory', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    expect(() =>
+      resolver.resolve(
+        {
+          config: {
+            workspace: {
+              copy_ignored: {
+                enabled: true,
+                include_file: '../outside/.worktreeinclude'
+              }
+            }
+          },
+          prompt_template: 'prompt'
+        },
+        { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+      )
+    ).toThrow('workspace.copy_ignored.include_file must be contained in the workflow directory');
+  });
+
   it('keeps default numeric values when optional fields are missing', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 

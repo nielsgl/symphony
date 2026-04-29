@@ -289,6 +289,11 @@ describe('createRuntimeEnvironment', () => {
     expect(payload.logging.active_file).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log', 'symphony.log'));
     expect(payload.logging.sinks).toEqual(['stderr', 'file']);
     expect(payload.logging.rotation.max_files).toBe(5);
+    expect((payload as Record<string, unknown>).workspace_copy_ignored).toMatchObject({
+      enabled: false,
+      conflict_policy: 'skip',
+      from: 'primary_worktree'
+    });
   });
 
   it('restores durable history on restart without restoring running or retry state', async () => {

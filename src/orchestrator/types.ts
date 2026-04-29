@@ -23,6 +23,17 @@ export interface RunningEntry {
   workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
   workspace_provisioned: boolean;
   workspace_is_git_worktree: boolean;
+  copy_ignored_applied?: boolean;
+  copy_ignored_status?: 'skipped' | 'success' | 'failed' | null;
+  copy_ignored_summary?:
+    | {
+        copied_files: number;
+        skipped_existing: number;
+        blocked_files: number;
+        bytes_copied: number;
+        duration_ms: number;
+      }
+    | null;
   session_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
@@ -57,6 +68,17 @@ export interface RetryEntry {
   workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
   workspace_provisioned: boolean;
   workspace_is_git_worktree: boolean;
+  copy_ignored_applied?: boolean;
+  copy_ignored_status?: 'skipped' | 'success' | 'failed' | null;
+  copy_ignored_summary?:
+    | {
+        copied_files: number;
+        skipped_existing: number;
+        blocked_files: number;
+        bytes_copied: number;
+        duration_ms: number;
+      }
+    | null;
   stop_reason_code: string | null;
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
@@ -77,6 +99,17 @@ export interface BlockedEntry {
   workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
   workspace_provisioned: boolean;
   workspace_is_git_worktree: boolean;
+  copy_ignored_applied?: boolean;
+  copy_ignored_status?: 'skipped' | 'success' | 'failed' | null;
+  copy_ignored_summary?:
+    | {
+        copied_files: number;
+        skipped_existing: number;
+        blocked_files: number;
+        bytes_copied: number;
+        duration_ms: number;
+      }
+    | null;
   stop_reason_code: string;
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
@@ -142,6 +175,17 @@ export interface SpawnWorkerResultSuccess {
   workspace_git_status?: 'clean' | 'dirty' | 'unknown' | null;
   workspace_provisioned?: boolean;
   workspace_is_git_worktree?: boolean;
+  copy_ignored_applied?: boolean;
+  copy_ignored_status?: 'skipped' | 'success' | 'failed' | null;
+  copy_ignored_summary?:
+    | {
+        copied_files: number;
+        skipped_existing: number;
+        blocked_files: number;
+        bytes_copied: number;
+        duration_ms: number;
+      }
+    | null;
 }
 
 export interface SpawnWorkerResultFailure {

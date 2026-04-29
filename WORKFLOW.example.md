@@ -59,6 +59,16 @@ workspace:
     teardown_mode: remove_worktree
     allow_dirty_repo: false
     fallback_to_clone_on_worktree_failure: false
+  copy_ignored:
+    enabled: false
+    include_file: .worktreeinclude
+    from: primary_worktree
+    conflict_policy: skip
+    require_gitignored: true
+    max_files: 10000
+    max_total_bytes: 5368709120
+    allow_patterns: []
+    deny_patterns: []
 
 hooks:
   after_create: ""
@@ -164,6 +174,15 @@ Memory tracker note:
 | `workspace.provisioner.teardown_mode` | string | `remove_worktree` | `remove_worktree` or `keep` | No |
 | `workspace.provisioner.allow_dirty_repo` | boolean | `false` | if false, worktree provisioning fails on dirty repo | No |
 | `workspace.provisioner.fallback_to_clone_on_worktree_failure` | boolean | `false` | reserved fallback toggle for clone fallback behavior | No |
+| `workspace.copy_ignored.enabled` | boolean | `false` | enable built-in `.worktreeinclude` copy engine | No |
+| `workspace.copy_ignored.include_file` | string | `.worktreeinclude` | absolute or workflow-relative include file path | No |
+| `workspace.copy_ignored.from` | string | `primary_worktree` | `primary_worktree` or `repo_root` | No |
+| `workspace.copy_ignored.conflict_policy` | string | `skip` | `skip`, `overwrite`, `fail` | No |
+| `workspace.copy_ignored.require_gitignored` | boolean | `true` | require candidates to be gitignored in source repo | No |
+| `workspace.copy_ignored.max_files` | integer | `10000` | safety cap on copied/skipped/blocked candidates | No |
+| `workspace.copy_ignored.max_total_bytes` | integer | `5368709120` | safety cap on copied bytes | No |
+| `workspace.copy_ignored.allow_patterns` | string[] | `[]` | optional additional allow filter for included candidates | No |
+| `workspace.copy_ignored.deny_patterns` | string[] | `[]` | optional deny extensions (hard denylist always applies) | No |
 
 ### `hooks`
 
@@ -174,6 +193,17 @@ Memory tracker note:
 | `hooks.after_run` | string | unset | shell command | No |
 | `hooks.before_remove` | string | unset | shell command | No |
 | `hooks.timeout_ms` | integer | `60000` | if `<= 0`, resolver resets to `60000` | No |
+
+Hook-based `.worktreeinclude` bootstrap (alternative to built-in copy engine):
+
+- Script: `/Users/niels.van.Galen.last/code/symphony/scripts/worktree_bootstrap.py`
+- Typical `after_create`:
+  - `python3 /Users/niels.van.Galen.last/code/symphony/scripts/worktree_bootstrap.py --source /absolute/repo/root`
+- Features:
+  - target defaults to current working directory (workspace)
+  - `--dry-run` preview mode
+  - skips existing files by default (`--force` to overwrite)
+  - blocks sensitive-looking files unless `--allow-sensitive`
 
 ### `agent`
 
