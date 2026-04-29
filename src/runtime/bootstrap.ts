@@ -287,6 +287,25 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     hooks: effectiveConfig.hooks,
     provisioner: createWorkspaceProvisioner(effectiveConfig.workspace.provisioner),
     copyIgnored: effectiveConfig.workspace.copy_ignored,
+    onHookResult: (result) => {
+      if (
+        result.hook === 'after_run' &&
+        result.status === 'failed' &&
+        result.fallback_reason_code &&
+        result.fallback_mode === 'mcp_github'
+      ) {
+        logger.log({
+          level: 'warn',
+          event: CANONICAL_EVENT.workspace.finalizationFallback,
+          message: `workspace finalization switched to deterministic ${result.fallback_mode} fallback`,
+          context: {
+            hook: result.hook,
+            fallback_reason_code: result.fallback_reason_code,
+            fallback_mode: result.fallback_mode
+          }
+        });
+      }
+    },
     onProvisionerResult: (result) => {
       const baseContext = {
         issue_identifier: result.identifier,

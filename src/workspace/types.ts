@@ -32,6 +32,8 @@ export interface HookExecutionResult {
   duration_ms: number;
   timed_out: boolean;
   error?: string;
+  fallback_reason_code?: 'shell_unavailable' | 'tool_missing_git' | 'tool_missing_gh';
+  fallback_mode?: 'mcp_github';
 }
 
 export interface WorkspaceHooksConfig {
@@ -85,6 +87,7 @@ export interface WorkspaceManagerOptions {
     script: string;
     timeoutMs: number;
   }) => Promise<{ timedOut: boolean; error?: string }>;
+  probeTool?: (params: { command: string; args: string[]; cwd: string }) => Promise<boolean>;
   onHookResult?: (result: HookExecutionResult) => void;
 }
 

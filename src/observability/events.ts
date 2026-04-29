@@ -58,6 +58,7 @@ export const CANONICAL_EVENT = {
     copyIgnoredStart: 'workspace.copy_ignored.start',
     copyIgnoredSuccess: 'workspace.copy_ignored.success',
     copyIgnoredFailed: 'workspace.copy_ignored.failed',
+    finalizationFallback: 'workspace.finalization.fallback',
     teardownStart: 'workspace.teardown.start',
     teardownSuccess: 'workspace.teardown.success',
     teardownFailed: 'workspace.teardown.failed',
