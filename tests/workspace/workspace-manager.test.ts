@@ -186,6 +186,27 @@ describe('WorkspaceManager', () => {
     expect(calls).toContain('create');
   });
 
+  it('surfaces structured hook reason codes instead of raw stderr blobs', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: {
+        after_create: 'echo create',
+        timeout_ms: 1000
+      },
+      runShell: async () => ({
+        timedOut: false,
+        error: '{"action":"error","reason":"source and target resolve to the same repository"}'
+      })
+    });
+
+    await expect(manager.ensureWorkspace('ABC-1')).rejects.toMatchObject({
+      code: 'workspace_hook_failed',
+      message: expect.stringContaining('source_and_target_resolve_to_the_same_repository')
+    });
+  });
+
   it('preflights finalization shell/tool availability and emits typed fallback reason codes', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);

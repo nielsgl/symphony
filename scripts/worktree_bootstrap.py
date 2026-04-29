@@ -389,15 +389,19 @@ def main(argv: Sequence[str] = sys.argv[1:]) -> int:
         if result == "copied":
             copied += 1
 
+    summary_reason = (
+        "finished_with_sensitive_skips" if skipped_sensitive > 0 else "finished_worktree_bootstrap"
+    )
     log(
         "summary",
-        "finished worktree bootstrap",
+        summary_reason,
         selected=len(selected),
         copied=copied,
         skipped_sensitive=skipped_sensitive,
         dry_run=args.dry_run,
     )
-    return 1 if skipped_sensitive else 0
+    # Sensitive skips are treated as benign/idempotent outcomes for unattended hooks.
+    return 0
 
 
 if __name__ == "__main__":

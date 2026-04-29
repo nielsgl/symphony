@@ -84,6 +84,37 @@ async function defaultProbeTool(params: {
   });
 }
 
+function normalizeHookReasonCode(reason: string): string {
+  return reason
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function parseHookStructuredReason(output: string | undefined): string | null {
+  if (!output) {
+    return null;
+  }
+
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('{') && line.endsWith('}'));
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const candidate = lines[index];
+    try {
+      const parsed = JSON.parse(candidate) as { action?: unknown; reason?: unknown };
+      if (typeof parsed.reason === 'string' && parsed.reason.trim().length > 0) {
+        return normalizeHookReasonCode(parsed.reason);
+      }
+    } catch {
+      // best-effort parse only
+    }
+  }
+  return null;
+}
+
 export class WorkspaceManager {
   private readonly root: string;
   private readonly hooks: WorkspaceManagerOptions['hooks'];
@@ -430,7 +461,10 @@ export class WorkspaceManager {
       throw new WorkspaceError('workspace_hook_timeout', `${hook} hook timed out`);
     }
 
-    throw new WorkspaceError('workspace_hook_failed', `${hook} hook failed: ${result.error ?? 'unknown error'}`);
+    throw new WorkspaceError(
+      'workspace_hook_failed',
+      `${hook} hook failed: ${result.hook_reason_code ?? result.error ?? 'unknown error'}`
+    );
   }
 
   private async runHookBestEffort(hook: WorkspaceHookName, cwd: string): Promise<void> {
@@ -473,6 +507,7 @@ export class WorkspaceManager {
     const duration_ms = Math.max(0, this.nowMs() - started);
 
     const inferredFallbackReason = this.inferFallbackReasonFromError(shellResult.error);
+    const hookReasonCode = parseHookStructuredReason(shellResult.error);
     const result: HookExecutionResult = shellResult.error
       ? {
           hook,
@@ -480,6 +515,7 @@ export class WorkspaceManager {
           duration_ms,
           timed_out: shellResult.timedOut,
           error: shellResult.error,
+          hook_reason_code: hookReasonCode ?? undefined,
           fallback_reason_code: inferredFallbackReason ?? undefined,
           fallback_mode: inferredFallbackReason ? 'mcp_github' : undefined
         }

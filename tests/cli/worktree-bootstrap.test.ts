@@ -102,7 +102,14 @@ describe('worktree_bootstrap.py', () => {
     const summaryLine = result.stdout
       .trim()
       .split('\n')
-      .find((line) => line.includes('"action": "summary"') && line.includes('finished worktree bootstrap'));
+      .find((line) => {
+        try {
+          const parsed = JSON.parse(line) as { action?: string; selected?: number };
+          return parsed.action === 'summary' && typeof parsed.selected === 'number';
+        } catch {
+          return false;
+        }
+      });
 
     expect(summaryLine).toBeTruthy();
     const summary = JSON.parse(summaryLine as string) as { copied: number; selected: number };

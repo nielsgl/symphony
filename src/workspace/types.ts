@@ -32,6 +32,7 @@ export interface HookExecutionResult {
   duration_ms: number;
   timed_out: boolean;
   error?: string;
+  hook_reason_code?: string;
   fallback_reason_code?: 'shell_unavailable' | 'tool_missing_git' | 'tool_missing_gh';
   fallback_mode?: 'mcp_github';
 }
