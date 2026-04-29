@@ -244,13 +244,21 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     last_verification_result: 'verified' | 'reprovisioned' | 'failed' | null;
     last_cleanup_on_failure_result: 'cleaned' | 'cleanup_failed' | 'not_attempted' | null;
     verification_mode: 'strict' | 'none';
+    last_integrity_status: 'ok' | 'reconciled' | 'failed' | null;
+    last_integrity_reason_code: string | null;
+    last_integrity_checked_at: string | null;
+    last_integrity_reconciled_at: string | null;
   } = {
     last_provision_result: null,
     last_teardown_result: null,
     last_error_code: null,
     last_verification_result: null,
     last_cleanup_on_failure_result: null,
-    verification_mode: effectiveConfig.workspace.provisioner.type === 'none' ? 'none' : 'strict'
+    verification_mode: effectiveConfig.workspace.provisioner.type === 'none' ? 'none' : 'strict',
+    last_integrity_status: null,
+    last_integrity_reason_code: null,
+    last_integrity_checked_at: null,
+    last_integrity_reconciled_at: null
   };
   const workspaceCopyIgnoredState: {
     last_status: 'start' | 'success' | 'skipped' | 'failed' | null;
@@ -303,6 +311,14 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           workspaceProvisionState.last_provision_result = 'failed';
           workspaceProvisionState.last_error_code = result.error_code ?? 'workspace_provision_failed';
           workspaceProvisionState.last_verification_result = 'failed';
+          if (workspaceProvisionState.last_error_code === 'workspace_integrity_reconcile_failed') {
+            logger.log({
+              level: 'error',
+              event: CANONICAL_EVENT.workspace.integrityReconcileFailed,
+              message: 'workspace integrity reconcile failed',
+              context: baseContext
+            });
+          }
           logger.log({
             level: 'error',
             event: CANONICAL_EVENT.workspace.provisionFailed,
@@ -337,6 +353,50 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         workspaceProvisionState.last_error_code = null;
         workspaceProvisionState.last_verification_result = result.status === 'reused' ? 'verified' : 'reprovisioned';
         workspaceProvisionState.last_cleanup_on_failure_result = null;
+        workspaceProvisionState.last_integrity_status = result.workspace_integrity_status ?? null;
+        workspaceProvisionState.last_integrity_reason_code = result.workspace_integrity_reason ?? null;
+        workspaceProvisionState.last_integrity_checked_at = result.workspace_integrity_checked_at ?? null;
+        workspaceProvisionState.last_integrity_reconciled_at = result.workspace_integrity_reconciled_at ?? null;
+        if (result.workspace_integrity_checked_at) {
+          logger.log({
+            level: 'info',
+            event: CANONICAL_EVENT.workspace.integrityCheckStart,
+            message: 'workspace integrity check started',
+            context: baseContext
+          });
+          logger.log({
+            level: result.workspace_integrity_status === 'failed' ? 'error' : 'info',
+            event:
+              result.workspace_integrity_status === 'failed'
+                ? CANONICAL_EVENT.workspace.integrityCheckFailed
+                : CANONICAL_EVENT.workspace.integrityCheckSuccess,
+            message:
+              result.workspace_integrity_status === 'failed'
+                ? 'workspace integrity check failed'
+                : 'workspace integrity check succeeded',
+            context: {
+              ...baseContext,
+              reason_code: result.workspace_integrity_reason ?? null
+            }
+          });
+        }
+        if (result.workspace_integrity_status === 'reconciled') {
+          logger.log({
+            level: 'info',
+            event: CANONICAL_EVENT.workspace.integrityReconcileStart,
+            message: 'workspace integrity reconcile started',
+            context: baseContext
+          });
+          logger.log({
+            level: 'info',
+            event: CANONICAL_EVENT.workspace.integrityReconcileSuccess,
+            message: 'workspace integrity reconcile succeeded',
+            context: {
+              ...baseContext,
+              reason_code: result.workspace_integrity_reason ?? null
+            }
+          });
+        }
         logger.log({
           level: 'info',
           event:
@@ -362,6 +422,14 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       if (result.status === 'failed') {
         workspaceProvisionState.last_teardown_result = 'failed';
         workspaceProvisionState.last_error_code = result.error_code ?? 'workspace_provision_failed';
+        if (workspaceProvisionState.last_error_code === 'workspace_integrity_reconcile_failed') {
+          logger.log({
+            level: 'error',
+            event: CANONICAL_EVENT.workspace.integrityReconcileFailed,
+            message: 'workspace integrity reconcile failed',
+            context: baseContext
+          });
+        }
         logger.log({
           level: 'error',
           event: CANONICAL_EVENT.workspace.teardownFailed,
@@ -376,6 +444,50 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
       workspaceProvisionState.last_teardown_result = result.status as 'removed' | 'kept' | 'skipped';
       workspaceProvisionState.last_error_code = null;
+      workspaceProvisionState.last_integrity_status = result.workspace_integrity_status ?? null;
+      workspaceProvisionState.last_integrity_reason_code = result.workspace_integrity_reason ?? null;
+      workspaceProvisionState.last_integrity_checked_at = result.workspace_integrity_checked_at ?? null;
+      workspaceProvisionState.last_integrity_reconciled_at = result.workspace_integrity_reconciled_at ?? null;
+      if (result.workspace_integrity_checked_at) {
+        logger.log({
+          level: 'info',
+          event: CANONICAL_EVENT.workspace.integrityCheckStart,
+          message: 'workspace integrity check started',
+          context: baseContext
+        });
+        logger.log({
+          level: result.workspace_integrity_status === 'failed' ? 'error' : 'info',
+          event:
+            result.workspace_integrity_status === 'failed'
+              ? CANONICAL_EVENT.workspace.integrityCheckFailed
+              : CANONICAL_EVENT.workspace.integrityCheckSuccess,
+          message:
+            result.workspace_integrity_status === 'failed'
+              ? 'workspace integrity check failed'
+              : 'workspace integrity check succeeded',
+          context: {
+            ...baseContext,
+            reason_code: result.workspace_integrity_reason ?? null
+          }
+        });
+      }
+      if (result.workspace_integrity_status === 'reconciled') {
+        logger.log({
+          level: 'info',
+          event: CANONICAL_EVENT.workspace.integrityReconcileStart,
+          message: 'workspace integrity reconcile started',
+          context: baseContext
+        });
+        logger.log({
+          level: 'info',
+          event: CANONICAL_EVENT.workspace.integrityReconcileSuccess,
+          message: 'workspace integrity reconcile succeeded',
+          context: {
+            ...baseContext,
+            reason_code: result.workspace_integrity_reason ?? null
+          }
+        });
+      }
       logger.log({
         level: 'info',
         event: CANONICAL_EVENT.workspace.teardownSuccess,
@@ -711,7 +823,11 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               last_error_code: workspaceProvisionState.last_error_code,
               last_verification_result: workspaceProvisionState.last_verification_result,
               last_cleanup_on_failure_result: workspaceProvisionState.last_cleanup_on_failure_result,
-              verification_mode: workspaceProvisionState.verification_mode
+              verification_mode: workspaceProvisionState.verification_mode,
+              last_integrity_status: workspaceProvisionState.last_integrity_status,
+              last_integrity_reason_code: workspaceProvisionState.last_integrity_reason_code,
+              last_integrity_checked_at: workspaceProvisionState.last_integrity_checked_at,
+              last_integrity_reconciled_at: workspaceProvisionState.last_integrity_reconciled_at
             }),
             getWorkspaceCopyIgnored: () => ({
               enabled: effectiveConfig.workspace.copy_ignored.enabled,

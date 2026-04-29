@@ -60,7 +60,13 @@ export const CANONICAL_EVENT = {
     copyIgnoredFailed: 'workspace.copy_ignored.failed',
     teardownStart: 'workspace.teardown.start',
     teardownSuccess: 'workspace.teardown.success',
-    teardownFailed: 'workspace.teardown.failed'
+    teardownFailed: 'workspace.teardown.failed',
+    integrityCheckStart: 'workspace.integrity.check.start',
+    integrityCheckSuccess: 'workspace.integrity.check.success',
+    integrityCheckFailed: 'workspace.integrity.check.failed',
+    integrityReconcileStart: 'workspace.integrity.reconcile.start',
+    integrityReconcileSuccess: 'workspace.integrity.reconcile.success',
+    integrityReconcileFailed: 'workspace.integrity.reconcile.failed'
   },
   tracker: {
     candidateFetchFailed: 'tracker.candidates.fetch_failed',
