@@ -31,9 +31,9 @@ workspace:
 
 hooks:
   after_create: |
-    python3 /Users/niels.van.Galen.last/code/symphony/scripts/worktree_bootstrap.py --source /Users/niels.van.Galen.last/code/symphony
+    python3 scripts/worktree_bootstrap.py --source . --allow-sensitive
   before_remove: |
-    node /Users/niels.van.Galen.last/code/symphony/scripts/workspace-before-remove.js
+    node scripts/workspace-before-remove.js
   timeout_ms: 60000
 agent:
   max_concurrent_agents: 10
