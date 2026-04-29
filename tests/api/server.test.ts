@@ -368,7 +368,11 @@ describe('LocalApiServer', () => {
           last_error_code: null,
           last_verification_result: null,
           last_cleanup_on_failure_result: null,
-          verification_mode: 'none'
+          verification_mode: 'none',
+          last_integrity_status: null,
+          last_integrity_reason_code: null,
+          last_integrity_checked_at: null,
+          last_integrity_reconciled_at: null
         }),
         getWorkspaceCopyIgnored: () => ({
           enabled: false,
@@ -874,7 +878,11 @@ describe('LocalApiServer', () => {
           last_error_code: null,
           last_verification_result: null,
           last_cleanup_on_failure_result: null,
-          verification_mode: 'none'
+          verification_mode: 'none',
+          last_integrity_status: null,
+          last_integrity_reason_code: null,
+          last_integrity_checked_at: null,
+          last_integrity_reconciled_at: null
         }),
         getWorkspaceCopyIgnored: () => ({
           enabled: false,
@@ -1053,7 +1061,11 @@ describe('LocalApiServer', () => {
           last_error_code: null,
           last_verification_result: null,
           last_cleanup_on_failure_result: null,
-          verification_mode: 'none'
+          verification_mode: 'none',
+          last_integrity_status: null,
+          last_integrity_reason_code: null,
+          last_integrity_checked_at: null,
+          last_integrity_reconciled_at: null
         }),
         getWorkspaceCopyIgnored: () => ({
           enabled: false,
@@ -1160,7 +1172,11 @@ describe('LocalApiServer', () => {
           last_error_code: null,
           last_verification_result: null,
           last_cleanup_on_failure_result: null,
-          verification_mode: 'none'
+          verification_mode: 'none',
+          last_integrity_status: null,
+          last_integrity_reason_code: null,
+          last_integrity_checked_at: null,
+          last_integrity_reconciled_at: null
         }),
         getWorkspaceCopyIgnored: () => ({
           enabled: false,

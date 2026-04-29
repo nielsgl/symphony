@@ -11,6 +11,10 @@ export interface WorkspaceInfo {
   workspace_git_status?: 'clean' | 'dirty' | 'unknown';
   workspace_provisioned?: boolean;
   workspace_is_git_worktree?: boolean;
+  workspace_integrity_status?: 'ok' | 'reconciled' | 'failed';
+  workspace_integrity_reason?: string | null;
+  workspace_integrity_checked_at?: string | null;
+  workspace_integrity_reconciled_at?: string | null;
   copy_ignored_applied?: boolean;
   copy_ignored_status?: 'skipped' | 'success' | 'failed';
   copy_ignored_summary?: {
@@ -54,6 +58,10 @@ export interface WorkspaceManagerOptions {
     cleanup_attempted?: boolean;
     cleanup_succeeded?: boolean;
     cleanup_error?: string;
+    workspace_integrity_status?: 'ok' | 'reconciled' | 'failed';
+    workspace_integrity_reason?: string | null;
+    workspace_integrity_checked_at?: string | null;
+    workspace_integrity_reconciled_at?: string | null;
   }) => void;
   onCopyIgnoredResult?: (result: {
     identifier: string;
@@ -99,6 +107,10 @@ export interface WorkspaceProvisionResult {
   workspace_git_status?: 'clean' | 'dirty' | 'unknown';
   workspace_provisioned?: boolean;
   workspace_is_git_worktree?: boolean;
+  workspace_integrity_status?: 'ok' | 'reconciled' | 'failed';
+  workspace_integrity_reason?: string | null;
+  workspace_integrity_checked_at?: string | null;
+  workspace_integrity_reconciled_at?: string | null;
 }
 
 export interface WorkspaceTeardownContext {
@@ -109,6 +121,10 @@ export interface WorkspaceTeardownContext {
 export interface WorkspaceTeardownResult {
   status: 'removed' | 'kept' | 'skipped';
   provisioner_type: string;
+  workspace_integrity_status?: 'ok' | 'reconciled' | 'failed';
+  workspace_integrity_reason?: string | null;
+  workspace_integrity_checked_at?: string | null;
+  workspace_integrity_reconciled_at?: string | null;
 }
 
 export interface WorkspaceProvisioner {

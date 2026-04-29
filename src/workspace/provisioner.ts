@@ -70,6 +70,33 @@ function isSafeForReprovision(entries: string[]): boolean {
   return entries.every((entry) => entry === PROVISION_SENTINEL_NAME);
 }
 
+interface WorktreeEntry {
+  path: string;
+  prunable: boolean;
+}
+
+function parseWorktreePorcelain(output: string): WorktreeEntry[] {
+  const entries: WorktreeEntry[] = [];
+  const lines = output.split(/\r?\n/);
+  let current: WorktreeEntry | null = null;
+  for (const line of lines) {
+    if (line.startsWith('worktree ')) {
+      if (current) {
+        entries.push(current);
+      }
+      current = { path: path.resolve(line.slice('worktree '.length).trim()), prunable: false };
+      continue;
+    }
+    if (line.startsWith('prunable') && current) {
+      current.prunable = true;
+    }
+  }
+  if (current) {
+    entries.push(current);
+  }
+  return entries;
+}
+
 async function writeProvisionSentinel(params: {
   workspacePath: string;
   provisionerType: 'worktree' | 'clone';
@@ -154,9 +181,60 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
     this.rmPath = options.fsOps?.rm ?? fs.rm;
   }
 
+  private async checkAndReconcileStaleWorktreeMetadata(workspacePath: string): Promise<{
+    status: 'ok' | 'reconciled';
+    reason: string | null;
+    checkedAt: string;
+    reconciledAt: string | null;
+  }> {
+    const checkedAt = new Date().toISOString();
+    const listBefore = await this.runGit({ cwd: this.repoRoot, args: ['worktree', 'list', '--porcelain'] });
+    if (!listBefore.ok) {
+      throw new WorkspaceError(
+        'workspace_integrity_reconcile_failed',
+        `workspace_integrity_reconcile_failed: failed to inspect git worktrees: ${listBefore.stderr.trim() || 'unknown'}`
+      );
+    }
+    const targetPath = path.resolve(workspacePath);
+    const matchBefore = parseWorktreePorcelain(listBefore.stdout).find((entry) => entry.path === targetPath);
+    if (!matchBefore?.prunable) {
+      return { status: 'ok', reason: null, checkedAt, reconciledAt: null };
+    }
+
+    const prune = await this.runGit({ cwd: this.repoRoot, args: ['worktree', 'prune'] });
+    if (!prune.ok) {
+      throw new WorkspaceError(
+        'workspace_integrity_reconcile_failed',
+        `workspace_integrity_reconcile_failed: stale_worktree_metadata: ${prune.stderr.trim() || 'git worktree prune failed'}`
+      );
+    }
+    const listAfter = await this.runGit({ cwd: this.repoRoot, args: ['worktree', 'list', '--porcelain'] });
+    if (!listAfter.ok) {
+      throw new WorkspaceError(
+        'workspace_integrity_reconcile_failed',
+        `workspace_integrity_reconcile_failed: failed to verify git worktrees after prune: ${listAfter.stderr.trim() || 'unknown'}`
+      );
+    }
+    const stillPresent = parseWorktreePorcelain(listAfter.stdout).some((entry) => entry.path === targetPath);
+    if (stillPresent) {
+      throw new WorkspaceError(
+        'workspace_integrity_reconcile_failed',
+        'workspace_integrity_reconcile_failed: workspace_path_missing_with_metadata'
+      );
+    }
+
+    return {
+      status: 'reconciled',
+      reason: 'stale_worktree_metadata',
+      checkedAt,
+      reconciledAt: new Date().toISOString()
+    };
+  }
+
   async provision(params: WorkspaceProvisionContext): Promise<WorkspaceProvisionResult> {
     await assertGitRepoRoot(this.repoRoot);
     const branchName = renderBranchName(this.branchTemplate, params.identifier);
+    const integrity = await this.checkAndReconcileStaleWorktreeMetadata(params.workspacePath);
 
     if (!this.allowDirtyRepo) {
       const status = await this.runGit({ cwd: this.repoRoot, args: ['status', '--porcelain'] });
@@ -208,7 +286,11 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
           workspace_exists: true,
           workspace_git_status: 'unknown',
           workspace_provisioned: true,
-          workspace_is_git_worktree: true
+          workspace_is_git_worktree: true,
+          workspace_integrity_status: integrity.status,
+          workspace_integrity_reason: integrity.reason,
+          workspace_integrity_checked_at: integrity.checkedAt,
+          workspace_integrity_reconciled_at: integrity.reconciledAt
         };
       }
 
@@ -245,15 +327,24 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
       workspace_exists: true,
       workspace_git_status: this.allowDirtyRepo ? 'unknown' : 'clean',
       workspace_provisioned: true,
-      workspace_is_git_worktree: true
+      workspace_is_git_worktree: true,
+      workspace_integrity_status: integrity.status,
+      workspace_integrity_reason: integrity.reason,
+      workspace_integrity_checked_at: integrity.checkedAt,
+      workspace_integrity_reconciled_at: integrity.reconciledAt
     };
   }
 
   async teardown(params: WorkspaceTeardownContext): Promise<WorkspaceTeardownResult> {
     if (this.teardownMode === 'keep') {
+      const integrity = await this.checkAndReconcileStaleWorktreeMetadata(params.workspacePath);
       return {
         status: 'kept',
-        provisioner_type: 'worktree'
+        provisioner_type: 'worktree',
+        workspace_integrity_status: integrity.status,
+        workspace_integrity_reason: integrity.reason,
+        workspace_integrity_checked_at: integrity.checkedAt,
+        workspace_integrity_reconciled_at: integrity.reconciledAt
       };
     }
 
