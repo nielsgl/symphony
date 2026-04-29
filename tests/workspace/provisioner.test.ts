@@ -120,6 +120,7 @@ describe('WorkspaceProvisioner', () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-provisioner-ws-'));
     const workspacePath = path.join(workspaceRoot, 'ABC-STALE');
     await fs.mkdir(path.join(repoRoot, '.git'));
+    await fs.mkdir(workspacePath, { recursive: true });
 
     let listCalls = 0;
     const runGit = vi.fn(async ({ args }: { args: string[] }) => {
@@ -150,6 +151,44 @@ describe('WorkspaceProvisioner', () => {
     const result = await provisioner.provision({ identifier: 'ABC-STALE', workspacePath });
     expect(result.workspace_integrity_status).toBe('reconciled');
     expect(result.workspace_integrity_reason).toBe('stale_worktree_metadata');
+    expect(runGit).toHaveBeenCalledWith({ cwd: repoRoot, args: ['worktree', 'prune'] });
+
+    await fs.rm(repoRoot, { recursive: true, force: true });
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it('worktree keep teardown reconciles missing workspace path with stale metadata', async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-provisioner-repo-'));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-provisioner-ws-'));
+    const workspacePath = path.join(workspaceRoot, 'ABC-MISSING');
+    await fs.mkdir(path.join(repoRoot, '.git'));
+
+    let listCalls = 0;
+    const runGit = vi.fn(async ({ args }: { args: string[] }) => {
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        listCalls += 1;
+        if (listCalls === 1) {
+          return { ok: true, stdout: `worktree ${workspacePath}\n`, stderr: '' };
+        }
+        return { ok: true, stdout: '', stderr: '' };
+      }
+      return { ok: true, stdout: '', stderr: '' };
+    });
+
+    const provisioner = new WorktreeProvisioner({
+      repoRoot,
+      baseRef: 'origin/main',
+      branchTemplate: 'feature/{{ issue.identifier }}',
+      teardownMode: 'keep',
+      allowDirtyRepo: true,
+      runGit,
+      fsOps: { stat: fs.stat, rm: fs.rm }
+    });
+
+    const result = await provisioner.teardown({ identifier: 'ABC-MISSING', workspacePath });
+    expect(result.status).toBe('kept');
+    expect(result.workspace_integrity_status).toBe('reconciled');
+    expect(result.workspace_integrity_reason).toBe('workspace_path_missing_with_metadata_pruned');
     expect(runGit).toHaveBeenCalledWith({ cwd: repoRoot, args: ['worktree', 'prune'] });
 
     await fs.rm(repoRoot, { recursive: true, force: true });

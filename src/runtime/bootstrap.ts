@@ -407,7 +407,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             context: baseContext
           });
           logger.log({
-            level: 'info',
+            level:
+              result.workspace_integrity_reason === 'workspace_path_missing_with_metadata_pruned' ? 'warn' : 'info',
             event: CANONICAL_EVENT.workspace.integrityReconcileSuccess,
             message: 'workspace integrity reconcile succeeded',
             context: {
@@ -415,6 +416,14 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               reason_code: result.workspace_integrity_reason ?? null
             }
           });
+          if (result.workspace_integrity_reason === 'workspace_path_missing_with_metadata_pruned') {
+            logger.log({
+              level: 'warn',
+              event: CANONICAL_EVENT.workspace.staleMetadataPrunedWarning,
+              message: 'workspace path missing while metadata existed; auto-pruned stale worktree metadata',
+              context: baseContext
+            });
+          }
         }
         logger.log({
           level: 'info',
@@ -498,7 +507,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           context: baseContext
         });
         logger.log({
-          level: 'info',
+          level:
+            result.workspace_integrity_reason === 'workspace_path_missing_with_metadata_pruned' ? 'warn' : 'info',
           event: CANONICAL_EVENT.workspace.integrityReconcileSuccess,
           message: 'workspace integrity reconcile succeeded',
           context: {
@@ -506,6 +516,14 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             reason_code: result.workspace_integrity_reason ?? null
           }
         });
+        if (result.workspace_integrity_reason === 'workspace_path_missing_with_metadata_pruned') {
+          logger.log({
+            level: 'warn',
+            event: CANONICAL_EVENT.workspace.staleMetadataPrunedWarning,
+            message: 'workspace path missing while metadata existed; auto-pruned stale worktree metadata',
+            context: baseContext
+          });
+        }
       }
       logger.log({
         level: 'info',

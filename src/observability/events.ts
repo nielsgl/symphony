@@ -67,7 +67,8 @@ export const CANONICAL_EVENT = {
     integrityCheckFailed: 'workspace.integrity.check.failed',
     integrityReconcileStart: 'workspace.integrity.reconcile.start',
     integrityReconcileSuccess: 'workspace.integrity.reconcile.success',
-    integrityReconcileFailed: 'workspace.integrity.reconcile.failed'
+    integrityReconcileFailed: 'workspace.integrity.reconcile.failed',
+    staleMetadataPrunedWarning: 'workspace.integrity.stale_metadata_pruned.warning'
   },
   tracker: {
     candidateFetchFailed: 'tracker.candidates.fetch_failed',

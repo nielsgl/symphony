@@ -188,6 +188,8 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
     reconciledAt: string | null;
   }> {
     const checkedAt = new Date().toISOString();
+    const targetPath = path.resolve(workspacePath);
+    const workspaceExistsOnDisk = await pathExists(targetPath);
     const listBefore = await this.runGit({ cwd: this.repoRoot, args: ['worktree', 'list', '--porcelain'] });
     if (!listBefore.ok) {
       throw new WorkspaceError(
@@ -195,9 +197,10 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
         `workspace_integrity_reconcile_failed: failed to inspect git worktrees: ${listBefore.stderr.trim() || 'unknown'}`
       );
     }
-    const targetPath = path.resolve(workspacePath);
     const matchBefore = parseWorktreePorcelain(listBefore.stdout).find((entry) => entry.path === targetPath);
-    if (!matchBefore?.prunable) {
+    const shouldReconcilePrunable = Boolean(matchBefore?.prunable);
+    const shouldReconcileMissingPathWithMetadata = !workspaceExistsOnDisk && Boolean(matchBefore);
+    if (!shouldReconcilePrunable && !shouldReconcileMissingPathWithMetadata) {
       return { status: 'ok', reason: null, checkedAt, reconciledAt: null };
     }
 
@@ -223,9 +226,12 @@ export class WorktreeProvisioner implements WorkspaceProvisioner {
       );
     }
 
+    const reconciledReason = shouldReconcileMissingPathWithMetadata
+      ? 'workspace_path_missing_with_metadata_pruned'
+      : 'stale_worktree_metadata';
     return {
       status: 'reconciled',
-      reason: 'stale_worktree_metadata',
+      reason: reconciledReason,
       checkedAt,
       reconciledAt: new Date().toISOString()
     };
