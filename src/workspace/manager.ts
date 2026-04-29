@@ -68,12 +68,29 @@ async function defaultRunShell(params: {
   });
 }
 
+async function defaultProbeTool(params: {
+  command: string;
+  args: string[];
+  cwd: string;
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(params.command, params.args, {
+      cwd: params.cwd,
+      stdio: ['ignore', 'ignore', 'ignore']
+    });
+
+    child.on('error', () => resolve(false));
+    child.on('close', (code) => resolve(code === 0));
+  });
+}
+
 export class WorkspaceManager {
   private readonly root: string;
   private readonly hooks: WorkspaceManagerOptions['hooks'];
   private readonly provisioner: NonNullable<WorkspaceManagerOptions['provisioner']>;
   private readonly nowMs: () => number;
   private readonly runShell: NonNullable<WorkspaceManagerOptions['runShell']>;
+  private readonly probeTool: NonNullable<WorkspaceManagerOptions['probeTool']>;
   private readonly onHookResult?: WorkspaceManagerOptions['onHookResult'];
   private readonly onProvisionerResult?: WorkspaceManagerOptions['onProvisionerResult'];
   private copyIgnored: WorkspaceManagerOptions['copyIgnored'];
@@ -85,6 +102,7 @@ export class WorkspaceManager {
     this.provisioner = options.provisioner ?? new NoopProvisioner();
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.runShell = options.runShell ?? defaultRunShell;
+    this.probeTool = options.probeTool ?? defaultProbeTool;
     this.onHookResult = options.onHookResult;
     this.onProvisionerResult = options.onProvisionerResult;
     this.copyIgnored = options.copyIgnored;
@@ -431,6 +449,22 @@ export class WorkspaceManager {
     }
 
     const started = this.nowMs();
+    const fallbackReason = hook === 'after_run' ? await this.determineFinalizationFallbackReason(cwd) : null;
+    if (fallbackReason) {
+      const duration_ms = Math.max(0, this.nowMs() - started);
+      const result: HookExecutionResult = {
+        hook,
+        status: 'failed',
+        duration_ms,
+        timed_out: false,
+        error: `finalization local shell unavailable (${fallbackReason})`,
+        fallback_reason_code: fallbackReason,
+        fallback_mode: 'mcp_github'
+      };
+      this.onHookResult?.(result);
+      return result;
+    }
+
     const shellResult = await this.runShell({
       cwd,
       script,
@@ -438,13 +472,16 @@ export class WorkspaceManager {
     });
     const duration_ms = Math.max(0, this.nowMs() - started);
 
+    const inferredFallbackReason = this.inferFallbackReasonFromError(shellResult.error);
     const result: HookExecutionResult = shellResult.error
       ? {
           hook,
           status: 'failed',
           duration_ms,
           timed_out: shellResult.timedOut,
-          error: shellResult.error
+          error: shellResult.error,
+          fallback_reason_code: inferredFallbackReason ?? undefined,
+          fallback_mode: inferredFallbackReason ? 'mcp_github' : undefined
         }
       : {
           hook,
@@ -455,6 +492,42 @@ export class WorkspaceManager {
 
     this.onHookResult?.(result);
     return result;
+  }
+
+  private inferFallbackReasonFromError(error: string | undefined): HookExecutionResult['fallback_reason_code'] | null {
+    if (!error) {
+      return null;
+    }
+
+    const normalized = error.toLowerCase();
+    if (
+      normalized.includes('spawn bash enoent') ||
+      normalized.includes('no such file or directory') ||
+      normalized.includes('os error 2')
+    ) {
+      return 'shell_unavailable';
+    }
+
+    return null;
+  }
+
+  private async determineFinalizationFallbackReason(cwd: string): Promise<HookExecutionResult['fallback_reason_code'] | null> {
+    const shellAvailable = await this.probeTool({ command: 'bash', args: ['-lc', 'exit 0'], cwd });
+    if (!shellAvailable) {
+      return 'shell_unavailable';
+    }
+
+    const gitAvailable = await this.probeTool({ command: 'git', args: ['--version'], cwd });
+    if (!gitAvailable) {
+      return 'tool_missing_git';
+    }
+
+    const ghAvailable = await this.probeTool({ command: 'gh', args: ['--version'], cwd });
+    if (!ghAvailable) {
+      return 'tool_missing_gh';
+    }
+
+    return null;
   }
 
   private assertContained(workspacePath: string): void {

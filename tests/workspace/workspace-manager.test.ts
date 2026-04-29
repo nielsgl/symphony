@@ -149,7 +149,8 @@ describe('WorkspaceManager', () => {
           return { timedOut: false, error: 'failed' };
         }
         return { timedOut: false };
-      }
+      },
+      probeTool: async () => true
     });
 
     await expect(manager.ensureWorkspace('ABC-1')).rejects.toMatchObject({ code: 'workspace_hook_timeout' });
@@ -173,7 +174,8 @@ describe('WorkspaceManager', () => {
           return { timedOut: true, error: 'timeout' };
         }
         return { timedOut: false };
-      }
+      },
+      probeTool: async () => true
     });
 
     const workspace = await manager2.ensureWorkspace('ABC-2');
@@ -182,6 +184,44 @@ describe('WorkspaceManager', () => {
     await expect(manager2.cleanupWorkspace('ABC-2')).resolves.toBe(true);
 
     expect(calls).toContain('create');
+  });
+
+  it('preflights finalization shell/tool availability and emits typed fallback reason codes', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const hookResults: Array<{
+      fallback_reason_code?: string;
+      fallback_mode?: string;
+      status: string;
+    }> = [];
+    const runShell = vi.fn(async () => ({ timedOut: false }));
+
+    const manager = new WorkspaceManager({
+      root,
+      hooks: {
+        after_run: 'echo finalize',
+        timeout_ms: 1000
+      },
+      runShell,
+      probeTool: async ({ command }) => command !== 'gh',
+      onHookResult: (result) => {
+        hookResults.push({
+          fallback_reason_code: result.fallback_reason_code,
+          fallback_mode: result.fallback_mode,
+          status: result.status
+        });
+      }
+    });
+
+    const workspace = await manager.ensureWorkspace('ABC-1');
+    await expect(manager.finalizeAttempt(workspace.path)).resolves.toBeUndefined();
+
+    expect(runShell).not.toHaveBeenCalled();
+    expect(hookResults).toContainEqual({
+      fallback_reason_code: 'tool_missing_gh',
+      fallback_mode: 'mcp_github',
+      status: 'failed'
+    });
   });
 
   it('runs after_create hook only on new workspace creation', async () => {
