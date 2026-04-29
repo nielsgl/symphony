@@ -537,6 +537,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       max_retry_backoff_ms: nextConfig.agent.max_retry_backoff_ms,
       active_states: nextConfig.tracker.active_states,
       terminal_states: nextConfig.tracker.terminal_states,
+      github_linking_mode: nextConfig.tracker.github_linking?.mode ?? 'off',
       stall_timeout_ms: nextConfig.codex.stall_timeout_ms,
       worker_hosts: nextConfig.worker?.ssh_hosts ?? [],
       max_concurrent_agents_per_host: nextConfig.worker?.max_concurrent_agents_per_host ?? null
@@ -594,6 +595,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       max_retry_backoff_ms: effectiveConfig.agent.max_retry_backoff_ms,
       active_states: effectiveConfig.tracker.active_states,
       terminal_states: effectiveConfig.tracker.terminal_states,
+      github_linking_mode: effectiveConfig.tracker.github_linking?.mode ?? 'off',
       stall_timeout_ms: effectiveConfig.codex.stall_timeout_ms,
       worker_hosts: effectiveConfig.worker?.ssh_hosts ?? [],
       max_concurrent_agents_per_host: effectiveConfig.worker?.max_concurrent_agents_per_host ?? null

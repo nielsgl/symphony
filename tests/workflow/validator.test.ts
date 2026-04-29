@@ -10,6 +10,7 @@ function baseConfig(): EffectiveConfig {
       endpoint: 'https://api.linear.app/graphql',
       api_key: 'token',
       project_slug: 'ABC',
+      github_linking: { mode: 'off' },
       active_states: ['Todo', 'In Progress'],
       terminal_states: ['Done']
     },
@@ -140,6 +141,18 @@ describe('ConfigValidator', () => {
     config.tracker.active_states = ['Open'];
 
     expect(validator.validate(config)).toEqual({ ok: true, at: expect.any(String) });
+  });
+
+  it('rejects unsupported tracker.github_linking.mode values', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.github_linking = { mode: 'enforce' };
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_tracker_github_linking_mode');
+    }
   });
 
   it('rejects github tracker config when active_states cannot map to open/closed', () => {

@@ -29,6 +29,7 @@ export interface Issue {
   labels: string[];
   blocked_by: IssueBlockerRef[];
   tracker_meta?: IssueTrackerMeta;
+  has_github_issue_link?: boolean;
   created_at: Date | null;
   updated_at: Date | null;
 }

@@ -231,6 +231,7 @@ export class OrchestratorCore {
     max_retry_backoff_ms: number;
     active_states: string[];
     terminal_states: string[];
+    github_linking_mode?: 'off' | 'warn' | 'required' | string;
     stall_timeout_ms: number;
     worker_hosts?: string[];
     max_concurrent_agents_per_host?: number | null;
@@ -241,6 +242,7 @@ export class OrchestratorCore {
     this.config.max_retry_backoff_ms = config.max_retry_backoff_ms;
     this.config.active_states = [...config.active_states];
     this.config.terminal_states = [...config.terminal_states];
+    this.config.github_linking_mode = config.github_linking_mode ?? 'off';
     this.config.stall_timeout_ms = config.stall_timeout_ms;
     this.config.worker_hosts = config.worker_hosts ? [...config.worker_hosts] : [];
     this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
@@ -317,6 +319,8 @@ export class OrchestratorCore {
     }
 
     const sortedCandidates = sortCandidatesForDispatch(candidates);
+    const githubLinkingMode = this.config.github_linking_mode ?? 'off';
+    let missingGithubLinkCount = 0;
 
     for (const issue of sortedCandidates) {
       if (availableGlobalSlots(this.state) <= 0) {
@@ -332,7 +336,40 @@ export class OrchestratorCore {
         continue;
       }
 
+      if (githubLinkingMode !== 'off' && issue.has_github_issue_link !== true) {
+        missingGithubLinkCount += 1;
+        this.logger?.log({
+          level: githubLinkingMode === 'required' ? 'warn' : 'info',
+          event: CANONICAL_EVENT.tracker.githubIssueLinkMissing,
+          message:
+            githubLinkingMode === 'required'
+              ? `issue ${issue.identifier} is missing a linked GitHub issue; dispatch skipped`
+              : `issue ${issue.identifier} is missing a linked GitHub issue`,
+          context: {
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            github_linking_mode: githubLinkingMode
+          }
+        });
+        this.recordRuntimeEvent({
+          event: CANONICAL_EVENT.tracker.githubIssueLinkMissing,
+          severity: githubLinkingMode === 'required' ? 'warn' : 'info',
+          issue_identifier: issue.identifier,
+          detail:
+            githubLinkingMode === 'required'
+              ? 'missing_link_required_dispatch_skipped'
+              : 'missing_link_warning_only'
+        });
+        if (githubLinkingMode === 'required') {
+          continue;
+        }
+      }
+
       await this.dispatchIssue(issue, null);
+    }
+
+    if (githubLinkingMode === 'required' && missingGithubLinkCount > 0) {
+      this.state.health.last_error = `${missingGithubLinkCount} candidate issue(s) missing linked GitHub issue`;
     }
 
     this.ports.notifyObservers?.();

@@ -65,7 +65,8 @@ export const CANONICAL_EVENT = {
   tracker: {
     candidateFetchFailed: 'tracker.candidates.fetch_failed',
     retryFetchFailed: 'tracker.retry.fetch_failed',
-    stateRefreshFailed: 'tracker.state.refresh.failed'
+    stateRefreshFailed: 'tracker.state.refresh.failed',
+    githubIssueLinkMissing: 'tracker.github_issue_link.missing'
   },
   runtime: {
     argsResolved: 'runtime.args.resolved',

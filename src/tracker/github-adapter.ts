@@ -143,6 +143,7 @@ function normalizeIssue(rawIssue: Record<string, unknown>, repository: string): 
     url: readNullableString(rawIssue.url),
     labels: normalizeLabels(rawIssue),
     blocked_by: [],
+    has_github_issue_link: true,
     tracker_meta: {
       tracker_kind: 'github',
       repository,

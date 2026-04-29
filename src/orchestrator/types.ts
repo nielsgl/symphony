@@ -245,6 +245,7 @@ export interface OrchestratorConfig {
   max_retry_backoff_ms: number;
   active_states: string[];
   terminal_states: string[];
+  github_linking_mode?: 'off' | 'warn' | 'required' | string;
   stall_timeout_ms: number;
   worker_hosts?: string[];
   max_concurrent_agents_per_host?: number | null;

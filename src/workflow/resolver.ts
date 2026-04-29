@@ -282,6 +282,8 @@ export class ConfigResolver {
     const trackerAssignee = resolveEnvToken(readString(tracker.assignee, ''), this.env);
     const trackerOwner = resolveEnvToken(readString(tracker.owner, ''), this.env);
     const trackerRepo = resolveEnvToken(readString(tracker.repo, ''), this.env);
+    const trackerGithubLinking = asRecord(tracker.github_linking);
+    const trackerGithubLinkingMode = readString(trackerGithubLinking.mode, 'off').trim() || 'off';
 
     const workflowResolvedPath =
       typeof options.workflowPath === 'string' && options.workflowPath.trim().length > 0
@@ -374,6 +376,9 @@ export class ConfigResolver {
         assignee: trackerAssignee || undefined,
         owner: trackerOwner,
         repo: trackerRepo,
+        github_linking: {
+          mode: trackerGithubLinkingMode
+        },
         active_states: readStringList(tracker.active_states, getDefaultActiveStates(trackerKind)),
         terminal_states: readStringList(tracker.terminal_states, getDefaultTerminalStates(trackerKind))
       },

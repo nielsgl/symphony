@@ -92,6 +92,11 @@ function normalizeBlockers(rawIssue: Record<string, unknown>): IssueBlockerRef[]
 
 function normalizeIssue(rawIssue: Record<string, unknown>): Issue {
   const state = readObject(rawIssue.state);
+  const attachments = readNodes(rawIssue.attachments);
+  const hasGithubIssueLink = attachments.some((attachment) => {
+    const url = readString(attachment.url).trim();
+    return /^https?:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+(?:[/?#].*)?$/i.test(url);
+  });
 
   return {
     id: readString(rawIssue.id),
@@ -104,6 +109,7 @@ function normalizeIssue(rawIssue: Record<string, unknown>): Issue {
     url: readNullableString(rawIssue.url),
     labels: normalizeLabels(rawIssue),
     blocked_by: normalizeBlockers(rawIssue),
+    has_github_issue_link: hasGithubIssueLink,
     created_at: parseIsoDate(rawIssue.createdAt),
     updated_at: parseIsoDate(rawIssue.updatedAt)
   };
@@ -152,6 +158,11 @@ query Issues($projectSlug: String!, $stateNames: [String!], $after: String, $fir
               name
             }
           }
+        }
+      }
+      attachments {
+        nodes {
+          url
         }
       }
     }
@@ -205,6 +216,11 @@ query IssuesByAssignee($projectSlug: String!, $stateNames: [String!], $assigneeI
           }
         }
       }
+      attachments {
+        nodes {
+          url
+        }
+      }
     }
     pageInfo {
       hasNextPage
@@ -246,6 +262,11 @@ query IssuesByIds($issueIds: [ID!]!) {
               name
             }
           }
+        }
+      }
+      attachments {
+        nodes {
+          url
         }
       }
     }

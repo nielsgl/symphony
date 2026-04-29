@@ -13,6 +13,7 @@ export type ValidationErrorCode =
   | 'missing_tracker_owner'
   | 'missing_tracker_repo'
   | 'invalid_tracker_active_states_for_github'
+  | 'invalid_tracker_github_linking_mode'
   | 'missing_codex_command'
   | 'invalid_codex_approval_policy'
   | 'invalid_codex_approval_policy_shape'
@@ -56,6 +57,9 @@ export interface TrackerConfig {
   assignee?: string;
   owner?: string;
   repo?: string;
+  github_linking?: {
+    mode: 'off' | 'warn' | 'required' | string;
+  };
   active_states: string[];
   terminal_states: string[];
 }

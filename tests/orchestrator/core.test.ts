@@ -160,6 +160,38 @@ describe('OrchestratorCore', () => {
     expect(snapshot.retry_attempts.has('i-claim')).toBe(false);
   });
 
+  it('skips dispatch when github-linking mode is required and issue has no linked GitHub issue', async () => {
+    const harness = createHarness({ configOverrides: { github_linking_mode: 'required' } });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-missing-link', identifier: 'ABC-GL-1', has_github_issue_link: false })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned).toHaveLength(0);
+    expect(snapshot.health.last_error).toContain('missing linked GitHub issue');
+    expect(snapshot.recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.tracker.githubIssueLinkMissing)).toBe(
+      true
+    );
+  });
+
+  it('logs github-link warning but still dispatches when mode is warn', async () => {
+    const harness = createHarness({ configOverrides: { github_linking_mode: 'warn' } });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-warn-link', identifier: 'ABC-GL-2', has_github_issue_link: false })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-warn-link']);
+    expect(
+      harness.orchestrator
+        .getStateSnapshot()
+        .recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.tracker.githubIssueLinkMissing)
+    ).toBe(true);
+  });
+
   it('assigns worker hosts in deterministic round-robin order when ssh hosts are configured', async () => {
     const harness = createHarness({
       configOverrides: {

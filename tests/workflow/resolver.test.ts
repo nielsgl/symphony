@@ -21,6 +21,7 @@ describe('ConfigResolver', () => {
 
     expect(config.polling.interval_ms).toBe(30000);
     expect(config.tracker.active_states).toEqual(['Todo', 'In Progress']);
+    expect(config.tracker.github_linking?.mode).toBe('off');
     expect(config.workspace.root).toBe('/tmp/symphony_workspaces');
     expect(config.workspace.root_source).toBe('default');
     expect(config.workspace.provisioner).toEqual({
@@ -113,6 +114,25 @@ describe('ConfigResolver', () => {
     expect(config.tracker.repo).toBe('symphony');
     expect(config.tracker.active_states).toEqual(['Open']);
     expect(config.tracker.terminal_states).toEqual(['Closed']);
+    expect(config.tracker.github_linking?.mode).toBe('off');
+  });
+
+  it('resolves tracker.github_linking.mode from workflow config', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        tracker: {
+          kind: 'linear',
+          api_key: 'token',
+          project_slug: 'ABC',
+          github_linking: { mode: 'required' }
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.tracker.github_linking?.mode).toBe('required');
   });
 
   it('uses memory defaults without tracker token fallback', () => {

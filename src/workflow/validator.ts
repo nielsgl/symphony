@@ -129,6 +129,16 @@ export class ConfigValidator {
       }
     }
 
+    const githubLinkingMode = effectiveConfig.tracker.github_linking?.mode ?? 'off';
+    if (githubLinkingMode !== 'off' && githubLinkingMode !== 'warn' && githubLinkingMode !== 'required') {
+      return {
+        ok: false,
+        error_code: 'invalid_tracker_github_linking_mode',
+        message: `tracker.github_linking.mode '${githubLinkingMode}' is not supported`,
+        at
+      };
+    }
+
     if (!effectiveConfig.codex.command.trim()) {
       return {
         ok: false,
