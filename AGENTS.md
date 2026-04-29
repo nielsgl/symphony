@@ -78,6 +78,9 @@ PR requirements:
 
 ## Agent Skills To Use
 Use these skills when applicable:
+- `land`: land PRs with merge-commit strategy and CI/review watch loops.
+- `pull`: sync feature branches with `origin/main` using merge (no rebase, `--no-ff`).
+- `push`: push branch updates and create/update PRs with Symphony validation gates.
 - `frontend-skill`: visually strong UI/UX work.
 - `linear`: Linear issue/project triage and updates.
 - `playwright`: CLI browser automation and screenshots.
