@@ -93,6 +93,41 @@ def repo_root(path: Path) -> Path:
     return Path(root).resolve()
 
 
+def git_common_dir(repo: Path) -> Path:
+    raw = git(repo, "rev-parse", "--git-common-dir").decode().strip()
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (repo / candidate).resolve()
+    return candidate.resolve()
+
+
+def resolve_auto_source_root(target_repo_root: Path) -> Path:
+    common_dir = git_common_dir(target_repo_root)
+    try:
+        proc = subprocess.run(
+            ["git", "--git-dir", str(common_dir), "worktree", "list", "--porcelain"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError:
+        fail("git not found on PATH")
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode(errors="replace").strip()
+        fail(f"git worktree list failed: {stderr}")
+
+    target_str = str(target_repo_root)
+    for raw in proc.stdout.decode(errors="replace").splitlines():
+        if not raw.startswith("worktree "):
+            continue
+        candidate = Path(raw[len("worktree ") :].strip()).resolve()
+        if str(candidate) != target_str:
+            return candidate
+
+    fail("unable to resolve source worktree root")
+
+
 def rel_posix(path: str) -> str:
     p = PurePosixPath(path.replace(os.sep, "/"))
     if p.is_absolute() or any(part in {"", ".", ".."} for part in p.parts):
@@ -273,9 +308,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        type=Path,
-        default=Path("."),
-        help="source repo/worktree, default: current directory",
+        type=str,
+        default="auto",
+        help="source repo/worktree path or 'auto' to select a sibling worktree (default: auto)",
     )
     parser.add_argument(
         "--target",
@@ -299,8 +334,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def main(argv: Sequence[str] = sys.argv[1:]) -> int:
     args = parse_args(argv)
-    source = repo_root(args.source)
     target = repo_root(args.target)
+    source = (
+        resolve_auto_source_root(target)
+        if args.source.strip().lower() == "auto"
+        else repo_root(Path(args.source))
+    )
     include_file = source / ".worktreeinclude"
 
     if source == target:
