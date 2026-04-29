@@ -31,7 +31,8 @@ workspace:
 
 hooks:
   after_create: |
-    python3 scripts/worktree_bootstrap.py --source . --allow-sensitive
+    SOURCE_ROOT="$(git worktree list --porcelain | awk '/^worktree / { print substr($0, 10); exit }')"
+    python3 scripts/worktree_bootstrap.py --source "${SOURCE_ROOT}" --allow-sensitive
   before_remove: |
     node scripts/workspace-before-remove.js
   timeout_ms: 60000
