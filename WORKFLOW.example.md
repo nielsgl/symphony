@@ -18,7 +18,7 @@ A workflow file has two parts:
 
 Example skeleton:
 
-```md
+```markdown
 ---
 # YAML config here
 ---
@@ -27,7 +27,7 @@ Prompt template here
 
 ## Complete example (all options)
 
-```md
+```markdown
 ---
 tracker:
   kind: linear
@@ -380,7 +380,7 @@ Strict behavior:
 
 ### Minimal Linear
 
-```md
+```markdown
 ---
 tracker:
   kind: linear
@@ -394,7 +394,7 @@ Work on {{ issue.identifier }} (attempt {{ attempt }}).
 
 ### Minimal GitHub
 
-```md
+```markdown
 ---
 tracker:
   kind: github

@@ -305,7 +305,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
 
-````md
+````markdown
 ## Codex Workpad
 
 ```text
