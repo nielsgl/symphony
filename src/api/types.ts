@@ -1,4 +1,5 @@
 import type { OrchestratorState, TickReason } from '../orchestrator';
+import type { PhaseMarkerName } from '../observability';
 import type { StructuredLogger } from '../observability';
 import type { DurableRunHistoryRecord, PersistenceHealth, UiContinuityState } from '../persistence';
 import type { SecurityProfile } from '../security';
@@ -75,6 +76,11 @@ export interface DiagnosticsSource {
     bytes_copied: number;
     duration_ms: number;
   };
+  getPhaseMarkers?(): {
+    enabled: boolean;
+    timeline_limit: number;
+    last_emit_error_code: string | null;
+  };
 }
 
 export interface LocalApiErrorEnvelope {
@@ -121,6 +127,10 @@ export interface ApiStateResponse {
     last_event: string | null;
     last_event_summary: string | null;
     last_message: string | null;
+    current_phase: PhaseMarkerName | null;
+    current_phase_at: string | null;
+    phase_elapsed_ms: number | null;
+    phase_detail: string | null;
     started_at: string;
     last_event_at: string | null;
     tokens: {
@@ -160,6 +170,9 @@ export interface ApiStateResponse {
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
     previous_session_id: string | null;
+    last_phase: PhaseMarkerName | null;
+    last_phase_at: string | null;
+    last_phase_detail: string | null;
   }>;
   blocked: Array<{
     issue_id: string;
@@ -188,6 +201,9 @@ export interface ApiStateResponse {
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
     previous_session_id: string | null;
+    last_phase: PhaseMarkerName | null;
+    last_phase_at: string | null;
+    last_phase_detail: string | null;
     requires_manual_resume: true;
   }>;
   codex_totals: {
@@ -274,6 +290,10 @@ export interface ApiIssueResponse {
     last_event: string | null;
     last_event_summary: string | null;
     last_message: string | null;
+    current_phase: PhaseMarkerName | null;
+    current_phase_at: string | null;
+    phase_elapsed_ms: number | null;
+    phase_detail: string | null;
     last_event_at: string | null;
     tokens: {
       input_tokens: number;
@@ -310,6 +330,9 @@ export interface ApiIssueResponse {
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
     previous_session_id: string | null;
+    last_phase: PhaseMarkerName | null;
+    last_phase_at: string | null;
+    last_phase_detail: string | null;
   } | null;
   blocked: {
     attempt: number;
@@ -336,8 +359,19 @@ export interface ApiIssueResponse {
     stop_reason_detail: string | null;
     previous_thread_id: string | null;
     previous_session_id: string | null;
+    last_phase: PhaseMarkerName | null;
+    last_phase_at: string | null;
+    last_phase_detail: string | null;
     requires_manual_resume: true;
   } | null;
+  phase_timeline: Array<{
+    at: string;
+    phase: PhaseMarkerName;
+    detail: string | null;
+    attempt: number;
+    thread_id: string | null;
+    session_id: string | null;
+  }>;
   recent_events: Array<{
     at: string;
     event: string;
@@ -393,6 +427,7 @@ export interface LocalApiServerOptions {
     dashboard_enabled: boolean;
     refresh_ms: number;
     render_interval_ms: number;
+    phase_stale_warn_ms?: number;
   };
   nowMs?: () => number;
   logger?: StructuredLogger;
@@ -475,5 +510,10 @@ export interface ApiDiagnosticsResponse {
     blocked_files: number;
     bytes_copied: number;
     duration_ms: number;
+  };
+  phase_markers: {
+    enabled: boolean;
+    timeline_limit: number;
+    last_emit_error_code: string | null;
   };
 }

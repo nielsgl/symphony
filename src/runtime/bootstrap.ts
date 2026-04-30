@@ -746,6 +746,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       terminal_states: effectiveConfig.tracker.terminal_states,
       github_linking_mode: effectiveConfig.tracker.github_linking?.mode ?? 'off',
       stall_timeout_ms: effectiveConfig.codex.stall_timeout_ms,
+      phase_markers_enabled: effectiveConfig.observability?.phase_markers_enabled ?? true,
+      phase_timeline_limit: effectiveConfig.observability?.phase_timeline_limit ?? 30,
       worker_hosts: effectiveConfig.worker?.ssh_hosts ?? [],
       max_concurrent_agents_per_host: effectiveConfig.worker?.max_concurrent_agents_per_host ?? null
     },
@@ -836,6 +838,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               persistenceStore?.saveUiState(state);
             },
             getPromptFallbackActive: () => promptFallbackActive,
+            getPhaseMarkers: () => orchestrator.getPhaseMarkerSettings(),
             getRuntimeResolution: () => ({
               workflow_path: currentWorkflowPath,
               workflow_dir: workflowDir,
@@ -952,7 +955,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           dashboardConfig: {
             dashboard_enabled: effectiveConfig.observability?.dashboard_enabled ?? true,
             refresh_ms: effectiveConfig.observability?.refresh_ms ?? 4000,
-            render_interval_ms: effectiveConfig.observability?.render_interval_ms ?? 1000
+            render_interval_ms: effectiveConfig.observability?.render_interval_ms ?? 1000,
+            phase_stale_warn_ms: effectiveConfig.observability?.phase_stale_warn_ms ?? 45000
           },
           logger,
           nowMs

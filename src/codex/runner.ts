@@ -556,6 +556,11 @@ export class CodexRunner {
       for (let turnIndex = 0; turnIndex < maxTurns; turnIndex += 1) {
         const promptText = turnIndex === 0 ? input.prompt : input.continuationPrompt ?? CONTINUATION_GUIDANCE;
         const sandboxPolicy = normalizeTurnSandboxPolicy(input.turnSandboxPolicy);
+        emit({
+          event: CANONICAL_EVENT.codex.promptSent,
+          thread_id,
+          detail: turnIndex === 0 ? 'initial_prompt' : 'continuation_prompt'
+        });
         const turnResponse = await protocol.request(
           'turn/start',
           {
@@ -599,6 +604,12 @@ export class CodexRunner {
 
         if (waitResult.terminal === 'turn/completed') {
           turnsCompleted += 1;
+          emit({
+            event: CANONICAL_EVENT.codex.phaseValidation,
+            thread_id,
+            turn_id,
+            session_id
+          });
 
           emit({
             event: CANONICAL_EVENT.codex.turnCompleted,
@@ -828,6 +839,7 @@ class ProtocolClient {
           this.write({ id: message.id, result: toolResult });
           if (toolResult.success) {
             emit({ event: CANONICAL_EVENT.codex.toolCallCompleted, detail: toolName ?? 'unknown_tool' });
+            emit({ event: CANONICAL_EVENT.codex.phaseImplementation, detail: toolName ?? 'unknown_tool' });
           } else if (toolName) {
             emit({ event: CANONICAL_EVENT.codex.toolCallFailed, detail: toolName });
           } else {
@@ -902,6 +914,7 @@ class ProtocolClient {
       const waitStartedAtMs = Date.now();
       const heartbeat = setInterval(() => {
         const elapsedSeconds = Math.floor((Date.now() - waitStartedAtMs) / 1000);
+        emit({ event: CANONICAL_EVENT.codex.phasePlanning, detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
         emit({ event: CANONICAL_EVENT.codex.turnWaiting, detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
       }, ProtocolClient.TURN_WAITING_HEARTBEAT_MS);
 

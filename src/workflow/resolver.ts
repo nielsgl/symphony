@@ -441,7 +441,10 @@ export class ConfigResolver {
       observability: {
         dashboard_enabled: readBoolean(observability.dashboard_enabled, true),
         refresh_ms: Math.max(500, readInt(observability.refresh_ms, 4000)),
-        render_interval_ms: Math.max(250, readInt(observability.render_interval_ms, 1000))
+        render_interval_ms: Math.max(250, readInt(observability.render_interval_ms, 1000)),
+        phase_markers_enabled: readBoolean(observability.phase_markers_enabled, true),
+        phase_timeline_limit: Math.max(1, readInt(observability.phase_timeline_limit, 30)),
+        phase_stale_warn_ms: Math.max(1000, readInt(observability.phase_stale_warn_ms, 45000))
       },
       logging: {
         root: loggingRoot,

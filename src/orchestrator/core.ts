@@ -1,6 +1,7 @@
 import type { Issue } from '../tracker';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
+import { isKnownPhaseMarker, isTerminalPhaseMarker, phaseMarkerOrder, type PhaseMarker, type PhaseMarkerName } from '../observability';
 import { ThroughputTracker } from '../observability/throughput';
 import {
   availableGlobalSlots,
@@ -15,6 +16,7 @@ import type {
   BlockedEntry,
   OrchestratorOptions,
   OrchestratorState,
+  PhaseMarkerSettings,
   RetryDelayType,
   RetryEntry,
   RunningEntry,
@@ -76,7 +78,10 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     tokens: { ...entry.tokens },
     last_reported_tokens: { ...entry.last_reported_tokens },
     recent_events: entry.recent_events.map((event) => ({ ...event })),
-    copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null
+    copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null,
+    current_phase: entry.current_phase,
+    current_phase_at_ms: entry.current_phase_at_ms,
+    phase_detail: entry.phase_detail
   };
 }
 
@@ -103,6 +108,9 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
     previous_session_id: entry.previous_session_id,
+    last_phase: entry.last_phase,
+    last_phase_at_ms: entry.last_phase_at_ms,
+    last_phase_detail: entry.last_phase_detail,
     timer_handle: entry.timer_handle
   };
 }
@@ -128,6 +136,9 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
     previous_session_id: entry.previous_session_id,
+    last_phase: entry.last_phase,
+    last_phase_at_ms: entry.last_phase_at_ms,
+    last_phase_detail: entry.last_phase_detail,
     blocked_at_ms: entry.blocked_at_ms,
     requires_manual_resume: true
   };
@@ -158,6 +169,7 @@ export class OrchestratorCore {
   private readonly nowMs: () => number;
   private readonly logger?: StructuredLogger;
   private readonly persistence?: OrchestratorOptions['persistence'];
+  private readonly phaseSettings: PhaseMarkerSettings;
   private readonly throughputTracker: ThroughputTracker;
 
   private readonly state: OrchestratorState;
@@ -169,6 +181,11 @@ export class OrchestratorCore {
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.logger = options.logger;
     this.persistence = options.persistence;
+    this.phaseSettings = {
+      enabled: options.config.phase_markers_enabled !== false,
+      timeline_limit: Math.max(1, options.config.phase_timeline_limit ?? 30),
+      last_emit_error_code: null
+    };
 
     this.state = {
       poll_interval_ms: this.config.poll_interval_ms,
@@ -177,6 +194,7 @@ export class OrchestratorCore {
       claimed: new Set(),
       retry_attempts: new Map(),
       blocked_inputs: new Map(),
+      phase_timeline: new Map(),
       completed: new Set(),
       codex_totals: {
         input_tokens: 0,
@@ -215,6 +233,12 @@ export class OrchestratorCore {
       blocked_inputs: new Map(
         Array.from(this.state.blocked_inputs.entries()).map(([issueId, entry]) => [issueId, cloneBlockedEntry(entry)])
       ),
+      phase_timeline: new Map(
+        Array.from((this.state.phase_timeline ?? new Map<string, PhaseMarker[]>()).entries()).map(([issueId, markers]) => [
+          issueId,
+          markers.map((marker: PhaseMarker) => ({ ...marker }))
+        ])
+      ),
       completed: new Set(this.state.completed.values()),
       codex_totals: { ...this.state.codex_totals },
       codex_rate_limits: this.state.codex_rate_limits ? { ...this.state.codex_rate_limits } : null,
@@ -235,6 +259,8 @@ export class OrchestratorCore {
     stall_timeout_ms: number;
     worker_hosts?: string[];
     max_concurrent_agents_per_host?: number | null;
+    phase_markers_enabled?: boolean;
+    phase_timeline_limit?: number;
   }): void {
     this.config.poll_interval_ms = config.poll_interval_ms;
     this.config.max_concurrent_agents = config.max_concurrent_agents;
@@ -246,6 +272,10 @@ export class OrchestratorCore {
     this.config.stall_timeout_ms = config.stall_timeout_ms;
     this.config.worker_hosts = config.worker_hosts ? [...config.worker_hosts] : [];
     this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
+    this.config.phase_markers_enabled = config.phase_markers_enabled ?? true;
+    this.config.phase_timeline_limit = config.phase_timeline_limit ?? 30;
+    this.phaseSettings.enabled = this.config.phase_markers_enabled !== false;
+    this.phaseSettings.timeline_limit = Math.max(1, this.config.phase_timeline_limit ?? 30);
 
     this.state.poll_interval_ms = config.poll_interval_ms;
     this.state.max_concurrent_agents = config.max_concurrent_agents;
@@ -534,6 +564,9 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: workerEvent.detail
     });
+    if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
+      this.emitMappedPhaseMarker(issue_id, workerEvent);
+    }
   }
 
   async onWorkerExit(issue_id: string, reason: WorkerExitReason, error?: string): Promise<void> {
@@ -546,6 +579,13 @@ export class OrchestratorCore {
     this.addRuntimeSecondsFromEntry(running);
 
     if (reason === 'normal') {
+      this.emitPhaseMarker(issue_id, {
+        phase: 'completed',
+        detail: 'worker exited normally',
+        attempt: running.retry_attempt,
+        thread_id: running.thread_id,
+        session_id: running.session_id
+      });
       await this.completeRunRecord(running, 'succeeded', null);
       this.state.completed.add(issue_id);
       await this.scheduleRetry({
@@ -590,6 +630,13 @@ export class OrchestratorCore {
       const stopReasonCode = this.inferStopReasonCode(error, 'worker_exit_abnormal');
       if (stopReasonCode === 'turn_input_required') {
         const stopReasonDetail = this.inferInputRequiredDetail(error, reason);
+        this.emitPhaseMarker(issue_id, {
+          phase: 'blocked_input',
+          detail: stopReasonDetail,
+          attempt: running.retry_attempt + 1,
+          thread_id: running.thread_id,
+          session_id: running.session_id
+        });
         await this.scheduleBlockedInput({
           issue_id,
           issue_identifier: running.identifier,
@@ -651,6 +698,13 @@ export class OrchestratorCore {
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
         previous_session_id: running.session_id
+      });
+      this.emitPhaseMarker(issue_id, {
+        phase: 'failed',
+        detail: error ?? `worker exited: ${reason}`,
+        attempt: running.retry_attempt + 1,
+        thread_id: running.thread_id,
+        session_id: running.session_id
       });
       this.logger?.log({
         level: 'warn',
@@ -947,6 +1001,11 @@ export class OrchestratorCore {
   }
 
   private async dispatchIssue(issue: Issue, attempt: number | null): Promise<void> {
+    this.emitPhaseMarker(issue.id, {
+      phase: 'dispatch_started',
+      detail: 'dispatch attempt started',
+      attempt: attempt ?? 0
+    });
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.dispatchAttemptStarted,
@@ -1001,6 +1060,11 @@ export class OrchestratorCore {
     const spawned = await this.ports.spawnWorker({ issue, attempt, worker_host: workerHost });
 
     if (!spawned.ok) {
+      this.emitPhaseMarker(issue.id, {
+        phase: 'failed',
+        detail: spawned.error,
+        attempt: nextAttempt(attempt)
+      });
       this.state.health.last_error = `failed to spawn agent for ${issue.identifier}`;
       this.logger?.log({
         level: 'warn',
@@ -1086,7 +1150,15 @@ export class OrchestratorCore {
       },
       recent_events: [],
       started_at_ms: this.nowMs(),
-      last_codex_timestamp_ms: null
+      last_codex_timestamp_ms: null,
+      current_phase: null,
+      current_phase_at_ms: null,
+      phase_detail: null
+    });
+    this.emitPhaseMarker(issue.id, {
+      phase: 'workspace_ready',
+      detail: 'workspace ready and worker spawned',
+      attempt: attempt ?? 0
     });
 
     const runningEntry = this.state.running.get(issue.id);
@@ -1203,6 +1275,9 @@ export class OrchestratorCore {
       stop_reason_detail: params.stop_reason_detail ?? null,
       previous_thread_id: params.previous_thread_id ?? null,
       previous_session_id: params.previous_session_id ?? null,
+      last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
+      last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
+      last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
       timer_handle: timerHandle
     });
 
@@ -1278,6 +1353,9 @@ export class OrchestratorCore {
       stop_reason_detail: params.stop_reason_detail,
       previous_thread_id: params.previous_thread_id,
       previous_session_id: params.previous_session_id,
+      last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
+      last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
+      last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
       blocked_at_ms: this.nowMs(),
       requires_manual_resume: true
     });
@@ -1430,6 +1508,145 @@ export class OrchestratorCore {
       ok: true,
       issue_id: blocked.issue_id
     };
+  }
+
+  getPhaseMarkerSettings(): PhaseMarkerSettings {
+    return { ...this.phaseSettings };
+  }
+
+  private getLastPhaseMarker(issue_id: string): PhaseMarker | null {
+    const timeline = this.state.phase_timeline?.get(issue_id);
+    return timeline && timeline.length > 0 ? timeline[timeline.length - 1] ?? null : null;
+  }
+
+  private emitExplicitPhaseMarker(issue_id: string, workerEvent: WorkerObservabilityEvent): boolean {
+    const running = this.state.running.get(issue_id);
+    const markerBase = {
+      detail: workerEvent.detail ?? null,
+      attempt: running?.retry_attempt ?? 0,
+      thread_id: workerEvent.thread_id ?? running?.thread_id ?? null,
+      session_id: workerEvent.session_id ?? running?.session_id ?? null
+    };
+
+    switch (workerEvent.event) {
+      case CANONICAL_EVENT.codex.promptSent:
+        this.emitPhaseMarker(issue_id, { ...markerBase, phase: 'prompt_sent' });
+        return true;
+      case CANONICAL_EVENT.codex.phasePlanning:
+        this.emitPhaseMarker(issue_id, { ...markerBase, phase: 'planning' });
+        return true;
+      case CANONICAL_EVENT.codex.phaseImplementation:
+        this.emitPhaseMarker(issue_id, { ...markerBase, phase: 'implementation' });
+        return true;
+      case CANONICAL_EVENT.codex.phaseValidation:
+        this.emitPhaseMarker(issue_id, { ...markerBase, phase: 'validation' });
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private emitMappedPhaseMarker(issue_id: string, workerEvent: WorkerObservabilityEvent): void {
+    const mapped = this.mapPhaseForWorkerEvent(workerEvent.event);
+    if (!mapped) {
+      return;
+    }
+    const running = this.state.running.get(issue_id);
+    this.emitPhaseMarker(issue_id, {
+      phase: mapped,
+      detail: workerEvent.detail ?? null,
+      attempt: running?.retry_attempt ?? 0,
+      thread_id: workerEvent.thread_id ?? running?.thread_id ?? null,
+      session_id: workerEvent.session_id ?? running?.session_id ?? null
+    });
+  }
+
+  private mapPhaseForWorkerEvent(eventName: string): PhaseMarkerName | null {
+    switch (eventName) {
+      case CANONICAL_EVENT.codex.sessionStarted:
+        return 'codex_session_started';
+      case CANONICAL_EVENT.codex.turnStarted:
+        return 'codex_turn_started';
+      case CANONICAL_EVENT.codex.turnWaiting:
+        return 'planning';
+      case CANONICAL_EVENT.codex.toolCallCompleted:
+        return 'implementation';
+      case CANONICAL_EVENT.codex.turnCompleted:
+        return 'validation';
+      case CANONICAL_EVENT.codex.turnFailed:
+        return 'failed';
+      case CANONICAL_EVENT.codex.turnInputRequired:
+        return 'blocked_input';
+      default:
+        return null;
+    }
+  }
+
+  private emitPhaseMarker(
+    issue_id: string,
+    marker: {
+      phase: PhaseMarkerName | string;
+      detail: string | null;
+      attempt: number;
+      thread_id?: string | null;
+      session_id?: string | null;
+    }
+  ): void {
+    if (!this.phaseSettings.enabled) {
+      return;
+    }
+    if (!isKnownPhaseMarker(marker.phase)) {
+      this.phaseSettings.last_emit_error_code = 'unknown_phase';
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.orchestration.phaseMarkerIgnored,
+        message: 'phase marker ignored: unknown phase',
+        context: { issue_id, phase: marker.phase, attempt: marker.attempt }
+      });
+      return;
+    }
+    const timeline = this.state.phase_timeline?.get(issue_id) ?? [];
+    const last = timeline[timeline.length - 1];
+    if (last && (isTerminalPhaseMarker(last.phase) || phaseMarkerOrder(marker.phase) <= phaseMarkerOrder(last.phase))) {
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.orchestration.phaseMarkerIgnored,
+        message: 'phase marker ignored: non-monotonic or terminal',
+        context: { issue_id, phase: marker.phase, previous_phase: last.phase, attempt: marker.attempt }
+      });
+      return;
+    }
+    const next: PhaseMarker = {
+      at_ms: this.nowMs(),
+      phase: marker.phase,
+      detail: marker.detail,
+      attempt: marker.attempt,
+      thread_id: marker.thread_id ?? null,
+      session_id: marker.session_id ?? null
+    };
+    timeline.push(next);
+    if (timeline.length > this.phaseSettings.timeline_limit) {
+      timeline.splice(0, timeline.length - this.phaseSettings.timeline_limit);
+    }
+    this.state.phase_timeline?.set(issue_id, timeline);
+    const running = this.state.running.get(issue_id);
+    if (running) {
+      running.current_phase = next.phase;
+      running.current_phase_at_ms = next.at_ms;
+      running.phase_detail = next.detail;
+    }
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.phaseMarkerEmitted,
+      message: 'phase marker emitted',
+      context: {
+        issue_id,
+        phase: next.phase,
+        attempt: next.attempt,
+        thread_id: next.thread_id,
+        session_id: next.session_id
+      }
+    });
   }
 
   private inferStopReasonCode(error: string | undefined, fallback: string): string {

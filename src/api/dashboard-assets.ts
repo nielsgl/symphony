@@ -2,6 +2,7 @@ interface DashboardClientConfig {
   dashboard_enabled: boolean;
   refresh_ms: number;
   render_interval_ms: number;
+  phase_stale_warn_ms?: number;
 }
 
 export function renderDashboardHtml(_config?: DashboardClientConfig): string {
@@ -93,6 +94,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
               <th>Issue</th>
               <th>State</th>
               <th>Session</th>
+              <th>Phase</th>
               <th>Runtime</th>
               <th>Turns</th>
               <th>Tokens</th>
@@ -103,7 +105,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
             </tr>
           </thead>
           <tbody id="running-rows">
-            <tr><td colspan="10" class="muted">No running issues.</td></tr>
+            <tr><td colspan="11" class="muted">No running issues.</td></tr>
           </tbody>
         </table>
       </div>
@@ -220,7 +222,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   const safeConfig = {
     dashboard_enabled: config.dashboard_enabled !== false,
     refresh_ms: Math.max(500, Number(config.refresh_ms) || 4000),
-    render_interval_ms: Math.max(250, Number(config.render_interval_ms) || 1000)
+    render_interval_ms: Math.max(250, Number(config.render_interval_ms) || 1000),
+    phase_stale_warn_ms: Math.max(1000, Number(config.phase_stale_warn_ms) || 45000)
   };
   return `(() => {
   const DASHBOARD_CONFIG = ${JSON.stringify(safeConfig)};
@@ -583,7 +586,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     if (!rows.length) {
       const emptyRow = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 10;
+      cell.colSpan = 11;
       cell.className = 'muted';
       cell.textContent = 'No running issues match current filters.';
       emptyRow.appendChild(cell);
@@ -627,6 +630,20 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
       sessionMeta.textContent = sessionMetaParts.length ? sessionMetaParts.join(' • ') : 'Host n/a';
       sessionCell.append(sessionValue, sessionMeta);
+
+      const phaseCell = document.createElement('td');
+      const phaseLabel = document.createElement('div');
+      phaseLabel.textContent = entry.current_phase || 'n/a';
+      const phaseMeta = document.createElement('div');
+      phaseMeta.className = 'muted';
+      if (entry.current_phase_at) {
+        const phaseAgeMs = Date.now() - Date.parse(entry.current_phase_at);
+        const stale = Number.isFinite(phaseAgeMs) && phaseAgeMs > DASHBOARD_CONFIG.phase_stale_warn_ms;
+        phaseMeta.textContent = (entry.phase_elapsed_ms ? 'elapsed ' + Math.floor(entry.phase_elapsed_ms / 1000) + 's' : 'elapsed n/a') + ' • updated ' + formatDurationFromIso(entry.current_phase_at) + ' ago' + (stale ? ' • No phase movement yet' : '');
+      } else {
+        phaseMeta.textContent = 'No phase movement yet';
+      }
+      phaseCell.append(phaseLabel, phaseMeta);
 
       const runtimeCell = document.createElement('td');
       runtimeCell.className = 'runtime-cell';
@@ -674,6 +691,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         issueCell,
         stateCell,
         sessionCell,
+        phaseCell,
         runtimeCell,
         turnsCell,
         tokensCell,
@@ -771,6 +789,16 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.className = 'muted';
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      const lastPhaseLine = document.createElement('div');
+      lastPhaseLine.className = 'muted';
+      lastPhaseLine.textContent = 'Last phase: ' + (entry.last_phase || 'n/a') + (entry.last_phase_at ? ' @ ' + formatDate(entry.last_phase_at) : '');
+      stopReasonCell.append(lastPhaseLine);
+      if (entry.last_phase_detail) {
+        const lastPhaseDetailLine = document.createElement('div');
+        lastPhaseDetailLine.className = 'muted';
+        lastPhaseDetailLine.textContent = entry.last_phase_detail;
+        stopReasonCell.append(lastPhaseDetailLine);
+      }
       const inputDecision = formatInputDecisionContext(entry.stop_reason_detail || '');
       if (inputDecision) {
         const decisionLine = document.createElement('div');
@@ -874,6 +902,16 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.className = 'muted';
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      const lastPhaseLine = document.createElement('div');
+      lastPhaseLine.className = 'muted';
+      lastPhaseLine.textContent = 'Last phase: ' + (entry.last_phase || 'n/a') + (entry.last_phase_at ? ' @ ' + formatDate(entry.last_phase_at) : '');
+      stopReasonCell.append(lastPhaseLine);
+      if (entry.last_phase_detail) {
+        const lastPhaseDetailLine = document.createElement('div');
+        lastPhaseDetailLine.className = 'muted';
+        lastPhaseDetailLine.textContent = entry.last_phase_detail;
+        stopReasonCell.append(lastPhaseDetailLine);
+      }
       const inputDecision = formatInputDecisionContext(entry.stop_reason_detail || '');
       if (inputDecision) {
         const decisionLine = document.createElement('div');
@@ -1089,6 +1127,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if (payload.blocked && payload.blocked.previous_session_id) {
         summaryParts.push('Previous session: ' + payload.blocked.previous_session_id);
       }
+      if (payload.running && payload.running.current_phase) {
+        summaryParts.push('Current phase: ' + payload.running.current_phase);
+      }
+      if ((payload.retry && payload.retry.last_phase) || (payload.blocked && payload.blocked.last_phase)) {
+        summaryParts.push('Last phase before stop: ' + ((payload.retry && payload.retry.last_phase) || (payload.blocked && payload.blocked.last_phase)));
+      }
       const runningOrRetry = payload.running || payload.retry || payload.blocked;
       if (runningOrRetry && runningOrRetry.provisioner_type) {
         summaryParts.push('Provisioner: ' + runningOrRetry.provisioner_type);
@@ -1109,7 +1153,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);
       }
       elements.issueSummary.textContent = summaryParts.join(' • ');
-      elements.issueOutput.textContent = JSON.stringify(payload, null, 2);
+      const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
+      const timelineText = timeline.length
+        ? timeline.map(function (marker) {
+            return marker.at + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + (marker.detail || 'n/a') + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
+          }).join('\\n')
+        : 'No phase markers yet.';
+      elements.issueOutput.textContent = 'Execution Timeline\\n' + timelineText + '\\n\\nIssue JSON\\n' + JSON.stringify(payload, null, 2);
       if (state.payload) {
         renderRunning(state.payload);
       }

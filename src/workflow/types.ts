@@ -152,6 +152,9 @@ export interface EffectiveConfig {
     dashboard_enabled: boolean;
     refresh_ms: number;
     render_interval_ms: number;
+    phase_markers_enabled?: boolean;
+    phase_timeline_limit?: number;
+    phase_stale_warn_ms?: number;
   };
   logging: LoggingConfig;
   worker?: WorkerConfig;

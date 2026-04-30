@@ -89,7 +89,8 @@ export class LocalApiServer {
     this.dashboardConfig = options.dashboardConfig ?? {
       dashboard_enabled: true,
       refresh_ms: 4000,
-      render_interval_ms: 1000
+      render_interval_ms: 1000,
+      phase_stale_warn_ms: 45000
     };
     this.logger = options.logger;
     this.refreshCoalescer = new RefreshCoalescer({
@@ -488,6 +489,13 @@ export class LocalApiServer {
                 workflow: {
                   prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
                 },
+                phase_markers: this.diagnosticsSource.getPhaseMarkers
+                  ? this.diagnosticsSource.getPhaseMarkers()
+                  : {
+                      enabled: true,
+                      timeline_limit: 30,
+                      last_emit_error_code: null
+                    },
                 runtime_resolution: this.diagnosticsSource.getRuntimeResolution(),
                 workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner(),
                 workspace_copy_ignored: this.diagnosticsSource.getWorkspaceCopyIgnored()
