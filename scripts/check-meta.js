@@ -117,20 +117,77 @@ function hasUiEvidence() {
   return { ok: false, mode: 'missing' };
 }
 
+function parseWorkflowFrontMatterFallback(workflowPath) {
+  if (!fs.existsSync(workflowPath)) {
+    return {};
+  }
+
+  const content = fs.readFileSync(workflowPath, 'utf8');
+  if (!content.startsWith('---')) {
+    return {};
+  }
+
+  const normalized = content.replace(/\r\n/g, '\n');
+  const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) {
+    return {};
+  }
+
+  const [, rawFrontMatter] = match;
+  const lines = rawFrontMatter.split('\n');
+  let inValidation = false;
+  let validationIndent = 0;
+
+  for (const line of lines) {
+    const normalizedLine = line.replace(/\t/g, '  ');
+    const trimmed = normalizedLine.trim();
+
+    if (!inValidation) {
+      const validationMatch = normalizedLine.match(/^(\s*)validation:\s*(?:#.*)?$/);
+      if (validationMatch) {
+        inValidation = true;
+        validationIndent = validationMatch[1].length;
+      }
+      continue;
+    }
+
+    if (trimmed.length === 0 || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const indent = normalizedLine.match(/^(\s*)/)?.[1].length ?? 0;
+    if (indent <= validationIndent) {
+      break;
+    }
+
+    const profileMatch = normalizedLine.match(
+      /^\s*ui_evidence_profile:\s*(?:"(baseline|strict)"|'(baseline|strict)'|(baseline|strict))\s*(?:#.*)?$/i
+    );
+    if (profileMatch) {
+      const profile = (profileMatch[1] || profileMatch[2] || profileMatch[3] || '').toLowerCase();
+      if (profile === 'baseline' || profile === 'strict') {
+        return { validation: { ui_evidence_profile: profile } };
+      }
+    }
+  }
+
+  return {};
+}
+
 function loadWorkflowConfig() {
+  const workflowPath = path.resolve(process.cwd(), process.env[WORKFLOW_PATH_ENV] || DEFAULT_WORKFLOW_PATH);
   try {
     const { WorkflowLoader } = require(path.join(process.cwd(), 'dist/src/workflow/loader.js'));
     const loader = new WorkflowLoader();
-    const explicitPath = process.env[WORKFLOW_PATH_ENV] || DEFAULT_WORKFLOW_PATH;
     const workflowDefinition = loader.load({
-      explicitPath: path.resolve(process.cwd(), explicitPath),
+      explicitPath: workflowPath,
       cwd: process.cwd()
     });
     return workflowDefinition && typeof workflowDefinition.config === 'object' && workflowDefinition.config
       ? workflowDefinition.config
       : {};
   } catch {
-    return {};
+    return parseWorkflowFrontMatterFallback(workflowPath);
   }
 }
 
