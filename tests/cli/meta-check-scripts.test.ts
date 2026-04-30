@@ -149,7 +149,7 @@ describe('meta check scripts', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
-  it('fails ui evidence gate for committed UI changes when origin/main is unavailable', () => {
+  it('fails ui evidence gate for committed UI changes in branch history when origin/main is unavailable', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
@@ -165,6 +165,11 @@ describe('meta check scripts', () => {
     fs.appendFileSync(dashboardPath, '\n// committed ui evidence gate test marker\n', 'utf8');
     expect(runGit(['add', 'src/api/dashboard-assets.ts'], tempRoot).status).toBe(0);
     expect(runGit(['commit', '-m', 'ui change'], tempRoot).status).toBe(0);
+
+    const nonUiPath = path.join(tempRoot, 'scripts/check-meta.js');
+    fs.appendFileSync(nonUiPath, '\n// non-ui change after ui commit\n', 'utf8');
+    expect(runGit(['add', 'scripts/check-meta.js'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'non-ui follow-up'], tempRoot).status).toBe(0);
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
       SYMPHONY_META_SKIP_BASE_CHECKS: '1'

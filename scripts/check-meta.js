@@ -52,6 +52,21 @@ function listChangedFiles() {
 
   if (!capturedCommittedDiff) {
     // Fallback for CI clones/worktrees that do not have origin/main available locally.
+    // Prefer branch-history diff from repository root so multi-commit UI changes are still detected.
+    const rootCommit = runGit(['rev-list', '--max-parents=0', '--max-count=1', 'HEAD']);
+    const rootSha = rootCommit.status === 0 ? rootCommit.stdout.trim() : '';
+    if (rootSha) {
+      const committedFromRoot = runGit(['diff', '--name-only', '--diff-filter=ACMR', `${rootSha}..HEAD`]);
+      if (committedFromRoot.status === 0) {
+        capturedCommittedDiff = true;
+        for (const file of committedFromRoot.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
+          changed.add(file);
+        }
+      }
+    }
+  }
+
+  if (!capturedCommittedDiff) {
     const headCommitFiles = runGit(['show', '--name-only', '--pretty=format:', '--diff-filter=ACMR', 'HEAD']);
     if (headCommitFiles.status === 0) {
       for (const file of headCommitFiles.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
