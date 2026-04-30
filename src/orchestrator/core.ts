@@ -702,7 +702,7 @@ export class OrchestratorCore {
       this.emitPhaseMarker(issue_id, {
         phase: 'failed',
         detail: error ?? `worker exited: ${reason}`,
-        attempt: running.retry_attempt + 1,
+        attempt: running.retry_attempt,
         thread_id: running.thread_id,
         session_id: running.session_id
       });
@@ -1063,7 +1063,7 @@ export class OrchestratorCore {
       this.emitPhaseMarker(issue.id, {
         phase: 'failed',
         detail: spawned.error,
-        attempt: nextAttempt(attempt)
+        attempt: attempt ?? 0
       });
       this.state.health.last_error = `failed to spawn agent for ${issue.identifier}`;
       this.logger?.log({
@@ -1606,13 +1606,16 @@ export class OrchestratorCore {
       return;
     }
     const timeline = this.state.phase_timeline?.get(issue_id) ?? [];
-    const last = timeline[timeline.length - 1];
-    if (last && (isTerminalPhaseMarker(last.phase) || phaseMarkerOrder(marker.phase) <= phaseMarkerOrder(last.phase))) {
+    const lastForAttempt = this.getLastPhaseMarkerForAttempt(timeline, marker.attempt);
+    if (
+      lastForAttempt &&
+      (isTerminalPhaseMarker(lastForAttempt.phase) || phaseMarkerOrder(marker.phase) <= phaseMarkerOrder(lastForAttempt.phase))
+    ) {
       this.logger?.log({
         level: 'info',
         event: CANONICAL_EVENT.orchestration.phaseMarkerIgnored,
         message: 'phase marker ignored: non-monotonic or terminal',
-        context: { issue_id, phase: marker.phase, previous_phase: last.phase, attempt: marker.attempt }
+        context: { issue_id, phase: marker.phase, previous_phase: lastForAttempt.phase, attempt: marker.attempt }
       });
       return;
     }
@@ -1647,6 +1650,16 @@ export class OrchestratorCore {
         session_id: next.session_id
       }
     });
+  }
+
+  private getLastPhaseMarkerForAttempt(timeline: PhaseMarker[], attempt: number): PhaseMarker | null {
+    for (let index = timeline.length - 1; index >= 0; index -= 1) {
+      const marker = timeline[index];
+      if (marker?.attempt === attempt) {
+        return marker;
+      }
+    }
+    return null;
   }
 
   private inferStopReasonCode(error: string | undefined, fallback: string): string {
