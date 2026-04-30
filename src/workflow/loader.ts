@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import YAML from 'js-yaml';
 
 import { WorkflowConfigError } from './errors';
+import { parseWorkflowFrontMatter } from './frontmatter';
 import type { WorkflowDefinition } from './types';
 
 export const DEFAULT_PROMPT_TEMPLATE = [
@@ -45,48 +45,11 @@ export class WorkflowLoader {
   }
 
   parse(content: string): WorkflowDefinition {
-    if (!content.startsWith('---')) {
-      const trimmed = content.trim();
-      return {
-        config: {},
-        prompt_template: trimmed.length > 0 ? trimmed : DEFAULT_PROMPT_TEMPLATE
-      };
-    }
-
-    const normalized = content.replace(/\r\n/g, '\n');
-    const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-
-    if (!match) {
-      throw new WorkflowConfigError(
-        'workflow_parse_error',
-        'workflow front matter is not closed with a second --- delimiter'
-      );
-    }
-
-    const [, rawFrontMatter, promptBody] = match;
-
-    let parsed: unknown;
-    try {
-      parsed = YAML.load(rawFrontMatter);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown YAML parse failure';
-      throw new WorkflowConfigError('workflow_parse_error', message);
-    }
-
-    if (parsed == null) {
-      parsed = {};
-    }
-
-    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new WorkflowConfigError(
-        'workflow_front_matter_not_a_map',
-        'workflow front matter must decode to a map/object'
-      );
-    }
+    const parsed = parseWorkflowFrontMatter(content);
 
     return {
-      config: parsed as Record<string, unknown>,
-      prompt_template: promptBody.trim().length > 0 ? promptBody.trim() : DEFAULT_PROMPT_TEMPLATE
+      config: parsed.config,
+      prompt_template: parsed.promptTemplate.length > 0 ? parsed.promptTemplate : DEFAULT_PROMPT_TEMPLATE
     };
   }
 }
