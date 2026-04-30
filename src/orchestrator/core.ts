@@ -564,7 +564,9 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: workerEvent.detail
     });
-    this.emitMappedPhaseMarker(issue_id, workerEvent);
+    if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
+      this.emitMappedPhaseMarker(issue_id, workerEvent);
+    }
   }
 
   async onWorkerExit(issue_id: string, reason: WorkerExitReason, error?: string): Promise<void> {
@@ -1515,6 +1517,33 @@ export class OrchestratorCore {
   private getLastPhaseMarker(issue_id: string): PhaseMarker | null {
     const timeline = this.state.phase_timeline?.get(issue_id);
     return timeline && timeline.length > 0 ? timeline[timeline.length - 1] ?? null : null;
+  }
+
+  private emitExplicitPhaseMarker(issue_id: string, workerEvent: WorkerObservabilityEvent): boolean {
+    const running = this.state.running.get(issue_id);
+    const markerBase = {
+      detail: workerEvent.detail ?? null,
+      attempt: running?.retry_attempt ?? 0,
+      thread_id: workerEvent.thread_id ?? running?.thread_id ?? null,
+      session_id: workerEvent.session_id ?? running?.session_id ?? null
+    };
+
+    switch (workerEvent.event) {
+      case CANONICAL_EVENT.codex.promptSent:
+        this.emitPhaseMarker(issue_id, { ...markerBase, phase: 'prompt_sent' });
+        return true;
+      case CANONICAL_EVENT.codex.phasePlanning:
+        this.emitPhaseMarker(issue_id, { ...markerBase, phase: 'planning' });
+        return true;
+      case CANONICAL_EVENT.codex.phaseImplementation:
+        this.emitPhaseMarker(issue_id, { ...markerBase, phase: 'implementation' });
+        return true;
+      case CANONICAL_EVENT.codex.phaseValidation:
+        this.emitPhaseMarker(issue_id, { ...markerBase, phase: 'validation' });
+        return true;
+      default:
+        return false;
+    }
   }
 
   private emitMappedPhaseMarker(issue_id: string, workerEvent: WorkerObservabilityEvent): void {

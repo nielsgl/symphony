@@ -11,7 +11,11 @@ export const CANONICAL_EVENT = {
   },
   codex: {
     sessionStarted: 'codex.session.started',
+    promptSent: 'codex.prompt.sent',
     turnStarted: 'codex.turn.started',
+    phasePlanning: 'codex.phase.planning',
+    phaseImplementation: 'codex.phase.implementation',
+    phaseValidation: 'codex.phase.validation',
     turnCompleted: 'codex.turn.completed',
     turnFailed: 'codex.turn.failed',
     turnCancelled: 'codex.turn.cancelled',
