@@ -51,6 +51,29 @@ describe('meta check scripts', () => {
     expect(meta.stdout).toContain('Meta checks passed');
   }, 30_000);
 
+  it('fails aggregate meta check when upstream parity blocking is enabled with untriaged high-impact deltas', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-meta-parity-check-'));
+    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'docs'), path.join(tempRoot, 'docs'), { recursive: true });
+    fs.cpSync(path.join(root, 'tests/fixtures/upstream-parity'), path.join(tempRoot, 'tests/fixtures/upstream-parity'), {
+      recursive: true
+    });
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UPSTREAM_PARITY_ENABLED: '1',
+      SYMPHONY_UPSTREAM_PARITY_BLOCKING: '1',
+      SYMPHONY_UPSTREAM_PARITY_HEAD_SHA: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      SYMPHONY_UPSTREAM_PARITY_FIXTURE: 'tests/fixtures/upstream-parity/compare-mixed.json'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('high-impact delta(s) are untriaged');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
   it('fails with actionable output when governance docs are missing from cwd', () => {
     const root = process.cwd();
     const tempCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-meta-check-'));

@@ -150,3 +150,7 @@ output/playwright/
 
 .worktrees
 .symphony/
+
+# Upstream parity reports are generated at runtime/CI and should remain untracked.
+docs/analysis/crossref/appendix/upstream-delta-report.json
+docs/analysis/crossref/appendix/upstream-delta-report.md
