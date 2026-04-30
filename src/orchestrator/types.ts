@@ -1,6 +1,7 @@
 import type { Issue, TrackerAdapter } from '../tracker';
 import type { CodexUsageTotals } from '../codex';
 import type { StructuredLogger } from '../observability';
+import type { PhaseMarker, PhaseMarkerName } from '../observability';
 import type { RunTerminalStatus } from '../persistence';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
@@ -51,6 +52,9 @@ export interface RunningEntry {
   }>;
   started_at_ms: number;
   last_codex_timestamp_ms: number | null;
+  current_phase?: PhaseMarkerName | null;
+  current_phase_at_ms?: number | null;
+  phase_detail?: string | null;
 }
 
 export interface RetryEntry {
@@ -83,6 +87,9 @@ export interface RetryEntry {
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
   previous_session_id: string | null;
+  last_phase?: PhaseMarkerName | null;
+  last_phase_at_ms?: number | null;
+  last_phase_detail?: string | null;
   timer_handle: unknown;
 }
 
@@ -114,6 +121,9 @@ export interface BlockedEntry {
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
   previous_session_id: string | null;
+  last_phase?: PhaseMarkerName | null;
+  last_phase_at_ms?: number | null;
+  last_phase_detail?: string | null;
   blocked_at_ms: number;
   requires_manual_resume: true;
 }
@@ -125,6 +135,7 @@ export interface OrchestratorState {
   claimed: Set<string>;
   retry_attempts: Map<string, RetryEntry>;
   blocked_inputs: Map<string, BlockedEntry>;
+  phase_timeline?: Map<string, PhaseMarker[]>;
   completed: Set<string>;
   codex_totals: {
     input_tokens: number;
@@ -214,6 +225,12 @@ export interface OrchestratorPorts {
   notifyObservers?: () => void;
 }
 
+export interface PhaseMarkerSettings {
+  enabled: boolean;
+  timeline_limit: number;
+  last_emit_error_code: string | null;
+}
+
 export interface OrchestratorPersistencePort {
   startRun: (params: { issue_id: string; issue_identifier: string }) => Promise<string>;
   recordSession: (params: { run_id: string; session_id: string }) => Promise<void>;
@@ -247,6 +264,8 @@ export interface OrchestratorConfig {
   terminal_states: string[];
   github_linking_mode?: 'off' | 'warn' | 'required' | string;
   stall_timeout_ms: number;
+  phase_markers_enabled?: boolean;
+  phase_timeline_limit?: number;
   worker_hosts?: string[];
   max_concurrent_agents_per_host?: number | null;
 }
