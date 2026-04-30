@@ -42,7 +42,7 @@ agent:
   max_turns: 20
 codex:
   # command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.3-codex"' --config model_reasoning_effort=medium app-server
+  command: CODEX_HOME="${CODEX_HOME:-$HOME/.codex-ci}" codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.3-codex"' --config model_reasoning_effort=medium app-server
   read_timeout_ms: 15000
   approval_policy: never
   thread_sandbox: danger-full-access
