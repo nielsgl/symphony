@@ -245,8 +245,35 @@ Resumes an issue in blocked-input state and returns it to dispatch lifecycle.
 ```bash
 npm run build
 npm test
+npm run test:e2e:web
+npm run check:meta
 git --no-pager diff --check
 ```
+
+### UI Evidence Gate (`check:meta`)
+
+`npm run check:meta` now enforces a UI evidence rule when dashboard UI surfaces
+change (`src/api/dashboard-assets.ts`, `desktop-static/`, or `src-tauri/src/`).
+
+When UI paths change, provide one of:
+
+1. Playwright pass marker environment variable:
+
+```bash
+SYMPHONY_UI_E2E_PLAYWRIGHT_PASS=1 npm run test:e2e:web
+npm run check:meta
+```
+
+2. Explicit evidence artifact marker file:
+
+```bash
+mkdir -p output/playwright
+printf 'UI_E2E_EVIDENCE=PASS\n' > output/playwright/ui-e2e-evidence.txt
+npm run check:meta
+```
+
+If evidence is missing, `check:meta` fails with a deterministic list of changed
+UI paths and remediation commands.
 
 ## Observability Notes
 

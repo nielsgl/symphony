@@ -15,7 +15,8 @@ export default defineConfig({
     screenshot: 'only-on-failure'
   },
   webServer: {
-    command: 'npm run start:dashboard -- --port=3000',
+    command:
+      'npm run start:dashboard -- --port=3000 --i-understand-that-this-will-be-running-without-the-usual-guardrails',
     url: 'http://127.0.0.1:3000/',
     timeout: 120_000,
     reuseExistingServer: true,
