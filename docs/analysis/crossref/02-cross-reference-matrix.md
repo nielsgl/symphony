@@ -72,3 +72,4 @@
    - GitHub adapter,
    - SQLite persistence and UI continuity APIs,
    - desktop-native packaging path.
+7. Upstream parity ingestion is now machine-assisted via `scripts/check-upstream-parity.js` with pinned baseline configuration (`docs/analysis/crossref/upstream-parity.json`) and report artifacts in `docs/analysis/crossref/appendix/`.

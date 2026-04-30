@@ -24,6 +24,7 @@
     "check:public-api-contract": "node scripts/check-public-api-contract.js",
     "check:spec-coverage": "node scripts/check-spec-coverage.js",
     "check:pr-governance": "node scripts/check-pr-governance.js",
+    "check:upstream-parity": "node scripts/check-upstream-parity.js",
     "check:meta": "node scripts/check-meta.js",
     "start:dashboard": "npm run build && node scripts/start-dashboard.js",
     "start:project-dashboard": "bash scripts/start-project-dashboard.sh",

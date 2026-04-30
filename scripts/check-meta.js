@@ -10,6 +10,7 @@ const checks = [
   'scripts/check-pr-governance.js',
   'scripts/check-log-context.js'
 ];
+const upstreamParityCheck = 'scripts/check-upstream-parity.js';
 
 const UI_PATH_PATTERNS = [
   /^src\/api\/dashboard-assets\.ts$/,
@@ -142,6 +143,17 @@ const skipBaseChecks = ['1', 'true', 'yes'].includes(String(process.env.SYMPHONY
 if (!skipBaseChecks) {
   for (const check of checks) {
     runNodeCheck(check);
+  }
+}
+
+const runUpstreamParity = ['1', 'true', 'yes'].includes(
+  String(process.env.SYMPHONY_UPSTREAM_PARITY_ENABLED || '').toLowerCase()
+);
+if (runUpstreamParity) {
+  const mode = process.env.SYMPHONY_UPSTREAM_PARITY_BLOCKING === '1' ? 'blocking' : 'advisory';
+  const result = spawnSync('node', [upstreamParityCheck, '--mode', mode], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    process.exit(result.status || 1);
   }
 }
 
