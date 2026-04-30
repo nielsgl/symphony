@@ -43,6 +43,7 @@ agent:
 codex:
   # command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.3-codex"' --config model_reasoning_effort=medium app-server
+  read_timeout_ms: 15000
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy: danger-full-access
