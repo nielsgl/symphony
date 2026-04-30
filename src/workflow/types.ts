@@ -42,7 +42,8 @@ export type ValidationErrorCode =
   | 'invalid_workspace_copy_ignored_limits'
   | 'invalid_logging_root'
   | 'invalid_logging_max_bytes'
-  | 'invalid_logging_max_files';
+  | 'invalid_logging_max_files'
+  | 'invalid_validation_ui_evidence_profile';
 
 export interface WorkflowDefinition {
   config: Record<string, unknown>;
@@ -155,6 +156,9 @@ export interface EffectiveConfig {
     phase_markers_enabled?: boolean;
     phase_timeline_limit?: number;
     phase_stale_warn_ms?: number;
+  };
+  validation?: {
+    ui_evidence_profile: 'baseline' | 'strict' | string;
   };
   logging: LoggingConfig;
   worker?: WorkerConfig;

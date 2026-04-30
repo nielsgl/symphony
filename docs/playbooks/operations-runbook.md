@@ -124,3 +124,35 @@ Concrete escalation sequence:
 2. Run one seed issue and capture `/api/v1/state` before and after refresh.
 3. Verify sample app tests in `tests/fixtures/todo-sample-app`.
 4. Re-enable baseline concurrency only after one successful issue cycle.
+
+## Upstream Parity Delta Review Cadence
+
+Run once weekly and before release-gate handoff.
+
+1. Advisory scan (always safe for local iteration):
+
+```bash
+npm run check:upstream-parity -- --mode advisory
+```
+
+2. Enforced release gate (fails on untriaged `spec_required`/`behavioral_risk`):
+
+```bash
+SYMPHONY_UPSTREAM_PARITY_ENABLED=1 SYMPHONY_UPSTREAM_PARITY_BLOCKING=1 npm run check:meta
+```
+
+3. Explicit local bypass for fast iteration (prints warning, never use in release sign-off):
+
+```bash
+SYMPHONY_UPSTREAM_PARITY_ENABLED=1 SYMPHONY_UPSTREAM_PARITY_BLOCKING=1 SYMPHONY_UPSTREAM_PARITY_BYPASS=1 npm run check:meta
+```
+
+4. Accept new baseline after triage (auditable SHA + timestamp + reviewer update):
+
+```bash
+# update docs/analysis/crossref/upstream-parity.json:
+# - last_reviewed_sha
+# - reviewed_at
+# - reviewed_by
+npm run check:upstream-parity -- --mode advisory
+```
