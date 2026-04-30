@@ -188,6 +188,10 @@ Returns current runtime summary:
 - latest rate-limit snapshot
 - health banner fields (`dispatch_validation`, `last_error`)
 - workspace provisioning integrity (`workspace_provisioned`, `workspace_is_git_worktree`)
+- phase progress for running issues (`current_phase`, `current_phase_at`,
+  `phase_elapsed_ms`, `phase_detail`)
+- last known phase context for retrying/blocked issues (`last_phase`,
+  `last_phase_at`, `last_phase_detail`)
 
 ### GET `/api/v1/:issue_identifier`
 
@@ -197,6 +201,7 @@ Returns issue-specific runtime diagnostics:
 - session fields and recent events
 - retry metadata
 - blocked-input metadata when status is `blocked`
+- bounded execution timeline (`phase_timeline`) with per-attempt phase markers
 - last known error
 
 Unknown issue identifiers return `404` with typed error envelope.
@@ -212,6 +217,12 @@ Server-Sent Events stream for realtime state snapshots and runtime health change
 ### GET `/api/v1/diagnostics`
 
 Runtime diagnostics including logging, persistence health, runtime resolution, and workspace provisioner state.
+
+Includes phase marker diagnostics:
+
+- `phase_markers.enabled`
+- `phase_markers.timeline_limit`
+- `phase_markers.last_emit_error_code`
 
 ### POST `/api/v1/issues/:issue_identifier/resume`
 

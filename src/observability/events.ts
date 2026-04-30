@@ -11,7 +11,11 @@ export const CANONICAL_EVENT = {
   },
   codex: {
     sessionStarted: 'codex.session.started',
+    promptSent: 'codex.prompt.sent',
     turnStarted: 'codex.turn.started',
+    phasePlanning: 'codex.phase.planning',
+    phaseImplementation: 'codex.phase.implementation',
+    phaseValidation: 'codex.phase.validation',
     turnCompleted: 'codex.turn.completed',
     turnFailed: 'codex.turn.failed',
     turnCancelled: 'codex.turn.cancelled',
@@ -41,7 +45,9 @@ export const CANONICAL_EVENT = {
     workerHostSlotsExhausted: 'orchestration.worker.host_slots_exhausted',
     blockedInputScheduled: 'orchestration.blocked_input.scheduled',
     blockedInputResumed: 'orchestration.blocked_input.resumed',
-    blockedInputCleared: 'orchestration.blocked_input.cleared'
+    blockedInputCleared: 'orchestration.blocked_input.cleared',
+    phaseMarkerEmitted: 'orchestration.phase_marker.emitted',
+    phaseMarkerIgnored: 'orchestration.phase_marker.ignored'
   },
   agentRunner: {
     attemptStarted: 'agent_runner.attempt.started',

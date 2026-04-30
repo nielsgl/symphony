@@ -316,7 +316,10 @@ describe('SnapshotService', () => {
       stop_reason_code: 'turn_input_required',
       stop_reason_detail: 'tool requestUserInput could not be auto-answered',
       previous_thread_id: 'thread-prev',
-      previous_session_id: 'thread-prev-turn-prev'
+      previous_session_id: 'thread-prev-turn-prev',
+      last_phase: null,
+      last_phase_at: null,
+      last_phase_detail: null
     });
   });
 
@@ -418,7 +421,10 @@ describe('SnapshotService', () => {
       stop_reason_code: 'turn_input_required',
       stop_reason_detail: 'tool requestUserInput could not be auto-answered',
       previous_thread_id: 'thread-prev',
-      previous_session_id: 'thread-prev-turn-prev'
+      previous_session_id: 'thread-prev-turn-prev',
+      last_phase: null,
+      last_phase_at: null,
+      last_phase_detail: null
     });
   });
 });

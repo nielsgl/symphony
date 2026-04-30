@@ -7,7 +7,7 @@ function asIsoDate(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
 }
 
-function toStateRunningRow(issueId: string, entry: RunningEntry): ApiStateResponse['running'][number] {
+function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number): ApiStateResponse['running'][number] {
   return {
     issue_id: issueId,
     issue_identifier: entry.identifier,
@@ -32,6 +32,10 @@ function toStateRunningRow(issueId: string, entry: RunningEntry): ApiStateRespon
     last_event: entry.last_event,
     last_event_summary: entry.last_event_summary,
     last_message: entry.last_message,
+    current_phase: entry.current_phase ?? null,
+    current_phase_at: entry.current_phase_at_ms ? asIsoDate(entry.current_phase_at_ms) : null,
+    phase_elapsed_ms: entry.current_phase_at_ms ? Math.max(0, nowMs - entry.current_phase_at_ms) : null,
+    phase_detail: entry.phase_detail ?? null,
     started_at: asIsoDate(entry.started_at_ms),
     last_event_at: entry.last_codex_timestamp_ms !== null ? asIsoDate(entry.last_codex_timestamp_ms) : null,
     tokens: {
@@ -64,7 +68,7 @@ export class SnapshotService {
 
   projectState(state: OrchestratorState): ApiStateResponse {
     const nowMs = this.nowMs();
-    const running = Array.from(state.running.entries()).map(([issueId, entry]) => toStateRunningRow(issueId, entry));
+    const running = Array.from(state.running.entries()).map(([issueId, entry]) => toStateRunningRow(issueId, entry, nowMs));
     const retrying = Array.from(state.retry_attempts.values()).map((entry) => ({
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -86,7 +90,10 @@ export class SnapshotService {
       stop_reason_code: entry.stop_reason_code ?? null,
       stop_reason_detail: entry.stop_reason_detail ?? null,
       previous_thread_id: entry.previous_thread_id ?? null,
-      previous_session_id: entry.previous_session_id ?? null
+      previous_session_id: entry.previous_session_id ?? null,
+      last_phase: entry.last_phase ?? null,
+      last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
+      last_phase_detail: entry.last_phase_detail ?? null
     }));
     const blocked = Array.from(state.blocked_inputs.values()).map((entry) => ({
       issue_id: entry.issue_id,
@@ -109,6 +116,9 @@ export class SnapshotService {
       stop_reason_detail: entry.stop_reason_detail ?? null,
       previous_thread_id: entry.previous_thread_id ?? null,
       previous_session_id: entry.previous_session_id ?? null,
+      last_phase: entry.last_phase ?? null,
+      last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
+      last_phase_detail: entry.last_phase_detail ?? null,
       requires_manual_resume: true as const
     }));
 
@@ -216,6 +226,10 @@ export class SnapshotService {
           last_event: entry.last_event,
           last_event_summary: entry.last_event_summary,
           last_message: entry.last_message,
+          current_phase: entry.current_phase ?? null,
+          current_phase_at: entry.current_phase_at_ms ? asIsoDate(entry.current_phase_at_ms) : null,
+          phase_elapsed_ms: entry.current_phase_at_ms ? Math.max(0, this.nowMs() - entry.current_phase_at_ms) : null,
+          phase_detail: entry.phase_detail ?? null,
           last_event_at: entry.last_codex_timestamp_ms !== null ? asIsoDate(entry.last_codex_timestamp_ms) : null,
           tokens: {
             input_tokens: entry.tokens.input_tokens,
@@ -252,7 +266,10 @@ export class SnapshotService {
               stop_reason_code: retryEntry.stop_reason_code ?? null,
               stop_reason_detail: retryEntry.stop_reason_detail ?? null,
               previous_thread_id: retryEntry.previous_thread_id ?? null,
-              previous_session_id: retryEntry.previous_session_id ?? null
+              previous_session_id: retryEntry.previous_session_id ?? null,
+              last_phase: retryEntry.last_phase ?? null,
+              last_phase_at: retryEntry.last_phase_at_ms ? asIsoDate(retryEntry.last_phase_at_ms) : null,
+              last_phase_detail: retryEntry.last_phase_detail ?? null
             }
           : null,
         blocked: blockedEntry
@@ -275,9 +292,20 @@ export class SnapshotService {
               stop_reason_detail: blockedEntry.stop_reason_detail ?? null,
               previous_thread_id: blockedEntry.previous_thread_id ?? null,
               previous_session_id: blockedEntry.previous_session_id ?? null,
+              last_phase: blockedEntry.last_phase ?? null,
+              last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
+              last_phase_detail: blockedEntry.last_phase_detail ?? null,
               requires_manual_resume: true as const
             }
           : null,
+        phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
+          at: asIsoDate(event.at_ms),
+          phase: event.phase,
+          detail: event.detail,
+          attempt: event.attempt,
+          thread_id: event.thread_id ?? null,
+          session_id: event.session_id ?? null
+        })),
         recent_events: entry.recent_events.map((event) => ({
           at: asIsoDate(event.at_ms),
           event: event.event,
@@ -326,7 +354,10 @@ export class SnapshotService {
           stop_reason_code: retryOnlyEntry.stop_reason_code ?? null,
           stop_reason_detail: retryOnlyEntry.stop_reason_detail ?? null,
           previous_thread_id: retryOnlyEntry.previous_thread_id ?? null,
-          previous_session_id: retryOnlyEntry.previous_session_id ?? null
+          previous_session_id: retryOnlyEntry.previous_session_id ?? null,
+          last_phase: retryOnlyEntry.last_phase ?? null,
+          last_phase_at: retryOnlyEntry.last_phase_at_ms ? asIsoDate(retryOnlyEntry.last_phase_at_ms) : null,
+          last_phase_detail: retryOnlyEntry.last_phase_detail ?? null
         },
         blocked: blockedEntry
           ? {
@@ -348,9 +379,20 @@ export class SnapshotService {
               stop_reason_detail: blockedEntry.stop_reason_detail ?? null,
               previous_thread_id: blockedEntry.previous_thread_id ?? null,
               previous_session_id: blockedEntry.previous_session_id ?? null,
+              last_phase: blockedEntry.last_phase ?? null,
+              last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
+              last_phase_detail: blockedEntry.last_phase_detail ?? null,
               requires_manual_resume: true as const
             }
           : null,
+        phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
+          at: asIsoDate(event.at_ms),
+          phase: event.phase,
+          detail: event.detail,
+          attempt: event.attempt,
+          thread_id: event.thread_id ?? null,
+          session_id: event.session_id ?? null
+        })),
         recent_events: [],
         last_error: retryOnlyEntry.error,
         logs: {
@@ -402,8 +444,19 @@ export class SnapshotService {
         stop_reason_detail: blockedEntry.stop_reason_detail ?? null,
         previous_thread_id: blockedEntry.previous_thread_id ?? null,
         previous_session_id: blockedEntry.previous_session_id ?? null,
+        last_phase: blockedEntry.last_phase ?? null,
+        last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
+        last_phase_detail: blockedEntry.last_phase_detail ?? null,
         requires_manual_resume: true as const
       },
+      phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
+        at: asIsoDate(event.at_ms),
+        phase: event.phase,
+        detail: event.detail,
+        attempt: event.attempt,
+        thread_id: event.thread_id ?? null,
+        session_id: event.session_id ?? null
+      })),
       recent_events: [],
       last_error: blockedEntry.stop_reason_detail ?? blockedEntry.stop_reason_code,
       logs: {
