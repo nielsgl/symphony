@@ -38,7 +38,10 @@ describe('ConfigResolver', () => {
     expect(config.observability).toEqual({
       dashboard_enabled: true,
       refresh_ms: 4000,
-      render_interval_ms: 1000
+      render_interval_ms: 1000,
+      phase_markers_enabled: true,
+      phase_timeline_limit: 30,
+      phase_stale_warn_ms: 45000
     });
     expect(config.logging.root).toBe(path.normalize('/home/tester/.symphony/log'));
     expect(config.logging.root_source).toBe('default');
@@ -528,7 +531,10 @@ describe('ConfigResolver', () => {
     expect(config.observability).toEqual({
       dashboard_enabled: false,
       refresh_ms: 500,
-      render_interval_ms: 250
+      render_interval_ms: 250,
+      phase_markers_enabled: true,
+      phase_timeline_limit: 30,
+      phase_stale_warn_ms: 45000
     });
   });
 
