@@ -270,6 +270,28 @@ describe('meta check scripts', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
+  it('fails when workflow profile exists but shared parser is unavailable', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+
+    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    fs.appendFileSync(dashboardPath, '\n// ui evidence gate parser unavailable\n', 'utf8');
+    fs.writeFileSync(path.join(tempRoot, 'WORKFLOW.md'), '---\nvalidation:\n  ui_evidence_profile: strict\n---\n', 'utf8');
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_E2E_PLAYWRIGHT_PASS: '1'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('unable to load workflow validation profile');
+    expect(result.stderr).toContain('shared_frontmatter_parser_unavailable');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
   it('resolves strict profile from quoted WORKFLOW.md value with comments and extra keys', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));

@@ -152,7 +152,7 @@ function loadWorkflowConfig() {
 
   const parseWorkflowFrontMatter = tryLoadSharedFrontmatterParser(repoRoot);
   if (typeof parseWorkflowFrontMatter !== 'function') {
-    return {};
+    return { __parse_error: 'shared_frontmatter_parser_unavailable' };
   }
 
   const content = fs.readFileSync(workflowPath, 'utf8');
@@ -162,7 +162,7 @@ function loadWorkflowConfig() {
       return parsed.config;
     }
   } catch {
-    return {};
+    return { __parse_error: 'shared_frontmatter_parse_failed' };
   }
 
   return {};
@@ -182,6 +182,13 @@ function resolveUiEvidenceProfile() {
 
   const workflowPath = path.resolve(process.cwd(), process.env[WORKFLOW_PATH_ENV] || DEFAULT_WORKFLOW_PATH);
   const workflowConfig = loadWorkflowConfig();
+  if (workflowConfig.__parse_error) {
+    process.stderr.write(
+      `Meta check failed: unable to load workflow validation profile (${workflowConfig.__parse_error}).\n`
+    );
+    process.stderr.write('Run `npm run build` and retry, or set SYMPHONY_UI_EVIDENCE_PROFILE explicitly.\n');
+    process.exit(1);
+  }
   const validation = workflowConfig && typeof workflowConfig.validation === 'object' ? workflowConfig.validation : {};
   const configured = String(validation.ui_evidence_profile || '')
     .trim()
