@@ -829,4 +829,48 @@ describe('OrchestratorCore', () => {
       'validation'
     ]);
   });
+
+  it('accepts fresh dispatch phases for a new retry attempt even after prior attempt reached planning', async () => {
+    const logEntries: Array<{
+      event: string;
+      context?: Record<string, string | number | boolean | null | undefined>;
+    }> = [];
+    const harness = createHarness({
+      logger: {
+        log: (params) => {
+          logEntries.push({ event: params.event, context: params.context });
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-redispatch' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-redispatch', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'waiting_for_turn_completion elapsed_s=0'
+    });
+    await harness.orchestrator.onWorkerExit('i-redispatch', 'abnormal');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-redispatch' })]);
+    await harness.orchestrator.onRetryTimer('i-redispatch');
+
+    const timeline = harness.orchestrator.getStateSnapshot().phase_timeline?.get('i-redispatch') ?? [];
+    expect(timeline.map((marker) => `${marker.attempt}:${marker.phase}`)).toEqual([
+      '0:dispatch_started',
+      '0:workspace_ready',
+      '0:planning',
+      '0:failed',
+      '1:dispatch_started',
+      '1:workspace_ready'
+    ]);
+
+    const ignoredDispatchStartedAttemptOne = logEntries.find(
+      (entry) =>
+        entry.event === CANONICAL_EVENT.orchestration.phaseMarkerIgnored &&
+        entry.context?.phase === 'dispatch_started' &&
+        entry.context?.attempt === 1
+    );
+    expect(ignoredDispatchStartedAttemptOne).toBeUndefined();
+  });
 });
