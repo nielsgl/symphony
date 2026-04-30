@@ -122,32 +122,51 @@ function parseWorkflowFrontMatter(workflowPath) {
   }
 
   const content = fs.readFileSync(workflowPath, 'utf8');
-  const frontMatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!frontMatterMatch) {
+  if (!content.startsWith('---')) {
     return {};
   }
 
-  const lines = frontMatterMatch[1].split(/\r?\n/);
-  let inValidationBlock = false;
+  const normalized = content.replace(/\r\n/g, '\n');
+  const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) {
+    return {};
+  }
+
+  const [, rawFrontMatter] = match;
+  const lines = rawFrontMatter.split('\n');
+  let inValidation = false;
   let validationIndent = 0;
+
   for (const line of lines) {
-    if (!inValidationBlock) {
-      const validationMatch = line.match(/^(\s*)validation:\s*$/);
+    const normalized = line.replace(/\t/g, '  ');
+    const trimmed = normalized.trim();
+
+    if (!inValidation) {
+      const validationMatch = normalized.match(/^(\s*)validation:\s*(?:#.*)?$/);
       if (validationMatch) {
-        inValidationBlock = true;
+        inValidation = true;
         validationIndent = validationMatch[1].length;
       }
       continue;
     }
 
-    const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
-    if (line.trim().length > 0 && indent <= validationIndent) {
+    if (trimmed.length === 0 || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const indent = normalized.match(/^(\s*)/)?.[1].length ?? 0;
+    if (indent <= validationIndent) {
       break;
     }
 
-    const profileMatch = line.match(/^\s*ui_evidence_profile:\s*["']?(baseline|strict)["']?\s*$/i);
+    const profileMatch = normalized.match(
+      /^\s*ui_evidence_profile:\s*(?:"(baseline|strict)"|'(baseline|strict)'|(baseline|strict))\s*(?:#.*)?$/i
+    );
     if (profileMatch) {
-      return { validation: { ui_evidence_profile: profileMatch[1].toLowerCase() } };
+      const profile = (profileMatch[1] || profileMatch[2] || profileMatch[3] || '').toLowerCase();
+      if (profile === 'baseline' || profile === 'strict') {
+        return { validation: { ui_evidence_profile: profile } };
+      }
     }
   }
 

@@ -239,6 +239,78 @@ describe('meta check scripts', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
+  it('resolves strict profile from quoted WORKFLOW.md value with comments and extra keys', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+
+    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict workflow quoted value\n', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'WORKFLOW.md'),
+      [
+        '---',
+        '# workflow comment',
+        'runtime:',
+        '  max_attempts: 3',
+        'validation:',
+        '  ui_evidence_profile: \"strict\"',
+        '  extra_key: \"preserve\"',
+        '---',
+        '',
+        'Prompt body'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_E2E_PLAYWRIGHT_PASS: '1'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('UI evidence profile active: strict');
+    expect(result.stderr).toContain('strict UI evidence profile requires artifact marker file');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('resolves strict profile from indented WORKFLOW.md frontmatter formatting', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+
+    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict workflow indentation\n', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'WORKFLOW.md'),
+      [
+        '---',
+        'runtime:',
+        '    max_attempts: 3',
+        'validation:',
+        '    ui_evidence_profile: strict',
+        '---',
+        '',
+        'Prompt body'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_E2E_PLAYWRIGHT_PASS: '1'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('UI evidence profile active: strict');
+    expect(result.stderr).toContain('strict UI evidence profile requires artifact marker file');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
   it('fails ui evidence gate for committed UI changes in branch history when origin/main is unavailable', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
