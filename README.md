@@ -255,6 +255,12 @@ git --no-pager diff --check
 `npm run check:meta` now enforces a UI evidence rule when dashboard UI surfaces
 change (`src/api/dashboard-assets.ts`, `desktop-static/`, or `src-tauri/src/`).
 
+Profile selection:
+
+- Default: `validation.ui_evidence_profile: baseline`
+- Optional strict mode: `validation.ui_evidence_profile: strict`
+- Override via env: `SYMPHONY_UI_EVIDENCE_PROFILE=baseline|strict`
+
 When UI paths change, provide one of:
 
 1. Playwright pass marker environment variable:
@@ -274,6 +280,9 @@ npm run check:meta
 
 If evidence is missing, `check:meta` fails with a deterministic list of changed
 UI paths and remediation commands.
+
+In `strict` profile, the explicit artifact marker file is required and env-only
+markers are not sufficient.
 
 ## Observability Notes
 

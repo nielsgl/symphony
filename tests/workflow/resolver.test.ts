@@ -47,6 +47,7 @@ describe('ConfigResolver', () => {
     expect(config.logging.root_source).toBe('default');
     expect(config.logging.max_bytes).toBe(10 * 1024 * 1024);
     expect(config.logging.max_files).toBe(5);
+    expect(config.validation?.ui_evidence_profile).toBe('baseline');
   });
 
   it('resolves $VAR for tracker.api_key and workspace.root', () => {
@@ -579,5 +580,20 @@ describe('ConfigResolver', () => {
       ssh_hosts: ['build-1', 'build-2'],
       max_concurrent_agents_per_host: 2
     });
+  });
+
+  it('resolves validation.ui_evidence_profile from workflow config', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        validation: {
+          ui_evidence_profile: 'strict'
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.validation?.ui_evidence_profile).toBe('strict');
   });
 });

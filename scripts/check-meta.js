@@ -19,6 +19,9 @@ const UI_PATH_PATTERNS = [
 ];
 
 const UI_E2E_PASS_ENV = 'SYMPHONY_UI_E2E_PLAYWRIGHT_PASS';
+const UI_EVIDENCE_PROFILE_ENV = 'SYMPHONY_UI_EVIDENCE_PROFILE';
+const WORKFLOW_PATH_ENV = 'SYMPHONY_WORKFLOW_PATH';
+const DEFAULT_WORKFLOW_PATH = 'WORKFLOW.md';
 const UI_EVIDENCE_MARKER_FILE = path.join('output', 'playwright', 'ui-e2e-evidence.txt');
 const UI_EVIDENCE_MARKER_LINE = 'UI_E2E_EVIDENCE=PASS';
 
@@ -114,7 +117,53 @@ function hasUiEvidence() {
   return { ok: false, mode: 'missing' };
 }
 
+function loadWorkflowConfig() {
+  try {
+    const { WorkflowLoader } = require(path.join(process.cwd(), 'dist/src/workflow/loader.js'));
+    const loader = new WorkflowLoader();
+    const explicitPath = process.env[WORKFLOW_PATH_ENV] || DEFAULT_WORKFLOW_PATH;
+    const workflowDefinition = loader.load({
+      explicitPath: path.resolve(process.cwd(), explicitPath),
+      cwd: process.cwd()
+    });
+    return workflowDefinition && typeof workflowDefinition.config === 'object' && workflowDefinition.config
+      ? workflowDefinition.config
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveUiEvidenceProfile() {
+  const envOverride = String(process.env[UI_EVIDENCE_PROFILE_ENV] || '').trim().toLowerCase();
+  if (envOverride.length > 0 && envOverride !== 'baseline' && envOverride !== 'strict') {
+    process.stderr.write(
+      `Meta check failed: unsupported ${UI_EVIDENCE_PROFILE_ENV} '${envOverride}'. Expected one of: baseline, strict.\n`
+    );
+    process.exit(1);
+  }
+  if (envOverride === 'baseline' || envOverride === 'strict') {
+    return { profile: envOverride, source: `env:${UI_EVIDENCE_PROFILE_ENV}` };
+  }
+
+  const workflowPath = path.resolve(process.cwd(), process.env[WORKFLOW_PATH_ENV] || DEFAULT_WORKFLOW_PATH);
+  const workflowConfig = loadWorkflowConfig();
+  const validation = workflowConfig && typeof workflowConfig.validation === 'object' ? workflowConfig.validation : {};
+  const configured = String(validation.ui_evidence_profile || '')
+    .trim()
+    .toLowerCase();
+
+  if (configured === 'baseline' || configured === 'strict') {
+    return { profile: configured, source: `workflow:${path.relative(process.cwd(), workflowPath) || DEFAULT_WORKFLOW_PATH}` };
+  }
+
+  return { profile: 'baseline', source: 'default:baseline' };
+}
+
 function enforceUiEvidenceGate() {
+  const uiEvidenceProfile = resolveUiEvidenceProfile();
+  process.stdout.write(`UI evidence profile active: ${uiEvidenceProfile.profile} (${uiEvidenceProfile.source}).\n`);
+
   const changedFiles = listChangedFiles();
   if (!hasUiAffectingChange(changedFiles)) {
     process.stdout.write('UI evidence gate skipped: no UI-affecting paths changed.\n');
@@ -122,6 +171,25 @@ function enforceUiEvidenceGate() {
   }
 
   const evidence = hasUiEvidence();
+
+  if (uiEvidenceProfile.profile === 'strict') {
+    const markerPath = path.join(process.cwd(), UI_EVIDENCE_MARKER_FILE);
+    const markerPresent =
+      fs.existsSync(markerPath) &&
+      fs
+        .readFileSync(markerPath, 'utf8')
+        .split(/\r?\n/)
+        .some((line) => line.trim() === UI_EVIDENCE_MARKER_LINE);
+
+    if (!markerPresent) {
+      process.stderr.write('Meta check failed: strict UI evidence profile requires artifact marker file for UI-affecting changes.\n');
+      process.stderr.write(`Missing or invalid marker file: ${UI_EVIDENCE_MARKER_FILE}\n`);
+      process.stderr.write(`Expected line in file: ${UI_EVIDENCE_MARKER_LINE}\n`);
+      process.stderr.write('Remediation: run e2e and persist evidence marker artifact before check:meta.\n');
+      process.exit(1);
+    }
+  }
+
   if (evidence.ok) {
     process.stdout.write(`UI evidence gate passed via ${evidence.mode}.\n`);
     return;
@@ -132,7 +200,7 @@ function enforceUiEvidenceGate() {
   for (const file of changedFiles.filter((candidate) => UI_PATH_PATTERNS.some((pattern) => pattern.test(candidate)))) {
     process.stderr.write(`  - ${file}\n`);
   }
-  process.stderr.write(`Provide one of:\n`);
+  process.stderr.write('Provide one of:\n');
   process.stderr.write(`  1) Run Playwright with ${UI_E2E_PASS_ENV}=1 (for example: ${UI_E2E_PASS_ENV}=1 npm run test:e2e:web)\n`);
   process.stderr.write(`  2) Create ${UI_EVIDENCE_MARKER_FILE} containing line: ${UI_EVIDENCE_MARKER_LINE}\n`);
   process.exit(1);
