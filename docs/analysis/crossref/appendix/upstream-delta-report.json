@@ -1,0 +1,83 @@
+{
+  "generated_at": "2026-04-30T11:07:02.449Z",
+  "upstream": {
+    "repo": "https://github.com/openai/symphony",
+    "branch": "main",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "baseline": {
+    "last_reviewed_sha": "58cf97da06d556c019ccea20c67f4f77da124bf3",
+    "reviewed_at": "2026-04-30T11:00:00Z",
+    "reviewed_by": "codex-nie-25"
+  },
+  "summary": {
+    "total_watched_deltas": 4,
+    "by_classification": {
+      "spec_required": 2,
+      "behavioral_risk": 2,
+      "docs_only": 0,
+      "no_impact": 0
+    },
+    "high_impact_untriaged": 4
+  },
+  "deltas": [
+    {
+      "file": "elixir/lib/symphony/orchestrator/core.ex",
+      "status": "modified",
+      "additions": 8,
+      "deletions": 2,
+      "patch_excerpt": "@@ -1,5 +1,6 @@\\n-defmodule Symphony.Orchestrator do\\n+defmodule Symphony.Orchestrator do\\n+  # retry state machine update\\n end",
+      "classification": "behavioral_risk",
+      "owner": "orchestrator",
+      "triaged": false
+    },
+    {
+      "file": "elixir/test/orchestrator/core_test.exs",
+      "status": "modified",
+      "additions": 7,
+      "deletions": 0,
+      "patch_excerpt": "@@ -1,2 +1,7 @@\\n+test \\\"retries on timeout\\\" do\\n+  assert true\\n+end",
+      "classification": "behavioral_risk",
+      "owner": "docs/parity",
+      "triaged": false
+    },
+    {
+      "file": "elixir/WORKFLOW.md",
+      "status": "modified",
+      "additions": 2,
+      "deletions": 1,
+      "patch_excerpt": "@@ -20,4 +20,5 @@\\n-Set timeout values.\\n+Set timeout values and validate dispatch state transitions.",
+      "classification": "spec_required",
+      "owner": "workflow",
+      "triaged": false
+    },
+    {
+      "file": "SPEC.md",
+      "status": "modified",
+      "additions": 3,
+      "deletions": 1,
+      "patch_excerpt": "@@ -10,4 +10,6 @@\\n-The orchestrator retries failed attempts.\\n+The orchestrator MUST retry failed attempts with bounded backoff.\\n+Approval policy defaults are REQUIRED to be strict.",
+      "classification": "spec_required",
+      "owner": "docs/parity",
+      "triaged": false
+    }
+  ],
+  "issue_seeds": [
+    {
+      "title": "[Upstream Parity] Triage behavioral_risk: elixir/lib/symphony/orchestrator/core.ex",
+      "body": "## Summary\nUpstream delta detected in `elixir/lib/symphony/orchestrator/core.ex` with classification `behavioral_risk`.\n\n## Ownership\n- subsystem: `orchestrator`\n\n## Required Actions\n- Review upstream patch intent.\n- Confirm local code/tests/docs parity or open implementation ticket.\n- Mark triaged outcome in parity report process."
+    },
+    {
+      "title": "[Upstream Parity] Triage behavioral_risk: elixir/test/orchestrator/core_test.exs",
+      "body": "## Summary\nUpstream delta detected in `elixir/test/orchestrator/core_test.exs` with classification `behavioral_risk`.\n\n## Ownership\n- subsystem: `docs/parity`\n\n## Required Actions\n- Review upstream patch intent.\n- Confirm local code/tests/docs parity or open implementation ticket.\n- Mark triaged outcome in parity report process."
+    },
+    {
+      "title": "[Upstream Parity] Triage spec_required: elixir/WORKFLOW.md",
+      "body": "## Summary\nUpstream delta detected in `elixir/WORKFLOW.md` with classification `spec_required`.\n\n## Ownership\n- subsystem: `workflow`\n\n## Required Actions\n- Review upstream patch intent.\n- Confirm local code/tests/docs parity or open implementation ticket.\n- Mark triaged outcome in parity report process."
+    },
+    {
+      "title": "[Upstream Parity] Triage spec_required: SPEC.md",
+      "body": "## Summary\nUpstream delta detected in `SPEC.md` with classification `spec_required`.\n\n## Ownership\n- subsystem: `docs/parity`\n\n## Required Actions\n- Review upstream patch intent.\n- Confirm local code/tests/docs parity or open implementation ticket.\n- Mark triaged outcome in parity report process."
+    }
+  ]
+}

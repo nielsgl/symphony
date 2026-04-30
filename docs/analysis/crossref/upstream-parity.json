@@ -1,0 +1,63 @@
+{
+  "upstream_repo": "https://github.com/openai/symphony",
+  "upstream_branch": "main",
+  "last_reviewed_sha": "58cf97da06d556c019ccea20c67f4f77da124bf3",
+  "reviewed_at": "2026-04-30T11:00:00Z",
+  "reviewed_by": "codex-nie-25",
+  "watchlist": [
+    {
+      "path_glob": "SPEC.md"
+    },
+    {
+      "path_glob": "elixir/WORKFLOW.md"
+    },
+    {
+      "path_glob": "elixir/lib/**"
+    },
+    {
+      "path_glob": "elixir/test/**"
+    }
+  ],
+  "ownership": [
+    {
+      "path_glob": "SPEC.md",
+      "owner": "docs/parity"
+    },
+    {
+      "path_glob": "elixir/WORKFLOW.md",
+      "owner": "workflow"
+    },
+    {
+      "path_glob": "elixir/lib/symphony/orchestrator/**",
+      "owner": "orchestrator"
+    },
+    {
+      "path_glob": "elixir/lib/symphony/codex/**",
+      "owner": "codex runner"
+    },
+    {
+      "path_glob": "elixir/lib/symphony/tracker/**",
+      "owner": "tracker"
+    },
+    {
+      "path_glob": "elixir/lib/symphony/workspace/**",
+      "owner": "workspace"
+    },
+    {
+      "path_glob": "elixir/lib/symphony_web/**",
+      "owner": "api"
+    },
+    {
+      "path_glob": "elixir/lib/symphony/observability/**",
+      "owner": "observability"
+    },
+    {
+      "path_glob": "elixir/lib/**",
+      "owner": "workflow"
+    },
+    {
+      "path_glob": "elixir/test/**",
+      "owner": "docs/parity"
+    }
+  ]
+}

@@ -19,6 +19,9 @@ Baseline is **spec-first strict**:
 4. Appendix artifacts:
    - [`appendix/spec-unit-mapping.csv`](/Users/niels.van.Galen.last/code/symphony/docs/analysis/crossref/appendix/spec-unit-mapping.csv)
    - [`appendix/subsystem-diff.json`](/Users/niels.van.Galen.last/code/symphony/docs/analysis/crossref/appendix/subsystem-diff.json)
+   - [`upstream-parity.json`](/Users/niels.van.Galen.last/code/symphony/docs/analysis/crossref/upstream-parity.json)
+   - [`appendix/upstream-delta-report.json`](/Users/niels.van.Galen.last/code/symphony/docs/analysis/crossref/appendix/upstream-delta-report.json)
+   - [`appendix/upstream-delta-report.md`](/Users/niels.van.Galen.last/code/symphony/docs/analysis/crossref/appendix/upstream-delta-report.md)
 
 ## Decision Rules
 ### Classification

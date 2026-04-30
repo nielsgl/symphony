@@ -385,7 +385,14 @@ Prioritization model:
   - Continue treating GitHub adapter, SQLite continuity, and desktop packaging as first-class product commitments.
 
 ## Remaining Open Recommendations
-- None. Parity recommendations are closed through `P21`.
+- XR-21 — Upstream reference-delta ingestion pipeline.
+  - Priority: `P1`
+  - Decision: `adopted` (in progress)
+  - Scope:
+    - deterministic upstream delta scan from pinned baseline SHA,
+    - rule-based impact classification and subsystem ownership mapping,
+    - JSON/Markdown parity artifacts for weekly triage and release gate input,
+    - `check:meta` advisory + blocking modes for untriaged high-impact deltas.
 - Intentional divergence guardrails remain tracked under `XR-00` and `XR-03`.
 
 ## Suggested Rollout Order (Post-P12)
