@@ -61,6 +61,9 @@ function baseConfig(): EffectiveConfig {
       root_source: 'workflow',
       max_bytes: 10 * 1024 * 1024,
       max_files: 5
+    },
+    validation: {
+      ui_evidence_profile: 'baseline'
     }
   };
 }
@@ -279,6 +282,18 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('invalid_hooks_timeout_ms');
+    }
+  });
+
+  it('rejects unsupported validation.ui_evidence_profile', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.validation = { ui_evidence_profile: 'enforced' };
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_validation_ui_evidence_profile');
     }
   });
 

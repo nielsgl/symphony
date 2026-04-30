@@ -251,6 +251,7 @@ export class ConfigResolver {
     const codex = asRecord(config.codex);
     const persistence = asRecord(config.persistence);
     const observability = asRecord(config.observability);
+    const validation = asRecord(config.validation);
     const logging = asRecord(config.logging);
     const worker = asRecord(config.worker);
     const server = asRecord(config.server);
@@ -366,6 +367,7 @@ export class ConfigResolver {
       resolvedLoggingRootCandidate.trim().length > 0 ? resolvedLoggingRootCandidate : defaultLoggingRoot;
     const loggingMaxBytes = readInt(logging.max_bytes, DEFAULT_LOG_ROTATION_MAX_BYTES);
     const loggingMaxFiles = readInt(logging.max_files, DEFAULT_LOG_ROTATION_MAX_FILES);
+    const uiEvidenceProfile = readString(validation.ui_evidence_profile, 'baseline').trim().toLowerCase() || 'baseline';
 
     const resolved: EffectiveConfig = {
       tracker: {
@@ -445,6 +447,9 @@ export class ConfigResolver {
         phase_markers_enabled: readBoolean(observability.phase_markers_enabled, true),
         phase_timeline_limit: Math.max(1, readInt(observability.phase_timeline_limit, 30)),
         phase_stale_warn_ms: Math.max(1000, readInt(observability.phase_stale_warn_ms, 45000))
+      },
+      validation: {
+        ui_evidence_profile: uiEvidenceProfile
       },
       logging: {
         root: loggingRoot,
