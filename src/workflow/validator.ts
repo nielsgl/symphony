@@ -157,6 +157,18 @@ export class ConfigValidator {
       };
     }
 
+    if (
+      effectiveConfig.validation.ui_evidence_profile !== 'baseline' &&
+      effectiveConfig.validation.ui_evidence_profile !== 'strict'
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_validation_ui_evidence_profile',
+        message: `validation.ui_evidence_profile '${effectiveConfig.validation.ui_evidence_profile}' is not supported`,
+        at
+      };
+    }
+
     if (!Number.isFinite(effectiveConfig.hooks.timeout_ms) || effectiveConfig.hooks.timeout_ms <= 0) {
       return {
         ok: false,

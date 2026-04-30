@@ -252,8 +252,13 @@ git --no-pager diff --check
 
 ### UI Evidence Gate (`check:meta`)
 
-`npm run check:meta` now enforces a UI evidence rule when dashboard UI surfaces
+`npm run check:meta` now enforces a capability-gated UI evidence rule when dashboard UI surfaces
 change (`src/api/dashboard-assets.ts`, `desktop-static/`, or `src-tauri/src/`).
+
+Set profile via workflow config (`validation.ui_evidence_profile`) or env override (`SYMPHONY_UI_EVIDENCE_PROFILE`):
+
+- `baseline` (default): accepts env pass marker or artifact file.
+- `strict`: requires explicit artifact evidence file for UI-affecting changes.
 
 When UI paths change, provide one of:
 
@@ -270,6 +275,17 @@ npm run check:meta
 mkdir -p output/playwright
 printf 'UI_E2E_EVIDENCE=PASS\n' > output/playwright/ui-e2e-evidence.txt
 npm run check:meta
+```
+
+Strict profile activation examples:
+
+```bash
+SYMPHONY_UI_EVIDENCE_PROFILE=strict npm run check:meta
+```
+
+```yaml
+validation:
+  ui_evidence_profile: strict
 ```
 
 If evidence is missing, `check:meta` fails with a deterministic list of changed

@@ -42,7 +42,8 @@ export type ValidationErrorCode =
   | 'invalid_workspace_copy_ignored_limits'
   | 'invalid_logging_root'
   | 'invalid_logging_max_bytes'
-  | 'invalid_logging_max_files';
+  | 'invalid_logging_max_files'
+  | 'invalid_validation_ui_evidence_profile';
 
 export interface WorkflowDefinition {
   config: Record<string, unknown>;
@@ -120,6 +121,9 @@ export interface LoggingConfig {
 export interface EffectiveConfig {
   tracker: TrackerConfig;
   polling: { interval_ms: number };
+  validation: {
+    ui_evidence_profile: 'baseline' | 'strict' | string;
+  };
   workspace: {
     root: string;
     root_source: 'workflow' | 'default';

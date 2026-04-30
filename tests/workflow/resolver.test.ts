@@ -20,6 +20,7 @@ describe('ConfigResolver', () => {
     const config = resolver.resolve(baseWorkflow);
 
     expect(config.polling.interval_ms).toBe(30000);
+    expect(config.validation.ui_evidence_profile).toBe('baseline');
     expect(config.tracker.active_states).toEqual(['Todo', 'In Progress']);
     expect(config.tracker.github_linking?.mode).toBe('off');
     expect(config.workspace.root).toBe('/tmp/symphony_workspaces');
@@ -70,6 +71,23 @@ describe('ConfigResolver', () => {
     expect(config.tracker.api_key).toBe('secret-token');
     expect(config.workspace.root).toBe('/srv/workspaces');
     expect(config.workspace.root_source).toBe('workflow');
+  });
+
+  it('resolves validation.ui_evidence_profile from workflow config', () => {
+    const resolver = new ConfigResolver({
+      env: {},
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve({
+      config: {
+        validation: { ui_evidence_profile: 'strict' }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.validation.ui_evidence_profile).toBe('strict');
   });
 
   it('resolves $VAR for tracker.project_slug', () => {

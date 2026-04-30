@@ -109,6 +109,9 @@ persistence:
   db_path: ~/.symphony/runtime.sqlite
   retention_days: 14
 
+validation:
+  ui_evidence_profile: baseline # baseline | strict
+
 observability:
   dashboard_enabled: true
   refresh_ms: 4000
@@ -289,6 +292,12 @@ Runtime note:
 |---|---|---|---|---|
 | `server.port` | integer | unset | explicit local API port (recommended valid TCP port) | No |
 
+### `validation`
+
+| Key | Type | Default | Allowed values / notes | Required |
+|---|---|---|---|---|
+| `validation.ui_evidence_profile` | string | `baseline` | `baseline` or `strict` | No |
+
 ## Resolution behavior (important)
 
 ### Environment variable interpolation
@@ -335,6 +344,7 @@ Config validation errors:
 - `invalid_codex_turn_sandbox_policy`
 - `invalid_codex_user_input_policy`
 - `invalid_worker_max_concurrent_agents_per_host`
+- `invalid_validation_ui_evidence_profile`
 
 ## Prompt template context and strictness
 Template rendering uses strict mode.

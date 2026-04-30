@@ -15,6 +15,7 @@ function baseConfig(): EffectiveConfig {
       terminal_states: ['Done']
     },
     polling: { interval_ms: 30000 },
+    validation: { ui_evidence_profile: 'baseline' },
     workspace: {
       root: '/tmp/symphony',
       root_source: 'workflow',
@@ -191,6 +192,18 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('missing_codex_command');
+    }
+  });
+
+  it('rejects unsupported validation.ui_evidence_profile values', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.validation.ui_evidence_profile = 'enforced';
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_validation_ui_evidence_profile');
     }
   });
 

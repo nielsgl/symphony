@@ -85,6 +85,9 @@ function makeConfig(): EffectiveConfig {
       root_source: 'workflow',
       max_bytes: 10 * 1024 * 1024,
       max_files: 5
+    },
+    validation: {
+      ui_evidence_profile: 'baseline'
     }
   };
 }

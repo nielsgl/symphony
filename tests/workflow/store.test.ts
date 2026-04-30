@@ -64,6 +64,9 @@ function makeSnapshotInputs() {
         root_source: 'workflow' as const,
         max_bytes: 10 * 1024 * 1024,
         max_files: 5
+      },
+      validation: {
+        ui_evidence_profile: 'baseline'
       }
     },
     promptTemplate: 'Prompt',

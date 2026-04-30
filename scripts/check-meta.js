@@ -18,6 +18,9 @@ const UI_PATH_PATTERNS = [
 ];
 
 const UI_E2E_PASS_ENV = 'SYMPHONY_UI_E2E_PLAYWRIGHT_PASS';
+const UI_EVIDENCE_PROFILE_ENV = 'SYMPHONY_UI_EVIDENCE_PROFILE';
+const WORKFLOW_PATH_ENV = 'SYMPHONY_WORKFLOW_PATH';
+const DEFAULT_WORKFLOW_PATH = 'WORKFLOW.md';
 const UI_EVIDENCE_MARKER_FILE = path.join('output', 'playwright', 'ui-e2e-evidence.txt');
 const UI_EVIDENCE_MARKER_LINE = 'UI_E2E_EVIDENCE=PASS';
 
@@ -113,7 +116,74 @@ function hasUiEvidence() {
   return { ok: false, mode: 'missing' };
 }
 
+function parseWorkflowFrontMatter(workflowPath) {
+  if (!fs.existsSync(workflowPath)) {
+    return {};
+  }
+
+  const content = fs.readFileSync(workflowPath, 'utf8');
+  const frontMatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!frontMatterMatch) {
+    return {};
+  }
+
+  const lines = frontMatterMatch[1].split(/\r?\n/);
+  let inValidationBlock = false;
+  let validationIndent = 0;
+  for (const line of lines) {
+    if (!inValidationBlock) {
+      const validationMatch = line.match(/^(\s*)validation:\s*$/);
+      if (validationMatch) {
+        inValidationBlock = true;
+        validationIndent = validationMatch[1].length;
+      }
+      continue;
+    }
+
+    const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
+    if (line.trim().length > 0 && indent <= validationIndent) {
+      break;
+    }
+
+    const profileMatch = line.match(/^\s*ui_evidence_profile:\s*["']?(baseline|strict)["']?\s*$/i);
+    if (profileMatch) {
+      return { validation: { ui_evidence_profile: profileMatch[1].toLowerCase() } };
+    }
+  }
+
+  return {};
+}
+
+function resolveUiEvidenceProfile() {
+  const envOverride = String(process.env[UI_EVIDENCE_PROFILE_ENV] || '').trim().toLowerCase();
+  if (envOverride.length > 0 && envOverride !== 'baseline' && envOverride !== 'strict') {
+    process.stderr.write(
+      `Meta check failed: unsupported ${UI_EVIDENCE_PROFILE_ENV} '${envOverride}'. Expected one of: baseline, strict.\n`
+    );
+    process.exit(1);
+  }
+  if (envOverride === 'baseline' || envOverride === 'strict') {
+    return { profile: envOverride, source: `env:${UI_EVIDENCE_PROFILE_ENV}` };
+  }
+
+  const workflowPath = path.resolve(process.cwd(), process.env[WORKFLOW_PATH_ENV] || DEFAULT_WORKFLOW_PATH);
+  const frontMatter = parseWorkflowFrontMatter(workflowPath);
+  const configured = String(frontMatter.validation?.ui_evidence_profile || '')
+    .trim()
+    .toLowerCase();
+  if (configured === 'baseline' || configured === 'strict') {
+    return { profile: configured, source: `workflow:${path.relative(process.cwd(), workflowPath) || DEFAULT_WORKFLOW_PATH}` };
+  }
+
+  return { profile: 'baseline', source: 'default:baseline' };
+}
+
 function enforceUiEvidenceGate() {
+  const uiEvidenceProfile = resolveUiEvidenceProfile();
+  process.stdout.write(
+    `UI evidence profile active: ${uiEvidenceProfile.profile} (${uiEvidenceProfile.source}).\n`
+  );
+
   const changedFiles = listChangedFiles();
   if (!hasUiAffectingChange(changedFiles)) {
     process.stdout.write('UI evidence gate skipped: no UI-affecting paths changed.\n');
@@ -121,6 +191,26 @@ function enforceUiEvidenceGate() {
   }
 
   const evidence = hasUiEvidence();
+
+  if (uiEvidenceProfile.profile === 'strict') {
+    const markerPath = path.join(process.cwd(), UI_EVIDENCE_MARKER_FILE);
+    const markerPresent =
+      fs.existsSync(markerPath) &&
+      fs
+        .readFileSync(markerPath, 'utf8')
+        .split(/\r?\n/)
+        .some((line) => line.trim() === UI_EVIDENCE_MARKER_LINE);
+    if (!markerPresent) {
+      process.stderr.write(
+        'Meta check failed: strict UI evidence profile requires artifact marker file for UI-affecting changes.\n'
+      );
+      process.stderr.write(`Missing or invalid marker file: ${UI_EVIDENCE_MARKER_FILE}\n`);
+      process.stderr.write(`Expected line in file: ${UI_EVIDENCE_MARKER_LINE}\n`);
+      process.stderr.write(`Remediation: run e2e and persist evidence marker artifact before check:meta.\n`);
+      process.exit(1);
+    }
+  }
+
   if (evidence.ok) {
     process.stdout.write(`UI evidence gate passed via ${evidence.mode}.\n`);
     return;

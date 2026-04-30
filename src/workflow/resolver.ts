@@ -243,6 +243,7 @@ export class ConfigResolver {
 
     const tracker = asRecord(config.tracker);
     const polling = asRecord(config.polling);
+    const validation = asRecord(config.validation);
     const workspace = asRecord(config.workspace);
     const provisioner = asRecord(workspace.provisioner);
     const copyIgnored = asRecord(workspace.copy_ignored);
@@ -384,6 +385,9 @@ export class ConfigResolver {
       },
       polling: {
         interval_ms: readIntStrict(polling.interval_ms, 30000)
+      },
+      validation: {
+        ui_evidence_profile: readString(validation.ui_evidence_profile, 'baseline').trim() || 'baseline'
       },
       workspace: {
         root: workspaceRoot,
