@@ -37,12 +37,24 @@ function runGit(args) {
 
 function listChangedFiles() {
   const changed = new Set();
+  let capturedCommittedDiff = false;
 
   const baseRefCheck = runGit(['rev-parse', '--verify', '--quiet', 'origin/main']);
   if (baseRefCheck.status === 0) {
     const committed = runGit(['diff', '--name-only', '--diff-filter=ACMR', 'origin/main...HEAD']);
     if (committed.status === 0) {
+      capturedCommittedDiff = true;
       for (const file of committed.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
+        changed.add(file);
+      }
+    }
+  }
+
+  if (!capturedCommittedDiff) {
+    // Fallback for CI clones/worktrees that do not have origin/main available locally.
+    const headCommitFiles = runGit(['show', '--name-only', '--pretty=format:', '--diff-filter=ACMR', 'HEAD']);
+    if (headCommitFiles.status === 0) {
+      for (const file of headCommitFiles.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
         changed.add(file);
       }
     }

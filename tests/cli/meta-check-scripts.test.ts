@@ -16,6 +16,13 @@ function runNode(args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
   });
 }
 
+function runGit(args: string[], cwd: string) {
+  return spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8'
+  });
+}
+
 function expectScriptPasses(root: string, script: string, output: string) {
   const result = runNode([script], root);
   expect(result.status).toBe(0);
@@ -138,6 +145,33 @@ describe('meta check scripts', () => {
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('UI evidence gate passed');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails ui evidence gate for committed UI changes when origin/main is unavailable', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+
+    expect(runGit(['init'], tempRoot).status).toBe(0);
+    expect(runGit(['config', 'user.email', 'test@example.com'], tempRoot).status).toBe(0);
+    expect(runGit(['config', 'user.name', 'Meta Test'], tempRoot).status).toBe(0);
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    fs.appendFileSync(dashboardPath, '\n// committed ui evidence gate test marker\n', 'utf8');
+    expect(runGit(['add', 'src/api/dashboard-assets.ts'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'ui change'], tempRoot).status).toBe(0);
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('UI-affecting changes detected without e2e evidence');
+    expect(result.stderr).toContain('src/api/dashboard-assets.ts');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });

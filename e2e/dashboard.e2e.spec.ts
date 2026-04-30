@@ -66,6 +66,7 @@ async function installDashboardApiMocks(
   options: {
     state: DashboardStatePayload | (() => DashboardStatePayload);
     issues?: Record<string, IssuePayload | ((id: string) => IssuePayload)>;
+    onRefresh?: () => void;
   }
 ): Promise<void> {
   await page.route('**/api/v1/state**', async (route) => {
@@ -107,6 +108,7 @@ async function installDashboardApiMocks(
   });
 
   await page.route('**/api/v1/refresh', async (route) => {
+    options.onRefresh?.();
     await route.fulfill({
       status: 202,
       contentType: 'application/json',
@@ -253,11 +255,10 @@ test.describe('phase-marker dashboard e2e', () => {
   });
 
   test('issue detail renders phase timeline and preserves context across transition', async ({ page }) => {
-    let stateCallCount = 0;
+    let scenario: 'running' | 'retrying' = 'running';
     await installDashboardApiMocks(page, {
       state: () => {
-        stateCallCount += 1;
-        if (stateCallCount === 1) {
+        if (scenario === 'running') {
           return baseState({
             running: [
               {
@@ -313,6 +314,9 @@ test.describe('phase-marker dashboard e2e', () => {
             }
           ]
         });
+      },
+      onRefresh: () => {
+        scenario = 'retrying';
       },
       issues: {
         'NIE-25': {
