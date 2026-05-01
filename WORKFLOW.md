@@ -42,7 +42,7 @@ agent:
   max_turns: 20
 codex:
   # command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  command: CODEX_HOME="${SYMPHONY_CODEX_HOME:-$HOME/.codex}" codex ${SYMPHONY_CODEX_FLAGS:-} --config shell_environment_policy.inherit=all --config "model=\"${SYMPHONY_CODEX_MODEL:-gpt-5.3-codex}\"" --config model_reasoning_effort="${SYMPHONY_CODEX_REASONING:-medium}" app-server
+  command: CODEX_HOME_RAW="${SYMPHONY_CODEX_HOME:-$HOME/.codex}"; CODEX_HOME_STRIPPED="${CODEX_HOME_RAW%\"}"; CODEX_HOME_STRIPPED="${CODEX_HOME_STRIPPED#\"}"; CODEX_HOME_EXPANDED="${CODEX_HOME_STRIPPED/#\$HOME/$HOME}"; CODEX_HOME_EXPANDED="${CODEX_HOME_EXPANDED/#\~/$HOME}"; CODEX_HOME="${CODEX_HOME_EXPANDED}" codex ${SYMPHONY_CODEX_FLAGS:-} --config shell_environment_policy.inherit=all --config "model=\"${SYMPHONY_CODEX_MODEL:-gpt-5.3-codex}\"" --config model_reasoning_effort="${SYMPHONY_CODEX_REASONING:-medium}" app-server
   read_timeout_ms: 15000
   approval_policy: never
   thread_sandbox: danger-full-access
