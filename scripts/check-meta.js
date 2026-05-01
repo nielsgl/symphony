@@ -24,6 +24,7 @@ const WORKFLOW_PATH_ENV = 'SYMPHONY_WORKFLOW_PATH';
 const DEFAULT_WORKFLOW_PATH = 'WORKFLOW.md';
 const UI_EVIDENCE_MARKER_FILE = path.join('output', 'playwright', 'ui-e2e-evidence.txt');
 const UI_EVIDENCE_MARKER_LINE = 'UI_E2E_EVIDENCE=PASS';
+const UI_EVIDENCE_MANIFEST_FILE = path.join('output', 'playwright', 'ui-evidence.json');
 
 function runNodeCheck(scriptPath) {
   const result = spawnSync('node', [scriptPath], { stdio: 'inherit' });
@@ -115,6 +116,78 @@ function hasUiEvidence() {
   }
 
   return { ok: false, mode: 'missing' };
+}
+
+function validateStrictUiEvidenceManifest(changedUiPaths) {
+  const manifestPath = path.join(process.cwd(), UI_EVIDENCE_MANIFEST_FILE);
+  if (!fs.existsSync(manifestPath)) {
+    return { ok: false, reason: `missing manifest file: ${UI_EVIDENCE_MANIFEST_FILE}` };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return { ok: false, reason: `invalid JSON in manifest: ${UI_EVIDENCE_MANIFEST_FILE}` };
+  }
+
+  const artifacts = Array.isArray(parsed.artifacts) ? parsed.artifacts : null;
+  if (!artifacts || artifacts.length < 1) {
+    return { ok: false, reason: 'manifest.artifacts must contain at least one item' };
+  }
+
+  const uiPaths = Array.isArray(parsed.ui_paths) ? parsed.ui_paths : null;
+  if (!uiPaths || uiPaths.length < 1) {
+    return { ok: false, reason: 'manifest.ui_paths must contain at least one item' };
+  }
+
+  const uiPathSet = new Set(uiPaths.filter((value) => typeof value === 'string'));
+  for (const changedPath of changedUiPaths) {
+    if (!uiPathSet.has(changedPath)) {
+      return { ok: false, reason: `manifest.ui_paths is missing changed UI path: ${changedPath}` };
+    }
+  }
+
+  if (typeof parsed.captured_at !== 'string' || parsed.captured_at.trim().length === 0 || Number.isNaN(Date.parse(parsed.captured_at))) {
+    return { ok: false, reason: 'manifest.captured_at must be a valid datetime string' };
+  }
+
+  if (typeof parsed.summary !== 'string' || parsed.summary.trim().length === 0) {
+    return { ok: false, reason: 'manifest.summary must be a non-empty string' };
+  }
+
+  for (const [index, artifact] of artifacts.entries()) {
+    if (!artifact || typeof artifact !== 'object') {
+      return { ok: false, reason: `manifest.artifacts[${index}] must be an object` };
+    }
+
+    const artifactPath = typeof artifact.path === 'string' ? artifact.path.trim() : '';
+    const artifactType = typeof artifact.type === 'string' ? artifact.type.trim() : '';
+    if (!artifactPath) {
+      return { ok: false, reason: `manifest.artifacts[${index}].path must be a non-empty string` };
+    }
+    if (artifactType !== 'image' && artifactType !== 'video') {
+      return { ok: false, reason: `manifest.artifacts[${index}].type must be image or video` };
+    }
+
+    const normalizedPath = artifactPath.replace(/\\/g, '/');
+    if (!normalizedPath.startsWith('output/playwright/')) {
+      return { ok: false, reason: `manifest.artifacts[${index}].path must be under output/playwright/` };
+    }
+    if (artifactType === 'image' && !normalizedPath.endsWith('.png')) {
+      return { ok: false, reason: `manifest.artifacts[${index}] image artifact must use .png` };
+    }
+    if (artifactType === 'video' && !normalizedPath.endsWith('.mp4') && !normalizedPath.endsWith('.webm')) {
+      return { ok: false, reason: `manifest.artifacts[${index}] video artifact must use .mp4 or .webm` };
+    }
+
+    const resolvedPath = path.resolve(process.cwd(), normalizedPath);
+    if (!fs.existsSync(resolvedPath)) {
+      return { ok: false, reason: `manifest artifact file is missing: ${normalizedPath}` };
+    }
+  }
+
+  return { ok: true, mode: `file:${UI_EVIDENCE_MANIFEST_FILE}` };
 }
 
 function tryLoadSharedFrontmatterParser(repoRoot) {
@@ -211,26 +284,21 @@ function enforceUiEvidenceGate() {
     return;
   }
 
-  const evidence = hasUiEvidence();
+  const changedUiPaths = changedFiles.filter((candidate) => UI_PATH_PATTERNS.some((pattern) => pattern.test(candidate)));
 
   if (uiEvidenceProfile.profile === 'strict') {
-    const markerPath = path.join(process.cwd(), UI_EVIDENCE_MARKER_FILE);
-    const markerPresent =
-      fs.existsSync(markerPath) &&
-      fs
-        .readFileSync(markerPath, 'utf8')
-        .split(/\r?\n/)
-        .some((line) => line.trim() === UI_EVIDENCE_MARKER_LINE);
-
-    if (!markerPresent) {
-      process.stderr.write('Meta check failed: strict UI evidence profile requires artifact marker file for UI-affecting changes.\n');
-      process.stderr.write(`Missing or invalid marker file: ${UI_EVIDENCE_MARKER_FILE}\n`);
-      process.stderr.write(`Expected line in file: ${UI_EVIDENCE_MARKER_LINE}\n`);
-      process.stderr.write('Remediation: run e2e and persist evidence marker artifact before check:meta.\n');
+    const strictEvidence = validateStrictUiEvidenceManifest(changedUiPaths);
+    if (!strictEvidence.ok) {
+      process.stderr.write('Meta check failed: strict UI evidence profile requires manifest-backed artifacts for UI-affecting changes.\n');
+      process.stderr.write(`Validation error: ${strictEvidence.reason}\n`);
+      process.stderr.write(`Expected manifest: ${UI_EVIDENCE_MANIFEST_FILE}\n`);
       process.exit(1);
     }
+    process.stdout.write(`UI evidence gate passed via ${strictEvidence.mode}.\n`);
+    return;
   }
 
+  const evidence = hasUiEvidence();
   if (evidence.ok) {
     process.stdout.write(`UI evidence gate passed via ${evidence.mode}.\n`);
     return;
@@ -238,7 +306,7 @@ function enforceUiEvidenceGate() {
 
   process.stderr.write('Meta check failed: UI-affecting changes detected without e2e evidence.\n');
   process.stderr.write('Changed UI paths:\n');
-  for (const file of changedFiles.filter((candidate) => UI_PATH_PATTERNS.some((pattern) => pattern.test(candidate)))) {
+  for (const file of changedUiPaths) {
     process.stderr.write(`  - ${file}\n`);
   }
   process.stderr.write('Provide one of:\n');
