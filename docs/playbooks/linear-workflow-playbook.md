@@ -311,11 +311,24 @@ JSON
 npm run check:meta
 ```
 
+Before committing:
+
+```bash
+# publish evidence link first (PR comment and/or Linear workpad),
+# then ensure artifacts are not tracked in git:
+git restore --staged output/playwright/* 2>/dev/null || true
+rm -rf output/playwright/
+```
+
+`check:meta` blocks staged/committed `output/playwright/*` by default. Use
+`SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED=1` only for explicit exceptional cases.
+
 Workpad checklist snippet for UI tickets:
 
 - [ ] UI evidence captured under `output/playwright/` (`.png` and/or `.mp4`/`.webm`)
 - [ ] `output/playwright/ui-evidence.json` updated with `artifacts`, `ui_paths`, `captured_at`, `summary`, `publish_reference`
 - [ ] `npm run check:meta` passes in the configured profile
+- [ ] `output/playwright/*` is not staged/committed before push
 ## 13. References
 
 - README.md

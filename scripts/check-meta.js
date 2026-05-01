@@ -26,6 +26,8 @@ const UI_EVIDENCE_MARKER_FILE = path.join('output', 'playwright', 'ui-e2e-eviden
 const UI_EVIDENCE_MARKER_LINE = 'UI_E2E_EVIDENCE=PASS';
 const UI_EVIDENCE_MANIFEST_FILE = path.join('output', 'playwright', 'ui-evidence.json');
 const UI_EVIDENCE_ARTIFACT_BASE_DIR = path.join('output', 'playwright');
+const UI_EVIDENCE_ALLOW_TRACKED_ENV = 'SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED';
+const UI_EVIDENCE_TRACKED_PATH_PREFIX = 'output/playwright/';
 
 function runNodeCheck(scriptPath) {
   const result = spawnSync('node', [scriptPath], { stdio: 'inherit' });
@@ -100,6 +102,34 @@ function listChangedFiles() {
 
 function hasUiAffectingChange(files) {
   return files.some((file) => UI_PATH_PATTERNS.some((pattern) => pattern.test(file)));
+}
+
+function isTrackedUiEvidenceAllowed() {
+  const value = String(process.env[UI_EVIDENCE_ALLOW_TRACKED_ENV] || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+function listTrackedUiEvidenceFiles() {
+  const tracked = new Set();
+  const commands = [
+    ['diff', '--cached', '--name-only', '--diff-filter=ACMR'],
+    ['diff', '--name-only', '--diff-filter=ACMR']
+  ];
+
+  for (const args of commands) {
+    const result = runGit(args);
+    if (result.status !== 0) {
+      continue;
+    }
+    for (const file of result.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
+      const normalized = file.replace(/\\/g, '/');
+      if (normalized.startsWith(UI_EVIDENCE_TRACKED_PATH_PREFIX)) {
+        tracked.add(normalized);
+      }
+    }
+  }
+
+  return Array.from(tracked).sort();
 }
 
 function hasUiEvidence() {
@@ -288,6 +318,24 @@ function resolveUiEvidenceProfile() {
 function enforceUiEvidenceGate() {
   const uiEvidenceProfile = resolveUiEvidenceProfile();
   process.stdout.write(`UI evidence profile active: ${uiEvidenceProfile.profile} (${uiEvidenceProfile.source}).\n`);
+
+  if (!isTrackedUiEvidenceAllowed()) {
+    const trackedEvidenceFiles = listTrackedUiEvidenceFiles();
+    if (trackedEvidenceFiles.length > 0) {
+      process.stderr.write('Meta check failed: tracked UI evidence artifacts are not allowed under output/playwright/.\n');
+      process.stderr.write('Publish artifacts to review surfaces, then unstage/remove them before commit.\n');
+      process.stderr.write(`To bypass intentionally, set ${UI_EVIDENCE_ALLOW_TRACKED_ENV}=1.\n`);
+      process.stderr.write('Tracked evidence files:\n');
+      for (const file of trackedEvidenceFiles) {
+        process.stderr.write(`  - ${file}\n`);
+      }
+      process.stderr.write('Suggested cleanup:\n');
+      process.stderr.write('  - git restore --staged output/playwright/*\n');
+      process.stderr.write('  - git rm --cached -r output/playwright/  # if already tracked in commit history\n');
+      process.stderr.write('  - rm -rf output/playwright/\n');
+      process.exit(1);
+    }
+  }
 
   const changedFiles = listChangedFiles();
   if (!hasUiAffectingChange(changedFiles)) {

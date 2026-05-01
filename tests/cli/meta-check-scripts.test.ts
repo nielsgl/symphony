@@ -14,6 +14,8 @@ function runNode(args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
     env: {
       ...process.env,
       NODE_PATH: nodePath,
+      SYMPHONY_UI_EVIDENCE_PROFILE: '',
+      SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED: '1',
       ...env
     }
   });
@@ -380,6 +382,51 @@ describe('meta check scripts', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('UI evidence profile active: strict');
     expect(result.stdout).toContain('UI evidence gate passed via file:output/playwright/ui-evidence.json');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails when strict evidence artifacts are staged for commit', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+
+    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict staged artifact block\n', 'utf8');
+
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub-video', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'output/playwright/ui-evidence.json'),
+      JSON.stringify(
+        {
+          artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
+          ui_paths: ['src/api/dashboard-assets.ts'],
+          captured_at: '2026-05-01T00:00:00.000Z',
+          summary: 'Demo capture',
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    expect(runGit(['add', 'src/api/dashboard-assets.ts'], tempRoot).status).toBe(0);
+    expect(runGit(['add', '-f', 'output/playwright/demo.webm', 'output/playwright/ui-evidence.json'], tempRoot).status).toBe(0);
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'strict',
+      SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED: '0'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('tracked UI evidence artifacts are not allowed');
+    expect(result.stderr).toContain('output/playwright/demo.webm');
+    expect(result.stderr).toContain('output/playwright/ui-evidence.json');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });

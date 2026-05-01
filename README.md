@@ -311,6 +311,11 @@ JSON
 npm run check:meta
 ```
 
+After publishing evidence to PR/Linear review surfaces, keep `output/playwright/*`
+untracked before commit. `check:meta` fails deterministically when evidence files
+are staged or committed unless `SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED=1` is set
+intentionally.
+
 Strict mode contract:
 
 - `output/playwright/ui-evidence.json` exists and is valid JSON.
@@ -320,6 +325,7 @@ Strict mode contract:
 - `ui_paths[]` includes changed UI path(s).
 - `captured_at` is a valid datetime string and `summary` is non-empty.
 - `publish_reference` is a non-empty reference to where artifacts were published for review.
+- `output/playwright/*` evidence artifacts must remain untracked in normal flows.
 
 ## Observability Notes
 
