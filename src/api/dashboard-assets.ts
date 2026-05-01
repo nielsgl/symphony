@@ -30,7 +30,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
       </div>
       <p id="last-updated" class="muted">Last update: --</p>
       <div class="hero-actions">
-        <button id="refresh-button" type="button">Refresh Now</button>
+        <button id="refresh-button" class="refresh-now-button" type="button">Refresh Now</button>
         <span id="refresh-status" aria-live="polite"></span>
       </div>
     </div>
@@ -1517,6 +1517,21 @@ button {
 
 button:hover {
   filter: brightness(1.06);
+}
+
+.refresh-now-button {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.refresh-now-button:hover {
+  background: #1d4ed8;
+  filter: none;
+}
+
+.refresh-now-button:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
 }
 
 .ghost-button {
