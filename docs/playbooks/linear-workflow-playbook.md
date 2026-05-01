@@ -304,7 +304,8 @@ cat > output/playwright/ui-evidence.json <<'JSON'
     "src/api/dashboard-assets.ts"
   ],
   "captured_at": "2026-05-01T00:00:00.000Z",
-  "summary": "Dashboard render and interaction flow validated."
+  "summary": "Dashboard render and interaction flow validated.",
+  "publish_reference": "https://github.com/<owner>/<repo>/pull/<number>#issuecomment-<id>"
 }
 JSON
 npm run check:meta
@@ -313,7 +314,7 @@ npm run check:meta
 Workpad checklist snippet for UI tickets:
 
 - [ ] UI evidence captured under `output/playwright/` (`.png` and/or `.mp4`/`.webm`)
-- [ ] `output/playwright/ui-evidence.json` updated with `artifacts`, `ui_paths`, `captured_at`, `summary`
+- [ ] `output/playwright/ui-evidence.json` updated with `artifacts`, `ui_paths`, `captured_at`, `summary`, `publish_reference`
 - [ ] `npm run check:meta` passes in the configured profile
 ## 13. References
 

@@ -25,6 +25,7 @@ const DEFAULT_WORKFLOW_PATH = 'WORKFLOW.md';
 const UI_EVIDENCE_MARKER_FILE = path.join('output', 'playwright', 'ui-e2e-evidence.txt');
 const UI_EVIDENCE_MARKER_LINE = 'UI_E2E_EVIDENCE=PASS';
 const UI_EVIDENCE_MANIFEST_FILE = path.join('output', 'playwright', 'ui-evidence.json');
+const UI_EVIDENCE_ARTIFACT_BASE_DIR = path.join('output', 'playwright');
 
 function runNodeCheck(scriptPath) {
   const result = spawnSync('node', [scriptPath], { stdio: 'inherit' });
@@ -120,6 +121,7 @@ function hasUiEvidence() {
 
 function validateStrictUiEvidenceManifest(changedUiPaths) {
   const manifestPath = path.join(process.cwd(), UI_EVIDENCE_MANIFEST_FILE);
+  const artifactBaseDir = path.resolve(process.cwd(), UI_EVIDENCE_ARTIFACT_BASE_DIR);
   if (!fs.existsSync(manifestPath)) {
     return { ok: false, reason: `missing manifest file: ${UI_EVIDENCE_MANIFEST_FILE}` };
   }
@@ -156,6 +158,11 @@ function validateStrictUiEvidenceManifest(changedUiPaths) {
     return { ok: false, reason: 'manifest.summary must be a non-empty string' };
   }
 
+  const publishReference = typeof parsed.publish_reference === 'string' ? parsed.publish_reference.trim() : '';
+  if (publishReference.length === 0) {
+    return { ok: false, reason: 'manifest.publish_reference must be a non-empty string' };
+  }
+
   for (const [index, artifact] of artifacts.entries()) {
     if (!artifact || typeof artifact !== 'object') {
       return { ok: false, reason: `manifest.artifacts[${index}] must be an object` };
@@ -182,6 +189,10 @@ function validateStrictUiEvidenceManifest(changedUiPaths) {
     }
 
     const resolvedPath = path.resolve(process.cwd(), normalizedPath);
+    const relativeToBase = path.relative(artifactBaseDir, resolvedPath);
+    if (relativeToBase.startsWith('..') || path.isAbsolute(relativeToBase)) {
+      return { ok: false, reason: `manifest.artifacts[${index}].path escapes output/playwright/: ${normalizedPath}` };
+    }
     if (!fs.existsSync(resolvedPath)) {
       return { ok: false, reason: `manifest artifact file is missing: ${normalizedPath}` };
     }

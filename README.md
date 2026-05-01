@@ -304,7 +304,8 @@ cat > output/playwright/ui-evidence.json <<'JSON'
     "src/api/dashboard-assets.ts"
   ],
   "captured_at": "2026-05-01T00:00:00.000Z",
-  "summary": "Dashboard launch and task list render validated."
+  "summary": "Dashboard launch and task list render validated.",
+  "publish_reference": "https://github.com/<owner>/<repo>/pull/<number>#issuecomment-<id>"
 }
 JSON
 npm run check:meta
@@ -318,6 +319,7 @@ Strict mode contract:
 - Every listed artifact file exists.
 - `ui_paths[]` includes changed UI path(s).
 - `captured_at` is a valid datetime string and `summary` is non-empty.
+- `publish_reference` is a non-empty reference to where artifacts were published for review.
 
 ## Observability Notes
 

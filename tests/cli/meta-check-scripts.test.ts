@@ -247,7 +247,8 @@ describe('meta check scripts', () => {
           artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
           ui_paths: ['src/api/dashboard-assets.ts'],
           captured_at: '2026-05-01T00:00:00.000Z',
-          summary: 'Demo capture'
+          summary: 'Demo capture',
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
         },
         null,
         2
@@ -262,6 +263,83 @@ describe('meta check scripts', () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('UI evidence profile active: strict');
     expect(result.stderr).toContain('manifest artifact file is missing: output/playwright/demo.webm');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails strict profile when manifest publish reference is missing', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+
+    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict missing publish reference\n', 'utf8');
+
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub-video', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'output/playwright/ui-evidence.json'),
+      JSON.stringify(
+        {
+          artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
+          ui_paths: ['src/api/dashboard-assets.ts'],
+          captured_at: '2026-05-01T00:00:00.000Z',
+          summary: 'Demo capture'
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'strict'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('manifest.publish_reference must be a non-empty string');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails strict profile when artifact path escapes output/playwright directory', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+
+    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict traversal check\n', 'utf8');
+
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/escape.png'), 'stub-image', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'output/playwright/ui-evidence.json'),
+      JSON.stringify(
+        {
+          artifacts: [{ path: 'output/playwright/../escape.png', type: 'image' }],
+          ui_paths: ['src/api/dashboard-assets.ts'],
+          captured_at: '2026-05-01T00:00:00.000Z',
+          summary: 'Demo capture',
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'strict'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('path escapes output/playwright/');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -286,7 +364,8 @@ describe('meta check scripts', () => {
           artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
           ui_paths: ['src/api/dashboard-assets.ts'],
           captured_at: '2026-05-01T00:00:00.000Z',
-          summary: 'Demo capture'
+          summary: 'Demo capture',
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
         },
         null,
         2
