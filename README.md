@@ -289,6 +289,38 @@ UI paths and remediation commands.
 In `strict` profile, the explicit artifact marker file is required and env-only
 markers are not sufficient.
 
+In `strict` profile, UI-affecting diffs must provide manifest-backed artifacts:
+
+```bash
+mkdir -p output/playwright
+# add at least one captured artifact under output/playwright/
+# for example: output/playwright/dashboard-home.png or output/playwright/demo.webm
+cat > output/playwright/ui-evidence.json <<'JSON'
+{
+  "artifacts": [
+    { "path": "output/playwright/dashboard-home.png", "type": "image" }
+  ],
+  "ui_paths": [
+    "src/api/dashboard-assets.ts"
+  ],
+  "captured_at": "2026-05-01T00:00:00.000Z",
+  "summary": "Dashboard launch and task list render validated.",
+  "publish_reference": "https://github.com/<owner>/<repo>/pull/<number>#issuecomment-<id>"
+}
+JSON
+npm run check:meta
+```
+
+Strict mode contract:
+
+- `output/playwright/ui-evidence.json` exists and is valid JSON.
+- `artifacts[]` includes at least one artifact under `output/playwright/`.
+- Artifact types: `image` (`.png`) or `video` (`.mp4`/`.webm`).
+- Every listed artifact file exists.
+- `ui_paths[]` includes changed UI path(s).
+- `captured_at` is a valid datetime string and `summary` is non-empty.
+- `publish_reference` is a non-empty reference to where artifacts were published for review.
+
 ## Observability Notes
 
 - Logs use stable `key=value` rendering with context fields.

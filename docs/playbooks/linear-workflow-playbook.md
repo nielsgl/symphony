@@ -282,7 +282,41 @@ Runtime symptoms:
 8. Review /api/v1/history for outcomes and trends.
 9. Stop with Ctrl+C and retain persistence for next session.
 
-## 12. References
+## 12. UI Evidence Capture (Deterministic)
+
+When UI-affecting files change and strict UI evidence mode is active, a marker
+or env pass flag alone is not enough. Capture and publish artifact evidence with
+the manifest contract below before handoff.
+
+Copy-paste flow:
+
+```bash
+mkdir -p output/playwright
+# place captured artifact(s) under output/playwright/, for example:
+# - output/playwright/dashboard-home.png
+# - output/playwright/demo.webm
+cat > output/playwright/ui-evidence.json <<'JSON'
+{
+  "artifacts": [
+    { "path": "output/playwright/dashboard-home.png", "type": "image" }
+  ],
+  "ui_paths": [
+    "src/api/dashboard-assets.ts"
+  ],
+  "captured_at": "2026-05-01T00:00:00.000Z",
+  "summary": "Dashboard render and interaction flow validated.",
+  "publish_reference": "https://github.com/<owner>/<repo>/pull/<number>#issuecomment-<id>"
+}
+JSON
+npm run check:meta
+```
+
+Workpad checklist snippet for UI tickets:
+
+- [ ] UI evidence captured under `output/playwright/` (`.png` and/or `.mp4`/`.webm`)
+- [ ] `output/playwright/ui-evidence.json` updated with `artifacts`, `ui_paths`, `captured_at`, `summary`, `publish_reference`
+- [ ] `npm run check:meta` passes in the configured profile
+## 13. References
 
 - README.md
 - WORKFLOW.md

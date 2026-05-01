@@ -231,6 +231,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Revert every temporary proof edit before commit/push.
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
+    - For UI-affecting diffs in strict UI evidence mode, env/marker-only evidence is insufficient: capture at least one screenshot (`.png`) or short video (`.mp4`/`.webm`), persist under `output/playwright/`, and publish `output/playwright/ui-evidence.json` with artifact list, changed UI paths, capture time, summary, and a publish reference link/token for reviewer access.
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
@@ -337,6 +338,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 - [ ] Criterion 1
 - [ ] Criterion 2
+- [ ] If UI-affecting changes are present: captured screenshot/video artifact(s) exist under `output/playwright/` and are listed in `output/playwright/ui-evidence.json`
 
 ### Validation
 
