@@ -20,7 +20,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
   <header class="hero">
     <div class="hero-copy">
       <p class="eyebrow">Symphony Runtime</p>
-      <h1>Operator Control Surface v2</h1>
+      <h1>Operator Control Surface</h1>
       <p class="hero-subtitle">Live orchestration visibility with retry control, issue drilldown, and desktop/browser parity.</p>
     </div>
     <div class="hero-status-card">
