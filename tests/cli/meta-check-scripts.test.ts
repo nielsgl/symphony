@@ -57,7 +57,10 @@ describe('meta check scripts', () => {
 
   it('passes aggregate meta check in repository root', () => {
     const root = process.cwd();
-    const meta = runNode(['scripts/check-meta.js'], root);
+    const meta = runNode(['scripts/check-meta.js'], root, {
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline',
+      SYMPHONY_UI_E2E_PLAYWRIGHT_PASS: '1'
+    });
     expect(meta.status).toBe(0);
     expect(meta.stdout).toContain('Meta checks passed');
   }, 30_000);
@@ -417,6 +420,55 @@ describe('meta check scripts', () => {
 
     expect(runGit(['add', 'src/api/dashboard-assets.ts'], tempRoot).status).toBe(0);
     expect(runGit(['add', '-f', 'output/playwright/demo.webm', 'output/playwright/ui-evidence.json'], tempRoot).status).toBe(0);
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'strict',
+      SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED: '0'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('tracked UI evidence artifacts are not allowed');
+    expect(result.stderr).toContain('output/playwright/demo.webm');
+    expect(result.stderr).toContain('output/playwright/ui-evidence.json');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails when strict evidence artifacts are committed in branch history', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+
+    expect(runGit(['init'], tempRoot).status).toBe(0);
+    expect(runGit(['config', 'user.email', 'test@example.com'], tempRoot).status).toBe(0);
+    expect(runGit(['config', 'user.name', 'Meta Test'], tempRoot).status).toBe(0);
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict committed artifact block\n', 'utf8');
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub-video', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'output/playwright/ui-evidence.json'),
+      JSON.stringify(
+        {
+          artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
+          ui_paths: ['src/api/dashboard-assets.ts'],
+          captured_at: '2026-05-01T00:00:00.000Z',
+          summary: 'Demo capture',
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    expect(runGit(['add', 'src/api/dashboard-assets.ts'], tempRoot).status).toBe(0);
+    expect(runGit(['add', '-f', 'output/playwright/demo.webm', 'output/playwright/ui-evidence.json'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'commit evidence files'], tempRoot).status).toBe(0);
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
       SYMPHONY_META_SKIP_BASE_CHECKS: '1',

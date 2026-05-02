@@ -111,15 +111,13 @@ function isTrackedUiEvidenceAllowed() {
 
 function listTrackedUiEvidenceFiles() {
   const tracked = new Set();
-  const commands = [
-    ['diff', '--cached', '--name-only', '--diff-filter=ACMR'],
-    ['diff', '--name-only', '--diff-filter=ACMR']
-  ];
+  let capturedCommittedDiff = false;
+  const rootCommit = runGit(['rev-list', '--max-parents=0', '--max-count=1', 'HEAD']);
+  const rootSha = rootCommit.status === 0 ? rootCommit.stdout.trim() : '';
 
-  for (const args of commands) {
-    const result = runGit(args);
+  const collectTracked = (result) => {
     if (result.status !== 0) {
-      continue;
+      return;
     }
     for (const file of result.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
       const normalized = file.replace(/\\/g, '/');
@@ -127,7 +125,31 @@ function listTrackedUiEvidenceFiles() {
         tracked.add(normalized);
       }
     }
+  };
+
+  const baseRefCheck = runGit(['rev-parse', '--verify', '--quiet', 'origin/main']);
+  if (baseRefCheck.status === 0) {
+    const committed = runGit(['diff', '--name-only', '--diff-filter=ACMR', 'origin/main...HEAD']);
+    if (committed.status === 0) {
+      capturedCommittedDiff = true;
+      collectTracked(committed);
+    }
   }
+
+  if (!capturedCommittedDiff && rootSha) {
+    const committedFromRoot = runGit(['diff', '--name-only', '--diff-filter=ACMR', `${rootSha}..HEAD`]);
+    if (committedFromRoot.status === 0) {
+      capturedCommittedDiff = true;
+      collectTracked(committedFromRoot);
+    }
+  }
+
+  if (!capturedCommittedDiff) {
+    collectTracked(runGit(['show', '--name-only', '--pretty=format:', '--diff-filter=ACMR', 'HEAD']));
+  }
+
+  collectTracked(runGit(['diff', '--cached', '--name-only', '--diff-filter=ACMR']));
+  collectTracked(runGit(['diff', '--name-only', '--diff-filter=ACMR']));
 
   return Array.from(tracked).sort();
 }
