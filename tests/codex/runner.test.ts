@@ -962,6 +962,36 @@ describe('CodexRunner', () => {
     });
   });
 
+  it('accepts numeric-string totals and usage.total_token_usage wrapper payloads', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"thread/tokenUsage/updated","params":{"token_usage":{"total":{"inputTokens":"10","outputTokens":"4","totalTokens":"14","cachedInputTokens":"2","reasoningOutputTokens":"1","modelContextWindow":"131072"}}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"token/count","params":{"usage":{"total_token_usage":{"input_tokens":"17","output_tokens":"6","total_tokens":"23","cached_input_tokens":"5","reasoning_output_tokens":"4","model_context_window":"131072"}}}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 17,
+        output_tokens: 6,
+        total_tokens: 23,
+        cached_input_tokens: 5,
+        reasoning_output_tokens: 4,
+        model_context_window: 131072
+      }
+    });
+  });
+
   it('handles a bounded high-volume stream deterministically', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
