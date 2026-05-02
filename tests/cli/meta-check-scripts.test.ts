@@ -150,7 +150,8 @@ describe('meta check scripts', () => {
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate test marker\n', 'utf8');
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
-      SYMPHONY_META_SKIP_BASE_CHECKS: '1'
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline'
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('UI-affecting changes detected without e2e evidence');
@@ -179,7 +180,8 @@ describe('meta check scripts', () => {
     );
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
-      SYMPHONY_META_SKIP_BASE_CHECKS: '1'
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline'
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('UI evidence gate passed');
@@ -497,6 +499,7 @@ describe('meta check scripts', () => {
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
       SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: '',
       SYMPHONY_UI_E2E_PLAYWRIGHT_PASS: '1'
     });
     expect(result.status).toBe(1);
@@ -518,6 +521,7 @@ describe('meta check scripts', () => {
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
       SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: '',
       SYMPHONY_UI_E2E_PLAYWRIGHT_PASS: '1'
     });
     expect(result.status).toBe(1);
@@ -622,7 +626,8 @@ describe('meta check scripts', () => {
     expect(runGit(['commit', '-m', 'non-ui follow-up'], tempRoot).status).toBe(0);
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
-      SYMPHONY_META_SKIP_BASE_CHECKS: '1'
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline'
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('UI-affecting changes detected without e2e evidence');

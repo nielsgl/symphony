@@ -298,24 +298,42 @@ function parseTokenTotals(payload: Record<string, unknown> | null): CodexUsageTo
     return null;
   }
 
-  const input = payload.input_tokens ?? payload.inputTokens;
-  const output = payload.output_tokens ?? payload.outputTokens;
-  const total = payload.total_tokens ?? payload.totalTokens;
-  if (typeof input === 'number' && typeof output === 'number' && typeof total === 'number') {
-    const cached = payload.cached_input_tokens ?? payload.cachedInputTokens;
-    const reasoning = payload.reasoning_output_tokens ?? payload.reasoningOutputTokens;
-    const contextWindow = payload.model_context_window ?? payload.modelContextWindow;
+  const input = readNumberLike(payload.input_tokens ?? payload.inputTokens);
+  const output = readNumberLike(payload.output_tokens ?? payload.outputTokens);
+  const total = readNumberLike(payload.total_tokens ?? payload.totalTokens);
+  if (input !== null && output !== null && total !== null) {
+    const cached = readNumberLike(payload.cached_input_tokens ?? payload.cachedInputTokens);
+    const reasoning = readNumberLike(payload.reasoning_output_tokens ?? payload.reasoningOutputTokens);
+    const contextWindow = readNumberLike(payload.model_context_window ?? payload.modelContextWindow);
     return {
       input_tokens: input,
       output_tokens: output,
       total_tokens: total,
-      ...(typeof cached === 'number' ? { cached_input_tokens: cached } : {}),
-      ...(typeof reasoning === 'number' ? { reasoning_output_tokens: reasoning } : {}),
-      ...(typeof contextWindow === 'number' ? { model_context_window: contextWindow } : {})
+      ...(cached !== null ? { cached_input_tokens: cached } : {}),
+      ...(reasoning !== null ? { reasoning_output_tokens: reasoning } : {}),
+      ...(contextWindow !== null ? { model_context_window: contextWindow } : {})
     };
   }
 
   return null;
+}
+
+function readNumberLike(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function mergeTokenUsageMetadata(
@@ -360,7 +378,7 @@ class UsageTracker {
 
     // Token accounting is strict-canonical: absolute totals only.
     if (method === 'thread/tokenusage/updated') {
-      const tokenUsage = asRecord(params.tokenUsage);
+      const tokenUsage = asRecord(params.tokenUsage) ?? asRecord(params.token_usage);
       const parsedTotal = parseTokenTotals(asRecord(tokenUsage?.total));
       absolute = parsedTotal ? mergeTokenUsageMetadata(parsedTotal, tokenUsage) : null;
     }
@@ -374,6 +392,12 @@ class UsageTracker {
     if (!absolute) {
       const totalTokenUsage = asRecord(params.total_token_usage) ?? asRecord(params.totalTokenUsage);
       absolute = parseTokenTotals(totalTokenUsage);
+    }
+
+    if (!absolute) {
+      const usage = asRecord(params.usage);
+      const usageTotalTokenUsage = asRecord(usage?.total_token_usage) ?? asRecord(usage?.totalTokenUsage);
+      absolute = parseTokenTotals(usageTotalTokenUsage);
     }
 
     if (!absolute) {
