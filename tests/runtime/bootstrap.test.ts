@@ -164,7 +164,7 @@ describe('createRuntimeEnvironment', () => {
     expect(tracker.fetch_candidate_issues).toHaveBeenCalled();
   });
 
-  it('uses runtime native submit wiring for blocked input when request method is supported', async () => {
+  it('falls back with typed reason when runtime native submit has no active transport session', async () => {
     const workflowPath = await makeWorkflowFile();
     dirs.push(path.dirname(workflowPath));
 
@@ -242,8 +242,8 @@ describe('createRuntimeEnvironment', () => {
 
     expect(response.status).toBe(202);
     expect(payload.resumed).toBe(true);
-    expect(payload.resume_mode).toBe('native');
-    expect(payload.resume_reason_code).toBe('native_applied');
+    expect(payload.resume_mode).toBe('fallback');
+    expect(payload.resume_reason_code).toBe('session_expired');
   });
 
   it('exposes SSE event stream endpoint for runtime state push updates', async () => {

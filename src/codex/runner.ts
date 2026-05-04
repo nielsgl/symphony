@@ -540,6 +540,16 @@ function shellEscape(value: string): string {
 export class CodexRunner {
   private readonly spawnProcess: SpawnProcess;
   private readonly dynamicToolExecutor: DynamicToolExecutor;
+  private readonly pendingNativeInputSessions = new Map<
+    string,
+    {
+      processHandle: RunnerProcess;
+      protocol: ProtocolClient;
+      request_id: string;
+      thread_id: string;
+      turn_id: string;
+    }
+  >();
 
   constructor(options: { spawnProcess?: SpawnProcess; dynamicToolExecutor?: DynamicToolExecutor } = {}) {
     this.spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
@@ -559,6 +569,7 @@ export class CodexRunner {
     }
 
     let processHandle: RunnerProcess;
+    let shouldTerminateProcess = true;
     try {
       processHandle = this.spawnProcess({ command: input.command, cwd: input.workspaceCwd, workerHost: input.workerHost });
     } catch {
@@ -737,6 +748,17 @@ export class CodexRunner {
         }
 
         emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, rate_limits });
+        const inputRequestId = waitResult.input_required_payload?.request_id ?? null;
+        if (inputRequestId) {
+          this.pendingNativeInputSessions.set(session_id, {
+            processHandle,
+            protocol,
+            request_id: inputRequestId,
+            thread_id,
+            turn_id
+          });
+          shouldTerminateProcess = false;
+        }
         return {
           status: 'failed',
           thread_id,
@@ -764,8 +786,74 @@ export class CodexRunner {
 
       throw error;
     } finally {
-      processHandle.kill('SIGKILL');
+      if (shouldTerminateProcess) {
+        processHandle.kill('SIGKILL');
+      }
     }
+  }
+
+  async submitBlockedInputNative(params: {
+    previous_session_id: string | null;
+    previous_thread_id: string | null;
+    request_id: string;
+    answer: { question_id?: string; option_label?: string; text?: string };
+  }): Promise<{ applied: boolean; code: 'native_applied' | 'session_expired' | 'request_not_found' | 'native_submit_failed'; message?: string }> {
+    const sessionId = params.previous_session_id?.trim() ?? '';
+    if (!sessionId) {
+      return { applied: false, code: 'session_expired', message: 'missing previous_session_id for native submit' };
+    }
+    const pending = this.pendingNativeInputSessions.get(sessionId);
+    if (!pending) {
+      return { applied: false, code: 'session_expired', message: `native session ${sessionId} is not active` };
+    }
+    if (params.previous_thread_id && params.previous_thread_id !== pending.thread_id) {
+      this.cleanupPendingNativeSession(sessionId, pending);
+      return { applied: false, code: 'session_expired', message: 'previous_thread_id does not match active native session' };
+    }
+    if (pending.request_id !== params.request_id) {
+      return { applied: false, code: 'request_not_found', message: 'request_id does not match active native request' };
+    }
+
+    const answerText = params.answer.option_label?.trim() || params.answer.text?.trim() || '';
+    if (!answerText) {
+      return { applied: false, code: 'native_submit_failed', message: 'missing answer text for native submit' };
+    }
+    const questionId = params.answer.question_id?.trim() || 'q1';
+
+    const protocolRequestId = Number(params.request_id);
+    if (!Number.isFinite(protocolRequestId)) {
+      return { applied: false, code: 'request_not_found', message: 'request_id is not a numeric protocol id' };
+    }
+
+    try {
+      pending.protocol.sendRequestResponse(protocolRequestId, {
+        answers: {
+          [questionId]: {
+            answers: [answerText]
+          }
+        }
+      });
+    } catch (error) {
+      this.cleanupPendingNativeSession(sessionId, pending);
+      return { applied: false, code: 'native_submit_failed', message: error instanceof Error ? error.message : 'failed to submit native answer' };
+    }
+
+    this.cleanupPendingNativeSession(sessionId, pending);
+    return { applied: true, code: 'native_applied' };
+  }
+
+  private cleanupPendingNativeSession(
+    sessionId: string,
+    pending: {
+      processHandle: RunnerProcess;
+      protocol: ProtocolClient;
+      request_id: string;
+      thread_id: string;
+      turn_id: string;
+    }
+  ): void {
+    this.pendingNativeInputSessions.delete(sessionId);
+    pending.processHandle.kill('SIGKILL');
   }
 
   private makeEmitter(onEvent: ((event: CodexRunnerEvent) => void) | undefined, pid: number | null) {
@@ -1036,6 +1124,10 @@ class ProtocolClient {
 
   private write(payload: ProtocolMessage): void {
     this.processHandle.stdin.write(`${JSON.stringify(payload)}\n`);
+  }
+
+  sendRequestResponse(id: number, result: Record<string, unknown>): void {
+    this.write({ id, result });
   }
 
   private detailExcerpt(value: string, maxLength = 180): string {

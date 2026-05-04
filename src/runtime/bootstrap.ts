@@ -781,16 +781,16 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         if (!supportsNative) {
           return { applied: false, code: 'transport_unsupported' as const };
         }
-        const normalizedAnswer = (params.answer.option_label ?? params.answer.text ?? '').trim();
-        const resumeContext = [
-          'Operator input was captured through runtime native submit transport.',
-          `Request ID: ${params.request_id}`,
-          `Answer: ${normalizedAnswer}`
-        ].join('\n');
+        const nativeResult = await codexRunner.submitBlockedInputNative({
+          previous_session_id: params.previous_session_id,
+          previous_thread_id: params.previous_thread_id,
+          request_id: params.request_id,
+          answer: params.answer
+        });
         return {
-          applied: true,
-          code: 'native_applied' as const,
-          resume_context: resumeContext
+          applied: nativeResult.applied,
+          code: nativeResult.code,
+          ...(nativeResult.message ? { message: nativeResult.message } : {})
         };
       },
       notifyObservers: () => {

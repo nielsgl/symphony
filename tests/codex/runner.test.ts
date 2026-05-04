@@ -848,6 +848,86 @@ describe('CodexRunner', () => {
     expect(responses).toEqual([]);
   });
 
+  it('submits blocked input natively on the same protocol session and completes the pending turn', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":90,"method":"item/tool/requestUserInput","params":{"questions":[{"options":[{"label":"Continue"}]}]}}\n');
+
+    const blocked = await promise;
+    expect(blocked).toMatchObject({
+      status: 'failed',
+      error_code: 'turn_input_required',
+      thread_id: 'thread-1',
+      session_id: 'thread-1-turn-1'
+    });
+
+    const nativePromise = runner.submitBlockedInputNative({
+      previous_session_id: blocked.session_id,
+      previous_thread_id: blocked.thread_id,
+      request_id: '90',
+      answer: { text: 'Continue' }
+    });
+    await expect(nativePromise).resolves.toEqual({ applied: true, code: 'native_applied' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => message.id === 90);
+    expect(responses).toContainEqual({
+      id: 90,
+      result: {
+        answers: {
+          q1: {
+            answers: ['Continue']
+          }
+        }
+      }
+    });
+  });
+
+  it('returns request_not_found for mismatched native request id and keeps pending request active', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":90,"method":"item/tool/requestUserInput","params":{"questions":[{"options":[{"label":"Continue"}]}]}}\n');
+
+    const blocked = await promise;
+    expect(blocked).toMatchObject({
+      status: 'failed',
+      error_code: 'turn_input_required',
+      thread_id: 'thread-1',
+      session_id: 'thread-1-turn-1'
+    });
+
+    await expect(
+      runner.submitBlockedInputNative({
+        previous_session_id: blocked.session_id,
+        previous_thread_id: blocked.thread_id,
+        request_id: '91',
+        answer: { text: 'Continue' }
+      })
+    ).resolves.toMatchObject({ applied: false, code: 'request_not_found' });
+
+    await expect(
+      runner.submitBlockedInputNative({
+        previous_session_id: blocked.session_id,
+        previous_thread_id: blocked.thread_id,
+        request_id: '90',
+        answer: { text: 'Continue' }
+      })
+    ).resolves.toEqual({ applied: true, code: 'native_applied' });
+  });
+
   it('[SPEC-13.5-1] extracts usage/rate-limit telemetry from compatible payload variants', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
