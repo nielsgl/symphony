@@ -359,8 +359,23 @@ function mergeTokenUsageMetadata(
   return absolute;
 }
 
+function parseLastTokenUsage(params: Record<string, unknown>): CodexUsageTotals | null {
+  const info = asRecord(params.info);
+  const usage = asRecord(params.usage);
+  const tokenUsage = asRecord(params.tokenUsage) ?? asRecord(params.token_usage);
+
+  return (
+    parseTokenTotals(asRecord(info?.last_token_usage) ?? asRecord(info?.lastTokenUsage)) ??
+    parseTokenTotals(asRecord(params.last_token_usage) ?? asRecord(params.lastTokenUsage)) ??
+    parseTokenTotals(asRecord(usage?.last_token_usage) ?? asRecord(usage?.lastTokenUsage)) ??
+    parseTokenTotals(asRecord(tokenUsage?.last) ?? asRecord(tokenUsage?.last_usage))
+  );
+}
+
 class UsageTracker {
   private lastAbsolute: CodexUsageTotals | null = null;
+  private hasCanonicalAbsolute = false;
+  private lastFallbackSignature: string | null = null;
   private aggregate: CodexUsageTotals = {
     input_tokens: 0,
     output_tokens: 0,
@@ -401,9 +416,39 @@ class UsageTracker {
     }
 
     if (!absolute) {
+      if (this.hasCanonicalAbsolute) {
+        return;
+      }
+
+      const fallbackUsage = parseLastTokenUsage(params);
+      if (!fallbackUsage) {
+        return;
+      }
+
+      const signature = JSON.stringify(fallbackUsage);
+      if (signature === this.lastFallbackSignature) {
+        return;
+      }
+
+      this.aggregate.input_tokens += Math.max(0, fallbackUsage.input_tokens);
+      this.aggregate.output_tokens += Math.max(0, fallbackUsage.output_tokens);
+      this.aggregate.total_tokens += Math.max(0, fallbackUsage.total_tokens);
+      if (typeof fallbackUsage.cached_input_tokens === 'number') {
+        this.aggregate.cached_input_tokens = (this.aggregate.cached_input_tokens ?? 0) + Math.max(0, fallbackUsage.cached_input_tokens);
+      }
+      if (typeof fallbackUsage.reasoning_output_tokens === 'number') {
+        this.aggregate.reasoning_output_tokens =
+          (this.aggregate.reasoning_output_tokens ?? 0) + Math.max(0, fallbackUsage.reasoning_output_tokens);
+      }
+      if (typeof fallbackUsage.model_context_window === 'number') {
+        this.aggregate.model_context_window = fallbackUsage.model_context_window;
+      }
+      this.lastFallbackSignature = signature;
       return;
     }
 
+    this.hasCanonicalAbsolute = true;
+    this.lastFallbackSignature = null;
     if (!this.lastAbsolute) {
       this.aggregate = { ...absolute };
       this.lastAbsolute = { ...absolute };

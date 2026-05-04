@@ -938,7 +938,7 @@ describe('CodexRunner', () => {
     });
   });
 
-  it('ignores info.last_token_usage when no absolute total is present', async () => {
+  it('uses last_token_usage as a live estimate when absolute totals are absent', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const runner = new CodexRunner({ spawnProcess: () => fake });
@@ -955,9 +955,36 @@ describe('CodexRunner', () => {
 
     await expect(promise).resolves.toMatchObject({
       usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0
+        input_tokens: 99,
+        output_tokens: 99,
+        total_tokens: 198
+      }
+    });
+  });
+
+  it('replaces live estimate with canonical absolute totals when they arrive', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":99,"output_tokens":99,"total_tokens":198}}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"token/count","params":{"info":{"total_token_usage":{"input_tokens":17,"output_tokens":6,"total_tokens":23}}}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 17,
+        output_tokens: 6,
+        total_tokens: 23
       }
     });
   });
