@@ -806,6 +806,36 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         decisionLine.textContent = inputDecision;
         stopReasonCell.append(decisionLine);
       }
+      if (entry.last_input_submit) {
+        const submitModeLine = document.createElement('div');
+        submitModeLine.className = 'muted';
+        submitModeLine.textContent =
+          'Last submit: ' +
+          entry.last_input_submit.resume_mode +
+          ' (' +
+          entry.last_input_submit.resume_reason_code +
+          ') @ ' +
+          formatDate(entry.last_input_submit.submitted_at);
+        stopReasonCell.append(submitModeLine);
+        if (entry.last_input_submit.resume_mode === 'fallback') {
+          const fallbackBanner = document.createElement('div');
+          fallbackBanner.className = 'status-pill pending';
+          fallbackBanner.textContent = 'Native continuation unavailable; resumed via prompt context fallback.';
+          stopReasonCell.append(fallbackBanner);
+        }
+      }
+      if (entry.pending_input) {
+        const pending = entry.pending_input;
+        const requestLine = document.createElement('div');
+        requestLine.className = 'muted';
+        requestLine.textContent = 'Request: ' + (pending.request_id || 'n/a') + ' (' + (pending.input_schema_type || 'unknown') + ')';
+        stopReasonCell.append(requestLine);
+        if (pending.prompt_text) {
+          const promptLine = document.createElement('div');
+          promptLine.textContent = pending.prompt_text;
+          stopReasonCell.append(promptLine);
+        }
+      }
 
       const previousSessionCell = document.createElement('td');
       const previousSessionValue = document.createElement('div');
@@ -932,6 +962,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const resumeButton = createActionButton('Resume', 'ghost-button', function () {
         void resumeBlockedIssue(entry.issue_identifier);
       });
+      const replyButton = createActionButton('Reply', 'ghost-button', function () {
+        void submitBlockedInput(entry);
+      });
       const copyPreviousSession = createActionButton('Copy Prev Session', 'ghost-button', function () {
         copyText(entry.previous_session_id || '');
       });
@@ -941,7 +974,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const openJson = createActionButton('JSON', 'ghost-button', function () {
         window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
       });
-      actionsCell.append(resumeButton, copyPreviousSession, copyWorkspace, openJson);
+      actionsCell.append(replyButton, resumeButton, copyPreviousSession, copyWorkspace, openJson);
 
       row.append(
         issueCell,
@@ -1154,12 +1187,24 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
       elements.issueSummary.textContent = summaryParts.join(' • ');
       const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
+      const sessionConsole = payload.blocked && Array.isArray(payload.blocked.session_console) ? payload.blocked.session_console : [];
       const timelineText = timeline.length
         ? timeline.map(function (marker) {
             return marker.at + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + (marker.detail || 'n/a') + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
           }).join('\\n')
         : 'No phase markers yet.';
-      elements.issueOutput.textContent = 'Execution Timeline\\n' + timelineText + '\\n\\nIssue JSON\\n' + JSON.stringify(payload, null, 2);
+      const sessionConsoleText = sessionConsole.length
+        ? sessionConsole.map(function (event) {
+            return event.at + ' | ' + event.event + ' | ' + (event.message || 'n/a');
+          }).join('\\n')
+        : 'No session console entries.';
+      elements.issueOutput.textContent =
+        'Execution Timeline\\n' +
+        timelineText +
+        '\\n\\nSession Console\\n' +
+        sessionConsoleText +
+        '\\n\\nIssue JSON\\n' +
+        JSON.stringify(payload, null, 2);
       if (state.payload) {
         renderRunning(state.payload);
       }
@@ -1182,6 +1227,50 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
     } catch (error) {
       setRefreshStatus('Resume failed: ' + String(error), true);
+    }
+  }
+
+  async function submitBlockedInput(entry) {
+    try {
+      if (!entry.pending_input || !entry.pending_input.request_id) {
+        throw new Error('No pending input request payload');
+      }
+      const pending = entry.pending_input;
+      const firstQuestion = Array.isArray(pending.questions) && pending.questions.length ? pending.questions[0] : null;
+      const questionId = firstQuestion && firstQuestion.id ? firstQuestion.id : undefined;
+      let answer;
+      if (pending.input_schema_type === 'options' && firstQuestion && Array.isArray(firstQuestion.options) && firstQuestion.options.length) {
+        const labels = firstQuestion.options.map(function (option) { return option.label; });
+        const selected = window.prompt((pending.prompt_text || 'Select option') + '\\nOptions: ' + labels.join(', '), labels[0] || '');
+        answer = { question_id: questionId, option_label: selected || '' };
+      } else {
+        const text = window.prompt(pending.prompt_text || 'Enter response', '');
+        answer = { question_id: questionId, text: text || '' };
+      }
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(entry.issue_identifier) + '/input', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          request_id: pending.request_id,
+          answer: answer
+        })
+      });
+      setRefreshStatus(
+        'Input submitted for ' +
+          payload.issue_identifier +
+          ' using ' +
+          (payload.resume_mode || 'unknown') +
+          ' mode (' +
+          (payload.resume_reason_code || 'n/a') +
+          ')',
+        false
+      );
+      await loadStateViaPoll();
+      if (state.selectedIssue === entry.issue_identifier) {
+        await loadIssue(entry.issue_identifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Input submit failed: ' + String(error), true);
     }
   }
 

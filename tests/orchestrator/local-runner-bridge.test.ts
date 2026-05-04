@@ -168,6 +168,44 @@ describe('LocalRunnerBridge integration', () => {
     expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
   });
 
+  it('prepends resume context to first prompt when provided', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+    const startSessionAndRunTurn = vi.fn(async () => ({
+      status: 'completed' as const,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      last_event: CANONICAL_EVENT.codex.turnCompleted
+    }));
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+      config: makeConfig(),
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
+    });
+
+    const spawned = await bridge.spawnWorker({
+      issue: makeIssue(),
+      attempt: null,
+      resume_context: 'Operator provided input.\nAnswer: Yes'
+    });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('Operator provided input.\nAnswer: Yes\n\nIssue ABC-1 attempt')
+      })
+    );
+  });
+
   it('runs workspace ensure/prepare/codex/finalize via orchestrator spawn path', async () => {
     const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
     const prepareAttempt = vi.fn(async () => {});

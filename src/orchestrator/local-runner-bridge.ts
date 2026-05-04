@@ -64,7 +64,12 @@ export class LocalRunnerBridge {
     };
   }
 
-  async spawnWorker(params: { issue: Issue; attempt: number | null; worker_host?: string | null }): Promise<SpawnWorkerResult> {
+  async spawnWorker(params: {
+    issue: Issue;
+    attempt: number | null;
+    worker_host?: string | null;
+    resume_context?: string | null;
+  }): Promise<SpawnWorkerResult> {
     const workerHost = params.worker_host ?? null;
     let workspace;
     try {
@@ -75,7 +80,7 @@ export class LocalRunnerBridge {
         error: error instanceof Error ? error.message : 'workspace provisioning failed'
       };
     }
-    const workerPromise = this.startWorker(params.issue, params.attempt, workerHost);
+    const workerPromise = this.startWorker(params.issue, params.attempt, workerHost, params.resume_context ?? null);
     const worker_handle: WorkerHandle = {
       issue_id: params.issue.id,
       issue_identifier: params.issue.identifier,
@@ -115,7 +120,12 @@ export class LocalRunnerBridge {
     await this.workspaceManager.cleanupWorkspace(workerHandle.issue_identifier);
   }
 
-  private async startWorker(issue: Issue, attempt: number | null, worker_host: string | null): Promise<void> {
+  private async startWorker(
+    issue: Issue,
+    attempt: number | null,
+    worker_host: string | null,
+    resume_context: string | null
+  ): Promise<void> {
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.agentRunner.attemptStarted,
@@ -135,6 +145,7 @@ export class LocalRunnerBridge {
       codexRunner: this.codexRunner,
       config: this.config,
       renderPrompt: this.renderPrompt,
+      resumeContext: resume_context,
       issueStateFetcher: this.issueStateFetcher,
       onCodexEvent: (event) => {
         this.onWorkerEvent?.({ issue_id: issue.id, event });
