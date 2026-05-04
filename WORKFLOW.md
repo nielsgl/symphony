@@ -174,6 +174,8 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
     - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad (for example: launch path, changed interaction path, and expected result path).
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
+    - For non-trivial behavior changes, copy and complete `docs/playbooks/TICKET-DOD-TEMPLATE.md` sections in the workpad before implementation.
+    - Keep `Surface acceptance` and `Semantic acceptance` separate; do not treat contract/UI completion as semantic completion.
 7.  Run a principal-style self-review of the plan and refine it in the comment.
 8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
 9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
@@ -188,16 +190,17 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 When a ticket has an attached PR, run this protocol before moving to `Human Review`:
 
 1. Identify the PR number from issue links/attachments.
-2. Gather feedback from all channels:
+2. Run the behavior-first checklist in `docs/playbooks/PR-REVIEW-CHECKLIST.md` and record pass/fail notes in the workpad.
+3. Gather feedback from all channels:
    - Top-level PR comments (`gh pr view --comments`).
    - Inline review comments (`gh api repos/<owner>/<repo>/pulls/<pr>/comments`).
    - Review summaries/states (`gh pr view --json reviews`).
-3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
+4. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
    - code/test/docs updated to address it, or
    - explicit, justified pushback reply is posted on that thread.
-4. Update the workpad plan/checklist to include each feedback item and its resolution status.
-5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments.
+5. Update the workpad plan/checklist to include each feedback item and its resolution status.
+6. Re-run validation after feedback-driven changes and push updates.
+7. Repeat this sweep until there are no outstanding actionable comments.
 
 ## Blocked-access escape hatch (required behavior)
 
@@ -234,6 +237,9 @@ Use this only when completion is blocked by missing required tools or missing au
     - For UI-affecting diffs in strict UI evidence mode, env/marker-only evidence is insufficient: capture at least one screenshot (`.png`) or short video (`.mp4`/`.webm`), persist under `output/playwright/`, and publish `output/playwright/ui-evidence.json` with artifact list, changed UI paths, capture time, summary, and a publish reference link/token for reviewer access.
     - After publishing evidence, unstage/remove `output/playwright/*` before commit. `check:meta` deterministically fails when evidence artifacts are staged/committed unless `SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED=1` is intentionally set.
 6.  Re-check all acceptance criteria and close any gaps.
+    - Enforce a behavior-first gate: verify `Semantic acceptance` is complete, not just `Surface acceptance`.
+    - If a primary mode/path is claimed (for example, native path), ensure at least one automated test proves it is reachable in real execution.
+    - Do not treat placeholder/stubbed production paths as complete.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
@@ -256,6 +262,8 @@ Use this only when completion is blocked by missing required tools or missing au
     - Confirm PR checks are passing (green) after the latest changes.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
     - Confirm `Finalization Evidence` is present and complete (commit + push + PR URL).
+    - Confirm scenario matrix coverage is explicitly documented (primary path, fallback path, mismatch path, validation-failure path) with expected mode/reason/status.
+    - Confirm no in-scope production path uses hardcoded fallback stubs that make the claimed primary path unreachable.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `Human Review`.
@@ -291,7 +299,11 @@ Use this only when completion is blocked by missing required tools or missing au
 
 - Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
 - Acceptance criteria and required ticket-provided validation items are complete.
+- Both DoD layers are complete:
+  - `Surface acceptance` (UI/API/events/contracts)
+  - `Semantic acceptance` (runtime behavior actually changed as intended)
 - Validation/tests are green for the latest commit.
+- At least one automated test proves each claimed behavior mode/path.
 - PR feedback sweep is complete and no actionable comments remain.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
