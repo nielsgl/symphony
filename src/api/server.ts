@@ -691,6 +691,49 @@ export class LocalApiServer {
         ]
       },
       {
+        path: /^\/api\/v1\/issues\/([^/]+)\/input$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response, match) => {
+              if (!this.issueControlSource) {
+                throw new LocalApiError('input_submit_failed', 'Issue control source is not configured', 503);
+              }
+
+              const chunks: Buffer[] = [];
+              for await (const chunk of request) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+              }
+              const payloadText = Buffer.concat(chunks).toString('utf8').trim();
+              if (!payloadText) {
+                throw new LocalApiError('invalid_input_submit', 'Request body is required', 400);
+              }
+              let parsed: { request_id?: string; answer?: { question_id?: string; option_label?: string; text?: string } };
+              try {
+                parsed = JSON.parse(payloadText) as { request_id?: string; answer?: { question_id?: string; option_label?: string; text?: string } };
+              } catch {
+                throw new LocalApiError('invalid_input_submit', 'Request body must be valid JSON', 400);
+              }
+              if (!parsed.request_id || !parsed.answer) {
+                throw new LocalApiError('invalid_input_submit', 'request_id and answer are required', 400);
+              }
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const result = await this.issueControlSource.submitBlockedIssueInput({
+                issueIdentifier,
+                request_id: parsed.request_id,
+                answer: parsed.answer
+              });
+              if (!result.ok) {
+                const status = result.code === 'issue_not_blocked' ? 404 : result.code === 'request_id_mismatch' ? 409 : 422;
+                throw new LocalApiError(result.code, result.message, status);
+              }
+
+              sendJson(response, 202, { resumed: true, issue_identifier: issueIdentifier, requested_at: new Date().toISOString() });
+            }
+          }
+        ]
+      },
+      {
         path: /^\/api\/v1\/issues\/([^/]+)\/resume$/,
         routes: [
           {

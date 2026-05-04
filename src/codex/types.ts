@@ -46,6 +46,27 @@ export interface CodexUsageTotals {
   model_context_window?: number;
 }
 
+export interface CodexInputRequestOption {
+  label: string;
+  value?: string;
+}
+
+export interface CodexInputQuestion {
+  id: string;
+  prompt?: string;
+  options?: CodexInputRequestOption[];
+}
+
+export interface CodexInputRequestPayload {
+  request_id: string;
+  request_method: string;
+  prompt_text: string | null;
+  questions: CodexInputQuestion[];
+  options: string[];
+  input_schema_type: 'options' | 'text' | 'unknown';
+  input_required_at: string;
+}
+
 export interface CodexTurnResult {
   status: CodexTurnStatus;
   thread_id: string;
@@ -54,6 +75,7 @@ export interface CodexTurnResult {
   last_event: string;
   error_code?: CodexTurnErrorCode;
   error_detail?: string;
+  input_required_payload?: CodexInputRequestPayload;
   turns_completed: number;
   usage?: CodexUsageTotals;
   rate_limits?: Record<string, unknown> | null;

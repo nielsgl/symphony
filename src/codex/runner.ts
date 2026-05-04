@@ -7,7 +7,7 @@ import { CANONICAL_EVENT } from '../observability/events';
 import { CodexRunnerError } from './errors';
 import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
 import { buildSshSpawnArgs } from './ssh-target';
-import type { CodexRunnerEvent, CodexRunnerStartInput, CodexTurnResult, CodexUsageTotals } from './types';
+import type { CodexInputRequestPayload, CodexRunnerEvent, CodexRunnerStartInput, CodexTurnResult, CodexUsageTotals } from './types';
 
 interface ProtocolMessage {
   id?: number;
@@ -33,6 +33,7 @@ interface WaitForTerminalResult {
   usage: CodexUsageTotals;
   rate_limits: Record<string, unknown> | null;
   input_required_detail?: string;
+  input_required_payload?: CodexInputRequestPayload;
 }
 
 interface TurnEventContext {
@@ -744,6 +745,7 @@ export class CodexRunner {
           last_event: CANONICAL_EVENT.codex.turnInputRequired,
           error_code: 'turn_input_required',
           error_detail: waitResult.input_required_detail ?? 'input_required_unanswerable',
+          input_required_payload: waitResult.input_required_payload,
           turns_completed: turnsCompleted,
           usage,
           rate_limits
@@ -934,7 +936,8 @@ class ProtocolClient {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
             rate_limits: this.latestRateLimits,
-            input_required_detail: 'tool requestUserInput input_required_unanswerable'
+            input_required_detail: 'tool requestUserInput input_required_unanswerable',
+            input_required_payload: toInputRequestPayload(message) ?? undefined
           };
         }
 
@@ -955,7 +958,8 @@ class ProtocolClient {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
             rate_limits: this.latestRateLimits,
-            input_required_detail: 'mcp elicitation request input_required_unanswerable'
+            input_required_detail: 'mcp elicitation request input_required_unanswerable',
+            input_required_payload: toInputRequestPayload(message) ?? undefined
           };
         }
 
@@ -1237,3 +1241,50 @@ class ProtocolClient {
 }
 
 export { CONTINUATION_GUIDANCE };
+function toInputRequestPayload(message: ProtocolMessage): CodexInputRequestPayload | null {
+  const params = asRecord(message.params);
+  if (!params || typeof message.id !== 'number') {
+    return null;
+  }
+  const questionsRaw = Array.isArray(params.questions) ? params.questions : [];
+  const questions = questionsRaw
+    .map((question) => {
+      const q = asRecord(question);
+      const id = readString(q?.id);
+      if (!id) {
+        return null;
+      }
+      const optionsRaw = Array.isArray(q?.options) ? q.options : [];
+      const options = optionsRaw
+        .map((option) => {
+          const o = asRecord(option);
+          const label = readString(o?.label);
+          if (!label) {
+            return null;
+          }
+          const value = readString(o?.value);
+          return value ? { label, value } : { label };
+        })
+        .filter((option): option is { label: string; value?: string } => option !== null);
+      return {
+        id,
+        ...(readString(q?.question) ? { prompt: readString(q?.question) } : {}),
+        ...(options.length > 0 ? { options } : {})
+      };
+    })
+    .filter((question): question is { id: string; prompt?: string; options?: Array<{ label: string; value?: string }> } => question !== null);
+
+  const promptText = readString(params.prompt) ?? readString(params.message) ?? null;
+  const flattenedOptions = questions.flatMap((question) => (question.options ?? []).map((option) => option.label));
+  const inputSchemaType = flattenedOptions.length > 0 ? 'options' : promptText || questions.length > 0 ? 'text' : 'unknown';
+
+  return {
+    request_id: String(message.id),
+    request_method: readString(message.method) ?? 'unknown',
+    prompt_text: promptText,
+    questions,
+    options: flattenedOptions,
+    input_schema_type: inputSchemaType,
+    input_required_at: new Date().toISOString()
+  };
+}

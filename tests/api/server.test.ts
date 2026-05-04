@@ -515,7 +515,9 @@ describe('LocalApiServer', () => {
             previous_thread_id: 'thread-prev',
             previous_session_id: 'thread-prev-turn-prev',
             blocked_at_ms: Date.parse('2026-04-10T10:03:00.000Z'),
-            requires_manual_resume: true
+            requires_manual_resume: true,
+            pending_input: null,
+            session_console: []
           }
         ]
       ])
@@ -530,7 +532,8 @@ describe('LocalApiServer', () => {
         tick: vi.fn(async () => undefined)
       },
       issueControlSource: {
-        resumeBlockedIssue
+        resumeBlockedIssue,
+        submitBlockedIssueInput: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }))
       }
     });
 

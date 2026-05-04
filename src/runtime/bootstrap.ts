@@ -950,7 +950,13 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             }
           },
           issueControlSource: {
-            resumeBlockedIssue: async (issueIdentifier) => orchestrator.resumeBlockedIssue(issueIdentifier)
+            resumeBlockedIssue: async (issueIdentifier) => orchestrator.resumeBlockedIssue(issueIdentifier),
+            submitBlockedIssueInput: async (params) =>
+              orchestrator.submitBlockedIssueInput({
+                issue_identifier: params.issueIdentifier,
+                request_id: params.request_id,
+                answer: params.answer
+              })
           },
           dashboardConfig: {
             dashboard_enabled: effectiveConfig.observability?.dashboard_enabled ?? true,
