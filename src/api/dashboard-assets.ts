@@ -1889,5 +1889,3 @@ details summary {
 }
 `;
 }
-
-// ui evidence gate strict staged artifact block
