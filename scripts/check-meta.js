@@ -154,6 +154,32 @@ function listTrackedUiEvidenceFiles() {
   return Array.from(tracked).sort();
 }
 
+function listStagedUiEvidenceEntries() {
+  const staged = runGit(['diff', '--cached', '--name-status']);
+  if (staged.status !== 0) {
+    return [];
+  }
+
+  const entries = [];
+  for (const rawLine of staged.stdout.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    const parts = line.split(/\s+/);
+    if (parts.length < 2) {
+      continue;
+    }
+    const status = parts[0];
+    const pathCandidate = parts[parts.length - 1].replace(/\\/g, '/');
+    if (!pathCandidate.startsWith(UI_EVIDENCE_TRACKED_PATH_PREFIX)) {
+      continue;
+    }
+    entries.push({ status, path: pathCandidate });
+  }
+  return entries;
+}
+
 function hasUiEvidence() {
   const passFlag = String(process.env[UI_E2E_PASS_ENV] || '').toLowerCase();
   if (passFlag === '1' || passFlag === 'true' || passFlag === 'yes') {
@@ -342,6 +368,22 @@ function enforceUiEvidenceGate() {
   process.stdout.write(`UI evidence profile active: ${uiEvidenceProfile.profile} (${uiEvidenceProfile.source}).\n`);
 
   if (!isTrackedUiEvidenceAllowed()) {
+    const stagedEvidenceEntries = listStagedUiEvidenceEntries();
+    if (stagedEvidenceEntries.length > 0) {
+      process.stderr.write('Meta check failed: staged UI evidence entries are not allowed under output/playwright/.\n');
+      process.stderr.write('Publish artifacts to review surfaces, then unstage/remove them before commit.\n');
+      process.stderr.write(`To bypass intentionally, set ${UI_EVIDENCE_ALLOW_TRACKED_ENV}=1.\n`);
+      process.stderr.write('Staged evidence entries:\n');
+      for (const entry of stagedEvidenceEntries) {
+        process.stderr.write(`  - ${entry.status} ${entry.path}\n`);
+      }
+      process.stderr.write('Suggested cleanup:\n');
+      process.stderr.write('  - git restore --staged output/playwright/*\n');
+      process.stderr.write('  - git rm --cached -r output/playwright/  # if already tracked in commit history\n');
+      process.stderr.write('  - rm -rf output/playwright/\n');
+      process.exit(1);
+    }
+
     const trackedEvidenceFiles = listTrackedUiEvidenceFiles();
     if (trackedEvidenceFiles.length > 0) {
       process.stderr.write('Meta check failed: tracked UI evidence artifacts are not allowed under output/playwright/.\n');
