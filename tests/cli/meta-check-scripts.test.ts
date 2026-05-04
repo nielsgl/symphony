@@ -429,7 +429,7 @@ describe('meta check scripts', () => {
       SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED: '0'
     });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('tracked UI evidence artifacts are not allowed');
+    expect(result.stderr).toContain('staged UI evidence entries are not allowed');
     expect(result.stderr).toContain('output/playwright/demo.webm');
     expect(result.stderr).toContain('output/playwright/ui-evidence.json');
 

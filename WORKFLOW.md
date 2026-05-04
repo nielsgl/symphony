@@ -248,6 +248,10 @@ Use this only when completion is blocked by missing required tools or missing au
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
+    - For UI-affecting changes, add a `### UI Evidence for Review` section in the workpad with:
+      - artifact summary,
+      - where evidence was published (link/token/reference),
+      - explicit reviewer instructions to access and verify.
     - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
     - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
     - Do not post any additional completion summary comment.
