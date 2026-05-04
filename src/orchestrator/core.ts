@@ -1013,7 +1013,7 @@ export class OrchestratorCore {
     }
   }
 
-  private async dispatchIssue(issue: Issue, attempt: number | null): Promise<void> {
+  private async dispatchIssue(issue: Issue, attempt: number | null, resume_context: string | null = null): Promise<void> {
     this.emitPhaseMarker(issue.id, {
       phase: 'dispatch_started',
       detail: 'dispatch attempt started',
@@ -1070,7 +1070,7 @@ export class OrchestratorCore {
       return;
     }
 
-    const spawned = await this.ports.spawnWorker({ issue, attempt, worker_host: workerHost });
+    const spawned = await this.ports.spawnWorker({ issue, attempt, worker_host: workerHost, resume_context });
 
     if (!spawned.ok) {
       this.emitPhaseMarker(issue.id, {
@@ -1428,7 +1428,10 @@ export class OrchestratorCore {
     });
   }
 
-  async resumeBlockedIssue(issue_identifier: string): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
+  async resumeBlockedIssue(
+    issue_identifier: string,
+    resume_context: string | null = null
+  ): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
     const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
     if (!blocked) {
       return {
@@ -1473,7 +1476,7 @@ export class OrchestratorCore {
 
     const eligibility = shouldDispatchIssue(issue, this.state, this.config);
     if (eligibility.eligible) {
-      await this.dispatchIssue(issue, blocked.attempt);
+      await this.dispatchIssue(issue, blocked.attempt, resume_context);
     } else if (eligibility.reason === 'global_slots_exhausted' || eligibility.reason === 'state_slots_exhausted') {
       await this.scheduleRetry({
         issue_id: blocked.issue_id,
@@ -1571,6 +1574,7 @@ export class OrchestratorCore {
       }
     }
 
+    const resumeContext = this.buildOperatorInputResumeContext(blocked, params.answer);
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.blockedInputSubmitRequested,
@@ -1579,10 +1583,28 @@ export class OrchestratorCore {
         issue_id: blocked.issue_id,
         issue_identifier: blocked.issue_identifier,
         request_id: params.request_id,
-        input_schema_type: blocked.pending_input.input_schema_type
+        input_schema_type: blocked.pending_input.input_schema_type,
+        answer_applied: true
       }
     });
-    return this.resumeBlockedIssue(params.issue_identifier);
+    return this.resumeBlockedIssue(params.issue_identifier, resumeContext);
+  }
+
+  private buildOperatorInputResumeContext(
+    blocked: BlockedEntry,
+    answer: { question_id?: string; option_label?: string; text?: string }
+  ): string {
+    const question =
+      blocked.pending_input?.questions.find((entry) => entry.id === answer.question_id) ?? blocked.pending_input?.questions[0] ?? null;
+    const promptText = question?.prompt ?? blocked.pending_input?.prompt_text ?? 'Operator input requested';
+    const normalizedAnswer = answer.option_label ?? answer.text?.trim() ?? '';
+    const requestId = blocked.pending_input?.request_id ?? 'unknown';
+    return [
+      'Operator provided input for a previously blocked request. Apply this answer and continue execution.',
+      `Request ID: ${requestId}`,
+      `Question: ${promptText}`,
+      `Answer: ${normalizedAnswer}`
+    ].join('\n');
   }
 
   getPhaseMarkerSettings(): PhaseMarkerSettings {

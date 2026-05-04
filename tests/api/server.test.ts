@@ -606,6 +606,40 @@ describe('LocalApiServer', () => {
     expect(refreshGetPayload.error.code).toBe('method_not_allowed');
   });
 
+  it('maps blocked input request mismatch to 409 conflict envelope', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: false as const,
+          code: 'request_mismatch',
+          message: 'Input request_id does not match current blocked request'
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request_id: 'req-1',
+        answer: { text: 'continue' }
+      })
+    });
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(409);
+    expect(payload.error.code).toBe('request_mismatch');
+  });
+
   it('accepts refresh requests and coalesces bursts', async () => {
     const tick = vi.fn(async () => undefined);
 

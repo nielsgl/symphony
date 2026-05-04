@@ -18,6 +18,7 @@ export interface LocalWorkerRunInput {
   codexRunner: CodexRunner;
   config: EffectiveConfig;
   renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
+  resumeContext?: string | null;
   issueStateFetcher: (issue_ids: string[]) => Promise<Issue[]>;
   onCodexEvent?: (event: CodexRunnerEvent) => void;
 }
@@ -56,13 +57,14 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
     const maxTurns = Math.max(1, input.config.agent.max_turns);
 
     for (let turnNumber = 1; turnNumber <= maxTurns; turnNumber += 1) {
-      const prompt =
+      const basePrompt =
         turnNumber === 1
           ? await input.renderPrompt({
               issue: currentIssue,
               attempt: input.attempt
             })
           : DEFAULT_CONTINUATION_PROMPT;
+      const prompt = turnNumber === 1 && input.resumeContext ? `${input.resumeContext}\n\n${basePrompt}` : basePrompt;
 
       const turnResult = await input.codexRunner.startSessionAndRunTurn({
         command: input.config.codex.command,

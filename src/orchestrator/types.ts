@@ -226,7 +226,12 @@ export type SpawnWorkerResult = SpawnWorkerResultSuccess | SpawnWorkerResultFail
 export interface OrchestratorPorts {
   tracker: TrackerAdapter;
   dispatchPreflight: () => DispatchPreflightResult;
-  spawnWorker: (params: { issue: Issue; attempt: number | null; worker_host?: string | null }) => Promise<SpawnWorkerResult>;
+  spawnWorker: (params: {
+    issue: Issue;
+    attempt: number | null;
+    worker_host?: string | null;
+    resume_context?: string | null;
+  }) => Promise<SpawnWorkerResult>;
   terminateWorker: (params: {
     issue_id: string;
     worker_handle: unknown;

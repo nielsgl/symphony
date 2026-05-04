@@ -724,7 +724,7 @@ export class LocalApiServer {
                 answer: parsed.answer
               });
               if (!result.ok) {
-                const status = result.code === 'issue_not_blocked' ? 404 : result.code === 'request_id_mismatch' ? 409 : 422;
+                const status = result.code === 'issue_not_blocked' ? 404 : result.code === 'request_mismatch' ? 409 : 422;
                 throw new LocalApiError(result.code, result.message, status);
               }
 

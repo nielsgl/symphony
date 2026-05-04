@@ -46,7 +46,7 @@ interface Harness {
   now: { value: number };
   scheduled: Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>;
   terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }>;
-  spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null }>;
+  spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null; resume_context?: string | null }>;
 }
 
 function createHarness(options: {
@@ -59,7 +59,7 @@ function createHarness(options: {
   const now = { value: 1_000_000 };
   const scheduled = new Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>();
   const terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }> = [];
-  const spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null }> = [];
+  const spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null; resume_context?: string | null }> = [];
 
   const config: OrchestratorConfig = {
     poll_interval_ms: 30_000,
@@ -74,8 +74,8 @@ function createHarness(options: {
 
   const spawnWorker: OrchestratorPorts['spawnWorker'] =
     options.spawnWorker ??
-    (async ({ issue, attempt, worker_host }) => {
-      spawned.push({ issue_id: issue.id, attempt, worker_host });
+    (async ({ issue, attempt, worker_host, resume_context }) => {
+      spawned.push({ issue_id: issue.id, attempt, worker_host, resume_context });
       return {
         ok: true,
         worker_handle: { issue_id: issue.id },
@@ -208,8 +208,8 @@ describe('OrchestratorCore', () => {
     await harness.orchestrator.tick('interval');
 
     expect(harness.spawned).toEqual([
-      { issue_id: 'i-host-1', attempt: null, worker_host: 'build-1' },
-      { issue_id: 'i-host-2', attempt: null, worker_host: 'build-2' }
+      { issue_id: 'i-host-1', attempt: null, worker_host: 'build-1', resume_context: null },
+      { issue_id: 'i-host-2', attempt: null, worker_host: 'build-2', resume_context: null }
     ]);
   });
 
@@ -230,7 +230,7 @@ describe('OrchestratorCore', () => {
     const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-capacity-2');
     expect(retryEntry?.error).toBe('no available worker host slots');
     expect(retryEntry?.stop_reason_code).toBe('slots_exhausted');
-    expect(harness.spawned).toEqual([{ issue_id: 'i-capacity-1', attempt: null, worker_host: 'build-1' }]);
+    expect(harness.spawned).toEqual([{ issue_id: 'i-capacity-1', attempt: null, worker_host: 'build-1', resume_context: null }]);
   });
 
   it('schedules continuation retry with attempt=1 and 1000ms delay on normal exit', async () => {
@@ -315,6 +315,33 @@ describe('OrchestratorCore', () => {
     expect(resumed).toEqual({ ok: true, issue_id: 'i-resume' });
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-resume')).toBe(false);
     expect(harness.spawned.map((entry) => entry.issue_id)).toContain('i-resume');
+  });
+
+  it('submits blocked operator input and injects answer into resumed dispatch context', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-submit', identifier: 'ABC-SUBMIT' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-submit',
+      'abnormal',
+      'turn_input_required:{"detail":"operator input required","request_id":"req-123","prompt_text":"Choose deployment action","questions":[{"id":"q1","prompt":"Deploy now?","options":[{"label":"Yes"},{"label":"No"}]}]}'
+    );
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-submit', identifier: 'ABC-SUBMIT', state: 'In Progress' })
+    ]);
+
+    const result = await harness.orchestrator.submitBlockedIssueInput({
+      issue_identifier: 'ABC-SUBMIT',
+      request_id: 'req-123',
+      answer: { question_id: 'q1', option_label: 'Yes' }
+    });
+
+    expect(result).toEqual({ ok: true, issue_id: 'i-submit' });
+    const resumedSpawn = harness.spawned.find((entry) => entry.issue_id === 'i-submit' && entry.resume_context);
+    expect(resumedSpawn?.resume_context).toContain('Request ID: req-123');
+    expect(resumedSpawn?.resume_context).toContain('Question: Deploy now?');
+    expect(resumedSpawn?.resume_context).toContain('Answer: Yes');
   });
 
   it('clears blocked issue state when tracker reports non-active or terminal state', async () => {
