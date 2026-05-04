@@ -1626,7 +1626,7 @@ export class OrchestratorCore {
           request_id: params.request_id
         }
       });
-      const resumed = await this.resumeBlockedIssue(params.issue_identifier, null, {
+      const resumed = await this.resumeBlockedIssue(params.issue_identifier, nativeAttempt.resume_context ?? null, {
         request_id: params.request_id,
         resume_mode: 'native',
         resume_reason_code: 'native_applied'
@@ -1716,6 +1716,7 @@ export class OrchestratorCore {
     applied: boolean;
     code: 'native_applied' | 'session_expired' | 'request_not_found' | 'transport_unsupported' | 'native_submit_failed';
     message?: string;
+    resume_context?: string;
   }> {
     if (!this.ports.submitBlockedIssueInputNative) {
       return { applied: false, code: 'transport_unsupported' };

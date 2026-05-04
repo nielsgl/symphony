@@ -275,6 +275,7 @@ export interface OrchestratorPorts {
       | 'transport_unsupported'
       | 'native_submit_failed';
     message?: string;
+    resume_context?: string;
   }>;
   notifyObservers?: () => void;
 }
