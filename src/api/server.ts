@@ -475,7 +475,9 @@ export class LocalApiServer {
                     'params.info.total_token_usage',
                     'params.info.totalTokenUsage',
                     'params.total_token_usage',
-                    'params.totalTokenUsage'
+                    'params.totalTokenUsage',
+                    'params.usage.total_token_usage',
+                    'params.usage.totalTokenUsage'
                   ],
                   excludes_generic_usage_for_totals: true,
                   excludes_last_usage_for_totals: true,

@@ -941,7 +941,9 @@ describe('LocalApiServer', () => {
       'params.info.total_token_usage',
       'params.info.totalTokenUsage',
       'params.total_token_usage',
-      'params.totalTokenUsage'
+      'params.totalTokenUsage',
+      'params.usage.total_token_usage',
+      'params.usage.totalTokenUsage'
     ]);
     expect(diagnosticsPayload.token_accounting.observed_dimensions.cached_input_tokens).toBe(false);
     expect((diagnosticsPayload as Record<string, unknown>).runtime_resolution).toMatchObject({
