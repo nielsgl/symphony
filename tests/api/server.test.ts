@@ -640,6 +640,114 @@ describe('LocalApiServer', () => {
     expect(payload.error.code).toBe('request_mismatch');
   });
 
+  it('accepts blocked input submit requests and resumes issue', async () => {
+    const submitBlockedIssueInput = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        submitBlockedIssueInput
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request_id: 'req-42',
+        answer: { question_id: 'q-1', option_label: 'Continue' }
+      })
+    });
+    const payload = (await response.json()) as { resumed: boolean; issue_identifier: string; requested_at: string };
+
+    expect(response.status).toBe(202);
+    expect(payload.resumed).toBe(true);
+    expect(payload.issue_identifier).toBe('ABC-3');
+    expect(typeof payload.requested_at).toBe('string');
+    expect(submitBlockedIssueInput).toHaveBeenCalledWith({
+      issueIdentifier: 'ABC-3',
+      request_id: 'req-42',
+      answer: { question_id: 'q-1', option_label: 'Continue' }
+    });
+  });
+
+  it('returns 400 envelope when blocked input submit payload is invalid', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        submitBlockedIssueInput: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const invalidJsonResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{'
+    });
+    const invalidJsonPayload = (await invalidJsonResponse.json()) as { error: { code: string } };
+    expect(invalidJsonResponse.status).toBe(400);
+    expect(invalidJsonPayload.error.code).toBe('invalid_input_submit');
+
+    const missingFieldsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ request_id: 'req-42' })
+    });
+    const missingFieldsPayload = (await missingFieldsResponse.json()) as { error: { code: string } };
+    expect(missingFieldsResponse.status).toBe(400);
+    expect(missingFieldsPayload.error.code).toBe('invalid_input_submit');
+  });
+
+  it('maps blocked input submit validation failures to 422 envelope', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: false as const,
+          code: 'invalid_answer',
+          message: 'Answer payload is invalid for pending request schema'
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request_id: 'req-42',
+        answer: { text: '' }
+      })
+    });
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(422);
+    expect(payload.error.code).toBe('invalid_answer');
+  });
+
   it('accepts refresh requests and coalesces bursts', async () => {
     const tick = vi.fn(async () => undefined);
 
