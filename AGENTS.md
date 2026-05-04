@@ -85,3 +85,10 @@ Use these skills when applicable:
 - `linear`: Linear issue/project triage and updates.
 - `playwright`: CLI browser automation and screenshots.
 - `playwright-interactive`: persistent `js_repl` Playwright/Electron debugging.
+- `ui-capture-evidence`: deterministic screenshot/screencast capture, quality gates, and publish verification.
+
+## UI Artifact Rules
+- For screenshot/screencast tasks, use `.codex/skills/ui-capture-evidence/SKILL.md`.
+- Store final artifacts under `output/playwright/` using run-scoped names (`<issue>-<timestamp>-<kind>.<ext>`).
+- Do not publish artifacts selected from ambiguous temporary paths (for example generic `/tmp/*screenshot*.png`).
+- Enforce minimum quality checks before publish (screenshots: width >= 1920).

@@ -1,0 +1,5 @@
+version: 1
+interface:
+  display_name: UI Capture Evidence
+  short_description: Capture, validate, and publish high-quality UI screenshots and screencasts with deterministic evidence checks.
+  default_prompt: Use this skill to capture and publish UI screenshots or screencasts with strict quality gates, deterministic artifact selection, upload integrity checks, and verified Linear posting evidence.

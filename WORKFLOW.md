@@ -118,6 +118,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `push`: keep remote branch current and publish updates.
 - `pull`: keep branch updated with latest `origin/main` before handoff.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
+- `ui-capture-evidence`: deterministic screenshot/screencast capture, quality gates, and Linear publish verification.
 
 ## Status map
 
@@ -232,6 +233,8 @@ Use this only when completion is blocked by missing required tools or missing au
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
     - For UI-affecting diffs in strict UI evidence mode, env/marker-only evidence is insufficient: capture at least one screenshot (`.png`) or short video (`.mp4`/`.webm`), persist under `output/playwright/`, and publish `output/playwright/ui-evidence.json` with artifact list, changed UI paths, capture time, summary, and a publish reference link/token for reviewer access.
+    - For screenshot/screencast issue tasks, use `.codex/skills/ui-capture-evidence/SKILL.md`; final published artifacts must come from run-scoped files under `output/playwright/` only.
+    - Reject and retry on failed quality gates (screenshot width < 1920, missing media metadata, or publish verification mismatch).
     - After publishing evidence, unstage/remove `output/playwright/*` before commit. `check:meta` deterministically fails when evidence artifacts are staged/committed unless `SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED=1` is intentionally set.
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
@@ -250,6 +253,16 @@ Use this only when completion is blocked by missing required tools or missing au
       - pushed branch name,
       - PR URL,
       - confirmation that PR checks are green.
+    - For screenshot/screencast tasks, add a `### Artifact Evidence` section containing:
+      - `artifact_type`,
+      - `publish_mode`,
+      - `local_path`,
+      - `mime_type`,
+      - `file_size_bytes`,
+      - `width` and `height` (or video resolution plus duration),
+      - `upload_ref`,
+      - `publish_ref`,
+      - `verification_status`.
 11. Before moving to `Human Review`, poll PR feedback and checks:
     - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
     - Run the full PR feedback sweep protocol.
