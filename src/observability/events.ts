@@ -44,6 +44,8 @@ export const CANONICAL_EVENT = {
     workerStalled: 'orchestration.worker.stalled',
     workerHostSlotsExhausted: 'orchestration.worker.host_slots_exhausted',
     blockedInputScheduled: 'orchestration.blocked_input.scheduled',
+    blockedInputSubmitRequested: 'orchestration.blocked_input.submit.requested',
+    blockedInputSubmitRejected: 'orchestration.blocked_input.submit.rejected',
     blockedInputResumed: 'orchestration.blocked_input.resumed',
     blockedInputCleared: 'orchestration.blocked_input.cleared',
     phaseMarkerEmitted: 'orchestration.phase_marker.emitted',

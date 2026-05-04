@@ -204,6 +204,23 @@ export interface ApiStateResponse {
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
+    pending_input: {
+      request_id: string | null;
+      request_method: string | null;
+      prompt_text: string | null;
+      questions: Array<{
+        id: string;
+        prompt?: string;
+        options?: Array<{ label: string; value?: string }>;
+      }>;
+      input_schema_type: 'options' | 'text' | 'unknown';
+      input_required_at: string;
+    } | null;
+    session_console: Array<{
+      at: string;
+      event: string;
+      message: string | null;
+    }>;
     requires_manual_resume: true;
   }>;
   codex_totals: {
@@ -362,6 +379,23 @@ export interface ApiIssueResponse {
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
+    pending_input: {
+      request_id: string | null;
+      request_method: string | null;
+      prompt_text: string | null;
+      questions: Array<{
+        id: string;
+        prompt?: string;
+        options?: Array<{ label: string; value?: string }>;
+      }>;
+      input_schema_type: 'options' | 'text' | 'unknown';
+      input_required_at: string;
+    } | null;
+    session_console: Array<{
+      at: string;
+      event: string;
+      message: string | null;
+    }>;
     requires_manual_resume: true;
   } | null;
   phase_timeline: Array<{
@@ -422,6 +456,11 @@ export interface LocalApiServerOptions {
     resumeBlockedIssue: (issueIdentifier: string) => Promise<
       { ok: true; issue_id: string } | { ok: false; code: string; message: string }
     >;
+    submitBlockedIssueInput: (params: {
+      issueIdentifier: string;
+      request_id: string;
+      answer: { question_id?: string; option_label?: string; text?: string };
+    }) => Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }>;
   };
   dashboardConfig?: {
     dashboard_enabled: boolean;

@@ -126,6 +126,23 @@ export interface BlockedEntry {
   last_phase_detail?: string | null;
   blocked_at_ms: number;
   requires_manual_resume: true;
+  pending_input?: {
+    request_id: string | null;
+    request_method: string | null;
+    prompt_text: string | null;
+    questions: Array<{
+      id: string;
+      prompt?: string;
+      options?: Array<{ label: string; value?: string }>;
+    }>;
+    input_schema_type: 'options' | 'text' | 'unknown';
+    input_required_at_ms: number;
+  } | null;
+  session_console?: Array<{
+    at_ms: number;
+    event: string;
+    message: string | null;
+  }>;
 }
 
 export interface OrchestratorState {

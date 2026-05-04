@@ -2,6 +2,7 @@ import type { Issue } from '../tracker';
 import type { WorkspaceManager } from '../workspace';
 import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
+import type { CodexInputRequestPayload } from '../codex/types';
 import type { EffectiveConfig } from '../workflow';
 import { CANONICAL_EVENT } from '../observability/events';
 import path from 'node:path';
@@ -25,6 +26,7 @@ export interface LocalWorkerRunResult {
   reason: 'normal' | 'abnormal';
   session_id: string | null;
   error?: string;
+  input_required_payload?: CodexInputRequestPayload;
 }
 
 export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise<LocalWorkerRunResult> {
@@ -83,12 +85,20 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       if (turnResult.status !== 'completed') {
         const error =
           turnResult.error_code === 'turn_input_required'
-            ? `${turnResult.error_code}: ${turnResult.error_detail ?? 'input_required_unanswerable'}`
+            ? `${turnResult.error_code}: ${
+                turnResult.input_required_payload
+                  ? JSON.stringify({
+                      detail: turnResult.error_detail ?? 'input_required_unanswerable',
+                      ...turnResult.input_required_payload
+                    })
+                  : (turnResult.error_detail ?? 'input_required_unanswerable')
+              }`
             : (turnResult.error_code ?? turnResult.last_event);
         return {
           reason: 'abnormal',
           session_id: turnResult.session_id,
-          error
+          error,
+          input_required_payload: turnResult.input_required_payload
         };
       }
       lastSessionId = turnResult.session_id;
