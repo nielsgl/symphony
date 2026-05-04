@@ -774,6 +774,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           }
         }
       },
+      submitBlockedIssueInputNative: async () => ({ applied: false, code: 'transport_unsupported' }),
       notifyObservers: () => {
         apiServer?.notifyStateChanged('orchestrator_observer');
       }

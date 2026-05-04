@@ -1263,7 +1263,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
           ' mode (' +
           (payload.resume_reason_code || 'n/a') +
           ')',
-        payload.resume_mode === 'fallback'
+        false
       );
       await loadStateViaPoll();
       if (state.selectedIssue === entry.issue_identifier) {

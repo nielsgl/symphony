@@ -1710,10 +1710,25 @@ export class OrchestratorCore {
   }
 
   private async submitBlockedIssueInputNative(
-    _blocked: BlockedEntry,
-    _params: { issue_identifier: string; request_id: string; answer: { question_id?: string; option_label?: string; text?: string } }
-  ): Promise<{ applied: boolean; code: string }> {
-    return { applied: false, code: 'transport_unsupported' };
+    blocked: BlockedEntry,
+    params: { issue_identifier: string; request_id: string; answer: { question_id?: string; option_label?: string; text?: string } }
+  ): Promise<{
+    applied: boolean;
+    code: 'native_applied' | 'session_expired' | 'request_not_found' | 'transport_unsupported' | 'native_submit_failed';
+    message?: string;
+  }> {
+    if (!this.ports.submitBlockedIssueInputNative) {
+      return { applied: false, code: 'transport_unsupported' };
+    }
+    return this.ports.submitBlockedIssueInputNative({
+      issue_id: blocked.issue_id,
+      issue_identifier: params.issue_identifier,
+      request_id: params.request_id,
+      request_method: blocked.pending_input?.request_method ?? null,
+      previous_thread_id: blocked.previous_thread_id ?? null,
+      previous_session_id: blocked.previous_session_id ?? null,
+      answer: params.answer
+    });
   }
 
   private buildOperatorInputResumeContext(

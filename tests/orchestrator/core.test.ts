@@ -52,6 +52,7 @@ interface Harness {
 function createHarness(options: {
   configOverrides?: Partial<OrchestratorConfig>;
   spawnWorker?: OrchestratorPorts['spawnWorker'];
+  submitBlockedIssueInputNative?: OrchestratorPorts['submitBlockedIssueInputNative'];
   logger?: StructuredLogger;
   persistence?: OrchestratorPersistencePort;
 } = {}): Harness {
@@ -105,6 +106,7 @@ function createHarness(options: {
           }
         }
       },
+      submitBlockedIssueInputNative: options.submitBlockedIssueInputNative,
       notifyObservers: () => undefined
     },
     nowMs: () => now.value,
@@ -348,6 +350,39 @@ describe('OrchestratorCore', () => {
     expect(resumedSpawn?.resume_context).toContain('Request ID: req-123');
     expect(resumedSpawn?.resume_context).toContain('Question: Deploy now?');
     expect(resumedSpawn?.resume_context).toContain('Answer: Yes');
+  });
+
+  it('submits blocked operator input through native transport when available', async () => {
+    const harness = createHarness({
+      submitBlockedIssueInputNative: async () => ({ applied: true, code: 'native_applied' })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-native', identifier: 'ABC-NATIVE' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-native',
+      'abnormal',
+      'turn_input_required:{"detail":"operator input required","request_id":"req-native","prompt_text":"Continue?","questions":[{"id":"q1","prompt":"Continue?","options":[{"label":"Yes"},{"label":"No"}]}]}'
+    );
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-native', identifier: 'ABC-NATIVE', state: 'In Progress' })
+    ]);
+
+    const result = await harness.orchestrator.submitBlockedIssueInput({
+      issue_identifier: 'ABC-NATIVE',
+      request_id: 'req-native',
+      answer: { question_id: 'q1', option_label: 'Yes' }
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      issue_id: 'i-native',
+      request_id: 'req-native',
+      resume_mode: 'native',
+      resume_reason_code: 'native_applied'
+    });
+    const resumedSpawn = harness.spawned.find((entry) => entry.issue_id === 'i-native' && entry.attempt === 2);
+    expect(resumedSpawn?.resume_context ?? null).toBeNull();
   });
 
   it('clears blocked issue state when tracker reports non-active or terminal state', async () => {

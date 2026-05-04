@@ -258,6 +258,24 @@ export interface OrchestratorPorts {
     callback: () => Promise<void>;
   }) => unknown;
   cancelRetryTimer: (timer_handle: unknown) => void;
+  submitBlockedIssueInputNative?: (params: {
+    issue_id: string;
+    issue_identifier: string;
+    request_id: string;
+    request_method: string | null;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
+    answer: { question_id?: string; option_label?: string; text?: string };
+  }) => Promise<{
+    applied: boolean;
+    code:
+      | 'native_applied'
+      | 'session_expired'
+      | 'request_not_found'
+      | 'transport_unsupported'
+      | 'native_submit_failed';
+    message?: string;
+  }>;
   notifyObservers?: () => void;
 }
 
