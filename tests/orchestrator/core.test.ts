@@ -337,7 +337,13 @@ describe('OrchestratorCore', () => {
       answer: { question_id: 'q1', option_label: 'Yes' }
     });
 
-    expect(result).toEqual({ ok: true, issue_id: 'i-submit' });
+    expect(result).toMatchObject({
+      ok: true,
+      issue_id: 'i-submit',
+      request_id: 'req-123',
+      resume_mode: 'fallback',
+      resume_reason_code: 'transport_unsupported'
+    });
     const resumedSpawn = harness.spawned.find((entry) => entry.issue_id === 'i-submit' && entry.resume_context);
     expect(resumedSpawn?.resume_context).toContain('Request ID: req-123');
     expect(resumedSpawn?.resume_context).toContain('Question: Deploy now?');

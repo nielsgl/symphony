@@ -806,6 +806,24 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         decisionLine.textContent = inputDecision;
         stopReasonCell.append(decisionLine);
       }
+      if (entry.last_input_submit) {
+        const submitModeLine = document.createElement('div');
+        submitModeLine.className = 'muted';
+        submitModeLine.textContent =
+          'Last submit: ' +
+          entry.last_input_submit.resume_mode +
+          ' (' +
+          entry.last_input_submit.resume_reason_code +
+          ') @ ' +
+          formatDate(entry.last_input_submit.submitted_at);
+        stopReasonCell.append(submitModeLine);
+        if (entry.last_input_submit.resume_mode === 'fallback') {
+          const fallbackBanner = document.createElement('div');
+          fallbackBanner.className = 'status-pill pending';
+          fallbackBanner.textContent = 'Native continuation unavailable; resumed via prompt context fallback.';
+          stopReasonCell.append(fallbackBanner);
+        }
+      }
       if (entry.pending_input) {
         const pending = entry.pending_input;
         const requestLine = document.createElement('div');
@@ -1237,7 +1255,16 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
           answer: answer
         })
       });
-      setRefreshStatus('Input submitted and resume requested for ' + payload.issue_identifier, false);
+      setRefreshStatus(
+        'Input submitted for ' +
+          payload.issue_identifier +
+          ' using ' +
+          (payload.resume_mode || 'unknown') +
+          ' mode (' +
+          (payload.resume_reason_code || 'n/a') +
+          ')',
+        payload.resume_mode === 'fallback'
+      );
       await loadStateViaPoll();
       if (state.selectedIssue === entry.issue_identifier) {
         await loadIssue(entry.issue_identifier);

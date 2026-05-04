@@ -138,6 +138,20 @@ export interface BlockedEntry {
     input_schema_type: 'options' | 'text' | 'unknown';
     input_required_at_ms: number;
   } | null;
+  last_input_submit?: {
+    submitted_at_ms: number;
+    request_id: string;
+    resume_mode: 'native' | 'fallback';
+    resume_reason_code: string;
+  } | null;
+  resume_history?: Array<{
+    submitted_at_ms: number;
+    request_id: string;
+    resume_mode: 'native' | 'fallback';
+    resume_reason_code: string;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
+  }>;
   session_console?: Array<{
     at_ms: number;
     event: string;

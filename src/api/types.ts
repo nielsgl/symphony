@@ -216,6 +216,20 @@ export interface ApiStateResponse {
       input_schema_type: 'options' | 'text' | 'unknown';
       input_required_at: string;
     } | null;
+    last_input_submit: {
+      submitted_at: string;
+      request_id: string;
+      resume_mode: 'native' | 'fallback';
+      resume_reason_code: string;
+    } | null;
+    resume_history: Array<{
+      submitted_at: string;
+      request_id: string;
+      resume_mode: 'native' | 'fallback';
+      resume_reason_code: string;
+      previous_thread_id: string | null;
+      previous_session_id: string | null;
+    }>;
     session_console: Array<{
       at: string;
       event: string;
@@ -391,6 +405,20 @@ export interface ApiIssueResponse {
       input_schema_type: 'options' | 'text' | 'unknown';
       input_required_at: string;
     } | null;
+    last_input_submit: {
+      submitted_at: string;
+      request_id: string;
+      resume_mode: 'native' | 'fallback';
+      resume_reason_code: string;
+    } | null;
+    resume_history: Array<{
+      submitted_at: string;
+      request_id: string;
+      resume_mode: 'native' | 'fallback';
+      resume_reason_code: string;
+      previous_thread_id: string | null;
+      previous_session_id: string | null;
+    }>;
     session_console: Array<{
       at: string;
       event: string;
@@ -460,7 +488,18 @@ export interface LocalApiServerOptions {
       issueIdentifier: string;
       request_id: string;
       answer: { question_id?: string; option_label?: string; text?: string };
-    }) => Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }>;
+    }) => Promise<
+      | {
+          ok: true;
+          issue_id: string;
+          request_id: string;
+          resume_mode: 'native' | 'fallback';
+          resume_reason_code: string;
+          requested_at: string;
+          request_lineage: { previous_thread_id: string | null; previous_session_id: string | null };
+        }
+      | { ok: false; code: string; message: string }
+    >;
   };
   dashboardConfig?: {
     dashboard_enabled: boolean;

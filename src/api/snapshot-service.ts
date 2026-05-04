@@ -126,6 +126,22 @@ export class SnapshotService {
             input_required_at: asIsoDate(entry.pending_input.input_required_at_ms)
           }
         : null,
+      last_input_submit: entry.last_input_submit
+        ? {
+            submitted_at: asIsoDate(entry.last_input_submit.submitted_at_ms),
+            request_id: entry.last_input_submit.request_id,
+            resume_mode: entry.last_input_submit.resume_mode,
+            resume_reason_code: entry.last_input_submit.resume_reason_code
+          }
+        : null,
+      resume_history: (entry.resume_history ?? []).map((history) => ({
+        submitted_at: asIsoDate(history.submitted_at_ms),
+        request_id: history.request_id,
+        resume_mode: history.resume_mode,
+        resume_reason_code: history.resume_reason_code,
+        previous_thread_id: history.previous_thread_id ?? null,
+        previous_session_id: history.previous_session_id ?? null
+      })),
       session_console: (entry.session_console ?? []).map((event) => ({
         at: asIsoDate(event.at_ms),
         event: event.event,
@@ -313,6 +329,22 @@ export class SnapshotService {
                     input_required_at: asIsoDate(blockedEntry.pending_input.input_required_at_ms)
                   }
                 : null,
+              last_input_submit: blockedEntry.last_input_submit
+                ? {
+                    submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),
+                    request_id: blockedEntry.last_input_submit.request_id,
+                    resume_mode: blockedEntry.last_input_submit.resume_mode,
+                    resume_reason_code: blockedEntry.last_input_submit.resume_reason_code
+                  }
+                : null,
+              resume_history: (blockedEntry.resume_history ?? []).map((history) => ({
+                submitted_at: asIsoDate(history.submitted_at_ms),
+                request_id: history.request_id,
+                resume_mode: history.resume_mode,
+                resume_reason_code: history.resume_reason_code,
+                previous_thread_id: history.previous_thread_id ?? null,
+                previous_session_id: history.previous_session_id ?? null
+              })),
               session_console: (blockedEntry.session_console ?? []).map((event) => ({
                 at: asIsoDate(event.at_ms),
                 event: event.event,
@@ -411,6 +443,22 @@ export class SnapshotService {
                     input_required_at: asIsoDate(blockedEntry.pending_input.input_required_at_ms)
                   }
                 : null,
+              last_input_submit: blockedEntry.last_input_submit
+                ? {
+                    submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),
+                    request_id: blockedEntry.last_input_submit.request_id,
+                    resume_mode: blockedEntry.last_input_submit.resume_mode,
+                    resume_reason_code: blockedEntry.last_input_submit.resume_reason_code
+                  }
+                : null,
+              resume_history: (blockedEntry.resume_history ?? []).map((history) => ({
+                submitted_at: asIsoDate(history.submitted_at_ms),
+                request_id: history.request_id,
+                resume_mode: history.resume_mode,
+                resume_reason_code: history.resume_reason_code,
+                previous_thread_id: history.previous_thread_id ?? null,
+                previous_session_id: history.previous_session_id ?? null
+              })),
               session_console: (blockedEntry.session_console ?? []).map((event) => ({
                 at: asIsoDate(event.at_ms),
                 event: event.event,
@@ -487,6 +535,22 @@ export class SnapshotService {
               input_required_at: asIsoDate(blockedEntry.pending_input.input_required_at_ms)
             }
           : null,
+        last_input_submit: blockedEntry.last_input_submit
+          ? {
+              submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),
+              request_id: blockedEntry.last_input_submit.request_id,
+              resume_mode: blockedEntry.last_input_submit.resume_mode,
+              resume_reason_code: blockedEntry.last_input_submit.resume_reason_code
+            }
+          : null,
+        resume_history: (blockedEntry.resume_history ?? []).map((history) => ({
+          submitted_at: asIsoDate(history.submitted_at_ms),
+          request_id: history.request_id,
+          resume_mode: history.resume_mode,
+          resume_reason_code: history.resume_reason_code,
+          previous_thread_id: history.previous_thread_id ?? null,
+          previous_session_id: history.previous_session_id ?? null
+        })),
         session_console: (blockedEntry.session_console ?? []).map((event) => ({
           at: asIsoDate(event.at_ms),
           event: event.event,

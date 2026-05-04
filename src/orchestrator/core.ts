@@ -1389,6 +1389,8 @@ export class OrchestratorCore {
             input_required_at_ms: this.nowMs()
           }
         : null,
+      last_input_submit: null,
+      resume_history: [],
       session_console: (params.session_console ?? []).slice(-40)
     });
     this.state.claimed.add(params.issue_id);
@@ -1430,7 +1432,12 @@ export class OrchestratorCore {
 
   async resumeBlockedIssue(
     issue_identifier: string,
-    resume_context: string | null = null
+    resume_context: string | null = null,
+    resume_metadata?: {
+      request_id: string;
+      resume_mode: 'native' | 'fallback';
+      resume_reason_code: string;
+    }
   ): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
     const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
     if (!blocked) {
@@ -1527,6 +1534,25 @@ export class OrchestratorCore {
       });
     }
 
+    if (resume_metadata) {
+      const submittedAtMs = this.nowMs();
+      const record = {
+        submitted_at_ms: submittedAtMs,
+        request_id: resume_metadata.request_id,
+        resume_mode: resume_metadata.resume_mode,
+        resume_reason_code: resume_metadata.resume_reason_code,
+        previous_thread_id: blocked.previous_thread_id ?? null,
+        previous_session_id: blocked.previous_session_id ?? null
+      };
+      blocked.last_input_submit = {
+        submitted_at_ms: submittedAtMs,
+        request_id: resume_metadata.request_id,
+        resume_mode: resume_metadata.resume_mode,
+        resume_reason_code: resume_metadata.resume_reason_code
+      };
+      blocked.resume_history = [...(blocked.resume_history ?? []), record].slice(-20);
+    }
+
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.blockedInputResumed,
@@ -1534,6 +1560,9 @@ export class OrchestratorCore {
       context: {
         issue_id: blocked.issue_id,
         issue_identifier: blocked.issue_identifier,
+        request_id: resume_metadata?.request_id ?? blocked.pending_input?.request_id ?? null,
+        resume_mode: resume_metadata?.resume_mode ?? null,
+        resume_reason_code: resume_metadata?.resume_reason_code ?? null,
         previous_thread_id: blocked.previous_thread_id,
         previous_session_id: blocked.previous_session_id
       }
@@ -1550,7 +1579,18 @@ export class OrchestratorCore {
     issue_identifier: string;
     request_id: string;
     answer: { question_id?: string; option_label?: string; text?: string };
-  }): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
+  }): Promise<
+    | {
+        ok: true;
+        issue_id: string;
+        request_id: string;
+        resume_mode: 'native' | 'fallback';
+        resume_reason_code: string;
+        requested_at: string;
+        request_lineage: { previous_thread_id: string | null; previous_session_id: string | null };
+      }
+    | { ok: false; code: string; message: string }
+  > {
     const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === params.issue_identifier);
     if (!blocked) {
       return { ok: false, code: 'issue_not_blocked', message: `Issue ${params.issue_identifier} is not blocked` };
@@ -1574,7 +1614,54 @@ export class OrchestratorCore {
       }
     }
 
+    const nativeAttempt = await this.submitBlockedIssueInputNative(blocked, params);
+    if (nativeAttempt.applied) {
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.orchestration.blockedInputSubmitNativeApplied,
+        message: 'native blocked input submission applied',
+        context: {
+          issue_id: blocked.issue_id,
+          issue_identifier: blocked.issue_identifier,
+          request_id: params.request_id
+        }
+      });
+      const resumed = await this.resumeBlockedIssue(params.issue_identifier, null, {
+        request_id: params.request_id,
+        resume_mode: 'native',
+        resume_reason_code: 'native_applied'
+      });
+      if (!resumed.ok) {
+        return resumed;
+      }
+      return {
+        ok: true,
+        issue_id: resumed.issue_id,
+        request_id: params.request_id,
+        resume_mode: 'native',
+        resume_reason_code: 'native_applied',
+        requested_at: new Date().toISOString(),
+        request_lineage: {
+          previous_thread_id: blocked.previous_thread_id ?? null,
+          previous_session_id: blocked.previous_session_id ?? null
+        }
+      };
+    }
+
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.blockedInputSubmitNativeFailed,
+      message: 'native blocked input submission unavailable',
+      context: {
+        issue_id: blocked.issue_id,
+        issue_identifier: blocked.issue_identifier,
+        request_id: params.request_id,
+        resume_reason_code: nativeAttempt.code
+      }
+    });
+
     const resumeContext = this.buildOperatorInputResumeContext(blocked, params.answer);
+    const fallbackReasonCode = nativeAttempt.code;
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.blockedInputSubmitRequested,
@@ -1584,10 +1671,49 @@ export class OrchestratorCore {
         issue_identifier: blocked.issue_identifier,
         request_id: params.request_id,
         input_schema_type: blocked.pending_input.input_schema_type,
-        answer_applied: true
+        answer_applied: true,
+        resume_mode: 'fallback',
+        resume_reason_code: fallbackReasonCode
       }
     });
-    return this.resumeBlockedIssue(params.issue_identifier, resumeContext);
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.blockedInputSubmitFallbackUsed,
+      message: 'blocked input resumed with fallback context',
+      context: {
+        issue_id: blocked.issue_id,
+        issue_identifier: blocked.issue_identifier,
+        request_id: params.request_id,
+        resume_reason_code: fallbackReasonCode
+      }
+    });
+    const resumed = await this.resumeBlockedIssue(params.issue_identifier, resumeContext, {
+      request_id: params.request_id,
+      resume_mode: 'fallback',
+      resume_reason_code: fallbackReasonCode
+    });
+    if (!resumed.ok) {
+      return resumed;
+    }
+    return {
+      ok: true,
+      issue_id: resumed.issue_id,
+      request_id: params.request_id,
+      resume_mode: 'fallback',
+      resume_reason_code: fallbackReasonCode,
+      requested_at: new Date().toISOString(),
+      request_lineage: {
+        previous_thread_id: blocked.previous_thread_id ?? null,
+        previous_session_id: blocked.previous_session_id ?? null
+      }
+    };
+  }
+
+  private async submitBlockedIssueInputNative(
+    _blocked: BlockedEntry,
+    _params: { issue_identifier: string; request_id: string; answer: { question_id?: string; option_label?: string; text?: string } }
+  ): Promise<{ applied: boolean; code: string }> {
+    return { applied: false, code: 'transport_unsupported' };
   }
 
   private buildOperatorInputResumeContext(

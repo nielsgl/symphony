@@ -728,7 +728,15 @@ export class LocalApiServer {
                 throw new LocalApiError(result.code, result.message, status);
               }
 
-              sendJson(response, 202, { resumed: true, issue_identifier: issueIdentifier, requested_at: new Date().toISOString() });
+              sendJson(response, 202, {
+                resumed: true,
+                issue_identifier: issueIdentifier,
+                request_id: result.request_id,
+                resume_mode: result.resume_mode,
+                resume_reason_code: result.resume_reason_code,
+                request_lineage: result.request_lineage,
+                requested_at: result.requested_at
+              });
             }
           }
         ]

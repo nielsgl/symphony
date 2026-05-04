@@ -533,7 +533,15 @@ describe('LocalApiServer', () => {
       },
       issueControlSource: {
         resumeBlockedIssue,
-        submitBlockedIssueInput: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }))
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
       }
     });
 
@@ -641,7 +649,15 @@ describe('LocalApiServer', () => {
   });
 
   it('accepts blocked input submit requests and resumes issue', async () => {
-    const submitBlockedIssueInput = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
+    const submitBlockedIssueInput = vi.fn(async () => ({
+      ok: true as const,
+      issue_id: 'issue-3',
+      request_id: 'req-42',
+      resume_mode: 'fallback' as const,
+      resume_reason_code: 'transport_unsupported',
+      requested_at: '2026-05-04T00:00:00.000Z',
+      request_lineage: { previous_thread_id: 'thread-1', previous_session_id: 'session-1' }
+    }));
     server = new LocalApiServer({
       snapshotSource: {
         getStateSnapshot: () => makeState()
@@ -665,11 +681,22 @@ describe('LocalApiServer', () => {
         answer: { question_id: 'q-1', option_label: 'Continue' }
       })
     });
-    const payload = (await response.json()) as { resumed: boolean; issue_identifier: string; requested_at: string };
+    const payload = (await response.json()) as {
+      resumed: boolean;
+      issue_identifier: string;
+      request_id: string;
+      resume_mode: string;
+      resume_reason_code: string;
+      request_lineage: { previous_thread_id: string | null; previous_session_id: string | null };
+      requested_at: string;
+    };
 
     expect(response.status).toBe(202);
     expect(payload.resumed).toBe(true);
     expect(payload.issue_identifier).toBe('ABC-3');
+    expect(payload.request_id).toBe('req-42');
+    expect(payload.resume_mode).toBe('fallback');
+    expect(payload.resume_reason_code).toBe('transport_unsupported');
     expect(typeof payload.requested_at).toBe('string');
     expect(submitBlockedIssueInput).toHaveBeenCalledWith({
       issueIdentifier: 'ABC-3',
@@ -688,7 +715,15 @@ describe('LocalApiServer', () => {
       },
       issueControlSource: {
         resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
-        submitBlockedIssueInput: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }))
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
       }
     });
 
