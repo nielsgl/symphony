@@ -8,7 +8,9 @@ import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { SnapshotService } from './snapshot-service';
 import type {
+  ApiIssueResponse,
   ApiEventEnvelope,
+  ApiStateResponse,
   ApiStateErrorResponse,
   ApiStateSnapshotResponse,
   LocalApiErrorEnvelope,
@@ -70,6 +72,7 @@ export class LocalApiServer {
   private readonly issueControlSource?: LocalApiServerOptions['issueControlSource'];
   private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
   private readonly logger?: StructuredLogger;
+  private readonly codexStateDbPath: string;
 
   private readonly server: http.Server;
   private readonly eventClients: Map<number, ServerResponse>;
@@ -93,6 +96,8 @@ export class LocalApiServer {
       phase_stale_warn_ms: 45000
     };
     this.logger = options.logger;
+    const codexHome = (process.env.SYMPHONY_CODEX_HOME || `${process.env.HOME || ''}/.codex`).trim();
+    this.codexStateDbPath = `${codexHome.replace(/\/+$/, '')}/state_5.sqlite`;
     this.refreshCoalescer = new RefreshCoalescer({
       refreshSource: options.refreshSource,
       nowMs: options.nowMs
@@ -209,7 +214,9 @@ export class LocalApiServer {
   private buildStateSnapshotResponse(): ApiStateSnapshotResponse {
     try {
       const state = this.snapshotSource.getStateSnapshot();
-      return this.snapshotService.projectState(state);
+      const payload = this.snapshotService.projectState(state);
+      this.enrichLiveTokenFallbackState(payload);
+      return payload;
     } catch (error) {
       const code: ApiStateErrorResponse['error']['code'] =
         error instanceof LocalApiError && error.code === 'snapshot_timeout'
@@ -251,6 +258,81 @@ export class LocalApiServer {
       source,
       state: payload
     });
+  }
+
+  private resolveLiveThreadTokenTotals(threadIds: string[]): Map<string, number> {
+    const result = new Map<string, number>();
+    if (threadIds.length === 0) {
+      return result;
+    }
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const sqlite = require('node:sqlite') as {
+        DatabaseSync: new (path: string, options?: { readonly?: boolean }) => {
+          prepare: (sql: string) => {
+            get: (...params: unknown[]) => { tokens_used?: number } | undefined;
+          };
+          close: () => void;
+        };
+      };
+      const db = new sqlite.DatabaseSync(this.codexStateDbPath, { readonly: true });
+      const statement = db.prepare('SELECT tokens_used FROM threads WHERE id = ?');
+      for (const threadId of threadIds) {
+        const row = statement.get(threadId);
+        if (row && typeof row.tokens_used === 'number' && row.tokens_used > 0) {
+          result.set(threadId, row.tokens_used);
+        }
+      }
+      db.close();
+    } catch {
+      return result;
+    }
+
+    return result;
+  }
+
+  private enrichLiveTokenFallbackState(payload: ApiStateResponse): void {
+    if (payload.running.length === 0) {
+      return;
+    }
+    const threadIds = payload.running
+      .map((row) => row.thread_id)
+      .filter((threadId): threadId is string => typeof threadId === 'string' && threadId.length > 0);
+    const liveTotals = this.resolveLiveThreadTokenTotals(threadIds);
+    if (liveTotals.size === 0) {
+      return;
+    }
+
+    let liveAggregate = 0;
+    for (const row of payload.running) {
+      if (row.tokens.total_tokens > 0 || !row.thread_id) {
+        continue;
+      }
+      const liveTotal = liveTotals.get(row.thread_id);
+      if (typeof liveTotal === 'number' && liveTotal > 0) {
+        row.tokens.total_tokens = liveTotal;
+        liveAggregate += liveTotal;
+      }
+    }
+
+    if (payload.codex_totals.total_tokens === 0 && liveAggregate > 0) {
+      payload.codex_totals.total_tokens = liveAggregate;
+    }
+  }
+
+  private enrichLiveTokenFallbackIssue(payload: ApiIssueResponse): void {
+    if (payload.status !== 'running' || !payload.running?.thread_id) {
+      return;
+    }
+    if (payload.running.tokens.total_tokens > 0) {
+      return;
+    }
+    const threadId = payload.running.thread_id;
+    const liveTotal = this.resolveLiveThreadTokenTotals([threadId]).get(threadId);
+    if (typeof liveTotal === 'number' && liveTotal > 0) {
+      payload.running.tokens.total_tokens = liveTotal;
+    }
   }
 
   private registerEventStream(_request: IncomingMessage, response: ServerResponse): void {
@@ -648,6 +730,7 @@ export class LocalApiServer {
               const issueIdentifier = decodeURIComponent(match[1]);
               const state = this.snapshotSource.getStateSnapshot();
               const payload = this.snapshotService.projectIssue(state, issueIdentifier);
+              this.enrichLiveTokenFallbackIssue(payload);
               this.logger?.log({
                 level: 'info',
                 event: CANONICAL_EVENT.api.issueRequested,

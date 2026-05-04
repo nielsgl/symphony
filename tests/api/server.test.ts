@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { LocalApiServer } from '../../src/api';
 import { LocalApiError } from '../../src/api/errors';
@@ -280,6 +283,76 @@ describe('LocalApiServer', () => {
       branch_name: 'feature/ABC-2',
       repo_root: '/tmp/source'
     });
+  });
+
+  it('fills running total tokens from CODEX_HOME state sqlite when protocol totals are absent', async () => {
+    const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const dbPath = path.join(codexHomeDir, 'state_5.sqlite');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sqlite = require('node:sqlite') as {
+      DatabaseSync: new (path: string) => {
+        exec: (sql: string) => void;
+        close: () => void;
+      };
+    };
+    const db = new sqlite.DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        tokens_used INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO threads (id, tokens_used) VALUES ('thread-live-1', 321);
+    `);
+    db.close();
+
+    const previousCodexHome = process.env.SYMPHONY_CODEX_HOME;
+    process.env.SYMPHONY_CODEX_HOME = codexHomeDir;
+
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            thread_id: 'thread-live-1',
+            tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            last_reported_tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+          })
+        ]
+      ]),
+      codex_totals: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        seconds_running: 0
+      }
+    });
+
+    server = new LocalApiServer({
+      host: '127.0.0.1',
+      port: 0,
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: { tick: async () => {} }
+    });
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const payload = (await response.json()) as {
+      codex_totals: { total_tokens: number };
+      running: Array<{ tokens: { total_tokens: number } }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.codex_totals.total_tokens).toBe(321);
+    expect(payload.running[0]?.tokens.total_tokens).toBe(321);
+
+    if (previousCodexHome === undefined) {
+      delete process.env.SYMPHONY_CODEX_HOME;
+    } else {
+      process.env.SYMPHONY_CODEX_HOME = previousCodexHome;
+    }
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
   });
 
   it('serves GET /api/v1/:issue_identifier projection and returns 404 for unknown issue', async () => {
