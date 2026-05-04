@@ -140,7 +140,17 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     last_phase_at_ms: entry.last_phase_at_ms,
     last_phase_detail: entry.last_phase_detail,
     blocked_at_ms: entry.blocked_at_ms,
-    requires_manual_resume: true
+    requires_manual_resume: true,
+    pending_input: entry.pending_input
+      ? {
+          ...entry.pending_input,
+          questions: entry.pending_input.questions.map((question) => ({
+            ...question,
+            options: question.options ? question.options.map((option) => ({ ...option })) : undefined
+          }))
+        }
+      : null,
+    session_console: (entry.session_console ?? []).map((event) => ({ ...event }))
   };
 }
 
@@ -629,7 +639,8 @@ export class OrchestratorCore {
       this.state.health.last_error = `worker exited for ${running.identifier}`;
       const stopReasonCode = this.inferStopReasonCode(error, 'worker_exit_abnormal');
       if (stopReasonCode === 'turn_input_required') {
-        const stopReasonDetail = this.inferInputRequiredDetail(error, reason);
+        const inputDetail = this.inferInputRequiredDetail(error, reason);
+        const stopReasonDetail = inputDetail.detail;
         this.emitPhaseMarker(issue_id, {
           phase: 'blocked_input',
           detail: stopReasonDetail,
@@ -655,6 +666,8 @@ export class OrchestratorCore {
           copy_ignored_summary: running.copy_ignored_summary,
           stop_reason_code: 'turn_input_required',
           stop_reason_detail: stopReasonDetail,
+          pending_input: inputDetail,
+          session_console: running.recent_events,
           previous_thread_id: running.thread_id,
           previous_session_id: running.session_id
         });
@@ -1000,7 +1013,7 @@ export class OrchestratorCore {
     }
   }
 
-  private async dispatchIssue(issue: Issue, attempt: number | null): Promise<void> {
+  private async dispatchIssue(issue: Issue, attempt: number | null, resume_context: string | null = null): Promise<void> {
     this.emitPhaseMarker(issue.id, {
       phase: 'dispatch_started',
       detail: 'dispatch attempt started',
@@ -1057,7 +1070,7 @@ export class OrchestratorCore {
       return;
     }
 
-    const spawned = await this.ports.spawnWorker({ issue, attempt, worker_host: workerHost });
+    const spawned = await this.ports.spawnWorker({ issue, attempt, worker_host: workerHost, resume_context });
 
     if (!spawned.ok) {
       this.emitPhaseMarker(issue.id, {
@@ -1324,6 +1337,14 @@ export class OrchestratorCore {
       | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
+    pending_input?: {
+      detail: string;
+      request_id: string | null;
+      request_method: string | null;
+      prompt_text: string | null;
+      questions: Array<{ id: string; prompt?: string; options?: Array<{ label: string; value?: string }> }>;
+    } | null;
+    session_console?: Array<{ at_ms: number; event: string; message: string | null }>;
     previous_thread_id: string | null;
     previous_session_id: string | null;
   }): Promise<void> {
@@ -1357,7 +1378,20 @@ export class OrchestratorCore {
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
       last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
       blocked_at_ms: this.nowMs(),
-      requires_manual_resume: true
+      requires_manual_resume: true,
+      pending_input: params.pending_input
+        ? {
+            request_id: params.pending_input.request_id,
+            request_method: params.pending_input.request_method,
+            prompt_text: params.pending_input.prompt_text,
+            questions: params.pending_input.questions,
+            input_schema_type: this.inferInputSchemaType(params.pending_input.questions),
+            input_required_at_ms: this.nowMs()
+          }
+        : null,
+      last_input_submit: null,
+      resume_history: [],
+      session_console: (params.session_console ?? []).slice(-40)
     });
     this.state.claimed.add(params.issue_id);
 
@@ -1369,6 +1403,7 @@ export class OrchestratorCore {
         issue_id: params.issue_id,
         issue_identifier: params.issue_identifier,
         stop_reason_code: params.stop_reason_code,
+        request_id: params.pending_input?.request_id ?? null,
         previous_thread_id: params.previous_thread_id,
         previous_session_id: params.previous_session_id
       }
@@ -1395,7 +1430,15 @@ export class OrchestratorCore {
     });
   }
 
-  async resumeBlockedIssue(issue_identifier: string): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
+  async resumeBlockedIssue(
+    issue_identifier: string,
+    resume_context: string | null = null,
+    resume_metadata?: {
+      request_id: string;
+      resume_mode: 'native' | 'fallback';
+      resume_reason_code: string;
+    }
+  ): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
     const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
     if (!blocked) {
       return {
@@ -1440,7 +1483,7 @@ export class OrchestratorCore {
 
     const eligibility = shouldDispatchIssue(issue, this.state, this.config);
     if (eligibility.eligible) {
-      await this.dispatchIssue(issue, blocked.attempt);
+      await this.dispatchIssue(issue, blocked.attempt, resume_context);
     } else if (eligibility.reason === 'global_slots_exhausted' || eligibility.reason === 'state_slots_exhausted') {
       await this.scheduleRetry({
         issue_id: blocked.issue_id,
@@ -1491,6 +1534,25 @@ export class OrchestratorCore {
       });
     }
 
+    if (resume_metadata) {
+      const submittedAtMs = this.nowMs();
+      const record = {
+        submitted_at_ms: submittedAtMs,
+        request_id: resume_metadata.request_id,
+        resume_mode: resume_metadata.resume_mode,
+        resume_reason_code: resume_metadata.resume_reason_code,
+        previous_thread_id: blocked.previous_thread_id ?? null,
+        previous_session_id: blocked.previous_session_id ?? null
+      };
+      blocked.last_input_submit = {
+        submitted_at_ms: submittedAtMs,
+        request_id: resume_metadata.request_id,
+        resume_mode: resume_metadata.resume_mode,
+        resume_reason_code: resume_metadata.resume_reason_code
+      };
+      blocked.resume_history = [...(blocked.resume_history ?? []), record].slice(-20);
+    }
+
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.blockedInputResumed,
@@ -1498,6 +1560,9 @@ export class OrchestratorCore {
       context: {
         issue_id: blocked.issue_id,
         issue_identifier: blocked.issue_identifier,
+        request_id: resume_metadata?.request_id ?? blocked.pending_input?.request_id ?? null,
+        resume_mode: resume_metadata?.resume_mode ?? null,
+        resume_reason_code: resume_metadata?.resume_reason_code ?? null,
         previous_thread_id: blocked.previous_thread_id,
         previous_session_id: blocked.previous_session_id
       }
@@ -1508,6 +1573,180 @@ export class OrchestratorCore {
       ok: true,
       issue_id: blocked.issue_id
     };
+  }
+
+  async submitBlockedIssueInput(params: {
+    issue_identifier: string;
+    request_id: string;
+    answer: { question_id?: string; option_label?: string; text?: string };
+  }): Promise<
+    | {
+        ok: true;
+        issue_id: string;
+        request_id: string;
+        resume_mode: 'native' | 'fallback';
+        resume_reason_code: string;
+        requested_at: string;
+        request_lineage: { previous_thread_id: string | null; previous_session_id: string | null };
+      }
+    | { ok: false; code: string; message: string }
+  > {
+    const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === params.issue_identifier);
+    if (!blocked) {
+      return { ok: false, code: 'issue_not_blocked', message: `Issue ${params.issue_identifier} is not blocked` };
+    }
+    if (!blocked.pending_input) {
+      return { ok: false, code: 'input_request_missing', message: 'Blocked issue has no pending input request payload' };
+    }
+    if (!blocked.pending_input.request_id || blocked.pending_input.request_id !== params.request_id) {
+      return { ok: false, code: 'request_mismatch', message: 'Input request_id does not match current blocked request' };
+    }
+
+    if (blocked.pending_input.input_schema_type === 'options') {
+      const q = blocked.pending_input.questions.find((question) => question.id === params.answer.question_id) ?? blocked.pending_input.questions[0];
+      const options = q?.options ?? [];
+      if (!params.answer.option_label || !options.some((option) => option.label === params.answer.option_label)) {
+        return { ok: false, code: 'input_validation_failed', message: 'Answer must select a valid option label for the pending question' };
+      }
+    } else if (blocked.pending_input.input_schema_type === 'text') {
+      if (!params.answer.text || !params.answer.text.trim()) {
+        return { ok: false, code: 'input_validation_failed', message: 'Answer text is required for this input request' };
+      }
+    }
+
+    const nativeAttempt = await this.submitBlockedIssueInputNative(blocked, params);
+    if (nativeAttempt.applied) {
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.orchestration.blockedInputSubmitNativeApplied,
+        message: 'native blocked input submission applied',
+        context: {
+          issue_id: blocked.issue_id,
+          issue_identifier: blocked.issue_identifier,
+          request_id: params.request_id
+        }
+      });
+      const resumed = await this.resumeBlockedIssue(params.issue_identifier, nativeAttempt.resume_context ?? null, {
+        request_id: params.request_id,
+        resume_mode: 'native',
+        resume_reason_code: 'native_applied'
+      });
+      if (!resumed.ok) {
+        return resumed;
+      }
+      return {
+        ok: true,
+        issue_id: resumed.issue_id,
+        request_id: params.request_id,
+        resume_mode: 'native',
+        resume_reason_code: 'native_applied',
+        requested_at: new Date().toISOString(),
+        request_lineage: {
+          previous_thread_id: blocked.previous_thread_id ?? null,
+          previous_session_id: blocked.previous_session_id ?? null
+        }
+      };
+    }
+
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.blockedInputSubmitNativeFailed,
+      message: 'native blocked input submission unavailable',
+      context: {
+        issue_id: blocked.issue_id,
+        issue_identifier: blocked.issue_identifier,
+        request_id: params.request_id,
+        resume_reason_code: nativeAttempt.code
+      }
+    });
+
+    const resumeContext = this.buildOperatorInputResumeContext(blocked, params.answer);
+    const fallbackReasonCode = nativeAttempt.code;
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.blockedInputSubmitRequested,
+      message: 'blocked input submit accepted',
+      context: {
+        issue_id: blocked.issue_id,
+        issue_identifier: blocked.issue_identifier,
+        request_id: params.request_id,
+        input_schema_type: blocked.pending_input.input_schema_type,
+        answer_applied: true,
+        resume_mode: 'fallback',
+        resume_reason_code: fallbackReasonCode
+      }
+    });
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.blockedInputSubmitFallbackUsed,
+      message: 'blocked input resumed with fallback context',
+      context: {
+        issue_id: blocked.issue_id,
+        issue_identifier: blocked.issue_identifier,
+        request_id: params.request_id,
+        resume_reason_code: fallbackReasonCode
+      }
+    });
+    const resumed = await this.resumeBlockedIssue(params.issue_identifier, resumeContext, {
+      request_id: params.request_id,
+      resume_mode: 'fallback',
+      resume_reason_code: fallbackReasonCode
+    });
+    if (!resumed.ok) {
+      return resumed;
+    }
+    return {
+      ok: true,
+      issue_id: resumed.issue_id,
+      request_id: params.request_id,
+      resume_mode: 'fallback',
+      resume_reason_code: fallbackReasonCode,
+      requested_at: new Date().toISOString(),
+      request_lineage: {
+        previous_thread_id: blocked.previous_thread_id ?? null,
+        previous_session_id: blocked.previous_session_id ?? null
+      }
+    };
+  }
+
+  private async submitBlockedIssueInputNative(
+    blocked: BlockedEntry,
+    params: { issue_identifier: string; request_id: string; answer: { question_id?: string; option_label?: string; text?: string } }
+  ): Promise<{
+    applied: boolean;
+    code: 'native_applied' | 'session_expired' | 'request_not_found' | 'transport_unsupported' | 'native_submit_failed';
+    message?: string;
+    resume_context?: string;
+  }> {
+    if (!this.ports.submitBlockedIssueInputNative) {
+      return { applied: false, code: 'transport_unsupported' };
+    }
+    return this.ports.submitBlockedIssueInputNative({
+      issue_id: blocked.issue_id,
+      issue_identifier: params.issue_identifier,
+      request_id: params.request_id,
+      request_method: blocked.pending_input?.request_method ?? null,
+      previous_thread_id: blocked.previous_thread_id ?? null,
+      previous_session_id: blocked.previous_session_id ?? null,
+      answer: params.answer
+    });
+  }
+
+  private buildOperatorInputResumeContext(
+    blocked: BlockedEntry,
+    answer: { question_id?: string; option_label?: string; text?: string }
+  ): string {
+    const question =
+      blocked.pending_input?.questions.find((entry) => entry.id === answer.question_id) ?? blocked.pending_input?.questions[0] ?? null;
+    const promptText = question?.prompt ?? blocked.pending_input?.prompt_text ?? 'Operator input requested';
+    const normalizedAnswer = answer.option_label ?? answer.text?.trim() ?? '';
+    const requestId = blocked.pending_input?.request_id ?? 'unknown';
+    return [
+      'Operator provided input for a previously blocked request. Apply this answer and continue execution.',
+      `Request ID: ${requestId}`,
+      `Question: ${promptText}`,
+      `Answer: ${normalizedAnswer}`
+    ].join('\n');
   }
 
   getPhaseMarkerSettings(): PhaseMarkerSettings {
@@ -1684,15 +1923,89 @@ export class OrchestratorCore {
     return fallback;
   }
 
-  private inferInputRequiredDetail(error: string | undefined, fallbackReason: string): string {
+  private inferInputRequiredDetail(
+    error: string | undefined,
+    fallbackReason: string
+  ): {
+    detail: string;
+    request_id: string | null;
+    request_method: string | null;
+    prompt_text: string | null;
+    questions: Array<{ id: string; prompt?: string; options?: Array<{ label: string; value?: string }> }>;
+  } {
     if (!error) {
-      return `worker exited: ${fallbackReason}`;
+      return {
+        detail: `worker exited: ${fallbackReason}`,
+        request_id: null,
+        request_method: null,
+        prompt_text: null,
+        questions: []
+      };
     }
     const prefix = 'turn_input_required:';
     if (error.toLowerCase().startsWith(prefix)) {
-      return error.slice(prefix.length).trim() || 'input_required_unanswerable';
+      const rawDetail = error.slice(prefix.length).trim() || 'input_required_unanswerable';
+      try {
+        const payload = JSON.parse(rawDetail) as {
+          detail?: string;
+          request_id?: string;
+          request_method?: string;
+          prompt_text?: string | null;
+          questions?: Array<{ id?: string; prompt?: string; options?: Array<{ label?: string; value?: string }> }>;
+        };
+        return {
+          detail: payload.detail ?? 'input_required_unanswerable',
+          request_id: payload.request_id ?? null,
+          request_method: payload.request_method ?? null,
+          prompt_text: payload.prompt_text ?? null,
+          questions: Array.isArray(payload.questions)
+            ? payload.questions
+                .filter((question) => Boolean(question?.id))
+                .map((question) => ({
+                  id: String(question.id),
+                  ...(question?.prompt ? { prompt: String(question.prompt) } : {}),
+                  ...(Array.isArray(question?.options)
+                    ? {
+                        options: question.options
+                          .filter((option) => Boolean(option?.label))
+                          .map((option) => ({
+                            label: String(option.label),
+                            ...(option?.value ? { value: String(option.value) } : {})
+                          }))
+                      }
+                    : {})
+                }))
+            : []
+        };
+      } catch {
+        return {
+          detail: rawDetail,
+          request_id: null,
+          request_method: null,
+          prompt_text: null,
+          questions: []
+        };
+      }
     }
-    return error;
+    return {
+      detail: error,
+      request_id: null,
+      request_method: null,
+      prompt_text: null,
+      questions: []
+    };
+  }
+
+  private inferInputSchemaType(
+    questions: Array<{ id: string; prompt?: string; options?: Array<{ label: string; value?: string }> }>
+  ): 'options' | 'text' | 'unknown' {
+    if (questions.some((question) => Array.isArray(question.options) && question.options.length > 0)) {
+      return 'options';
+    }
+    if (questions.length > 0) {
+      return 'text';
+    }
+    return 'unknown';
   }
 
   private addRuntimeSecondsFromEntry(runningEntry: RunningEntry): void {

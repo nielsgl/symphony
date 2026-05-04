@@ -164,6 +164,88 @@ describe('createRuntimeEnvironment', () => {
     expect(tracker.fetch_candidate_issues).toHaveBeenCalled();
   });
 
+  it('uses runtime native submit wiring for blocked input when request method is supported', async () => {
+    const workflowPath = await makeWorkflowFile();
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [
+        {
+          id: 'issue-1',
+          identifier: 'ABC-1',
+          title: 'Issue ABC-1',
+          description: null,
+          priority: 1,
+          state: 'Todo',
+          branch_name: null,
+          url: null,
+          labels: [],
+          blocked_by: [],
+          created_at: new Date('2026-05-04T00:00:00.000Z'),
+          updated_at: new Date('2026-05-04T00:00:00.000Z')
+        }
+      ]),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    await (runtime.orchestrator as unknown as {
+      scheduleBlockedInput: (params: Record<string, unknown>) => Promise<void>;
+    }).scheduleBlockedInput({
+      issue_id: 'issue-1',
+      issue_identifier: 'ABC-1',
+      attempt: 1,
+      worker_host: null,
+      workspace_path: null,
+      provisioner_type: null,
+      branch_name: null,
+      repo_root: null,
+      workspace_exists: true,
+      workspace_git_status: 'clean',
+      workspace_provisioned: false,
+      workspace_is_git_worktree: false,
+      stop_reason_code: 'turn_input_required',
+      stop_reason_detail: 'tool requestUserInput input_required_unanswerable',
+      pending_input: {
+        detail: 'tool requestUserInput input_required_unanswerable',
+        request_id: 'req-native-1',
+        request_method: 'tool_request_user_input',
+        prompt_text: 'Please choose a path.',
+        questions: [{ id: 'q-1', prompt: 'Proceed?', options: [{ label: 'Continue' }] }]
+      },
+      session_console: [],
+      previous_thread_id: 'thread-1',
+      previous_session_id: 'session-1'
+    });
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request_id: 'req-native-1',
+        answer: { question_id: 'q-1', option_label: 'Continue' }
+      })
+    });
+    const payload = (await response.json()) as { resumed: boolean; resume_mode: string; resume_reason_code: string };
+
+    expect(response.status).toBe(202);
+    expect(payload.resumed).toBe(true);
+    expect(payload.resume_mode).toBe('native');
+    expect(payload.resume_reason_code).toBe('native_applied');
+  });
+
   it('exposes SSE event stream endpoint for runtime state push updates', async () => {
     const workflowPath = await makeWorkflowFile();
     dirs.push(path.dirname(workflowPath));

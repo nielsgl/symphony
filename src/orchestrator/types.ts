@@ -126,6 +126,37 @@ export interface BlockedEntry {
   last_phase_detail?: string | null;
   blocked_at_ms: number;
   requires_manual_resume: true;
+  pending_input?: {
+    request_id: string | null;
+    request_method: string | null;
+    prompt_text: string | null;
+    questions: Array<{
+      id: string;
+      prompt?: string;
+      options?: Array<{ label: string; value?: string }>;
+    }>;
+    input_schema_type: 'options' | 'text' | 'unknown';
+    input_required_at_ms: number;
+  } | null;
+  last_input_submit?: {
+    submitted_at_ms: number;
+    request_id: string;
+    resume_mode: 'native' | 'fallback';
+    resume_reason_code: string;
+  } | null;
+  resume_history?: Array<{
+    submitted_at_ms: number;
+    request_id: string;
+    resume_mode: 'native' | 'fallback';
+    resume_reason_code: string;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
+  }>;
+  session_console?: Array<{
+    at_ms: number;
+    event: string;
+    message: string | null;
+  }>;
 }
 
 export interface OrchestratorState {
@@ -209,7 +240,12 @@ export type SpawnWorkerResult = SpawnWorkerResultSuccess | SpawnWorkerResultFail
 export interface OrchestratorPorts {
   tracker: TrackerAdapter;
   dispatchPreflight: () => DispatchPreflightResult;
-  spawnWorker: (params: { issue: Issue; attempt: number | null; worker_host?: string | null }) => Promise<SpawnWorkerResult>;
+  spawnWorker: (params: {
+    issue: Issue;
+    attempt: number | null;
+    worker_host?: string | null;
+    resume_context?: string | null;
+  }) => Promise<SpawnWorkerResult>;
   terminateWorker: (params: {
     issue_id: string;
     worker_handle: unknown;
@@ -222,6 +258,25 @@ export interface OrchestratorPorts {
     callback: () => Promise<void>;
   }) => unknown;
   cancelRetryTimer: (timer_handle: unknown) => void;
+  submitBlockedIssueInputNative?: (params: {
+    issue_id: string;
+    issue_identifier: string;
+    request_id: string;
+    request_method: string | null;
+    previous_thread_id: string | null;
+    previous_session_id: string | null;
+    answer: { question_id?: string; option_label?: string; text?: string };
+  }) => Promise<{
+    applied: boolean;
+    code:
+      | 'native_applied'
+      | 'session_expired'
+      | 'request_not_found'
+      | 'transport_unsupported'
+      | 'native_submit_failed';
+    message?: string;
+    resume_context?: string;
+  }>;
   notifyObservers?: () => void;
 }
 

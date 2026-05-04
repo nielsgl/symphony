@@ -2,6 +2,7 @@ import type { Issue } from '../tracker';
 import type { WorkspaceManager } from '../workspace';
 import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
+import type { CodexInputRequestPayload } from '../codex/types';
 import type { EffectiveConfig } from '../workflow';
 import { CANONICAL_EVENT } from '../observability/events';
 import path from 'node:path';
@@ -17,6 +18,7 @@ export interface LocalWorkerRunInput {
   codexRunner: CodexRunner;
   config: EffectiveConfig;
   renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
+  resumeContext?: string | null;
   issueStateFetcher: (issue_ids: string[]) => Promise<Issue[]>;
   onCodexEvent?: (event: CodexRunnerEvent) => void;
 }
@@ -25,6 +27,7 @@ export interface LocalWorkerRunResult {
   reason: 'normal' | 'abnormal';
   session_id: string | null;
   error?: string;
+  input_required_payload?: CodexInputRequestPayload;
 }
 
 export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise<LocalWorkerRunResult> {
@@ -54,13 +57,14 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
     const maxTurns = Math.max(1, input.config.agent.max_turns);
 
     for (let turnNumber = 1; turnNumber <= maxTurns; turnNumber += 1) {
-      const prompt =
+      const basePrompt =
         turnNumber === 1
           ? await input.renderPrompt({
               issue: currentIssue,
               attempt: input.attempt
             })
           : DEFAULT_CONTINUATION_PROMPT;
+      const prompt = turnNumber === 1 && input.resumeContext ? `${input.resumeContext}\n\n${basePrompt}` : basePrompt;
 
       const turnResult = await input.codexRunner.startSessionAndRunTurn({
         command: input.config.codex.command,
@@ -83,12 +87,20 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       if (turnResult.status !== 'completed') {
         const error =
           turnResult.error_code === 'turn_input_required'
-            ? `${turnResult.error_code}: ${turnResult.error_detail ?? 'input_required_unanswerable'}`
+            ? `${turnResult.error_code}: ${
+                turnResult.input_required_payload
+                  ? JSON.stringify({
+                      detail: turnResult.error_detail ?? 'input_required_unanswerable',
+                      ...turnResult.input_required_payload
+                    })
+                  : (turnResult.error_detail ?? 'input_required_unanswerable')
+              }`
             : (turnResult.error_code ?? turnResult.last_event);
         return {
           reason: 'abnormal',
           session_id: turnResult.session_id,
-          error
+          error,
+          input_required_payload: turnResult.input_required_payload
         };
       }
       lastSessionId = turnResult.session_id;

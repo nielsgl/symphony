@@ -774,6 +774,25 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           }
         }
       },
+      submitBlockedIssueInputNative: async (params) => {
+        const method = (params.request_method ?? '').trim().toLowerCase();
+        const supportsNative =
+          method === 'tool_request_user_input' || method === 'tool_requestuserinput' || method === 'mcp_elicitation_request';
+        if (!supportsNative) {
+          return { applied: false, code: 'transport_unsupported' as const };
+        }
+        const normalizedAnswer = (params.answer.option_label ?? params.answer.text ?? '').trim();
+        const resumeContext = [
+          'Operator input was captured through runtime native submit transport.',
+          `Request ID: ${params.request_id}`,
+          `Answer: ${normalizedAnswer}`
+        ].join('\n');
+        return {
+          applied: true,
+          code: 'native_applied' as const,
+          resume_context: resumeContext
+        };
+      },
       notifyObservers: () => {
         apiServer?.notifyStateChanged('orchestrator_observer');
       }
@@ -950,7 +969,13 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             }
           },
           issueControlSource: {
-            resumeBlockedIssue: async (issueIdentifier) => orchestrator.resumeBlockedIssue(issueIdentifier)
+            resumeBlockedIssue: async (issueIdentifier) => orchestrator.resumeBlockedIssue(issueIdentifier),
+            submitBlockedIssueInput: async (params) =>
+              orchestrator.submitBlockedIssueInput({
+                issue_identifier: params.issueIdentifier,
+                request_id: params.request_id,
+                answer: params.answer
+              })
           },
           dashboardConfig: {
             dashboard_enabled: effectiveConfig.observability?.dashboard_enabled ?? true,

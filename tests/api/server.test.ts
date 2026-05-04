@@ -515,7 +515,9 @@ describe('LocalApiServer', () => {
             previous_thread_id: 'thread-prev',
             previous_session_id: 'thread-prev-turn-prev',
             blocked_at_ms: Date.parse('2026-04-10T10:03:00.000Z'),
-            requires_manual_resume: true
+            requires_manual_resume: true,
+            pending_input: null,
+            session_console: []
           }
         ]
       ])
@@ -530,7 +532,16 @@ describe('LocalApiServer', () => {
         tick: vi.fn(async () => undefined)
       },
       issueControlSource: {
-        resumeBlockedIssue
+        resumeBlockedIssue,
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
       }
     });
 
@@ -601,6 +612,175 @@ describe('LocalApiServer', () => {
 
     expect(refreshGetResponse.status).toBe(405);
     expect(refreshGetPayload.error.code).toBe('method_not_allowed');
+  });
+
+  it('maps blocked input request mismatch to 409 conflict envelope', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: false as const,
+          code: 'request_mismatch',
+          message: 'Input request_id does not match current blocked request'
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request_id: 'req-1',
+        answer: { text: 'continue' }
+      })
+    });
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(409);
+    expect(payload.error.code).toBe('request_mismatch');
+  });
+
+  it('accepts blocked input submit requests and resumes issue', async () => {
+    const submitBlockedIssueInput = vi.fn(async () => ({
+      ok: true as const,
+      issue_id: 'issue-3',
+      request_id: 'req-42',
+      resume_mode: 'fallback' as const,
+      resume_reason_code: 'transport_unsupported',
+      requested_at: '2026-05-04T00:00:00.000Z',
+      request_lineage: { previous_thread_id: 'thread-1', previous_session_id: 'session-1' }
+    }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        submitBlockedIssueInput
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request_id: 'req-42',
+        answer: { question_id: 'q-1', option_label: 'Continue' }
+      })
+    });
+    const payload = (await response.json()) as {
+      resumed: boolean;
+      issue_identifier: string;
+      request_id: string;
+      resume_mode: string;
+      resume_reason_code: string;
+      request_lineage: { previous_thread_id: string | null; previous_session_id: string | null };
+      requested_at: string;
+    };
+
+    expect(response.status).toBe(202);
+    expect(payload.resumed).toBe(true);
+    expect(payload.issue_identifier).toBe('ABC-3');
+    expect(payload.request_id).toBe('req-42');
+    expect(payload.resume_mode).toBe('fallback');
+    expect(payload.resume_reason_code).toBe('transport_unsupported');
+    expect(typeof payload.requested_at).toBe('string');
+    expect(submitBlockedIssueInput).toHaveBeenCalledWith({
+      issueIdentifier: 'ABC-3',
+      request_id: 'req-42',
+      answer: { question_id: 'q-1', option_label: 'Continue' }
+    });
+  });
+
+  it('returns 400 envelope when blocked input submit payload is invalid', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const invalidJsonResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{'
+    });
+    const invalidJsonPayload = (await invalidJsonResponse.json()) as { error: { code: string } };
+    expect(invalidJsonResponse.status).toBe(400);
+    expect(invalidJsonPayload.error.code).toBe('invalid_input_submit');
+
+    const missingFieldsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ request_id: 'req-42' })
+    });
+    const missingFieldsPayload = (await missingFieldsResponse.json()) as { error: { code: string } };
+    expect(missingFieldsResponse.status).toBe(400);
+    expect(missingFieldsPayload.error.code).toBe('invalid_input_submit');
+  });
+
+  it('maps blocked input submit validation failures to 422 envelope', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: false as const,
+          code: 'invalid_answer',
+          message: 'Answer payload is invalid for pending request schema'
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        request_id: 'req-42',
+        answer: { text: '' }
+      })
+    });
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(422);
+    expect(payload.error.code).toBe('invalid_answer');
   });
 
   it('accepts refresh requests and coalesces bursts', async () => {
