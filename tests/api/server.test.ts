@@ -589,6 +589,43 @@ describe('LocalApiServer', () => {
     expect(resumeBlockedIssue).toHaveBeenCalledWith('ABC-3');
   });
 
+  it('passes resume override payload through POST /api/v1/issues/:issue_identifier/resume', async () => {
+    const resumeBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue,
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/resume`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ resume_override_reason: 'operator_override_push_additional_commit' })
+    });
+    expect(response.status).toBe(202);
+    expect(resumeBlockedIssue).toHaveBeenCalledWith('ABC-3', {
+      resume_override_reason: 'operator_override_push_additional_commit'
+    });
+  });
+
   it('returns 405 for unsupported methods on defined routes', async () => {
     server = new LocalApiServer({
       snapshotSource: {
@@ -903,6 +940,11 @@ describe('LocalApiServer', () => {
     expect(scriptPayload).toContain('/api/v1/state');
     expect(scriptPayload).toContain('/api/v1/refresh');
     expect(scriptPayload).toContain('/api/v1/events');
+    expect(scriptPayload).toContain('action-required-banner');
+    expect(scriptPayload).toContain('operator_action_required_workspace_conflict');
+    expect(scriptPayload).toContain('Awaiting Human Review (Scope Incomplete)');
+    expect(scriptPayload).toContain('Blocked reason: \' + getActionRequiredLabel(payload.blocked.stop_reason_code)');
+    expect(scriptPayload).toContain('formatApiError(payload, \'Request failed\')');
     expect(scriptPayload).toContain('setInterval(updateRuntimeClock, DASHBOARD_CONFIG.render_interval_ms)');
 
     const cssResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/styles.css`);

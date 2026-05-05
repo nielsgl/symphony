@@ -1,3 +1,7 @@
+import {
+  ACTION_REQUIRED_REASON_LABELS
+} from './dashboard-view-model';
+
 interface DashboardClientConfig {
   dashboard_enabled: boolean;
   refresh_ms: number;
@@ -35,6 +39,12 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
       </div>
     </div>
   </header>
+
+  <section id="action-required-banner" class="action-required-banner hidden" role="region" aria-live="polite">
+    <strong id="action-required-title">Action Required</strong>
+    <span id="action-required-summary"></span>
+    <div id="action-required-groups" class="inline-badges"></div>
+  </section>
 
   <main class="layout">
     <section id="snapshot-error-panel" class="panel panel-wide snapshot-error hidden">
@@ -225,8 +235,27 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     render_interval_ms: Math.max(250, Number(config.render_interval_ms) || 1000),
     phase_stale_warn_ms: Math.max(1000, Number(config.phase_stale_warn_ms) || 45000)
   };
+  const actionRequiredReasonLabels = JSON.stringify(ACTION_REQUIRED_REASON_LABELS);
+  const operatorTransitionRules = JSON.stringify({
+    detailMap: {
+      'completion gate blocked redispatch because no progress signal was detected': 'completion_gate_blocked',
+      'pr is open but scope is incomplete and no progress signal was detected': 'completion_gate_blocked',
+      'respawn circuit breaker opened': 'circuit_breaker_opened',
+      'resume accepted': 'resume_accepted',
+      'resume rejected': 'resume_rejected',
+      'cancel accepted': 'cancel_accepted',
+      'cancel rejected': 'cancel_rejected'
+    },
+    eventMap: {
+      'orchestrator.redispatch.completion_gate_blocked': 'completion_gate_blocked',
+      'orchestrator.redispatch.circuit_breaker_opened': 'circuit_breaker_opened',
+      'orchestration.blocked_input.resumed': 'resume_accepted'
+    }
+  });
   return `(() => {
   const DASHBOARD_CONFIG = ${JSON.stringify(safeConfig)};
+  const ACTION_REQUIRED_CODES = ${actionRequiredReasonLabels};
+  const OPERATOR_TRANSITION_RULES = ${operatorTransitionRules};
   const state = {
     payload: null,
     lastGoodPayload: null,
@@ -243,7 +272,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     filter: {
       query: '',
       status: 'all',
-      eventFeedSeverity: 'all'
+      eventFeedSeverity: 'all',
+      blockedReason: 'all'
     },
     panels: {
       throughputOpen: true,
@@ -260,6 +290,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     refreshStatus: document.getElementById('refresh-status'),
     healthMessage: document.getElementById('health-message'),
     lastError: document.getElementById('last-error'),
+    actionRequiredBanner: document.getElementById('action-required-banner'),
+    actionRequiredTitle: document.getElementById('action-required-title'),
+    actionRequiredSummary: document.getElementById('action-required-summary'),
+    actionRequiredGroups: document.getElementById('action-required-groups'),
     snapshotErrorPanel: document.getElementById('snapshot-error-panel'),
     snapshotErrorMessage: document.getElementById('snapshot-error-message'),
     kpiGrid: document.getElementById('kpi-grid'),
@@ -330,6 +364,27 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.refreshStatus.className = isError ? 'status-error' : 'status-ok';
   }
 
+  function getActionRequiredLabel(code) {
+    return ACTION_REQUIRED_CODES[code] || code || 'unknown';
+  }
+
+  function isActionRequiredCode(code) {
+    return Boolean(code && ACTION_REQUIRED_CODES[code]);
+  }
+
+  function formatApiError(payload, fallbackMessage) {
+    if (!payload || !payload.error) {
+      return fallbackMessage;
+    }
+    if (payload.error.code && payload.error.message) {
+      return payload.error.code + ': ' + payload.error.message;
+    }
+    if (payload.error.message) {
+      return String(payload.error.message);
+    }
+    return fallbackMessage;
+  }
+
   function createMetricCard(label, value) {
     const card = document.createElement('article');
     card.className = 'kpi-card';
@@ -372,6 +427,133 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
     const rateLimits = payload.rate_limits;
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+  }
+
+  function renderActionRequiredBanner(payload) {
+    const blockedEntries = Array.isArray(payload && payload.blocked) ? payload.blocked : [];
+    const grouped = blockedEntries.reduce(function (acc, entry) {
+      if (!isActionRequiredCode(entry.stop_reason_code)) {
+        return acc;
+      }
+      acc[entry.stop_reason_code] = (acc[entry.stop_reason_code] || 0) + 1;
+      return acc;
+    }, {});
+    const groupedEntries = Object.entries(grouped);
+    if (!groupedEntries.length) {
+      elements.actionRequiredBanner.classList.add('hidden');
+      elements.actionRequiredSummary.textContent = '';
+      elements.actionRequiredGroups.replaceChildren();
+      return;
+    }
+
+    const total = groupedEntries.reduce(function (sum, entry) {
+      const count = entry[1];
+      return sum + count;
+    }, 0);
+    elements.actionRequiredBanner.classList.remove('hidden');
+    elements.actionRequiredSummary.textContent = total + ' blocked run' + (total === 1 ? '' : 's') + ' need operator action.';
+
+    const groupNodes = groupedEntries.map(function (entry) {
+      const code = entry[0];
+      const count = entry[1];
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ghost-button reason-chip';
+      button.textContent = getActionRequiredLabel(code) + ' (' + count + ')';
+      button.title = 'Filter blocked rows for ' + getActionRequiredLabel(code);
+      button.addEventListener('click', function () {
+        state.filter.status = 'blocked';
+        state.filter.blockedReason = code;
+        elements.statusFilter.value = 'blocked';
+        if (state.payload) {
+          renderRunning(state.payload);
+          renderRetry(state.payload);
+          renderBlocked(state.payload);
+        }
+      });
+      return button;
+    });
+    elements.actionRequiredGroups.replaceChildren(...groupNodes);
+  }
+
+  function describeTransition(transition) {
+    switch (transition) {
+      case 'completion_gate_blocked':
+        return { label: 'Completion Gate Blocked', result: 'failure', detail: 'No progress signal detected in redispatch window.' };
+      case 'circuit_breaker_opened':
+        return { label: 'Circuit Breaker Opened', result: 'failure', detail: 'Respawn threshold reached; operator intervention required.' };
+      case 'resume_accepted':
+        return { label: 'Resume Accepted', result: 'success', detail: 'Resume request accepted and redispatch restarted.' };
+      case 'resume_rejected':
+        return { label: 'Resume Rejected', result: 'failure', detail: 'Resume request rejected; resolve blocking condition first.' };
+      case 'cancel_accepted':
+        return { label: 'Cancel Accepted', result: 'success', detail: 'Issue returned to backlog.' };
+      case 'cancel_rejected':
+        return { label: 'Cancel Rejected', result: 'failure', detail: 'Cancel request rejected; tracker state unchanged.' };
+      default:
+        return null;
+    }
+  }
+
+  function deriveOperatorTransitionRows(issueId, payload) {
+    const rows = [];
+    const seen = new Set();
+    function addRow(at, transition, detail) {
+      const key = transition + ':' + String(at || 'n/a') + ':' + String(detail || '');
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      const descriptor = describeTransition(transition);
+      if (!descriptor) {
+        return;
+      }
+      rows.push({
+        at: at || 'n/a',
+        issue_identifier: issueId,
+        label: descriptor.label,
+        result: descriptor.result,
+        detail: detail && detail.trim ? (detail.trim() ? detail : descriptor.detail) : descriptor.detail
+      });
+    }
+
+    const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
+    for (const marker of timeline) {
+      const normalized = String(marker && marker.detail ? marker.detail : '').trim().toLowerCase();
+      const transition = OPERATOR_TRANSITION_RULES.detailMap[normalized];
+      if (transition) {
+        addRow(marker.at, transition, marker.detail || null);
+      }
+    }
+    const events = Array.isArray(payload.recent_events) ? payload.recent_events : [];
+    for (const entry of events) {
+      const transitionByEvent = OPERATOR_TRANSITION_RULES.eventMap[String(entry && entry.event ? entry.event : '')];
+      if (transitionByEvent) {
+        addRow(entry.at, transitionByEvent, entry.message || null);
+      }
+      const normalizedMessage = String(entry && entry.message ? entry.message : '').trim().toLowerCase();
+      const transitionByMessage = OPERATOR_TRANSITION_RULES.detailMap[normalizedMessage];
+      if (transitionByMessage) {
+        addRow(entry.at, transitionByMessage, entry.message || null);
+      }
+    }
+    if (payload.blocked && (payload.blocked.stop_reason_code === 'operator_action_required_no_progress_redispatch_blocked' || payload.blocked.stop_reason_code === 'awaiting_human_review_scope_incomplete')) {
+      addRow('n/a', 'completion_gate_blocked', payload.blocked.stop_reason_detail || null);
+    }
+    return rows.sort(function (a, b) {
+      const atA = Date.parse(a.at);
+      const atB = Date.parse(b.at);
+      if (Number.isFinite(atA) && Number.isFinite(atB)) {
+        return atA - atB;
+      }
+      if (Number.isFinite(atA)) {
+        return -1;
+      }
+      if (Number.isFinite(atB)) {
+        return 1;
+      }
+      return a.label.localeCompare(b.label);
+    });
   }
 
   function renderThroughput(payload) {
@@ -880,6 +1062,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if (state.filter.status === 'running' || state.filter.status === 'retrying') {
         return false;
       }
+      if (state.filter.blockedReason !== 'all' && entry.stop_reason_code !== state.filter.blockedReason) {
+        return false;
+      }
       if (!state.filter.query) {
         return true;
       }
@@ -932,6 +1117,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.className = 'muted';
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      if (entry.stop_reason_code) {
+        const stateLabel = document.createElement('div');
+        stateLabel.className = 'status-pill pending';
+        stateLabel.textContent = getActionRequiredLabel(entry.stop_reason_code);
+        stopReasonCell.append(stateLabel);
+      }
       const lastPhaseLine = document.createElement('div');
       lastPhaseLine.className = 'muted';
       lastPhaseLine.textContent = 'Last phase: ' + (entry.last_phase || 'n/a') + (entry.last_phase_at ? ' @ ' + formatDate(entry.last_phase_at) : '');
@@ -949,6 +1140,44 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         decisionLine.textContent = inputDecision;
         stopReasonCell.append(decisionLine);
       }
+      if (Array.isArray(entry.conflict_files) && entry.conflict_files.length) {
+        const conflictTitle = document.createElement('div');
+        conflictTitle.className = 'muted';
+        conflictTitle.textContent = 'Conflict files';
+        stopReasonCell.append(conflictTitle);
+        const conflictChips = document.createElement('div');
+        conflictChips.className = 'inline-badges';
+        for (const conflict of entry.conflict_files) {
+          const chip = document.createElement('span');
+          chip.className = 'mini-badge ' + (conflict.status === 'staged' ? 'mini-badge-good' : 'mini-badge-bad');
+          chip.textContent = conflict.path + ' (' + (conflict.status || 'unknown') + ')';
+          conflictChips.append(chip);
+        }
+        stopReasonCell.append(conflictChips);
+      }
+      if (Array.isArray(entry.required_actions) && entry.required_actions.length) {
+        const requiredActions = document.createElement('div');
+        requiredActions.className = 'muted';
+        requiredActions.textContent = 'Required actions: ' + entry.required_actions.join(', ');
+        stopReasonCell.append(requiredActions);
+      }
+      const countWindow = document.createElement('div');
+      countWindow.className = 'muted';
+      countWindow.textContent =
+        'Attempt window: ' +
+        formatNumber(entry.attempt_count_window) +
+        ' in ' +
+        formatNumber(entry.window_minutes) +
+        ' minute(s)';
+      stopReasonCell.append(countWindow);
+      const progressLine = document.createElement('div');
+      progressLine.className = 'muted';
+      progressLine.textContent =
+        'Last progress: ' +
+        (entry.last_known_commit_sha || 'n/a') +
+        ' @ ' +
+        (entry.last_progress_checkpoint_at ? formatDate(entry.last_progress_checkpoint_at) : 'n/a');
+      stopReasonCell.append(progressLine);
 
       const previousSessionCell = document.createElement('td');
       const previousSessionValue = document.createElement('div');
@@ -1009,6 +1238,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     state.payload = payload;
     state.lastGoodPayload = payload;
     renderOverview(payload);
+    renderActionRequiredBanner(payload);
     renderThroughput(payload);
     renderRunning(payload);
     renderRetry(payload);
@@ -1036,7 +1266,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     const response = await fetch(url, init);
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload && payload.error ? payload.error.message : 'Request failed');
+      throw new Error(formatApiError(payload, 'Request failed'));
     }
     return payload;
   }
@@ -1158,7 +1388,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         summaryParts.push('Stop reason: ' + payload.retry.stop_reason_code);
       }
       if (payload.blocked && payload.blocked.stop_reason_code) {
-        summaryParts.push('Blocked reason: ' + payload.blocked.stop_reason_code);
+        summaryParts.push('Blocked reason: ' + getActionRequiredLabel(payload.blocked.stop_reason_code));
       }
       if (payload.retry && payload.retry.previous_session_id) {
         summaryParts.push('Previous session: ' + payload.retry.previous_session_id);
@@ -1199,13 +1429,33 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
             return marker.at + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + (marker.detail || 'n/a') + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
           }).join('\\n')
         : 'No phase markers yet.';
+      const operatorTimelineRows = deriveOperatorTransitionRows(issueId, payload);
+      const operatorTimelineText = operatorTimelineRows.length
+        ? operatorTimelineRows
+            .map(function (entry) {
+              return (
+                entry.at +
+                ' | ' +
+                entry.label +
+                ' | issue ' +
+                entry.issue_identifier +
+                ' | ' +
+                entry.result +
+                ' | ' +
+                entry.detail
+              );
+            })
+            .join('\\n')
+        : 'No operator transition entries.';
       const sessionConsoleText = sessionConsole.length
         ? sessionConsole.map(function (event) {
             return event.at + ' | ' + event.event + ' | ' + (event.message || 'n/a');
           }).join('\\n')
         : 'No session console entries.';
       elements.issueOutput.textContent =
-        'Execution Timeline\\n' +
+        'Operator Transition Timeline\\n' +
+        operatorTimelineText +
+        '\\n\\nExecution Timeline\\n' +
         timelineText +
         '\\n\\nSession Console\\n' +
         sessionConsoleText +
@@ -1446,6 +1696,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
     elements.statusFilter.addEventListener('change', function (event) {
       state.filter.status = event.target && event.target.value ? event.target.value : 'all';
+      if (state.filter.status !== 'blocked') {
+        state.filter.blockedReason = 'all';
+      }
       if (state.payload) {
         renderRunning(state.payload);
         renderRetry(state.payload);
@@ -1611,6 +1864,26 @@ h1 {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.action-required-banner {
+  margin: 10px 24px 0;
+  border: 1px solid #d58a44;
+  background: #fff5e8;
+  color: #8a4b12;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reason-chip {
+  font-size: 11px;
+  padding: 4px 8px;
+  color: #8a4b12;
+  border-color: #e9c9a4;
 }
 
 button,
@@ -1844,6 +2117,19 @@ td {
 .mini-badge-bad {
   background: #f8e8e8;
   color: #8a2f2f;
+}
+
+.status-pill {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-pill.pending {
+  background: #fff1df;
+  color: #8a4b12;
 }
 
 .action-cell {
