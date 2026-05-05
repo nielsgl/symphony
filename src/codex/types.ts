@@ -1,3 +1,5 @@
+import { REASON_CODES } from '../observability/reason-codes';
+
 export interface CodexRunnerStartInput {
   command: string;
   commandArgs?: string[];
@@ -30,14 +32,14 @@ export type CodexTurnErrorCode =
   | 'codex_not_found'
   | 'invalid_workspace_cwd'
   | 'invalid_remote_workspace_cwd'
-  | 'unsafe_workspace_root'
+  | typeof REASON_CODES.unsafeWorkspaceRoot
   | 'response_timeout'
   | 'turn_timeout'
   | 'port_exit'
   | 'response_error'
   | 'turn_failed'
   | 'turn_cancelled'
-  | 'turn_input_required';
+  | typeof REASON_CODES.turnInputRequired;
 
 export interface CodexUsageTotals {
   input_tokens: number;
