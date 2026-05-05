@@ -963,7 +963,7 @@ export class OrchestratorCore {
       const stopReasonDetail = gateEvaluation.awaiting_human_review_scope_incomplete
         ? 'PR is open but scope is incomplete and no progress signal was detected'
         : 'completion gate blocked redispatch because no progress signal was detected';
-      await this.scheduleBlockedInput({
+      const blockedResult = await this.scheduleBlockedInput({
         issue_id,
         issue_identifier: retryEntry.identifier,
         attempt: retryEntry.attempt,
@@ -998,29 +998,56 @@ export class OrchestratorCore {
       const eventName = gateEvaluation.awaiting_human_review_scope_incomplete
         ? CANONICAL_EVENT.orchestration.stateAwaitingHumanReviewScopeIncomplete
         : CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked;
-      this.recordRuntimeEvent({
-        event: eventName,
-        severity: 'warn',
-        issue_identifier: retryEntry.identifier,
-        detail: stopReasonDetail
-      });
-      this.logger?.log({
-        level: 'warn',
-        event: eventName,
-        message: stopReasonDetail,
-        context: {
-          issue_id,
+      if (blockedResult.created) {
+        this.recordRuntimeEvent({
+          event: eventName,
+          severity: 'warn',
           issue_identifier: retryEntry.identifier,
-          attempt_count_window: gateEvaluation.attempt_count_window,
-          window_minutes: gateEvaluation.window_minutes
-        }
-      });
-      if (gateEvaluation.breaker_hit) {
+          detail: stopReasonDetail
+        });
+        this.logger?.log({
+          level: 'warn',
+          event: eventName,
+          message: stopReasonDetail,
+          context: {
+            issue_id,
+            issue_identifier: retryEntry.identifier,
+            stop_reason_code: stopReasonCode,
+            progress_summary: JSON.stringify({
+              attempt_count_window: gateEvaluation.attempt_count_window,
+              window_minutes: gateEvaluation.window_minutes,
+              last_known_commit_sha: gateEvaluation.last_known_commit_sha,
+              signals: gateEvaluation.progress_signals
+            }),
+            next_operator_action: 'issue.resume',
+            next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'
+          }
+        });
+      }
+      if (gateEvaluation.breaker_hit && blockedResult.created) {
         this.recordRuntimeEvent({
           event: CANONICAL_EVENT.orchestration.redispatchCircuitBreakerOpened,
           severity: 'warn',
           issue_identifier: retryEntry.identifier,
           detail: 'respawn circuit breaker opened'
+        });
+        this.logger?.log({
+          level: 'warn',
+          event: CANONICAL_EVENT.orchestration.redispatchCircuitBreakerOpened,
+          message: 'respawn circuit breaker opened',
+          context: {
+            issue_id,
+            issue_identifier: retryEntry.identifier,
+            stop_reason_code: stopReasonCode,
+            progress_summary: JSON.stringify({
+              attempt_count_window: gateEvaluation.attempt_count_window,
+              window_minutes: gateEvaluation.window_minutes,
+              last_known_commit_sha: gateEvaluation.last_known_commit_sha,
+              signals: gateEvaluation.progress_signals
+            }),
+            next_operator_action: 'issue.resume',
+            next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'
+          }
         });
       }
       return;
@@ -1655,7 +1682,7 @@ export class OrchestratorCore {
     };
     required_actions?: string[];
     apply_circuit_breaker?: boolean;
-  }): Promise<void> {
+  }): Promise<{ created: boolean }> {
     const existingRetry = this.state.retry_attempts.get(params.issue_id);
     if (existingRetry) {
       this.ports.cancelRetryTimer(existingRetry.timer_handle);
@@ -1664,7 +1691,7 @@ export class OrchestratorCore {
 
     const existingBlocked = this.state.blocked_inputs.get(params.issue_id);
     if (existingBlocked && existingBlocked.stop_reason_code === params.stop_reason_code && existingBlocked.requires_manual_resume) {
-      return;
+      return { created: false };
     }
 
     const blockedEntry: BlockedEntry = {
@@ -1752,6 +1779,7 @@ export class OrchestratorCore {
         previous_session_id: params.previous_session_id
       }
     });
+    return { created: true };
   }
 
   private clearBlockedInput(issue_id: string, reason: string): void {
@@ -2029,6 +2057,25 @@ export class OrchestratorCore {
       severity: 'info',
       issue_identifier,
       detail: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog'
+    });
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.cancelToBacklogExecuted,
+      message: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog',
+      context: {
+        issue_id: blocked.issue_id,
+        issue_identifier,
+        stop_reason_code: blocked.stop_reason_code,
+        classification_summary: JSON.stringify(
+          blocked.classification_summary ?? {
+            ephemeral: 0,
+            tracked_ephemeral: 0,
+            unknown_non_ephemeral: 0
+          }
+        ),
+        next_operator_action: 'issue.state.todo',
+        next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/cancel'
+      }
     });
     this.ports.notifyObservers?.();
     return { ok: true, issue_id: blocked.issue_id, moved_to_state: targetState };

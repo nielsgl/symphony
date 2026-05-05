@@ -629,12 +629,26 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       });
     },
     onPreflightResult: (result) => {
+      const parsedConflictFiles = result.conflict_files.map((file) => ({
+        path: file.path,
+        status: file.status,
+        classification: file.classification ?? 'unknown_non_ephemeral'
+      }));
+      const classificationSummary = result.classification_summary ?? {
+        ephemeral: 0,
+        tracked_ephemeral: 0,
+        unknown_non_ephemeral: 0
+      };
       const context = {
         issue_identifier: result.identifier,
         workspace_path: result.workspace_path,
         cleaned_files: JSON.stringify(result.cleaned_files),
-        conflict_files: JSON.stringify(result.conflict_files),
-        resolution_hints: JSON.stringify(result.resolution_hints)
+        conflict_files: JSON.stringify(parsedConflictFiles),
+        resolution_hints: JSON.stringify(result.resolution_hints),
+        stop_reason_code: 'operator_action_required_workspace_conflict',
+        classification_summary: JSON.stringify(classificationSummary),
+        next_operator_action: 'issue.resume',
+        next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'
       };
       if (result.status === 'cleaned') {
         logger.log({

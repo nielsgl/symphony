@@ -88,4 +88,46 @@ describe('SqlitePersistenceStore', () => {
     expect(health.integrity_ok).toBe(true);
     expect(health.last_pruned_at).not.toBeNull();
   });
+
+  it('persists breaker and blocked input records across reopen and supports delete lifecycle', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-breaker-state-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    storeA.upsertBreaker({
+      issue_id: 'i-1',
+      issue_identifier: 'ABC-1',
+      breaker_active: true,
+      breaker_hit_count: 3,
+      breaker_window_minutes: 30,
+      breaker_first_hit_at: '2026-04-11T10:00:00.000Z',
+      breaker_last_hit_at: '2026-04-11T10:02:00.000Z'
+    });
+    storeA.upsertBlockedInput('i-1', JSON.stringify({ issue_id: 'i-1', issue_identifier: 'ABC-1', stop_reason_code: 'x' }));
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    expect(storeB.listBreakers()).toEqual([
+      {
+        issue_id: 'i-1',
+        issue_identifier: 'ABC-1',
+        breaker_active: true,
+        breaker_hit_count: 3,
+        breaker_window_minutes: 30,
+        breaker_first_hit_at: '2026-04-11T10:00:00.000Z',
+        breaker_last_hit_at: '2026-04-11T10:02:00.000Z'
+      }
+    ]);
+    expect(storeB.listBlockedInputs()).toHaveLength(1);
+    expect(storeB.listBlockedInputs()[0]).toMatchObject({ issue_id: 'i-1' });
+
+    storeB.deleteBreaker('i-1');
+    storeB.deleteBlockedInput('i-1');
+    expect(storeB.listBreakers()).toEqual([]);
+    expect(storeB.listBlockedInputs()).toEqual([]);
+  });
 });

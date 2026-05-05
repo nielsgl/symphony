@@ -110,7 +110,22 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [
+        {
+          id: 'issue-1',
+          identifier: 'ABC-1',
+          title: 'Issue ABC-1',
+          description: null,
+          priority: 1,
+          state: 'Todo',
+          branch_name: null,
+          url: null,
+          labels: [],
+          blocked_by: [],
+          created_at: new Date('2026-05-04T00:00:00.000Z'),
+          updated_at: new Date('2026-05-04T00:00:00.000Z')
+        }
+      ]),
       create_comment: vi.fn(async () => undefined),
       update_issue_state: vi.fn(async () => undefined)
     };
@@ -144,7 +159,22 @@ describe('createRuntimeEnvironment', () => {
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [
+        {
+          id: 'issue-1',
+          identifier: 'ABC-1',
+          title: 'Issue ABC-1',
+          description: null,
+          priority: 1,
+          state: 'Todo',
+          branch_name: null,
+          url: null,
+          labels: [],
+          blocked_by: [],
+          created_at: new Date('2026-05-04T00:00:00.000Z'),
+          updated_at: new Date('2026-05-04T00:00:00.000Z')
+        }
+      ]),
       create_comment: vi.fn(async () => undefined),
       update_issue_state: vi.fn(async () => undefined)
     };
@@ -427,6 +457,93 @@ describe('createRuntimeEnvironment', () => {
     expect(stateResponse.status).toBe(200);
     expect(statePayload.counts.running).toBe(0);
     expect(statePayload.counts.retrying).toBe(0);
+  });
+
+  it('restores persisted suppression and breaker state on restart and projects diagnostics', async () => {
+    const workflowPath = await makeWorkflowFile();
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    const dbPath = path.join(workflowDir, 'runtime.sqlite');
+
+    const seedStore = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14
+    });
+    seedStore.upsertBreaker({
+      issue_id: 'issue-1',
+      issue_identifier: 'ABC-1',
+      breaker_active: true,
+      breaker_hit_count: 2,
+      breaker_window_minutes: 30,
+      breaker_first_hit_at: '2026-04-11T10:00:00.000Z',
+      breaker_last_hit_at: '2026-04-11T10:02:00.000Z'
+    });
+    seedStore.upsertBlockedInput(
+      'issue-1',
+      JSON.stringify({
+        issue_id: 'issue-1',
+        issue_identifier: 'ABC-1',
+        attempt: 2,
+        worker_host: null,
+        workspace_path: '/tmp/symphony/ABC-1',
+        provisioner_type: null,
+        branch_name: null,
+        repo_root: null,
+        workspace_exists: true,
+        workspace_git_status: 'dirty',
+        workspace_provisioned: true,
+        workspace_is_git_worktree: true,
+        stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+        stop_reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+        conflict_files: [],
+        resolution_hints: ['Resolve and resume'],
+        blocked_at_ms: Date.parse('2026-04-11T10:02:00.000Z'),
+        requires_manual_resume: true,
+        pending_input: null,
+        session_console: []
+      })
+    );
+    seedStore.close();
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      breaker_statuses: Array<{
+        issue_identifier: string;
+        breaker_active: boolean;
+        breaker_hit_count: number;
+        breaker_window_minutes: number;
+      }>;
+    };
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.breaker_statuses).toEqual([
+      {
+        issue_id: 'issue-1',
+        issue_identifier: 'ABC-1',
+        breaker_active: true,
+        breaker_hit_count: 2,
+        breaker_window_minutes: 30,
+        breaker_first_hit_at: '2026-04-11T10:00:00.000Z',
+        breaker_last_hit_at: '2026-04-11T10:02:00.000Z'
+      }
+    ]);
   });
 
   it('keeps HTTP extension disabled when neither CLI port nor workflow server.port is configured', async () => {
