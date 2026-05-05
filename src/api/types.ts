@@ -199,6 +199,11 @@ export interface ApiStateResponse {
     } | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
+    conflict_files: Array<{
+      path: string;
+      status: 'staged' | 'unstaged' | 'unknown';
+    }>;
+    resolution_hints: string[];
     previous_thread_id: string | null;
     previous_session_id: string | null;
     last_phase: PhaseMarkerName | null;
@@ -388,6 +393,11 @@ export interface ApiIssueResponse {
     } | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
+    conflict_files: Array<{
+      path: string;
+      status: 'staged' | 'unstaged' | 'unknown';
+    }>;
+    resolution_hints: string[];
     previous_thread_id: string | null;
     previous_session_id: string | null;
     last_phase: PhaseMarkerName | null;

@@ -57,6 +57,15 @@ interface ScheduleRetryParams {
   previous_session_id?: string | null;
 }
 
+interface WorkspaceConflictContext {
+  detail: string;
+  conflict_files: Array<{
+    path: string;
+    status: 'staged' | 'unstaged' | 'unknown';
+  }>;
+  resolution_hints: string[];
+}
+
 function cloneIssue(issue: Issue): Issue {
   return {
     ...issue,
@@ -134,6 +143,8 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null,
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
+    conflict_files: (entry.conflict_files ?? []).map((file) => ({ ...file })),
+    resolution_hints: [...(entry.resolution_hints ?? [])],
     previous_thread_id: entry.previous_thread_id,
     previous_session_id: entry.previous_session_id,
     last_phase: entry.last_phase,
@@ -683,6 +694,56 @@ export class OrchestratorCore {
             outcome: 'blocked',
             stop_reason_code: 'turn_input_required',
             error: stopReasonDetail
+          }
+        });
+        this.ports.notifyObservers?.();
+        return;
+      }
+      if (stopReasonCode === 'operator_action_required_workspace_conflict') {
+        const workspaceConflict = this.inferWorkspaceConflictContext(error, reason);
+        this.emitPhaseMarker(issue_id, {
+          phase: 'blocked_input',
+          detail: workspaceConflict.detail,
+          attempt: running.retry_attempt + 1,
+          thread_id: running.thread_id,
+          session_id: running.session_id
+        });
+        await this.scheduleBlockedInput({
+          issue_id,
+          issue_identifier: running.identifier,
+          attempt: running.retry_attempt + 1,
+          worker_host: running.worker_host ?? null,
+          workspace_path: running.workspace_path ?? null,
+          provisioner_type: running.provisioner_type ?? null,
+          branch_name: running.branch_name ?? null,
+          repo_root: running.repo_root ?? null,
+          workspace_exists: running.workspace_exists,
+          workspace_git_status: running.workspace_git_status,
+          workspace_provisioned: running.workspace_provisioned,
+          workspace_is_git_worktree: running.workspace_is_git_worktree,
+          copy_ignored_applied: running.copy_ignored_applied,
+          copy_ignored_status: running.copy_ignored_status,
+          copy_ignored_summary: running.copy_ignored_summary,
+          stop_reason_code: 'operator_action_required_workspace_conflict',
+          stop_reason_detail: workspaceConflict.detail,
+          conflict_files: workspaceConflict.conflict_files,
+          resolution_hints: workspaceConflict.resolution_hints,
+          session_console: running.recent_events,
+          previous_thread_id: running.thread_id,
+          previous_session_id: running.session_id
+        });
+        this.logger?.log({
+          level: 'warn',
+          event: CANONICAL_EVENT.orchestration.workerExitHandled,
+          message: 'worker exit handled: blocked on workspace conflict',
+          context: {
+            issue_id,
+            issue_identifier: running.identifier,
+            session_id: running.session_id,
+            reason,
+            outcome: 'blocked',
+            stop_reason_code: 'operator_action_required_workspace_conflict',
+            error: workspaceConflict.detail
           }
         });
         this.ports.notifyObservers?.();
@@ -1337,6 +1398,11 @@ export class OrchestratorCore {
       | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
+    conflict_files?: Array<{
+      path: string;
+      status: 'staged' | 'unstaged' | 'unknown';
+    }>;
+    resolution_hints?: string[];
     pending_input?: {
       detail: string;
       request_id: string | null;
@@ -1372,6 +1438,8 @@ export class OrchestratorCore {
       copy_ignored_summary: params.copy_ignored_summary ?? null,
       stop_reason_code: params.stop_reason_code,
       stop_reason_detail: params.stop_reason_detail,
+      conflict_files: (params.conflict_files ?? []).map((file) => ({ ...file })),
+      resolution_hints: [...(params.resolution_hints ?? [])],
       previous_thread_id: params.previous_thread_id,
       previous_session_id: params.previous_session_id,
       last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
@@ -1906,6 +1974,11 @@ export class OrchestratorCore {
       return fallback;
     }
 
+    const workspaceConflictPayload = this.parseWorkspaceConflictPayload(error);
+    if (workspaceConflictPayload?.code === 'operator_action_required_workspace_conflict') {
+      return 'operator_action_required_workspace_conflict';
+    }
+
     const normalized = error.toLowerCase();
     if (normalized.includes('turn_input_required')) {
       return 'turn_input_required';
@@ -1919,8 +1992,92 @@ export class OrchestratorCore {
     if (normalized.includes('workspace_empty')) {
       return 'workspace_empty';
     }
+    if (
+      normalized.includes('workspace_unprovisioned_conflict') ||
+      normalized.includes('worktree_branch_conflict')
+    ) {
+      return 'operator_action_required_workspace_conflict';
+    }
 
     return fallback;
+  }
+
+  private inferWorkspaceConflictContext(error: string | undefined, fallbackReason: string): WorkspaceConflictContext {
+    const defaultDetail = error ?? `worker exited: ${fallbackReason}`;
+    const defaultHints = [
+      'Resolve workspace git conflicts in the issue worktree.',
+      'Ensure the workspace branch/worktree mapping matches repository state.',
+      'Resume the blocked issue explicitly after conflicts are resolved.'
+    ];
+    if (!error) {
+      return { detail: defaultDetail, conflict_files: [], resolution_hints: defaultHints };
+    }
+
+    const payload = this.parseWorkspaceConflictPayload(error);
+    if (payload) {
+      return {
+        detail: payload.detail ?? defaultDetail,
+        conflict_files: payload.conflict_files,
+        resolution_hints: payload.resolution_hints.length > 0 ? payload.resolution_hints : defaultHints
+      };
+    }
+
+    const inferredConflictFiles = this.inferWorkspaceConflictFiles(defaultDetail);
+    return { detail: defaultDetail, conflict_files: inferredConflictFiles, resolution_hints: defaultHints };
+  }
+
+  private inferWorkspaceConflictFiles(detail: string): Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }> {
+    const normalized = detail.toLowerCase();
+    if (normalized.includes('worktree_branch_conflict')) {
+      return [{ path: '.git/HEAD', status: 'unknown' }];
+    }
+    if (normalized.includes('workspace path is not a managed git worktree')) {
+      return [{ path: '.git', status: 'unknown' }];
+    }
+    if (normalized.includes('workspace path exists but branch cannot be inspected')) {
+      return [{ path: '.git/HEAD', status: 'unknown' }];
+    }
+    if (normalized.includes('workspace path exists but is not a managed git worktree')) {
+      return [{ path: '.git', status: 'unknown' }];
+    }
+
+    return [];
+  }
+
+  private parseWorkspaceConflictPayload(error: string): {
+    code: string | null;
+    detail: string | null;
+    conflict_files: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>;
+    resolution_hints: string[];
+  } | null {
+    const prefix = 'workspace_conflict:';
+    if (!error.toLowerCase().startsWith(prefix)) {
+      return null;
+    }
+    const rawDetail = error.slice(prefix.length).trim();
+    try {
+      const payload = JSON.parse(rawDetail) as {
+        code?: string;
+        detail?: string;
+        conflict_files?: Array<{ path?: string; status?: string }>;
+        resolution_hints?: string[];
+      };
+      return {
+        code: typeof payload.code === 'string' ? payload.code : null,
+        detail: typeof payload.detail === 'string' ? payload.detail : null,
+        conflict_files: (payload.conflict_files ?? [])
+          .filter((file) => typeof file?.path === 'string' && file.path.trim().length > 0)
+          .map((file) => ({
+            path: String(file.path),
+            status: file?.status === 'staged' || file?.status === 'unstaged' ? file.status : 'unknown'
+          })),
+        resolution_hints: (payload.resolution_hints ?? []).filter(
+          (hint): hint is string => typeof hint === 'string' && hint.trim().length > 0
+        )
+      };
+    } catch {
+      return null;
+    }
   }
 
   private inferInputRequiredDetail(

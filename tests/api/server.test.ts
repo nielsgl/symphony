@@ -510,8 +510,10 @@ describe('LocalApiServer', () => {
             workspace_git_status: 'clean',
             workspace_provisioned: true,
             workspace_is_git_worktree: true,
-            stop_reason_code: 'turn_input_required',
-            stop_reason_detail: 'operator input required',
+            stop_reason_code: 'operator_action_required_workspace_conflict',
+            stop_reason_detail: 'workspace_unprovisioned_conflict: worktree_branch_conflict',
+            conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }],
+            resolution_hints: ['Resolve branch/worktree mismatch before manual resume.'],
             previous_thread_id: 'thread-prev',
             previous_session_id: 'thread-prev-turn-prev',
             blocked_at_ms: Date.parse('2026-04-10T10:03:00.000Z'),
@@ -557,7 +559,8 @@ describe('LocalApiServer', () => {
     expect(statePayload.counts.blocked).toBe(1);
     expect(statePayload.blocked[0]).toMatchObject({
       issue_identifier: 'ABC-3',
-      requires_manual_resume: true
+      requires_manual_resume: true,
+      conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });
 
     const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-3`);
@@ -568,8 +571,9 @@ describe('LocalApiServer', () => {
     expect(issueResponse.status).toBe(200);
     expect(issuePayload.status).toBe('blocked');
     expect(issuePayload.blocked).toMatchObject({
-      stop_reason_code: 'turn_input_required',
-      requires_manual_resume: true
+      stop_reason_code: 'operator_action_required_workspace_conflict',
+      requires_manual_resume: true,
+      resolution_hints: ['Resolve branch/worktree mismatch before manual resume.']
     });
 
     const resumeResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/resume`, {
