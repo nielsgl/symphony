@@ -177,7 +177,7 @@ Notes:
   - `SYMPHONY_CODEX_HOME` (switch local Codex account/home directory)
   - `SYMPHONY_CODEX_MODEL` (override model)
   - `SYMPHONY_CODEX_REASONING` (override reasoning effort)
-  - `SYMPHONY_CODEX_FLAGS` (append extra Codex CLI flags)
+  - `SYMPHONY_CODEX_FLAGS` (append extra Codex CLI flags as a JSON string array, for example `["--config","shell_environment_policy.inherit=all"]`)
 - `.env` is loaded automatically for startup scripts (or `SYMPHONY_ENV_FILE` for a custom file path).
 - If backend startup fails, the desktop window now stays open and displays an actionable boot error instead of exiting hard.
 

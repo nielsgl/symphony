@@ -377,7 +377,7 @@ describe('ConfigResolver', () => {
         SYMPHONY_CODEX_HOME: '~/env-codex',
         SYMPHONY_CODEX_MODEL: 'env-model',
         SYMPHONY_CODEX_REASONING: 'medium',
-        SYMPHONY_CODEX_FLAGS: '--config sandbox_workspace_write.network_access=true'
+        SYMPHONY_CODEX_FLAGS: '["--config","sandbox_workspace_write.network_access=true"]'
       },
       homedir: () => '/home/tester',
       tmpdir: () => '/tmp'
@@ -390,6 +390,20 @@ describe('ConfigResolver', () => {
     expect(config.codex.effective_codex_model).toBe('env-model');
     expect(config.codex.effective_reasoning_effort).toBe('medium');
     expect(config.codex.effective_extra_flags).toEqual(['--config', 'sandbox_workspace_write.network_access=true']);
+  });
+
+  it('rejects non-JSON SYMPHONY_CODEX_FLAGS values', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        SYMPHONY_CODEX_FLAGS: '--config sandbox_workspace_write.network_access=true'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    expect(() => resolver.resolve({ config: {}, prompt_template: 'prompt' })).toThrow(
+      'SYMPHONY_CODEX_FLAGS must be a JSON string array'
+    );
   });
 
   it('does not interpolate arbitrary environment variables in codex.home', () => {

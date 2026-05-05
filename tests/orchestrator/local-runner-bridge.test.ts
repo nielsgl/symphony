@@ -206,7 +206,7 @@ describe('LocalRunnerBridge integration', () => {
     );
   });
 
-  it('builds typed codex command args in mixed mode and emits legacy-only warning only for legacy mode', async () => {
+  it('preserves a legacy wrapper base in mixed mode and emits a mixed-mode reason code', async () => {
     const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
     const prepareAttempt = vi.fn(async () => {});
     const finalizeAttempt = vi.fn(async () => {});
@@ -222,7 +222,7 @@ describe('LocalRunnerBridge integration', () => {
     const config = makeConfig();
     config.codex = {
       ...config.codex,
-      command: 'CODEX_HOME="$HOME/.codex" codex --config model="legacy" app-server',
+      command: 'CODEX_HOME="$HOME/.codex" /opt/codex-wrapper --config model="legacy" app-server',
       effective_codex_home: '/tmp/codex-home',
       effective_codex_model: 'typed-model',
       effective_reasoning_effort: 'high',
@@ -248,8 +248,10 @@ describe('LocalRunnerBridge integration', () => {
 
     expect(startSessionAndRunTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        command: 'codex',
+        command: '/opt/codex-wrapper',
         commandArgs: [
+          '--config',
+          'model=legacy',
           '--config',
           'shell_environment_policy.inherit=all',
           '--config',
@@ -262,6 +264,12 @@ describe('LocalRunnerBridge integration', () => {
       })
     );
     expect(events.some((event) => event.detail === 'codex_command_legacy_path_used')).toBe(false);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.commandMixedTypedOverridesApplied,
+        detail: 'codex_command_mixed_typed_overrides_applied'
+      })
+    );
   });
 
   it('emits warning code when legacy-only codex command path is used', async () => {

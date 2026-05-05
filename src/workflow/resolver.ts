@@ -176,20 +176,16 @@ function readEnvStringList(value: string | undefined): string[] | undefined {
   }
 
   const trimmed = value.trim();
-  if (trimmed.startsWith('[')) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch {
-      throw new WorkflowConfigError('invalid_codex_extra_flags', 'SYMPHONY_CODEX_FLAGS must be a JSON string array');
-    }
-    if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
-      throw new WorkflowConfigError('invalid_codex_extra_flags', 'SYMPHONY_CODEX_FLAGS must be a JSON string array');
-    }
-    return parsed as string[];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new WorkflowConfigError('invalid_codex_extra_flags', 'SYMPHONY_CODEX_FLAGS must be a JSON string array');
   }
-
-  return trimmed.split(/\s+/).filter((entry) => entry.length > 0);
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
+    throw new WorkflowConfigError('invalid_codex_extra_flags', 'SYMPHONY_CODEX_FLAGS must be a JSON string array');
+  }
+  return parsed as string[];
 }
 
 function resolveEnvToken(value: string, env: NodeJS.ProcessEnv): string {

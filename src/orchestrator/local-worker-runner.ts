@@ -66,6 +66,13 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
         codex_app_server_pid: null,
         detail: 'codex_command_legacy_path_used'
       });
+    } else if (input.config.codex.codex_resolution_mode === 'mixed') {
+      input.onCodexEvent?.({
+        event: CANONICAL_EVENT.codex.commandMixedTypedOverridesApplied,
+        timestamp: new Date().toISOString(),
+        codex_app_server_pid: null,
+        detail: 'codex_command_mixed_typed_overrides_applied'
+      });
     }
 
     for (let turnNumber = 1; turnNumber <= maxTurns; turnNumber += 1) {
