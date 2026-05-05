@@ -40,9 +40,9 @@ description:
 9. When all checks are green and review feedback is addressed, merge with
    merge-commit semantics (`--merge`) and
    delete the branch using the PR title/body for the merge subject/body.
-9.1 Before final merge, normalize/validate the PR body and enforce published UI evidence mappings when relevant:
-   - `SYMPHONY_PR_BODY_FILE=.git/.symphony-pr-body.md npm run check:pr-governance`
-   - `SYMPHONY_PR_BODY_FILE=.git/.symphony-pr-body.md npm run check:meta`
+9.1 Before final merge, run the governed submit wrapper so body normalization and evidence gates are enforced at submit boundary:
+   - `npm run submit:pr-governed -- --mode edit`
+   - Wrapper sequence is mandatory: normalize body -> `check:pr-governance` -> `check:meta` -> `gh pr edit --body-file <normalized-file>`.
    - Any `output/playwright/*` references require per-artifact Linear publication evidence (`publish_reference`, `linear_attachment_id`, or `published_url`) or merge is blocked.
 10. **Context guard:** Before implementing review feedback, confirm it does not
     conflict with the user’s stated intent or task context. If it conflicts,
