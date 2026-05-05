@@ -29,7 +29,8 @@ export const CANONICAL_EVENT = {
     unsupportedServerRequest: 'codex.protocol.unsupported_request',
     protocolMalformedLine: 'codex.protocol.malformed_line',
     sideOutput: 'codex.side_output',
-    turnWaiting: 'codex.turn.waiting'
+    turnWaiting: 'codex.turn.waiting',
+    tokenTelemetryMissingThresholdExceeded: 'token_telemetry_missing_threshold_exceeded'
   },
   orchestration: {
     dispatchValidationFailed: 'orchestration.dispatch.validation.failed',

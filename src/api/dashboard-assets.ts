@@ -837,10 +837,26 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
       const tokensCell = document.createElement('td');
       const tokenTotal = document.createElement('div');
-      tokenTotal.textContent = 'Total: ' + formatNumber(entry.tokens.total_tokens);
+      const telemetryStatus = entry.token_telemetry_status || 'unavailable';
+      if (telemetryStatus === 'pending') {
+        tokenTotal.textContent = 'Pending';
+      } else if (telemetryStatus === 'unavailable') {
+        tokenTotal.textContent = 'Unavailable';
+      } else {
+        tokenTotal.textContent = 'Total: ' + formatNumber(entry.tokens.total_tokens);
+      }
       const tokenDetail = document.createElement('div');
       tokenDetail.className = 'muted';
-      tokenDetail.textContent = 'In ' + formatNumber(entry.tokens.input_tokens) + ' / Out ' + formatNumber(entry.tokens.output_tokens);
+      if (telemetryStatus === 'available') {
+        tokenDetail.textContent =
+          'In ' +
+          formatNumber(entry.tokens.input_tokens) +
+          ' / Out ' +
+          formatNumber(entry.tokens.output_tokens) +
+          (entry.token_telemetry_last_source ? ' • ' + entry.token_telemetry_last_source : '');
+      } else {
+        tokenDetail.textContent = telemetryStatus === 'pending' ? 'Waiting for first usage payload' : 'No telemetry path detected';
+      }
       tokensCell.append(tokenTotal, tokenDetail);
 
       const eventCell = document.createElement('td');

@@ -7,7 +7,14 @@ import { CANONICAL_EVENT } from '../observability/events';
 import { CodexRunnerError } from './errors';
 import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
 import { buildSshSpawnArgs } from './ssh-target';
-import type { CodexInputRequestPayload, CodexRunnerEvent, CodexRunnerStartInput, CodexTurnResult, CodexUsageTotals } from './types';
+import type {
+  CodexInputRequestPayload,
+  CodexRunnerEvent,
+  CodexRunnerStartInput,
+  CodexTurnResult,
+  CodexUsageTotals,
+  TokenTelemetrySnapshot
+} from './types';
 
 interface ProtocolMessage {
   id?: number;
@@ -31,6 +38,7 @@ type SpawnProcess = (params: { command: string; cwd: string; workerHost?: string
 interface WaitForTerminalResult {
   terminal: 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required';
   usage: CodexUsageTotals;
+  telemetry: TokenTelemetrySnapshot;
   rate_limits: Record<string, unknown> | null;
   input_required_detail?: string;
   input_required_payload?: CodexInputRequestPayload;
@@ -373,105 +381,214 @@ function parseLastTokenUsage(params: Record<string, unknown>): CodexUsageTotals 
   );
 }
 
+function parseTerminalSummaryUsage(method: string, params: Record<string, unknown>): CodexUsageTotals | null {
+  if (method !== 'turn/completed' && method !== 'turn.completed' && method !== 'turn/failed' && method !== 'turn.failed') {
+    return null;
+  }
+
+  const usage = asRecord(params.usage);
+  const summary = asRecord(params.summary);
+  const info = asRecord(params.info);
+  return (
+    parseTokenTotals(usage) ??
+    parseTokenTotals(asRecord(usage?.total_token_usage) ?? asRecord(usage?.totalTokenUsage)) ??
+    parseTokenTotals(asRecord(summary?.usage)) ??
+    parseTokenTotals(asRecord(summary?.total_token_usage) ?? asRecord(summary?.totalTokenUsage)) ??
+    parseTokenTotals(asRecord(info?.total_token_usage) ?? asRecord(info?.totalTokenUsage)) ??
+    parseTokenTotals(asRecord(params.total_token_usage) ?? asRecord(params.totalTokenUsage))
+  );
+}
+
+function parsePersistedFallbackUsage(params: Record<string, unknown>): CodexUsageTotals | null {
+  const usage = asRecord(params.usage);
+  return (
+    parseTokenTotals(asRecord(params.persisted_usage) ?? asRecord(params.persistedUsage)) ??
+    parseTokenTotals(asRecord(params.persisted_fallback_usage) ?? asRecord(params.persistedFallbackUsage)) ??
+    parseTokenTotals(asRecord(usage?.persisted_usage) ?? asRecord(usage?.persistedUsage)) ??
+    parseTokenTotals(asRecord(usage?.persisted_fallback_usage) ?? asRecord(usage?.persistedFallbackUsage))
+  );
+}
+
+interface UsageObservation {
+  usage: CodexUsageTotals;
+  source: string;
+  // Canonical precedence: terminal turn summary > incremental turn usage > persisted fallback usage.
+  precedence: 1 | 2 | 3;
+  absolute: boolean;
+}
+
 class UsageTracker {
   private lastAbsolute: CodexUsageTotals | null = null;
-  private hasCanonicalAbsolute = false;
-  private lastFallbackSignature: string | null = null;
+  private highestPrecedence: UsageObservation['precedence'] | null = null;
+  private lastIncrementalSignature: string | null = null;
   private aggregate: CodexUsageTotals = {
     input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0
   };
+  private telemetry: TokenTelemetrySnapshot = {
+    token_telemetry_status: 'unavailable',
+    token_telemetry_last_source: null,
+    token_telemetry_last_at_ms: null
+  };
 
-  observe(message: ProtocolMessage): void {
-    const method = (message.method ?? '').toLowerCase();
-    const params = asRecord(message.params);
-    if (!params) {
+  observe(message: ProtocolMessage, observedAtMs: number = Date.now()): void {
+    const observation = this.extractObservation(message);
+    if (!observation) {
       return;
     }
 
-    let absolute: CodexUsageTotals | null = null;
+    if (this.highestPrecedence !== null && observation.precedence > this.highestPrecedence) {
+      return;
+    }
+    if (this.highestPrecedence !== null && observation.precedence < this.highestPrecedence) {
+      this.aggregate = {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0
+      };
+      this.lastAbsolute = null;
+      this.lastIncrementalSignature = null;
+    }
 
-    // Token accounting is strict-canonical: absolute totals only.
+    if (observation.precedence === 1) {
+      this.aggregate = { ...observation.usage };
+      this.lastAbsolute = { ...observation.usage };
+      this.recordTelemetry(observation.source, observedAtMs);
+      this.highestPrecedence = observation.precedence;
+      this.lastIncrementalSignature = null;
+      return;
+    }
+
+    if (observation.precedence === 3) {
+      this.aggregate = { ...observation.usage };
+      this.lastAbsolute = { ...observation.usage };
+      this.recordTelemetry(observation.source, observedAtMs);
+      this.highestPrecedence = observation.precedence;
+      return;
+    }
+
+    const signature = JSON.stringify(observation.usage);
+    if (!observation.absolute && signature === this.lastIncrementalSignature) {
+      return;
+    }
+
+    if (observation.absolute) {
+      if (!this.lastAbsolute) {
+        this.aggregate = { ...observation.usage };
+      } else {
+        this.addAbsoluteDelta(observation.usage);
+      }
+      this.lastAbsolute = { ...observation.usage };
+    } else {
+      this.addIncrementalUsage(observation.usage);
+      this.lastIncrementalSignature = signature;
+    }
+
+    this.recordTelemetry(observation.source, observedAtMs);
+    this.highestPrecedence = observation.precedence;
+  }
+
+  private extractObservation(message: ProtocolMessage): UsageObservation | null {
+    const method = (message.method ?? '').toLowerCase();
+    const params = asRecord(message.params);
+    if (!params) {
+      return null;
+    }
+
+    const terminalSummary = parseTerminalSummaryUsage(method, params);
+    if (terminalSummary) {
+      return {
+        usage: terminalSummary,
+        source: 'terminal_turn_summary',
+        precedence: 1,
+        absolute: true
+      };
+    }
+
+    let absolute: CodexUsageTotals | null = null;
+    let source = 'incremental_usage';
     if (method === 'thread/tokenusage/updated') {
       const tokenUsage = asRecord(params.tokenUsage) ?? asRecord(params.token_usage);
       const parsedTotal = parseTokenTotals(asRecord(tokenUsage?.total));
       absolute = parsedTotal ? mergeTokenUsageMetadata(parsedTotal, tokenUsage) : null;
+      source = 'thread/tokenUsage/updated.params.tokenUsage.total';
     }
 
     if (!absolute) {
       const info = asRecord(params.info);
       const infoTotalTokenUsage = asRecord(info?.total_token_usage) ?? asRecord(info?.totalTokenUsage);
       absolute = parseTokenTotals(infoTotalTokenUsage);
+      source = 'params.info.total_token_usage';
     }
 
     if (!absolute) {
       const totalTokenUsage = asRecord(params.total_token_usage) ?? asRecord(params.totalTokenUsage);
       absolute = parseTokenTotals(totalTokenUsage);
+      source = 'params.total_token_usage';
     }
 
     if (!absolute) {
       const usage = asRecord(params.usage);
       const usageTotalTokenUsage = asRecord(usage?.total_token_usage) ?? asRecord(usage?.totalTokenUsage);
       absolute = parseTokenTotals(usageTotalTokenUsage);
+      source = 'params.usage.total_token_usage';
     }
 
-    if (!absolute) {
-      if (this.hasCanonicalAbsolute) {
-        return;
-      }
-
-      const fallbackUsage = parseLastTokenUsage(params);
-      if (!fallbackUsage) {
-        return;
-      }
-
-      const signature = JSON.stringify(fallbackUsage);
-      if (signature === this.lastFallbackSignature) {
-        return;
-      }
-
-      this.aggregate.input_tokens += Math.max(0, fallbackUsage.input_tokens);
-      this.aggregate.output_tokens += Math.max(0, fallbackUsage.output_tokens);
-      this.aggregate.total_tokens += Math.max(0, fallbackUsage.total_tokens);
-      if (typeof fallbackUsage.cached_input_tokens === 'number') {
-        this.aggregate.cached_input_tokens = (this.aggregate.cached_input_tokens ?? 0) + Math.max(0, fallbackUsage.cached_input_tokens);
-      }
-      if (typeof fallbackUsage.reasoning_output_tokens === 'number') {
-        this.aggregate.reasoning_output_tokens =
-          (this.aggregate.reasoning_output_tokens ?? 0) + Math.max(0, fallbackUsage.reasoning_output_tokens);
-      }
-      if (typeof fallbackUsage.model_context_window === 'number') {
-        this.aggregate.model_context_window = fallbackUsage.model_context_window;
-      }
-      this.lastFallbackSignature = signature;
-      return;
+    if (absolute) {
+      return {
+        usage: absolute,
+        source,
+        precedence: 2,
+        absolute: true
+      };
     }
 
-    this.hasCanonicalAbsolute = true;
-    this.lastFallbackSignature = null;
-    if (!this.lastAbsolute) {
+    const lastUsage = parseLastTokenUsage(params);
+    if (lastUsage) {
+      return {
+        usage: lastUsage,
+        source: 'last_token_usage',
+        precedence: 2,
+        absolute: false
+      };
+    }
+
+    const persistedUsage = parsePersistedFallbackUsage(params);
+    if (persistedUsage) {
+      return {
+        usage: persistedUsage,
+        source: 'persisted_fallback_usage',
+        precedence: 3,
+        absolute: true
+      };
+    }
+
+    return null;
+  }
+
+  private addAbsoluteDelta(absolute: CodexUsageTotals): void {
+    const previous = this.lastAbsolute;
+    if (!previous) {
       this.aggregate = { ...absolute };
-      this.lastAbsolute = { ...absolute };
       return;
     }
-
-    this.aggregate.input_tokens += Math.max(0, absolute.input_tokens - this.lastAbsolute.input_tokens);
-    this.aggregate.output_tokens += Math.max(0, absolute.output_tokens - this.lastAbsolute.output_tokens);
-    this.aggregate.total_tokens += Math.max(0, absolute.total_tokens - this.lastAbsolute.total_tokens);
-    if (typeof absolute.cached_input_tokens === 'number' && typeof this.lastAbsolute.cached_input_tokens === 'number') {
+    this.aggregate.input_tokens += Math.max(0, absolute.input_tokens - previous.input_tokens);
+    this.aggregate.output_tokens += Math.max(0, absolute.output_tokens - previous.output_tokens);
+    this.aggregate.total_tokens += Math.max(0, absolute.total_tokens - previous.total_tokens);
+    if (typeof absolute.cached_input_tokens === 'number' && typeof previous.cached_input_tokens === 'number') {
       this.aggregate.cached_input_tokens = (this.aggregate.cached_input_tokens ?? 0) +
-        Math.max(0, absolute.cached_input_tokens - this.lastAbsolute.cached_input_tokens);
+        Math.max(0, absolute.cached_input_tokens - previous.cached_input_tokens);
     } else if (typeof absolute.cached_input_tokens === 'number' && this.aggregate.cached_input_tokens === undefined) {
       this.aggregate.cached_input_tokens = absolute.cached_input_tokens;
     }
 
     if (
       typeof absolute.reasoning_output_tokens === 'number' &&
-      typeof this.lastAbsolute.reasoning_output_tokens === 'number'
+      typeof previous.reasoning_output_tokens === 'number'
     ) {
       this.aggregate.reasoning_output_tokens = (this.aggregate.reasoning_output_tokens ?? 0) +
-        Math.max(0, absolute.reasoning_output_tokens - this.lastAbsolute.reasoning_output_tokens);
+        Math.max(0, absolute.reasoning_output_tokens - previous.reasoning_output_tokens);
     } else if (typeof absolute.reasoning_output_tokens === 'number' && this.aggregate.reasoning_output_tokens === undefined) {
       this.aggregate.reasoning_output_tokens = absolute.reasoning_output_tokens;
     }
@@ -479,11 +596,38 @@ class UsageTracker {
     if (typeof absolute.model_context_window === 'number') {
       this.aggregate.model_context_window = absolute.model_context_window;
     }
-    this.lastAbsolute = { ...absolute };
+  }
+
+  private addIncrementalUsage(usage: CodexUsageTotals): void {
+    this.aggregate.input_tokens += Math.max(0, usage.input_tokens);
+    this.aggregate.output_tokens += Math.max(0, usage.output_tokens);
+    this.aggregate.total_tokens += Math.max(0, usage.total_tokens);
+    if (typeof usage.cached_input_tokens === 'number') {
+      this.aggregate.cached_input_tokens = (this.aggregate.cached_input_tokens ?? 0) + Math.max(0, usage.cached_input_tokens);
+    }
+    if (typeof usage.reasoning_output_tokens === 'number') {
+      this.aggregate.reasoning_output_tokens =
+        (this.aggregate.reasoning_output_tokens ?? 0) + Math.max(0, usage.reasoning_output_tokens);
+    }
+    if (typeof usage.model_context_window === 'number') {
+      this.aggregate.model_context_window = usage.model_context_window;
+    }
+  }
+
+  private recordTelemetry(source: string, observedAtMs: number): void {
+    this.telemetry = {
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: source,
+      token_telemetry_last_at_ms: observedAtMs
+    };
   }
 
   snapshot(): CodexUsageTotals {
     return { ...this.aggregate };
+  }
+
+  telemetrySnapshot(): TokenTelemetrySnapshot {
+    return { ...this.telemetry };
   }
 }
 
@@ -681,6 +825,7 @@ export class CodexRunner {
         const waitResult = await protocol.waitForTurnTerminal(input.turnTimeoutMs, emit);
         const session_id = `${thread_id}-${turn_id}`;
         const usage = waitResult.usage;
+        const telemetry = waitResult.telemetry;
         const rate_limits = waitResult.rate_limits;
 
         if (waitResult.terminal === 'turn/completed') {
@@ -698,6 +843,7 @@ export class CodexRunner {
             turn_id,
             session_id,
             usage,
+            ...telemetry,
             rate_limits
           });
 
@@ -713,12 +859,13 @@ export class CodexRunner {
             last_event: CANONICAL_EVENT.codex.turnCompleted,
             turns_completed: turnsCompleted,
             usage,
+            ...telemetry,
             rate_limits
           };
         }
 
         if (waitResult.terminal === 'turn/failed') {
-          emit({ event: CANONICAL_EVENT.codex.turnFailed, thread_id, turn_id, session_id, usage, rate_limits });
+          emit({ event: CANONICAL_EVENT.codex.turnFailed, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
           return {
             status: 'failed',
             thread_id,
@@ -728,12 +875,13 @@ export class CodexRunner {
             error_code: 'turn_failed',
             turns_completed: turnsCompleted,
             usage,
+            ...telemetry,
             rate_limits
           };
         }
 
         if (waitResult.terminal === 'turn/cancelled') {
-          emit({ event: CANONICAL_EVENT.codex.turnCancelled, thread_id, turn_id, session_id, usage, rate_limits });
+          emit({ event: CANONICAL_EVENT.codex.turnCancelled, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
           return {
             status: 'failed',
             thread_id,
@@ -743,11 +891,12 @@ export class CodexRunner {
             error_code: 'turn_cancelled',
             turns_completed: turnsCompleted,
             usage,
+            ...telemetry,
             rate_limits
           };
         }
 
-        emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, rate_limits });
+        emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
         const inputRequestId = waitResult.input_required_payload?.request_id ?? null;
         if (inputRequestId) {
           this.pendingNativeInputSessions.set(session_id, {
@@ -770,6 +919,7 @@ export class CodexRunner {
           input_required_payload: waitResult.input_required_payload,
           turns_completed: turnsCompleted,
           usage,
+          ...telemetry,
           rate_limits
         };
       }
@@ -1023,6 +1173,7 @@ class ProtocolClient {
           return {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
+            telemetry: this.usageTracker.telemetrySnapshot(),
             rate_limits: this.latestRateLimits,
             input_required_detail: 'tool requestUserInput input_required_unanswerable',
             input_required_payload: toInputRequestPayload(message) ?? undefined
@@ -1045,6 +1196,7 @@ class ProtocolClient {
           return {
             terminal: 'turn/input_required',
             usage: this.usageTracker.snapshot(),
+            telemetry: this.usageTracker.telemetrySnapshot(),
             rate_limits: this.latestRateLimits,
             input_required_detail: 'mcp elicitation request input_required_unanswerable',
             input_required_payload: toInputRequestPayload(message) ?? undefined
@@ -1056,6 +1208,7 @@ class ProtocolClient {
           return {
             terminal,
             usage: this.usageTracker.snapshot(),
+            telemetry: this.usageTracker.telemetrySnapshot(),
             rate_limits: this.latestRateLimits
           };
         }

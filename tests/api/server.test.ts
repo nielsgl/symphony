@@ -43,6 +43,11 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
       output_tokens: 8,
       total_tokens: 20
     },
+    token_telemetry_status: 'available' as const,
+    token_telemetry_last_source: 'terminal_turn_summary',
+    token_telemetry_last_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+    token_telemetry_turn_started_at_ms: Date.parse('2026-04-10T10:00:30.000Z'),
+    token_telemetry_warning_emitted: false,
     recent_events: [
       {
         at_ms: Date.parse('2026-04-10T10:00:30.000Z'),
@@ -316,7 +321,10 @@ describe('LocalApiServer', () => {
           makeRunningEntry({
             thread_id: 'thread-live-1',
             tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-            last_reported_tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+            last_reported_tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            token_telemetry_status: 'pending',
+            token_telemetry_last_source: null,
+            token_telemetry_last_at_ms: null
           })
         ]
       ]),
@@ -341,12 +349,23 @@ describe('LocalApiServer', () => {
     const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
     const payload = (await response.json()) as {
       codex_totals: { total_tokens: number };
-      running: Array<{ tokens: { total_tokens: number } }>;
+      running: Array<{
+        token_telemetry_status: string;
+        token_telemetry_last_source: string | null;
+        token_telemetry_last_at_ms: number | null;
+        tokens: { total_tokens: number; input_tokens: number; output_tokens: number };
+      }>;
     };
 
     expect(response.status).toBe(200);
     expect(payload.codex_totals.total_tokens).toBe(321);
     expect(payload.running[0]?.tokens.total_tokens).toBe(321);
+    expect(typeof payload.running[0]?.tokens.total_tokens).toBe('number');
+    expect(typeof payload.running[0]?.tokens.input_tokens).toBe('number');
+    expect(typeof payload.running[0]?.tokens.output_tokens).toBe('number');
+    expect(payload.running[0]?.token_telemetry_status).toBe('available');
+    expect(payload.running[0]?.token_telemetry_last_source).toBe('codex_home_state_sqlite');
+    expect(typeof payload.running[0]?.token_telemetry_last_at_ms).toBe('number');
 
     if (previousCodexHome === undefined) {
       delete process.env.SYMPHONY_CODEX_HOME;
@@ -1295,6 +1314,8 @@ describe('LocalApiServer', () => {
       token_accounting: {
         mode: string;
         canonical_precedence: string[];
+        excludes_last_usage_for_totals: boolean;
+        no_telemetry_warning_threshold_ms: number;
         observed_dimensions: {
           cached_input_tokens: boolean;
           reasoning_output_tokens: boolean;
@@ -1323,14 +1344,19 @@ describe('LocalApiServer', () => {
     expect(diagnosticsPayload.workflow.prompt_fallback_active).toBe(false);
     expect(diagnosticsPayload.token_accounting.mode).toBe('strict_canonical');
     expect(diagnosticsPayload.token_accounting.canonical_precedence).toEqual([
+      'terminal_turn_summary',
       'thread/tokenUsage/updated.params.tokenUsage.total',
       'params.info.total_token_usage',
       'params.info.totalTokenUsage',
       'params.total_token_usage',
       'params.totalTokenUsage',
       'params.usage.total_token_usage',
-      'params.usage.totalTokenUsage'
+      'params.usage.totalTokenUsage',
+      'last_token_usage',
+      'persisted_fallback_usage'
     ]);
+    expect(diagnosticsPayload.token_accounting.excludes_last_usage_for_totals).toBe(false);
+    expect(diagnosticsPayload.token_accounting.no_telemetry_warning_threshold_ms).toBe(120_000);
     expect(diagnosticsPayload.token_accounting.observed_dimensions.cached_input_tokens).toBe(false);
     expect((diagnosticsPayload as Record<string, unknown>).runtime_resolution).toMatchObject({
       workflow_path: '/tmp/WORKFLOW.md',

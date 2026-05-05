@@ -39,6 +39,11 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
       output_tokens: 5,
       total_tokens: 16
     },
+    token_telemetry_status: 'available' as const,
+    token_telemetry_last_source: 'terminal_turn_summary',
+    token_telemetry_last_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+    token_telemetry_turn_started_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+    token_telemetry_warning_emitted: false,
     recent_events: [
       {
         at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
@@ -158,6 +163,9 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.last_event_summary).toBe('codex turn completed: done');
     expect(projected.running[0]?.turn_count).toBe(3);
     expect(projected.running[0]?.workspace_path).toBe('/tmp/symphony/ABC-1');
+    expect(projected.running[0]?.token_telemetry_status).toBe('available');
+    expect(projected.running[0]?.token_telemetry_last_source).toBe('terminal_turn_summary');
+    expect(projected.running[0]?.token_telemetry_last_at_ms).toBe(Date.parse('2026-04-10T10:01:00.000Z'));
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');

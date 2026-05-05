@@ -224,6 +224,7 @@ export class OrchestratorCore {
 
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
+    this.config.no_telemetry_warning_threshold_ms = this.config.no_telemetry_warning_threshold_ms ?? 120_000;
     this.ports = options.ports;
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.logger = options.logger;
@@ -317,6 +318,7 @@ export class OrchestratorCore {
     terminal_states: string[];
     github_linking_mode?: 'off' | 'warn' | 'required' | string;
     stall_timeout_ms: number;
+    no_telemetry_warning_threshold_ms?: number;
     worker_hosts?: string[];
     max_concurrent_agents_per_host?: number | null;
     phase_markers_enabled?: boolean;
@@ -332,6 +334,7 @@ export class OrchestratorCore {
     this.config.terminal_states = [...config.terminal_states];
     this.config.github_linking_mode = config.github_linking_mode ?? 'off';
     this.config.stall_timeout_ms = config.stall_timeout_ms;
+    this.config.no_telemetry_warning_threshold_ms = config.no_telemetry_warning_threshold_ms ?? 120_000;
     this.config.worker_hosts = config.worker_hosts ? [...config.worker_hosts] : [];
     this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
     this.config.phase_markers_enabled = config.phase_markers_enabled ?? true;
@@ -524,6 +527,9 @@ export class OrchestratorCore {
 
     if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
       runningEntry.turn_count += 1;
+      runningEntry.token_telemetry_status = 'pending';
+      runningEntry.token_telemetry_turn_started_at_ms = workerEvent.timestamp_ms;
+      runningEntry.token_telemetry_warning_emitted = false;
     }
 
     const usageThreadMatches =
@@ -564,6 +570,9 @@ export class OrchestratorCore {
       }
       runningEntry.tokens = { ...usage };
       runningEntry.last_reported_tokens = { ...usage };
+      runningEntry.token_telemetry_status = workerEvent.token_telemetry_status ?? 'available';
+      runningEntry.token_telemetry_last_source = workerEvent.token_telemetry_last_source ?? 'worker_event_usage';
+      runningEntry.token_telemetry_last_at_ms = workerEvent.token_telemetry_last_at_ms ?? workerEvent.timestamp_ms;
       if (totalDelta > 0) {
         this.throughputTracker.observe({
           at_ms: workerEvent.timestamp_ms,
@@ -571,6 +580,16 @@ export class OrchestratorCore {
         });
       }
     }
+
+    if (workerEvent.token_telemetry_status && !workerEvent.usage) {
+      runningEntry.token_telemetry_status = workerEvent.token_telemetry_status;
+      runningEntry.token_telemetry_last_source =
+        workerEvent.token_telemetry_last_source ?? runningEntry.token_telemetry_last_source;
+      runningEntry.token_telemetry_last_at_ms =
+        workerEvent.token_telemetry_last_at_ms ?? runningEntry.token_telemetry_last_at_ms;
+    }
+
+    this.maybeEmitTokenTelemetryWarning(runningEntry, workerEvent.timestamp_ms);
 
     if (workerEvent.rate_limits) {
       this.state.codex_rate_limits = { ...workerEvent.rate_limits };
@@ -1465,6 +1484,11 @@ export class OrchestratorCore {
         output_tokens: 0,
         total_tokens: 0
       },
+      token_telemetry_status: 'unavailable',
+      token_telemetry_last_source: null,
+      token_telemetry_last_at_ms: null,
+      token_telemetry_turn_started_at_ms: null,
+      token_telemetry_warning_emitted: false,
       recent_events: [],
       started_at_ms: this.nowMs(),
       last_codex_timestamp_ms: null,
@@ -2629,6 +2653,31 @@ export class OrchestratorCore {
 
   private addRuntimeSecondsFromEntry(runningEntry: RunningEntry): void {
     this.state.codex_totals.seconds_running += Math.max(0, Math.floor((this.nowMs() - runningEntry.started_at_ms) / 1000));
+  }
+
+  private maybeEmitTokenTelemetryWarning(runningEntry: RunningEntry, eventAtMs: number): void {
+    if (runningEntry.token_telemetry_status === 'available' || runningEntry.token_telemetry_warning_emitted) {
+      return;
+    }
+
+    const turnStartedAtMs = runningEntry.token_telemetry_turn_started_at_ms;
+    if (turnStartedAtMs === null) {
+      return;
+    }
+
+    const thresholdMs = this.config.no_telemetry_warning_threshold_ms ?? 120_000;
+    if (thresholdMs <= 0 || eventAtMs - turnStartedAtMs < thresholdMs) {
+      return;
+    }
+
+    runningEntry.token_telemetry_warning_emitted = true;
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.codex.tokenTelemetryMissingThresholdExceeded,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: `token_telemetry_status=${runningEntry.token_telemetry_status} elapsed_ms=${eventAtMs - turnStartedAtMs}`
+    });
   }
 
   private async completeRunRecord(

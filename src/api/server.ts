@@ -312,6 +312,9 @@ export class LocalApiServer {
       const liveTotal = liveTotals.get(row.thread_id);
       if (typeof liveTotal === 'number' && liveTotal > 0) {
         row.tokens.total_tokens = liveTotal;
+        row.token_telemetry_status = 'available';
+        row.token_telemetry_last_source = 'codex_home_state_sqlite';
+        row.token_telemetry_last_at_ms = Date.now();
         liveAggregate += liveTotal;
       }
     }
@@ -332,6 +335,9 @@ export class LocalApiServer {
     const liveTotal = this.resolveLiveThreadTokenTotals([threadId]).get(threadId);
     if (typeof liveTotal === 'number' && liveTotal > 0) {
       payload.running.tokens.total_tokens = liveTotal;
+      payload.running.token_telemetry_status = 'available';
+      payload.running.token_telemetry_last_source = 'codex_home_state_sqlite';
+      payload.running.token_telemetry_last_at_ms = Date.now();
     }
   }
 
@@ -553,16 +559,20 @@ export class LocalApiServer {
                 token_accounting: {
                   mode: 'strict_canonical',
                   canonical_precedence: [
+                    'terminal_turn_summary',
                     'thread/tokenUsage/updated.params.tokenUsage.total',
                     'params.info.total_token_usage',
                     'params.info.totalTokenUsage',
                     'params.total_token_usage',
                     'params.totalTokenUsage',
                     'params.usage.total_token_usage',
-                    'params.usage.totalTokenUsage'
+                    'params.usage.totalTokenUsage',
+                    'last_token_usage',
+                    'persisted_fallback_usage'
                   ],
                   excludes_generic_usage_for_totals: true,
-                  excludes_last_usage_for_totals: true,
+                  excludes_last_usage_for_totals: false,
+                  no_telemetry_warning_threshold_ms: 120_000,
                   optional_dimensions: [
                     'cached_input_tokens',
                     'reasoning_output_tokens',
