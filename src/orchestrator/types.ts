@@ -7,6 +7,17 @@ import type { RunTerminalStatus } from '../persistence';
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
 export type WorkerExitReason = 'normal' | 'abnormal';
 export type RetryDelayType = 'continuation' | 'failure';
+export type BudgetHardLimitPolicy = 'block_requires_resume' | 'terminate_attempt';
+export type BudgetStatus = 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable';
+
+export interface BudgetRuntimeProjection {
+  budget_usage_tokens: number | null;
+  budget_limit_tokens: number | null;
+  budget_window_minutes: number;
+  budget_status: BudgetStatus;
+  budget_policy: BudgetHardLimitPolicy | null;
+  budget_message?: string | null;
+}
 
 export interface RunningEntry {
   issue: Issue;
@@ -63,6 +74,9 @@ export interface RunningEntry {
   token_telemetry_last_at_ms: number | null;
   token_telemetry_turn_started_at_ms: number | null;
   token_telemetry_warning_emitted: boolean;
+  budget_warning_emitted?: boolean;
+  budget_hard_limit_enforced?: boolean;
+  budget?: BudgetRuntimeProjection;
   recent_events: Array<{
     at_ms: number;
     event: string;
@@ -122,6 +136,7 @@ export interface RetryEntry {
     checklist_checkpoint: string | null;
     state_marker: string | null;
   };
+  budget?: BudgetRuntimeProjection;
 }
 
 export interface RedispatchProgressSample {
@@ -191,6 +206,7 @@ export interface BlockedEntry {
   };
   required_actions?: string[];
   resume_override_reason?: string | null;
+  budget?: BudgetRuntimeProjection;
   pending_input?: {
     request_id: string | null;
     request_method: string | null;
@@ -257,6 +273,7 @@ export interface OrchestratorState {
   circuit_breakers: Map<string, CircuitBreakerEntry>;
   redispatch_progress?: Map<string, RedispatchProgressSample[]>;
   phase_timeline?: Map<string, PhaseMarker[]>;
+  budget_usage_samples?: Map<string, Array<{ at_ms: number; total_tokens: number }>>;
   completed: Set<string>;
   codex_totals: {
     input_tokens: number;
@@ -444,6 +461,13 @@ export interface OrchestratorConfig {
   progress_stalled_waiting_ms?: number;
   phase_markers_enabled?: boolean;
   phase_timeline_limit?: number;
+  budget?: {
+    per_run_total_tokens?: number;
+    per_issue_rolling_tokens?: number;
+    rolling_window_minutes: number;
+    warning_threshold_ratio: number;
+    hard_limit_policy: BudgetHardLimitPolicy;
+  };
   worker_hosts?: string[];
   max_concurrent_agents_per_host?: number | null;
 }

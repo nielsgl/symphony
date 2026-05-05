@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   deriveOperatorTransitions,
+  formatBudgetStatusLabel,
+  formatBudgetSummary,
   getActionRequiredLabel,
   isActionRequiredCode,
   summarizeActionRequired
@@ -25,8 +27,35 @@ describe('dashboard view model', () => {
 
   it('identifies supported action-required reason codes', () => {
     expect(isActionRequiredCode('operator_action_required_no_progress_redispatch_blocked')).toBe(true);
+    expect(isActionRequiredCode('operator_action_required_budget_limit_exceeded')).toBe(true);
     expect(getActionRequiredLabel('awaiting_human_review_scope_incomplete')).toBe('Awaiting Human Review (Scope Incomplete)');
+    expect(getActionRequiredLabel('attempt_terminated_budget_limit_exceeded')).toBe('Budget Limit Terminated Attempt');
     expect(isActionRequiredCode('manual_resume')).toBe(false);
+  });
+
+  it('formats operator-visible budget status without treating unavailable telemetry as zero', () => {
+    expect(formatBudgetStatusLabel('hard_limited')).toBe('Hard limited');
+    expect(
+      formatBudgetSummary({
+        budget_usage_tokens: 105,
+        budget_limit_tokens: 100,
+        budget_window_minutes: 1440,
+        budget_status: 'hard_limited',
+        budget_policy: 'block_requires_resume',
+        budget_message: 'Budget hard limit exceeded. Continuation blocked until manual resume.'
+      })
+    ).toBe(
+      'Budget: Hard limited | 105 / 100 tokens | window 1,440m | policy block_requires_resume | Budget hard limit exceeded. Continuation blocked until manual resume.'
+    );
+    expect(
+      formatBudgetSummary({
+        budget_usage_tokens: null,
+        budget_limit_tokens: 100,
+        budget_window_minutes: 60,
+        budget_status: 'telemetry_unavailable',
+        budget_policy: 'terminate_attempt'
+      })
+    ).toBe('Budget: Telemetry unavailable | usage unavailable | window 60m | policy terminate_attempt');
   });
 
   it('derives explicit operator transition entries from canonical events and blocked reason state', () => {

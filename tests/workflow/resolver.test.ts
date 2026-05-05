@@ -33,6 +33,11 @@ describe('ConfigResolver', () => {
       fallback_to_clone_on_worktree_failure: false
     });
     expect(config.codex.command).toBe('codex app-server');
+    expect(config.budget).toEqual({
+      rolling_window_minutes: 1440,
+      warning_threshold_ratio: 0.8,
+      hard_limit_policy: 'block_requires_resume'
+    });
     expect(config.persistence.enabled).toBe(true);
     expect(config.persistence.retention_days).toBe(14);
     expect(config.observability).toEqual({
@@ -48,6 +53,30 @@ describe('ConfigResolver', () => {
     expect(config.logging.max_bytes).toBe(10 * 1024 * 1024);
     expect(config.logging.max_files).toBe(5);
     expect(config.validation?.ui_evidence_profile).toBe('baseline');
+  });
+
+  it('resolves budget controls with defaults for optional policy fields', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        budget: {
+          per_run_total_tokens: '10000',
+          per_issue_rolling_tokens: 25000,
+          warning_threshold_ratio: '0.75',
+          hard_limit_policy: 'terminate_attempt'
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.budget).toEqual({
+      per_run_total_tokens: 10000,
+      per_issue_rolling_tokens: 25000,
+      rolling_window_minutes: 1440,
+      warning_threshold_ratio: 0.75,
+      hard_limit_policy: 'terminate_attempt'
+    });
   });
 
   it('resolves $VAR for tracker.api_key and workspace.root', () => {

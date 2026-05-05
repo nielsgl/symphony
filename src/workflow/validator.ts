@@ -49,6 +49,10 @@ function isValidServerHost(host: string): boolean {
   );
 }
 
+function isPositiveInteger(value: number | undefined): boolean {
+  return value === undefined || (Number.isFinite(value) && value > 0 && Math.trunc(value) === value);
+}
+
 export class ConfigValidator {
   private readonly clock: () => Date;
 
@@ -265,6 +269,68 @@ export class ConfigValidator {
           at
         };
       }
+    }
+
+    const budget = effectiveConfig.budget ?? {
+      rolling_window_minutes: 1440,
+      warning_threshold_ratio: 0.8,
+      hard_limit_policy: 'block_requires_resume'
+    };
+
+    if (!isPositiveInteger(budget.per_run_total_tokens)) {
+      return {
+        ok: false,
+        error_code: 'invalid_budget_per_run_total_tokens',
+        message: 'budget.per_run_total_tokens must be a positive integer when provided',
+        at
+      };
+    }
+
+    if (!isPositiveInteger(budget.per_issue_rolling_tokens)) {
+      return {
+        ok: false,
+        error_code: 'invalid_budget_per_issue_rolling_tokens',
+        message: 'budget.per_issue_rolling_tokens must be a positive integer when provided',
+        at
+      };
+    }
+
+    if (
+      !Number.isFinite(budget.rolling_window_minutes) ||
+      budget.rolling_window_minutes <= 0 ||
+      Math.trunc(budget.rolling_window_minutes) !== budget.rolling_window_minutes
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_budget_rolling_window_minutes',
+        message: 'budget.rolling_window_minutes must be a positive integer',
+        at
+      };
+    }
+
+    if (
+      !Number.isFinite(budget.warning_threshold_ratio) ||
+      budget.warning_threshold_ratio <= 0 ||
+      budget.warning_threshold_ratio > 1
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_budget_warning_threshold_ratio',
+        message: 'budget.warning_threshold_ratio must be greater than 0 and less than or equal to 1',
+        at
+      };
+    }
+
+    if (
+      budget.hard_limit_policy !== 'block_requires_resume' &&
+      budget.hard_limit_policy !== 'terminate_attempt'
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_budget_hard_limit_policy',
+        message: "budget.hard_limit_policy must be 'block_requires_resume' or 'terminate_attempt'",
+        at
+      };
     }
 
     if (!Number.isFinite(effectiveConfig.codex.turn_timeout_ms) || effectiveConfig.codex.turn_timeout_ms <= 0) {

@@ -45,6 +45,11 @@ function baseConfig(): EffectiveConfig {
       max_turns: 20,
       max_concurrent_agents_by_state: {}
     },
+    budget: {
+      rolling_window_minutes: 1440,
+      warning_threshold_ratio: 0.8,
+      hard_limit_policy: 'block_requires_resume'
+    },
     codex: {
       command: 'codex app-server',
       turn_timeout_ms: 3600000,
@@ -196,6 +201,45 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('missing_codex_command');
+    }
+  });
+
+  it('accepts valid budget controls', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.budget = {
+      per_run_total_tokens: 1000,
+      per_issue_rolling_tokens: 5000,
+      rolling_window_minutes: 60,
+      warning_threshold_ratio: 0.75,
+      hard_limit_policy: 'terminate_attempt'
+    };
+
+    expect(validator.validate(config)).toEqual({ ok: true, at: expect.any(String) });
+  });
+
+  it('rejects invalid budget controls with typed errors', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.budget = {
+      rolling_window_minutes: 1440,
+      warning_threshold_ratio: 0.8,
+      hard_limit_policy: 'block_requires_resume'
+    };
+    config.budget.per_run_total_tokens = 0;
+
+    const invalidRunLimit = validator.validate(config);
+    expect(invalidRunLimit.ok).toBe(false);
+    if (!invalidRunLimit.ok) {
+      expect(invalidRunLimit.error_code).toBe('invalid_budget_per_run_total_tokens');
+    }
+
+    config.budget.per_run_total_tokens = 1000;
+    config.budget.warning_threshold_ratio = 1.5;
+    const invalidThreshold = validator.validate(config);
+    expect(invalidThreshold.ok).toBe(false);
+    if (!invalidThreshold.ok) {
+      expect(invalidThreshold.error_code).toBe('invalid_budget_warning_threshold_ratio');
     }
   });
 

@@ -477,6 +477,97 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return Boolean(code && ACTION_REQUIRED_CODES[code]);
   }
 
+  function formatBudgetStatusLabel(status) {
+    switch (status) {
+      case 'warning':
+        return 'Warning';
+      case 'hard_limited':
+        return 'Hard limited';
+      case 'telemetry_unavailable':
+        return 'Telemetry unavailable';
+      case 'ok':
+        return 'Ok';
+      default:
+        return 'Not configured';
+    }
+  }
+
+  function budgetStatusClass(status) {
+    if (status === 'hard_limited') {
+      return 'failed';
+    }
+    if (status === 'warning' || status === 'telemetry_unavailable') {
+      return 'pending';
+    }
+    return 'success';
+  }
+
+  function createBudgetBlock(entry) {
+    const container = document.createElement('div');
+    container.className = 'budget-summary';
+    const status = entry && entry.budget_status ? entry.budget_status : null;
+    const statusPill = document.createElement('div');
+    statusPill.className = 'status-pill ' + budgetStatusClass(status);
+    statusPill.textContent = 'Budget: ' + formatBudgetStatusLabel(status);
+    container.append(statusPill);
+
+    const detail = document.createElement('div');
+    detail.className = 'muted';
+    if (status === 'telemetry_unavailable') {
+      detail.textContent = 'Budget usage unavailable; not counted as zero.';
+    } else if (typeof entry.budget_usage_tokens === 'number' || typeof entry.budget_limit_tokens === 'number') {
+      const usage = typeof entry.budget_usage_tokens === 'number' ? formatNumber(entry.budget_usage_tokens) : 'n/a';
+      const limit = typeof entry.budget_limit_tokens === 'number' ? formatNumber(entry.budget_limit_tokens) : 'n/a';
+      detail.textContent = usage + ' / ' + limit + ' tokens';
+    } else {
+      detail.textContent = 'No token budget configured.';
+    }
+    container.append(detail);
+
+    const metaParts = [];
+    if (typeof entry.budget_window_minutes === 'number') {
+      metaParts.push('Window ' + formatNumber(entry.budget_window_minutes) + 'm');
+    }
+    if (entry.budget_policy) {
+      metaParts.push('Policy ' + entry.budget_policy);
+    }
+    if (metaParts.length) {
+      const meta = document.createElement('div');
+      meta.className = 'muted';
+      meta.textContent = metaParts.join(' • ');
+      container.append(meta);
+    }
+    if (entry.budget_message) {
+      const message = document.createElement('div');
+      message.className = status === 'hard_limited' ? 'status-error' : 'muted';
+      message.textContent = 'Budget stopped continuation: ' + entry.budget_message;
+      container.append(message);
+    }
+    return container;
+  }
+
+  function formatBudgetSummary(entry) {
+    const status = entry && entry.budget_status ? entry.budget_status : null;
+    const parts = ['Budget: ' + formatBudgetStatusLabel(status)];
+    if (status === 'telemetry_unavailable') {
+      parts.push('usage unavailable');
+    } else if (entry && (typeof entry.budget_usage_tokens === 'number' || typeof entry.budget_limit_tokens === 'number')) {
+      const usage = typeof entry.budget_usage_tokens === 'number' ? formatNumber(entry.budget_usage_tokens) : 'n/a';
+      const limit = typeof entry.budget_limit_tokens === 'number' ? formatNumber(entry.budget_limit_tokens) : 'n/a';
+      parts.push(usage + ' / ' + limit + ' tokens');
+    }
+    if (entry && typeof entry.budget_window_minutes === 'number') {
+      parts.push('window ' + formatNumber(entry.budget_window_minutes) + 'm');
+    }
+    if (entry && entry.budget_policy) {
+      parts.push('policy ' + entry.budget_policy);
+    }
+    if (entry && entry.budget_message) {
+      parts.push(entry.budget_message);
+    }
+    return parts.join(' • ');
+  }
+
   function formatApiError(payload, fallbackMessage) {
     if (!payload || !payload.error) {
       return fallbackMessage;
@@ -1065,6 +1156,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       tokenBadge.title = 'Token telemetry confidence/source quality';
       tokenBadge.textContent = getTokenConfidenceLabel(telemetryConfidence);
       tokensCell.append(tokenTotal, tokenBadge, tokenDetail);
+      tokensCell.append(createBudgetBlock(entry));
 
       const eventCell = document.createElement('td');
       eventCell.textContent = entry.last_event_summary || entry.last_event || 'n/a';
@@ -1213,6 +1305,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.className = 'muted';
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      stopReasonCell.append(createBudgetBlock(entry));
       const retryHintBadge = createOperatorHintBadge(entry.operator_explainer_hint);
       if (retryHintBadge) {
         stopReasonCell.append(retryHintBadge);
@@ -1363,6 +1456,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.className = 'muted';
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      stopReasonCell.append(createBudgetBlock(entry));
       if (entry.stop_reason_code) {
         const stateLabel = document.createElement('div');
         stateLabel.className = 'status-pill failed';
@@ -1708,6 +1802,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if (runningOrRetry && typeof runningOrRetry.workspace_is_git_worktree === 'boolean') {
         summaryParts.push('Git worktree: ' + (runningOrRetry.workspace_is_git_worktree ? 'yes' : 'no'));
       }
+      if (runningOrRetry) {
+        summaryParts.push(formatBudgetSummary(runningOrRetry));
+      }
       if (state.runtimeResolution && state.runtimeResolution.workspace_root) {
         summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);
       }
@@ -1749,6 +1846,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
             return event.at + ' | ' + event.event + ' | ' + (event.message || 'n/a');
           }).join('\\n')
         : 'No session console entries.';
+      const budgetText = runningOrRetry ? formatBudgetSummary(runningOrRetry) : 'Budget: not configured';
       elements.issueOutput.textContent =
         'Operator Transition Timeline\\n' +
         operatorTimelineText +
@@ -1758,6 +1856,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         timelineText +
         '\\n\\nSession Console\\n' +
         sessionConsoleText +
+        '\\n\\nBudget\\n' +
+        budgetText +
         '\\n\\nIssue JSON\\n' +
         JSON.stringify(payload, null, 2);
       if (state.payload) {

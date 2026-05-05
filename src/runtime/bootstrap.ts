@@ -769,6 +769,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       running_wait_stall_threshold_ms: nextConfig.codex.running_wait_stall_threshold_ms,
       progress_heartbeat_only_warn_ms: nextConfig.codex.progress_heartbeat_only_warn_ms,
       progress_stalled_waiting_ms: nextConfig.codex.progress_stalled_waiting_ms,
+      budget: nextConfig.budget,
       worker_hosts: nextConfig.worker?.ssh_hosts ?? [],
       max_concurrent_agents_per_host: nextConfig.worker?.max_concurrent_agents_per_host ?? null
     });
@@ -834,6 +835,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       progress_stalled_waiting_ms: effectiveConfig.codex.progress_stalled_waiting_ms,
       phase_markers_enabled: effectiveConfig.observability?.phase_markers_enabled ?? true,
       phase_timeline_limit: effectiveConfig.observability?.phase_timeline_limit ?? 30,
+      budget: effectiveConfig.budget,
       worker_hosts: effectiveConfig.worker?.ssh_hosts ?? [],
       max_concurrent_agents_per_host: effectiveConfig.worker?.max_concurrent_agents_per_host ?? null
     },

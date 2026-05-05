@@ -3,6 +3,8 @@ import { CANONICAL_EVENT } from '../observability/events';
 export const ACTION_REQUIRED_REASON_LABELS: Record<string, string> = {
   operator_action_required_workspace_conflict: 'Workspace Conflict',
   operator_action_required_no_progress_redispatch_blocked: 'No Progress Redispatch Blocked',
+  operator_action_required_budget_limit_exceeded: 'Budget Limit Exceeded',
+  attempt_terminated_budget_limit_exceeded: 'Budget Limit Terminated Attempt',
   awaiting_human_review_scope_incomplete: 'Awaiting Human Review (Scope Incomplete)'
 };
 
@@ -14,6 +16,15 @@ export interface ActionRequiredSummary {
 export interface DashboardBlockedEntry {
   stop_reason_code?: string | null;
   stop_reason_detail?: string | null;
+}
+
+export interface DashboardBudgetEntry {
+  budget_usage_tokens?: number | null;
+  budget_limit_tokens?: number | null;
+  budget_window_minutes?: number | null;
+  budget_status?: 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable' | null;
+  budget_policy?: 'block_requires_resume' | 'terminate_attempt' | null;
+  budget_message?: string | null;
 }
 
 export function getActionRequiredLabel(code: string | null | undefined): string {
@@ -35,6 +46,46 @@ export function summarizeActionRequired(entries: DashboardBlockedEntry[]): Actio
   }
   const total = Object.values(grouped).reduce((sum, value) => sum + value, 0);
   return { total, grouped };
+}
+
+export function formatBudgetStatusLabel(status: DashboardBudgetEntry['budget_status']): string {
+  switch (status) {
+    case 'warning':
+      return 'Warning';
+    case 'hard_limited':
+      return 'Hard limited';
+    case 'telemetry_unavailable':
+      return 'Telemetry unavailable';
+    case 'ok':
+      return 'Ok';
+    default:
+      return 'Not configured';
+  }
+}
+
+export function formatBudgetSummary(entry: DashboardBudgetEntry | null | undefined): string {
+  const status = entry?.budget_status ?? null;
+  if (!entry || (!status && !entry.budget_policy && entry.budget_limit_tokens === undefined)) {
+    return 'Budget: not configured';
+  }
+  const parts = [`Budget: ${formatBudgetStatusLabel(status)}`];
+  if (status === 'telemetry_unavailable') {
+    parts.push('usage unavailable');
+  } else if (typeof entry.budget_usage_tokens === 'number' || typeof entry.budget_limit_tokens === 'number') {
+    const usage = typeof entry.budget_usage_tokens === 'number' ? entry.budget_usage_tokens.toLocaleString('en-US') : 'n/a';
+    const limit = typeof entry.budget_limit_tokens === 'number' ? entry.budget_limit_tokens.toLocaleString('en-US') : 'n/a';
+    parts.push(`${usage} / ${limit} tokens`);
+  }
+  if (typeof entry.budget_window_minutes === 'number') {
+    parts.push(`window ${entry.budget_window_minutes.toLocaleString('en-US')}m`);
+  }
+  if (entry.budget_policy) {
+    parts.push(`policy ${entry.budget_policy}`);
+  }
+  if (entry.budget_message) {
+    parts.push(entry.budget_message);
+  }
+  return parts.join(' | ');
 }
 
 export type OperatorTransitionType =
