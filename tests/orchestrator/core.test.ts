@@ -1480,6 +1480,157 @@ describe('OrchestratorCore', () => {
     ]));
   });
 
+  it('persists retry timer redispatch attempts under the original issue run', async () => {
+    const issueRuns: Array<Record<string, unknown>> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    const threads: Array<Record<string, unknown>> = [];
+    const transitions: Array<Record<string, unknown>> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => `legacy-run-${attempts.length + 1}`,
+      appendIssueRun: async (params) => {
+        issueRuns.push(params);
+        return `issue_run_${issueRuns.length}`;
+      },
+      appendAttempt: async (params) => {
+        attempts.push(params);
+        return `attempt_${attempts.length}`;
+      },
+      appendThread: async (params) => {
+        threads.push(params);
+        return String(params.thread_id);
+      },
+      appendTurn: async (params) => String(params.turn_id),
+      appendStateTransition: async (params) => {
+        transitions.push(params);
+        return `transition_${transitions.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      persistence,
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-new',
+        checklist_checkpoint: 'chk-new',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({ id: 'i-retry-lineage', identifier: 'ABC-RETRY', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-retry-lineage', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-0',
+      turn_id: 'turn-0'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.orchestrator.onWorkerExit('i-retry-lineage', 'normal');
+
+    const internals = harness.orchestrator as unknown as {
+      state: {
+        redispatch_progress: Map<
+          string,
+          Array<{ at_ms: number; commit_sha: string | null; checklist_checkpoint: string | null; state_marker: string | null; pr_open: boolean }>
+        >;
+      };
+    };
+    internals.state.redispatch_progress = new Map([
+      [
+        'i-retry-lineage',
+        [{ at_ms: harness.now.value - 1, commit_sha: 'sha-old', checklist_checkpoint: 'chk-old', state_marker: null, pr_open: false }]
+      ]
+    ]);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-retry-lineage')?.callback();
+    harness.orchestrator.onWorkerEvent('i-retry-lineage', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(issueRuns).toHaveLength(1);
+    expect(attempts).toEqual([
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_number: 0 }),
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_number: 1 })
+    ]);
+    expect(threads).toEqual([
+      expect.objectContaining({ attempt_id: 'attempt_1', thread_id: 'thread-0' }),
+      expect.objectContaining({ attempt_id: 'attempt_2', thread_id: 'thread-1' })
+    ]);
+    expect(transitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_1', reason_code: 'normal_completion' }),
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_2', reason_code: 'dispatch_started' })
+    ]));
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-retry-lineage').map((entry) => entry.attempt)).toEqual([null, 1]);
+  });
+
+  it('persists redispatch gate blocks on the retry lineage issue run', async () => {
+    const issueRuns: Array<Record<string, unknown>> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    const transitions: Array<Record<string, unknown>> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-1',
+      appendIssueRun: async (params) => {
+        issueRuns.push(params);
+        return `issue_run_${issueRuns.length}`;
+      },
+      appendAttempt: async (params) => {
+        attempts.push(params);
+        return `attempt_${attempts.length}`;
+      },
+      appendThread: async (params) => String(params.thread_id),
+      appendTurn: async (params) => String(params.turn_id),
+      appendStateTransition: async (params) => {
+        transitions.push(params);
+        return `transition_${transitions.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      persistence,
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({ id: 'i-retry-blocked', identifier: 'ABC-BLOCK', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-retry-blocked', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-0',
+      turn_id: 'turn-0'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.orchestrator.onWorkerExit('i-retry-blocked', 'normal');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-retry-blocked')?.callback();
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-retry-blocked');
+    expect(issueRuns).toHaveLength(1);
+    expect(blocked?.issue_run_id).toBe('issue_run_1');
+    expect(blocked?.previous_attempt_id).toBe('attempt_1');
+    expect(transitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        thread_id: 'thread-0',
+        to_status: 'blocked',
+        reason_code: 'operator_action_required_no_progress_redispatch_blocked'
+      })
+    ]));
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-retry-blocked')).toHaveLength(1);
+  });
+
   it('aggregates worker event usage and turn counts deterministically', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-usage' })]);

@@ -105,6 +105,8 @@ export interface RetryEntry {
   issue_id: string;
   identifier: string;
   attempt: number;
+  issue_run_id?: string | null;
+  previous_attempt_id?: string | null;
   due_at_ms: number;
   error: string | null;
   worker_host: string | null;
@@ -155,6 +157,8 @@ export interface BlockedEntry {
   issue_id: string;
   issue_identifier: string;
   attempt: number;
+  issue_run_id?: string | null;
+  previous_attempt_id?: string | null;
   worker_host: string | null;
   workspace_path: string | null;
   provisioner_type: string | null;

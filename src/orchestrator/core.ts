@@ -32,6 +32,8 @@ interface ScheduleRetryParams {
   issue_id: string;
   identifier: string;
   attempt: number;
+  issue_run_id?: string | null;
+  previous_attempt_id?: string | null;
   delay_type: RetryDelayType;
   error?: string | null;
   worker_host?: string | null;
@@ -82,6 +84,11 @@ interface WorkspaceConflictContext {
   resolution_hints: string[];
 }
 
+interface DispatchGraphContext {
+  issue_run_id?: string | null;
+  previous_attempt_id?: string | null;
+}
+
 function cloneIssue(issue: Issue): Issue {
   return {
     ...issue,
@@ -130,6 +137,8 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     issue_id: entry.issue_id,
     identifier: entry.identifier,
     attempt: entry.attempt,
+    issue_run_id: entry.issue_run_id ?? null,
+    previous_attempt_id: entry.previous_attempt_id ?? null,
     due_at_ms: entry.due_at_ms,
     error: entry.error,
     worker_host: entry.worker_host,
@@ -162,6 +171,8 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     issue_id: entry.issue_id,
     issue_identifier: entry.issue_identifier,
     attempt: entry.attempt,
+    issue_run_id: entry.issue_run_id ?? null,
+    previous_attempt_id: entry.previous_attempt_id ?? null,
     worker_host: entry.worker_host,
     workspace_path: entry.workspace_path,
     provisioner_type: entry.provisioner_type,
@@ -1006,6 +1017,45 @@ export class OrchestratorCore {
     }
   }
 
+  private async persistExecutionGraphRetryTransition(
+    retryEntry: RetryEntry,
+    toStatus: string,
+    status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying',
+    reasonCode: string,
+    reasonDetail: string | null
+  ): Promise<void> {
+    if (!this.persistence || !retryEntry.issue_run_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendStateTransition?.({
+        issue_run_id: retryEntry.issue_run_id,
+        attempt_id: retryEntry.previous_attempt_id,
+        thread_id: retryEntry.previous_thread_id,
+        turn_id: null,
+        from_status: null,
+        to_status: toStatus,
+        transitioned_at: asIso(this.nowMs()),
+        status,
+        reason_code: reasonCode,
+        reason_detail: reasonDetail
+      });
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist execution graph retry transition for ${retryEntry.identifier}`,
+        context: {
+          issue_id: retryEntry.issue_id,
+          issue_identifier: retryEntry.identifier,
+          thread_id: retryEntry.previous_thread_id,
+          reason_code: reasonCode
+        }
+      });
+    }
+  }
+
   private budgetConfigured(): boolean {
     return Boolean(
       this.config.budget &&
@@ -1256,6 +1306,8 @@ export class OrchestratorCore {
         issue_id: issueId,
         issue_identifier: running.identifier,
         attempt: running.retry_attempt + 1,
+        issue_run_id: running.issue_run_id ?? null,
+        previous_attempt_id: running.attempt_id ?? null,
         worker_host: running.worker_host ?? null,
         workspace_path: running.workspace_path ?? null,
         provisioner_type: running.provisioner_type ?? null,
@@ -1380,6 +1432,8 @@ export class OrchestratorCore {
         issue_id,
         identifier: running.identifier,
         attempt: 1,
+        issue_run_id: running.issue_run_id ?? null,
+        previous_attempt_id: running.attempt_id ?? null,
         delay_type: 'continuation',
         error: null,
         worker_host: running.worker_host ?? null,
@@ -1432,6 +1486,8 @@ export class OrchestratorCore {
           issue_id,
           issue_identifier: running.identifier,
           attempt: running.retry_attempt + 1,
+          issue_run_id: running.issue_run_id ?? null,
+          previous_attempt_id: running.attempt_id ?? null,
           worker_host: running.worker_host ?? null,
           workspace_path: running.workspace_path ?? null,
           provisioner_type: running.provisioner_type ?? null,
@@ -1482,6 +1538,8 @@ export class OrchestratorCore {
           issue_id,
           issue_identifier: running.identifier,
           attempt: running.retry_attempt + 1,
+          issue_run_id: running.issue_run_id ?? null,
+          previous_attempt_id: running.attempt_id ?? null,
           worker_host: running.worker_host ?? null,
           workspace_path: running.workspace_path ?? null,
           provisioner_type: running.provisioner_type ?? null,
@@ -1532,6 +1590,8 @@ export class OrchestratorCore {
         issue_id,
         identifier: running.identifier,
         attempt: running.retry_attempt + 1,
+        issue_run_id: running.issue_run_id ?? null,
+        previous_attempt_id: running.attempt_id ?? null,
         delay_type: 'failure',
         error: error ?? `worker exited: ${reason}`,
         worker_host: running.worker_host ?? null,
@@ -1623,6 +1683,8 @@ export class OrchestratorCore {
         issue_id,
         identifier: retryEntry.identifier,
         attempt: retryEntry.attempt + 1,
+        issue_run_id: retryEntry.issue_run_id,
+        previous_attempt_id: retryEntry.previous_attempt_id,
         delay_type: 'failure',
         error: 'retry poll failed',
         worker_host: retryEntry.worker_host ?? null,
@@ -1667,6 +1729,8 @@ export class OrchestratorCore {
           issue_id,
           identifier: issue.identifier,
           attempt: retryEntry.attempt + 1,
+          issue_run_id: retryEntry.issue_run_id,
+          previous_attempt_id: retryEntry.previous_attempt_id,
           delay_type: 'failure',
           error: 'no available orchestrator slots',
           worker_host: retryEntry.worker_host ?? null,
@@ -1706,6 +1770,8 @@ export class OrchestratorCore {
         issue_id,
         issue_identifier: retryEntry.identifier,
         attempt: retryEntry.attempt,
+        issue_run_id: retryEntry.issue_run_id,
+        previous_attempt_id: retryEntry.previous_attempt_id,
         worker_host: retryEntry.worker_host ?? null,
         workspace_path: retryEntry.workspace_path ?? null,
         provisioner_type: retryEntry.provisioner_type ?? null,
@@ -1734,6 +1800,13 @@ export class OrchestratorCore {
         ],
         apply_circuit_breaker: gateEvaluation.breaker_hit
       });
+      await this.persistExecutionGraphRetryTransition(
+        retryEntry,
+        'blocked',
+        'blocked',
+        stopReasonCode,
+        stopReasonDetail
+      );
       const eventName = gateEvaluation.awaiting_human_review_scope_incomplete
         ? CANONICAL_EVENT.orchestration.stateAwaitingHumanReviewScopeIncomplete
         : CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked;
@@ -1792,7 +1865,10 @@ export class OrchestratorCore {
       return;
     }
 
-    await this.dispatchIssue(issue, retryEntry.attempt);
+    await this.dispatchIssue(issue, retryEntry.attempt, null, {
+      issue_run_id: retryEntry.issue_run_id,
+      previous_attempt_id: retryEntry.previous_attempt_id
+    });
   }
 
   private evaluateRedispatchGate(
@@ -2051,6 +2127,8 @@ export class OrchestratorCore {
         issue_id: issueId,
         identifier: runningEntry.identifier,
         attempt: runningEntry.retry_attempt + 1,
+        issue_run_id: runningEntry.issue_run_id ?? null,
+        previous_attempt_id: runningEntry.attempt_id ?? null,
         delay_type: 'failure',
         error: 'worker stalled',
         worker_host: runningEntry.worker_host ?? null,
@@ -2093,7 +2171,12 @@ export class OrchestratorCore {
     }
   }
 
-  private async dispatchIssue(issue: Issue, attempt: number | null, resume_context: string | null = null): Promise<void> {
+  private async dispatchIssue(
+    issue: Issue,
+    attempt: number | null,
+    resume_context: string | null = null,
+    graphContext: DispatchGraphContext = {}
+  ): Promise<void> {
     this.emitPhaseMarker(issue.id, {
       phase: 'dispatch_started',
       detail: 'dispatch attempt started',
@@ -2130,6 +2213,8 @@ export class OrchestratorCore {
         issue_id: issue.id,
         identifier: issue.identifier,
         attempt: nextAttempt(attempt),
+        issue_run_id: graphContext.issue_run_id ?? null,
+        previous_attempt_id: graphContext.previous_attempt_id ?? null,
         delay_type: 'failure',
         error: 'no available worker host slots',
         worker_host: workerHost,
@@ -2175,6 +2260,8 @@ export class OrchestratorCore {
         issue_id: issue.id,
         identifier: issue.identifier,
         attempt: nextAttempt(attempt),
+        issue_run_id: graphContext.issue_run_id ?? null,
+        previous_attempt_id: graphContext.previous_attempt_id ?? null,
         delay_type: 'failure',
         error: 'failed to spawn agent',
         worker_host: workerHost,
@@ -2211,7 +2298,7 @@ export class OrchestratorCore {
       issue,
       identifier: issue.identifier,
       run_id: null,
-      issue_run_id: null,
+      issue_run_id: graphContext.issue_run_id ?? null,
       attempt_id: null,
       worker_handle: spawned.worker_handle,
       monitor_handle: spawned.monitor_handle,
@@ -2287,6 +2374,7 @@ export class OrchestratorCore {
         });
         const startedAt = asIso(runningEntry.started_at_ms);
         runningEntry.issue_run_id =
+          graphContext.issue_run_id ??
           (await this.persistence.appendIssueRun?.({
             issue_id: issue.id,
             issue_identifier: issue.identifier,
@@ -2294,7 +2382,8 @@ export class OrchestratorCore {
             status: 'running',
             reason_code: 'dispatch_started',
             reason_detail: 'dispatch attempt started'
-          })) ?? null;
+          })) ??
+          null;
         if (runningEntry.issue_run_id) {
           runningEntry.attempt_id =
             (await this.persistence.appendAttempt?.({
@@ -2413,6 +2502,8 @@ export class OrchestratorCore {
       issue_id: params.issue_id,
       identifier: params.identifier,
       attempt: params.attempt,
+      issue_run_id: params.issue_run_id ?? null,
+      previous_attempt_id: params.previous_attempt_id ?? null,
       due_at_ms: dueAtMs,
       error: params.error ?? null,
       worker_host: params.worker_host ?? null,
@@ -2460,6 +2551,8 @@ export class OrchestratorCore {
     issue_id: string;
     issue_identifier: string;
     attempt: number;
+    issue_run_id?: string | null;
+    previous_attempt_id?: string | null;
     worker_host: string | null;
     workspace_path: string | null;
     provisioner_type: string | null;
@@ -2531,6 +2624,8 @@ export class OrchestratorCore {
       issue_id: params.issue_id,
       issue_identifier: params.issue_identifier,
       attempt: params.attempt,
+      issue_run_id: params.issue_run_id ?? null,
+      previous_attempt_id: params.previous_attempt_id ?? null,
       worker_host: params.worker_host,
       workspace_path: params.workspace_path,
       provisioner_type: params.provisioner_type,
@@ -2800,12 +2895,17 @@ export class OrchestratorCore {
 
     const eligibility = shouldDispatchIssue(issue, this.state, this.config);
     if (eligibility.eligible) {
-      await this.dispatchIssue(issue, blocked.attempt, resume_context);
+      await this.dispatchIssue(issue, blocked.attempt, resume_context, {
+        issue_run_id: blocked.issue_run_id,
+        previous_attempt_id: blocked.previous_attempt_id
+      });
     } else if (eligibility.reason === 'global_slots_exhausted' || eligibility.reason === 'state_slots_exhausted') {
       await this.scheduleRetry({
         issue_id: blocked.issue_id,
         identifier: blocked.issue_identifier,
         attempt: blocked.attempt,
+        issue_run_id: blocked.issue_run_id,
+        previous_attempt_id: blocked.previous_attempt_id,
         delay_type: 'failure',
         error: 'no available orchestrator slots',
         worker_host: blocked.worker_host,
@@ -2831,6 +2931,8 @@ export class OrchestratorCore {
         issue_id: blocked.issue_id,
         identifier: blocked.issue_identifier,
         attempt: blocked.attempt,
+        issue_run_id: blocked.issue_run_id,
+        previous_attempt_id: blocked.previous_attempt_id,
         delay_type: 'continuation',
         error: null,
         worker_host: blocked.worker_host,
