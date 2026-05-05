@@ -222,7 +222,7 @@ describe('LocalRunnerBridge integration', () => {
     const config = makeConfig();
     config.codex = {
       ...config.codex,
-      command: 'CODEX_HOME="$HOME/.codex" /opt/codex-wrapper --config model="legacy" app-server',
+      command: 'FOO=bar BAZ=qux CODEX_HOME="$HOME/.codex" /opt/codex-wrapper --config model="legacy" app-server',
       effective_codex_home: '/tmp/codex-home',
       effective_codex_model: 'typed-model',
       effective_reasoning_effort: 'high',
@@ -260,7 +260,7 @@ describe('LocalRunnerBridge integration', () => {
           'model_reasoning_effort=high',
           'app-server'
         ],
-        commandEnv: { CODEX_HOME: '/tmp/codex-home' }
+        commandEnv: { BAZ: 'qux', CODEX_HOME: '/tmp/codex-home', FOO: 'bar' }
       })
     );
     expect(events.some((event) => event.detail === 'codex_command_legacy_path_used')).toBe(false);

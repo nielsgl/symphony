@@ -72,19 +72,26 @@ function isEnvironmentAssignment(token: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
 }
 
-function readLegacyCommandBase(command: string): { command: string; args: string[] } {
+function readLegacyCommandBase(command: string): { command: string; args: string[]; env: Record<string, string> } {
   const tokens = tokenizeShellCommand(command);
   const executableIndex = tokens.findIndex((token) => !isEnvironmentAssignment(token));
   if (executableIndex === -1) {
-    return { command, args: [] };
+    return { command, args: [], env: {} };
   }
 
+  const env = Object.fromEntries(
+    tokens.slice(0, executableIndex).map((token) => {
+      const separatorIndex = token.indexOf('=');
+      return [token.slice(0, separatorIndex), token.slice(separatorIndex + 1)];
+    })
+  );
   const executable = tokens[executableIndex];
   const executableArgs = tokens.slice(executableIndex + 1);
   const appServerIndex = executableArgs.lastIndexOf('app-server');
   return {
     command: executable,
-    args: appServerIndex === -1 ? executableArgs : executableArgs.slice(0, appServerIndex)
+    args: appServerIndex === -1 ? executableArgs : executableArgs.slice(0, appServerIndex),
+    env
   };
 }
 
@@ -106,12 +113,15 @@ export function buildCodexSpawnCommand(codex: CodexConfig): CodexSpawnCommand {
   }
 
   const legacyBase =
-    codex.codex_resolution_mode === 'mixed' ? readLegacyCommandBase(codex.command) : { command: 'codex', args: [] };
+    codex.codex_resolution_mode === 'mixed'
+      ? readLegacyCommandBase(codex.command)
+      : { command: 'codex', args: [], env: {} };
 
   return {
     command: legacyBase.command,
     args: [...legacyBase.args, ...buildTypedArgs(codex)],
     env: {
+      ...legacyBase.env,
       CODEX_HOME: path.normalize(codex.effective_codex_home ?? `${process.env.HOME ?? ''}/.codex`)
     }
   };
