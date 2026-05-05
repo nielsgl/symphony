@@ -293,6 +293,15 @@ export class ConfigValidator {
         at
       };
     }
+    const runningWaitThreshold = effectiveConfig.codex.running_wait_stall_threshold_ms ?? 300000;
+    if (!Number.isFinite(runningWaitThreshold) || runningWaitThreshold <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_running_wait_stall_threshold_ms',
+        message: 'codex.running_wait_stall_threshold_ms must be a positive integer',
+        at
+      };
+    }
 
     const provisionerType = effectiveConfig.workspace.provisioner.type;
     if (provisionerType !== 'none' && provisionerType !== 'worktree' && provisionerType !== 'clone') {

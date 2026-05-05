@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { assertHumanReadableMarkdownBody } = require('./lib/markdown-body');
+const { MANIFEST_RELATIVE_PATH: UI_EVIDENCE_MANIFEST_FILE, validateManifestFile } = require('./lib/ui-evidence');
 
 const checks = [
   'scripts/check-api-contract.js',
@@ -26,8 +27,6 @@ const WORKFLOW_PATH_ENV = 'SYMPHONY_WORKFLOW_PATH';
 const DEFAULT_WORKFLOW_PATH = 'WORKFLOW.md';
 const UI_EVIDENCE_MARKER_FILE = path.join('output', 'playwright', 'ui-e2e-evidence.txt');
 const UI_EVIDENCE_MARKER_LINE = 'UI_E2E_EVIDENCE=PASS';
-const UI_EVIDENCE_MANIFEST_FILE = path.join('output', 'playwright', 'ui-evidence.json');
-const UI_EVIDENCE_ARTIFACT_BASE_DIR = path.join('output', 'playwright');
 const UI_EVIDENCE_ALLOW_TRACKED_ENV = 'SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED';
 const UI_EVIDENCE_TRACKED_PATH_PREFIX = 'output/playwright/';
 const UI_EVIDENCE_REFERENCE_PATTERN = /output\/playwright\/[^\s`"')\]}]+/g;
@@ -198,88 +197,6 @@ function hasUiEvidence() {
   }
 
   return { ok: false, mode: 'missing' };
-}
-
-function validateStrictUiEvidenceManifest(changedUiPaths) {
-  const manifestPath = path.join(process.cwd(), UI_EVIDENCE_MANIFEST_FILE);
-  const artifactBaseDir = path.resolve(process.cwd(), UI_EVIDENCE_ARTIFACT_BASE_DIR);
-  if (!fs.existsSync(manifestPath)) {
-    return { ok: false, reason: `missing manifest file: ${UI_EVIDENCE_MANIFEST_FILE}` };
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  } catch {
-    return { ok: false, reason: `invalid JSON in manifest: ${UI_EVIDENCE_MANIFEST_FILE}` };
-  }
-
-  const artifacts = Array.isArray(parsed.artifacts) ? parsed.artifacts : null;
-  if (!artifacts || artifacts.length < 1) {
-    return { ok: false, reason: 'manifest.artifacts must contain at least one item' };
-  }
-
-  const uiPaths = Array.isArray(parsed.ui_paths) ? parsed.ui_paths : null;
-  if (!uiPaths || uiPaths.length < 1) {
-    return { ok: false, reason: 'manifest.ui_paths must contain at least one item' };
-  }
-
-  const uiPathSet = new Set(uiPaths.filter((value) => typeof value === 'string'));
-  for (const changedPath of changedUiPaths) {
-    if (!uiPathSet.has(changedPath)) {
-      return { ok: false, reason: `manifest.ui_paths is missing changed UI path: ${changedPath}` };
-    }
-  }
-
-  if (typeof parsed.captured_at !== 'string' || parsed.captured_at.trim().length === 0 || Number.isNaN(Date.parse(parsed.captured_at))) {
-    return { ok: false, reason: 'manifest.captured_at must be a valid datetime string' };
-  }
-
-  if (typeof parsed.summary !== 'string' || parsed.summary.trim().length === 0) {
-    return { ok: false, reason: 'manifest.summary must be a non-empty string' };
-  }
-
-  const publishReference = typeof parsed.publish_reference === 'string' ? parsed.publish_reference.trim() : '';
-  if (publishReference.length === 0) {
-    return { ok: false, reason: 'manifest.publish_reference must be a non-empty string' };
-  }
-
-  for (const [index, artifact] of artifacts.entries()) {
-    if (!artifact || typeof artifact !== 'object') {
-      return { ok: false, reason: `manifest.artifacts[${index}] must be an object` };
-    }
-
-    const artifactPath = typeof artifact.path === 'string' ? artifact.path.trim() : '';
-    const artifactType = typeof artifact.type === 'string' ? artifact.type.trim() : '';
-    if (!artifactPath) {
-      return { ok: false, reason: `manifest.artifacts[${index}].path must be a non-empty string` };
-    }
-    if (artifactType !== 'image' && artifactType !== 'video') {
-      return { ok: false, reason: `manifest.artifacts[${index}].type must be image or video` };
-    }
-
-    const normalizedPath = artifactPath.replace(/\\/g, '/');
-    if (!normalizedPath.startsWith('output/playwright/')) {
-      return { ok: false, reason: `manifest.artifacts[${index}].path must be under output/playwright/` };
-    }
-    if (artifactType === 'image' && !normalizedPath.endsWith('.png')) {
-      return { ok: false, reason: `manifest.artifacts[${index}] image artifact must use .png` };
-    }
-    if (artifactType === 'video' && !normalizedPath.endsWith('.mp4') && !normalizedPath.endsWith('.webm')) {
-      return { ok: false, reason: `manifest.artifacts[${index}] video artifact must use .mp4 or .webm` };
-    }
-
-    const resolvedPath = path.resolve(process.cwd(), normalizedPath);
-    const relativeToBase = path.relative(artifactBaseDir, resolvedPath);
-    if (relativeToBase.startsWith('..') || path.isAbsolute(relativeToBase)) {
-      return { ok: false, reason: `manifest.artifacts[${index}].path escapes output/playwright/: ${normalizedPath}` };
-    }
-    if (!fs.existsSync(resolvedPath)) {
-      return { ok: false, reason: `manifest artifact file is missing: ${normalizedPath}` };
-    }
-  }
-
-  return { ok: true, mode: `file:${UI_EVIDENCE_MANIFEST_FILE}` };
 }
 
 function extractArtifactReferences(text) {
@@ -530,10 +447,10 @@ function enforceUiEvidenceGate() {
   const changedUiPaths = changedFiles.filter((candidate) => UI_PATH_PATTERNS.some((pattern) => pattern.test(candidate)));
 
   if (uiEvidenceProfile.profile === 'strict') {
-    const strictEvidence = validateStrictUiEvidenceManifest(changedUiPaths);
+    const strictEvidence = validateManifestFile(process.cwd(), { changedUiPaths, requireLinearProof: true });
     if (!strictEvidence.ok) {
       process.stderr.write('Meta check failed: strict UI evidence profile requires manifest-backed artifacts for UI-affecting changes.\n');
-      process.stderr.write(`Validation error: ${strictEvidence.reason}\n`);
+      process.stderr.write(`Validation error: ${strictEvidence.code}: ${strictEvidence.message}\n`);
       process.stderr.write(`Expected manifest: ${UI_EVIDENCE_MANIFEST_FILE}\n`);
       process.exit(1);
     }

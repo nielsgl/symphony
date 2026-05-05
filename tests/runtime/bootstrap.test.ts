@@ -273,12 +273,10 @@ describe('createRuntimeEnvironment', () => {
         answer: { question_id: 'q-1', option_label: 'Continue' }
       })
     });
-    const payload = (await response.json()) as { resumed: boolean; resume_mode: string; resume_reason_code: string };
+    const payload = (await response.json()) as { error: { code: string } };
 
-    expect(response.status).toBe(202);
-    expect(payload.resumed).toBe(true);
-    expect(payload.resume_mode).toBe('fallback');
-    expect(payload.resume_reason_code).toBe('session_expired');
+    expect(response.status).toBe(409);
+    expect(payload.error.code).toBe('input_submission_expired');
   });
 
   it('exposes SSE event stream endpoint for runtime state push updates', async () => {
