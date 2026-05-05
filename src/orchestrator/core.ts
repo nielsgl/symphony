@@ -1048,9 +1048,9 @@ export class OrchestratorCore {
       first.state_marker === sample.state_marker;
     const attemptCountWindow = updated.length;
     const breakerHit = noProgress && attemptCountWindow >= Math.max(1, this.config.respawn_max_attempts_without_progress ?? 3);
-    const awaitingHuman = Boolean(sample.pr_open && noProgress && breakerHit);
+    const awaitingHuman = Boolean(sample.pr_open && noProgress);
     return {
-      allow_redispatch: !breakerHit,
+      allow_redispatch: !noProgress,
       awaiting_human_review_scope_incomplete: awaitingHuman,
       attempt_count_window: attemptCountWindow,
       window_minutes: windowMinutes,

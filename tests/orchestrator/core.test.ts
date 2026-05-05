@@ -252,7 +252,7 @@ describe('OrchestratorCore', () => {
     expect(retryEntry?.due_at_ms).toBe(harness.now.value + 1000);
   });
 
-  it('schedules exponential failure retries with cap on abnormal exits', async () => {
+  it('moves abnormal retry to blocked no-progress state when redispatch gate fails', async () => {
     const harness = createHarness({ configOverrides: { max_retry_backoff_ms: 25_000 } });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
     await harness.orchestrator.tick('interval');
@@ -267,21 +267,9 @@ describe('OrchestratorCore', () => {
 
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
     await harness.orchestrator.onRetryTimer('i-abnormal');
-    harness.now.value += 1;
-    await harness.orchestrator.onWorkerExit('i-abnormal', 'abnormal');
-
-    const secondRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-abnormal');
-    expect(secondRetry?.attempt).toBe(2);
-    expect(secondRetry?.due_at_ms).toBe(harness.now.value + 20_000);
-
-    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
-    await harness.orchestrator.onRetryTimer('i-abnormal');
-    harness.now.value += 1;
-    await harness.orchestrator.onWorkerExit('i-abnormal', 'abnormal');
-
-    const thirdRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-abnormal');
-    expect(thirdRetry?.attempt).toBe(3);
-    expect(thirdRetry?.due_at_ms).toBe(harness.now.value + 25_000);
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-abnormal')).toBe(false);
+    expect(snapshot.blocked_inputs.get('i-abnormal')?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
   });
 
   it('moves turn_input_required exits into blocked input state without scheduling retries', async () => {
@@ -443,6 +431,128 @@ describe('OrchestratorCore', () => {
     harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
     const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-PROGRESS');
     expect(resumed).toEqual({ ok: true, issue_id: 'i-progress' });
+  });
+
+  it('blocks redispatch immediately with explicit no-progress reason when completion gate fails', async () => {
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 3, respawn_window_minutes: 30 },
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({ id: 'i-gate-block', identifier: 'ABC-GATE', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-gate-block', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-gate-block')?.callback();
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-gate-block');
+    expect(blocked?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
+    expect(blocked?.required_actions).toEqual([
+      'Mark acceptance complete and resume',
+      'Push additional commit and resume',
+      'Cancel and return to backlog'
+    ]);
+    expect(
+      harness.orchestrator
+        .getStateSnapshot()
+        .recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)
+    ).toBe(true);
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-gate-block')).toHaveLength(1);
+  });
+
+  it('maps no-progress redispatch to awaiting_human_review_scope_incomplete when PR is open', async () => {
+    const harness = createHarness({
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({
+      id: 'i-awaiting-human',
+      identifier: 'ABC-AWAIT',
+      state: 'In Progress',
+      tracker_meta: {
+        tracker_kind: 'github',
+        repository: 'repo/name',
+        pr_links: [{ number: 7, url: 'https://example.test/pr/7', state: 'open', merged: false }]
+      },
+      description: '- [ ] Acceptance item remains open'
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-awaiting-human', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-awaiting-human')?.callback();
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-awaiting-human');
+    expect(blocked?.stop_reason_code).toBe('awaiting_human_review_scope_incomplete');
+    expect(
+      harness.orchestrator
+        .getStateSnapshot()
+        .recent_runtime_events.some(
+          (entry) => entry.event === CANONICAL_EVENT.orchestration.stateAwaitingHumanReviewScopeIncomplete
+        )
+    ).toBe(true);
+  });
+
+  it('emits circuit-breaker-opened event when no-progress attempts in window exceed threshold', async () => {
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1, respawn_window_minutes: 30 },
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({ id: 'i-breaker', identifier: 'ABC-BREAKER', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-breaker', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-breaker')?.callback();
+
+    expect(
+      harness.orchestrator
+        .getStateSnapshot()
+        .recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCircuitBreakerOpened)
+    ).toBe(true);
+  });
+
+  it('requires override for no-progress resume and allows resume with explicit override reason', async () => {
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1 },
+      resolveProgressSignals: async () => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: 'marker-same'
+      })
+    });
+    const issue = makeIssue({ id: 'i-resume-override', identifier: 'ABC-OVERRIDE', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-resume-override', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-resume-override')?.callback();
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+    const withoutOverride = await harness.orchestrator.resumeBlockedIssue('ABC-OVERRIDE');
+    expect(withoutOverride).toEqual({
+      ok: false,
+      code: 'resume_failed',
+      message: 'Issue ABC-OVERRIDE requires progress or an explicit resume override reason'
+    });
+
+    const withOverride = await harness.orchestrator.resumeBlockedIssue(
+      'ABC-OVERRIDE',
+      null,
+      'operator approved redispatch without new progress'
+    );
+    expect(withOverride).toEqual({ ok: true, issue_id: 'i-resume-override' });
   });
 
   it('cancels blocked issue to Todo/backlog state via dedicated path', async () => {
@@ -1040,12 +1150,18 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
-  it('accepts fresh dispatch phases for a new retry attempt even after prior attempt reached planning', async () => {
+  it('accepts fresh dispatch phases for a resumed attempt after prior attempt reached planning', async () => {
     const logEntries: Array<{
       event: string;
       context?: Record<string, string | number | boolean | null | undefined>;
     }> = [];
+    let commit = 'sha-1';
     const harness = createHarness({
+      resolveProgressSignals: async () => ({
+        commit_sha: commit,
+        checklist_checkpoint: 'chk',
+        state_marker: 'planning'
+      }),
       logger: {
         log: (params) => {
           logEntries.push({ event: params.event, context: params.context });
@@ -1064,6 +1180,12 @@ describe('OrchestratorCore', () => {
 
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-redispatch' })]);
     await harness.orchestrator.onRetryTimer('i-redispatch');
+    commit = 'sha-2';
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-redispatch', identifier: 'ABC-1', state: 'In Progress' })
+    ]);
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-1');
+    expect(resumed).toEqual({ ok: true, issue_id: 'i-redispatch' });
 
     const timeline = harness.orchestrator.getStateSnapshot().phase_timeline?.get('i-redispatch') ?? [];
     expect(timeline.map((marker) => `${marker.attempt}:${marker.phase}`)).toEqual([
