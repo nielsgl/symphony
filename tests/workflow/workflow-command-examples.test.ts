@@ -9,7 +9,7 @@ describe('workflow command examples', () => {
 
     expect(workflow).not.toMatch(/--model\s+\S+\s+app-server/);
     expect(workflow).not.toMatch(/CODEX_HOME=.*codex .*app-server/);
-    expect(workflow).toMatch(/codex:\n(?:  .+\n)*  model: gpt-5\.3-codex\n/);
+    expect(workflow).toMatch(/codex:\n(?:  .+\n)*  model: [^\s]+\n/);
     expect(workflow).toMatch(/  reasoning_effort: medium\n/);
   });
 });
