@@ -1,5 +1,5 @@
 import type { OrchestratorState, TickReason } from '../orchestrator';
-import type { PhaseMarkerName } from '../observability';
+import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
 import type { StructuredLogger } from '../observability';
 import type { DurableRunHistoryRecord, PersistenceHealth, UiContinuityState } from '../persistence';
 import type { SecurityProfile } from '../security';
@@ -163,6 +163,8 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     running: number;
     retrying: number;
     blocked: number;
+    running_stalled_waiting_count: number;
+    running_awaiting_input_count: number;
   };
   running: Array<{
     issue_id: string;
@@ -233,6 +235,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       reasoning_output_tokens?: number;
       model_context_window?: number;
     };
+    operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   retrying: Array<{
     issue_id: string;
@@ -265,6 +268,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
+    operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   blocked: Array<{
     issue_id: string;
@@ -368,6 +372,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_progress_transition_at_ms: number | null;
     last_heartbeat_at_ms: number | null;
     operator_actions: OperatorActionProjection[];
+    operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   codex_totals: {
     input_tokens: number;
@@ -417,6 +422,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
   issue_id: string;
   status: 'running' | 'retrying' | 'blocked';
   operator_actions: OperatorActionProjection[];
+  operator_explainer: OperatorExplainer;
   workspace: {
     path: string | null;
     host: string | null;

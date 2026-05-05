@@ -254,9 +254,21 @@ describe('LocalApiServer', () => {
     expect(payload).toHaveProperty('codex_totals');
     expect(payload).toHaveProperty('rate_limits');
     expect(payload).toHaveProperty('health');
-    expect((payload.counts as { running: number; retrying: number; blocked: number }).running).toBe(1);
-    expect((payload.counts as { running: number; retrying: number; blocked: number }).retrying).toBe(1);
-    expect((payload.counts as { running: number; retrying: number; blocked: number }).blocked).toBe(0);
+    expect(
+      (
+        payload.counts as {
+          running: number;
+          retrying: number;
+          blocked: number;
+          running_stalled_waiting_count: number;
+          running_awaiting_input_count: number;
+        }
+      ).running
+    ).toBe(1);
+    expect((payload.counts as { retrying: number }).retrying).toBe(1);
+    expect((payload.counts as { blocked: number }).blocked).toBe(0);
+    expect((payload.counts as { running_stalled_waiting_count: number }).running_stalled_waiting_count).toBe(0);
+    expect((payload.counts as { running_awaiting_input_count: number }).running_awaiting_input_count).toBe(0);
     expect(
       (
         payload.running as Array<{
@@ -264,13 +276,19 @@ describe('LocalApiServer', () => {
           provisioner_type: string;
           workspace_git_status: string;
           workspace_exists: boolean;
+          operator_explainer_hint: { classification: string; actionability: string; headline: string };
         }>
       )[0]
     ).toMatchObject({
       workspace_path: '/tmp/symphony/ABC-1',
       provisioner_type: 'none',
       workspace_git_status: 'unknown',
-      workspace_exists: true
+      workspace_exists: true,
+      operator_explainer_hint: {
+        classification: 'healthy',
+        actionability: 'none',
+        headline: 'Run is progressing'
+      }
     });
     expect(
       (
@@ -369,6 +387,7 @@ describe('LocalApiServer', () => {
 
     const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-1`);
     const issuePayload = (await issueResponse.json()) as {
+      operator_explainer: { version: string; classification: string; actionability: string; headline: string };
       running: {
         token_telemetry_status: string;
         token_telemetry_last_source: string | null;
@@ -377,6 +396,12 @@ describe('LocalApiServer', () => {
       };
     };
     expect(issueResponse.status).toBe(200);
+    expect(issuePayload.operator_explainer).toMatchObject({
+      version: expect.any(String),
+      classification: 'healthy',
+      actionability: 'none',
+      headline: 'Run is progressing'
+    });
     expect(issuePayload.running.tokens.total_tokens).toBe(321);
     expect(issuePayload.running.token_telemetry_status).toBe('available');
     expect(issuePayload.running.token_telemetry_last_source).toBe('codex_home_state_sqlite');

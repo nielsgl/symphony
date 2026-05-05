@@ -1,4 +1,5 @@
 import type { OrchestratorState, RunningEntry } from '../orchestrator';
+import { explainOperatorRuntimeState, toOperatorExplainerHint } from '../observability';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
 import {
@@ -41,6 +42,27 @@ function resolveStateFreshness(state: OrchestratorState, nowMs: number) {
   return resolveSnapshotFreshness(state.snapshot_generated_at_ms ?? nowMs, nowMs);
 }
 
+function explainRunningEntry(entry: RunningEntry) {
+  return explainOperatorRuntimeState({
+    state_class: 'running',
+    awaiting_input: Boolean(entry.awaiting_input_since_ms),
+    stalled_waiting: Boolean(entry.stalled_waiting_since_ms && entry.stalled_waiting_reason),
+    stalled_waiting_reason: entry.stalled_waiting_reason ?? null,
+    reason_code:
+      entry.stalled_waiting_since_ms && entry.stalled_waiting_reason
+        ? entry.stalled_waiting_reason
+        : entry.awaiting_input_since_ms
+          ? 'turn_input_required'
+          : entry.last_event,
+    reason_detail:
+      entry.stalled_waiting_since_ms && entry.stalled_waiting_reason
+        ? 'codex.turn.waiting heartbeat loop exceeded threshold'
+        : entry.awaiting_input_since_ms
+          ? entry.pending_input_preview?.type ?? null
+          : entry.last_event_summary ?? entry.last_message
+  });
+}
+
 function toStateRunningRow(
   issueId: string,
   entry: RunningEntry,
@@ -59,6 +81,7 @@ function toStateRunningRow(
     now_ms: nowMs,
     stalled_waiting_ms: 300_000
   });
+  const operatorExplainer = explainRunningEntry(entry);
   return {
     issue_id: issueId,
     issue_identifier: entry.identifier,
@@ -122,7 +145,8 @@ function toStateRunningRow(
       ...(typeof entry.tokens.model_context_window === 'number'
         ? { model_context_window: entry.tokens.model_context_window }
         : {})
-    }
+    },
+    operator_explainer_hint: toOperatorExplainerHint(operatorExplainer)
   };
 }
 
@@ -167,7 +191,15 @@ export class SnapshotService {
       previous_session_id: entry.previous_session_id ?? null,
       last_phase: entry.last_phase ?? null,
       last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
-      last_phase_detail: entry.last_phase_detail ?? null
+      last_phase_detail: entry.last_phase_detail ?? null,
+      operator_explainer_hint: toOperatorExplainerHint(
+        explainOperatorRuntimeState({
+          state_class: 'retrying',
+          reason_code: entry.stop_reason_code,
+          reason_detail: entry.stop_reason_detail ?? entry.error,
+          expected_transition_detail: `Automatic retry at ${asIsoDate(entry.due_at_ms)}`
+        })
+      )
     }));
     const blocked = Array.from(state.blocked_inputs.values()).map((entry) => {
       const progressSignal = resolveBlockedProgressSignal(entry);
@@ -234,6 +266,13 @@ export class SnapshotService {
         ...resolveBlockedTurnControl(entry),
         ...progressSignal,
         operator_actions: projectOperatorActions(state, entry.issue_id),
+        operator_explainer_hint: toOperatorExplainerHint(
+          explainOperatorRuntimeState({
+            state_class: 'blocked',
+            reason_code: entry.stop_reason_code,
+            reason_detail: entry.stop_reason_detail
+          })
+        ),
         pending_input: entry.pending_input
           ? {
               ...entry.pending_input,
@@ -276,7 +315,11 @@ export class SnapshotService {
       counts: {
         running: running.length,
         retrying: retrying.length,
-        blocked: blocked.length
+        blocked: blocked.length,
+        running_stalled_waiting_count: running.filter((entry) => entry.operator_explainer_hint?.classification === 'stalled_waiting')
+          .length,
+        running_awaiting_input_count: running.filter((entry) => entry.operator_explainer_hint?.classification === 'awaiting_input')
+          .length
       },
       running,
       retrying,
@@ -341,6 +384,7 @@ export class SnapshotService {
       const progressSignal = resolveProgressSignal(entry);
       const turnControl = resolveRunningTurnControl(entry);
       const blockedProgressSignal = blockedEntry ? resolveBlockedProgressSignal(blockedEntry) : null;
+      const operatorExplainer = explainRunningEntry(entry);
       return redactUnknown({
         issue_identifier: issueIdentifier,
         issue_id: issueId,
@@ -348,6 +392,7 @@ export class SnapshotService {
         ...freshness,
         ...createApiDegradedDiagnostics(null, []),
         operator_actions: projectOperatorActions(state, issueId),
+        operator_explainer: operatorExplainer,
         workspace: {
           path: entry.workspace_path,
           host: entry.worker_host ?? null
@@ -556,6 +601,12 @@ export class SnapshotService {
       const retryOnlyEntry = retryEntry;
       const issueId = retryOnlyEntry.issue_id;
       const blockedProgressSignal = blockedEntry ? resolveBlockedProgressSignal(blockedEntry) : null;
+      const operatorExplainer = explainOperatorRuntimeState({
+        state_class: 'retrying',
+        reason_code: retryOnlyEntry.stop_reason_code,
+        reason_detail: retryOnlyEntry.stop_reason_detail ?? retryOnlyEntry.error,
+        expected_transition_detail: `Automatic retry at ${asIsoDate(retryOnlyEntry.due_at_ms)}`
+      });
       return redactUnknown({
         issue_identifier: issueIdentifier,
         issue_id: issueId,
@@ -563,6 +614,7 @@ export class SnapshotService {
         ...freshness,
         ...createApiDegradedDiagnostics(null, []),
         operator_actions: projectOperatorActions(state, issueId),
+        operator_explainer: operatorExplainer,
         workspace: {
           path: retryOnlyEntry.workspace_path ?? null,
           host: retryOnlyEntry.worker_host ?? null
@@ -697,6 +749,11 @@ export class SnapshotService {
     }
 
     const issueId = blockedEntry.issue_id;
+    const operatorExplainer = explainOperatorRuntimeState({
+      state_class: 'blocked',
+      reason_code: blockedEntry.stop_reason_code,
+      reason_detail: blockedEntry.stop_reason_detail
+    });
     return redactUnknown({
       issue_identifier: issueIdentifier,
       issue_id: issueId,
@@ -704,6 +761,7 @@ export class SnapshotService {
       ...freshness,
       ...createApiDegradedDiagnostics(null, []),
       operator_actions: projectOperatorActions(state, issueId),
+      operator_explainer: operatorExplainer,
       workspace: {
         path: blockedEntry.workspace_path ?? null,
         host: blockedEntry.worker_host ?? null
