@@ -54,7 +54,9 @@ function baseConfig(): EffectiveConfig {
       command: 'codex app-server',
       turn_timeout_ms: 3600000,
       read_timeout_ms: 5000,
-      stall_timeout_ms: 300000
+      stall_timeout_ms: 300000,
+      progress_heartbeat_only_warn_ms: 120000,
+      progress_stalled_waiting_ms: 300000
     },
     persistence: {
       enabled: true,
@@ -446,6 +448,25 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('invalid_codex_stall_timeout_ms');
+    }
+  });
+
+  it('rejects non-positive progress visibility thresholds', () => {
+    const validator = new ConfigValidator();
+    const heartbeatConfig = baseConfig();
+    heartbeatConfig.codex.progress_heartbeat_only_warn_ms = 0;
+    const heartbeatResult = validator.validate(heartbeatConfig);
+    expect(heartbeatResult.ok).toBe(false);
+    if (!heartbeatResult.ok) {
+      expect(heartbeatResult.error_code).toBe('invalid_codex_progress_heartbeat_only_warn_ms');
+    }
+
+    const stalledConfig = baseConfig();
+    stalledConfig.codex.progress_stalled_waiting_ms = 0;
+    const stalledResult = validator.validate(stalledConfig);
+    expect(stalledResult.ok).toBe(false);
+    if (!stalledResult.ok) {
+      expect(stalledResult.error_code).toBe('invalid_codex_progress_stalled_waiting_ms');
     }
   });
 

@@ -63,6 +63,9 @@ export interface RunningEntry {
   stalled_waiting_since_ms?: number | null;
   stalled_waiting_reason?: 'turn_waiting_threshold_exceeded' | null;
   running_waiting_started_at_ms?: number | null;
+  last_progress_transition_at_ms?: number | null;
+  last_heartbeat_at_ms?: number | null;
+  heartbeat_only_event_emitted?: boolean;
   running_wait_stall_event_emitted?: boolean;
   tokens: CodexUsageTotals;
   last_reported_tokens: CodexUsageTotals;
@@ -84,6 +87,14 @@ export interface RunningEntry {
   current_phase?: PhaseMarkerName | null;
   current_phase_at_ms?: number | null;
   phase_detail?: string | null;
+}
+
+export interface OperatorActionRecord {
+  action: 'resume' | 'cancel' | 'retry' | 'submit_input';
+  requested_at_ms: number;
+  result: 'accepted' | 'rejected' | 'failed';
+  result_code: string | null;
+  message: string | null;
 }
 
 export interface RetryEntry {
@@ -253,10 +264,12 @@ export interface CircuitBreakerEntry {
 export interface OrchestratorState {
   poll_interval_ms: number;
   max_concurrent_agents: number;
+  snapshot_generated_at_ms?: number;
   running: Map<string, RunningEntry>;
   claimed: Set<string>;
   retry_attempts: Map<string, RetryEntry>;
   blocked_inputs: Map<string, BlockedEntry>;
+  operator_actions?: Map<string, OperatorActionRecord[]>;
   circuit_breakers: Map<string, CircuitBreakerEntry>;
   redispatch_progress?: Map<string, RedispatchProgressSample[]>;
   phase_timeline?: Map<string, PhaseMarker[]>;
@@ -413,6 +426,7 @@ export interface OrchestratorPersistencePort {
   deleteBreaker?: (issue_id: string) => Promise<void>;
   upsertBlockedInput?: (issue_id: string, payload: string) => Promise<void>;
   deleteBlockedInput?: (issue_id: string) => Promise<void>;
+  upsertOperatorActions?: (issue_id: string, payload: string) => Promise<void>;
 }
 
 export interface WorkerObservabilityEvent {
@@ -443,6 +457,8 @@ export interface OrchestratorConfig {
   stall_timeout_ms: number;
   no_telemetry_warning_threshold_ms?: number;
   running_wait_stall_threshold_ms?: number;
+  progress_heartbeat_only_warn_ms?: number;
+  progress_stalled_waiting_ms?: number;
   phase_markers_enabled?: boolean;
   phase_timeline_limit?: number;
   budget?: {

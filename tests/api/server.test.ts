@@ -656,6 +656,20 @@ describe('LocalApiServer', () => {
 
   it('projects blocked issues and resumes them via POST /api/v1/issues/:issue_identifier/resume', async () => {
     const state = makeState({
+      operator_actions: new Map([
+        [
+          'issue-3',
+          [
+            {
+              action: 'resume',
+              requested_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+              result: 'rejected',
+              result_code: 'resume_failed',
+              message: 'requires progress'
+            }
+          ]
+        ]
+      ]),
       blocked_inputs: new Map([
         [
           'issue-3',
@@ -716,28 +730,40 @@ describe('LocalApiServer', () => {
     const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
     const statePayload = (await stateResponse.json()) as {
       counts: { blocked: number };
-      blocked: Array<{ issue_identifier: string; requires_manual_resume: boolean }>;
+      blocked: Array<{
+        issue_identifier: string;
+        requires_manual_resume: boolean;
+        turn_control_state: string;
+        progress_signal_state: string;
+        operator_actions: Array<{ action: string; result: string }>;
+      }>;
     };
     expect(stateResponse.status).toBe(200);
     expect(statePayload.counts.blocked).toBe(1);
     expect(statePayload.blocked[0]).toMatchObject({
       issue_identifier: 'ABC-3',
       requires_manual_resume: true,
+      turn_control_state: 'blocked_manual_resume',
+      progress_signal_state: 'advancing',
+      operator_actions: [{ action: 'resume', result: 'rejected' }],
       conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });
 
     const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-3`);
     const issuePayload = (await issueResponse.json()) as {
       status: string;
-      blocked: { stop_reason_code: string; requires_manual_resume: boolean };
+      operator_actions: Array<{ action: string; result: string }>;
+      blocked: { stop_reason_code: string; requires_manual_resume: boolean; turn_control_state: string };
     };
     expect(issueResponse.status).toBe(200);
     expect(issuePayload.status).toBe('blocked');
     expect(issuePayload.blocked).toMatchObject({
       stop_reason_code: 'operator_action_required_workspace_conflict',
       requires_manual_resume: true,
+      turn_control_state: 'blocked_manual_resume',
       resolution_hints: ['Resolve branch/worktree mismatch before manual resume.']
     });
+    expect(issuePayload.operator_actions).toEqual([{ action: 'resume', requested_at_ms: Date.parse('2026-04-10T10:04:00.000Z'), result: 'rejected', result_code: 'resume_failed', message: 'requires progress' }]);
 
     const resumeResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/resume`, {
       method: 'POST'
@@ -816,6 +842,44 @@ describe('LocalApiServer', () => {
 
     expect(refreshGetResponse.status).toBe(405);
     expect(refreshGetPayload.error.code).toBe('method_not_allowed');
+  });
+
+  it('returns typed degraded diagnostics for route mismatch and supports canonical issue-detail route', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () =>
+          makeState({
+            running: new Map([['issue-1', makeRunningEntry()]])
+          })
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1`);
+    const issuePayload = (await issueResponse.json()) as { status: string; api_degraded_mode: boolean };
+    expect(issueResponse.status).toBe(200);
+    expect(issuePayload.status).toBe('running');
+    expect(issuePayload.api_degraded_mode).toBe(false);
+
+    const missingRouteResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/detail`);
+    const missingRoutePayload = (await missingRouteResponse.json()) as {
+      error: { code: string };
+      api_degraded_mode: boolean;
+      api_degraded_reason_code: string;
+      api_degraded_routes: string[];
+    };
+    expect(missingRouteResponse.status).toBe(404);
+    expect(missingRoutePayload).toMatchObject({
+      error: { code: 'api_degraded_route_not_found' },
+      api_degraded_mode: true,
+      api_degraded_reason_code: 'route_not_found'
+    });
+    expect(missingRoutePayload.api_degraded_routes).toContain('/api/v1/issues/:issue_identifier');
   });
 
   it('maps typed expired input submission to 409 conflict envelope', async () => {
@@ -1103,6 +1167,12 @@ describe('LocalApiServer', () => {
     expect(scriptPayload).toContain('/api/v1/refresh');
     expect(scriptPayload).toContain('/api/v1/events');
     expect(scriptPayload).toContain('action-required-banner');
+    expect(scriptPayload).toContain('api-degraded-banner');
+    expect(scriptPayload).toContain('getTurnControlLabel');
+    expect(scriptPayload).toContain('getProgressSignalLabel');
+    expect(scriptPayload).toContain('getTokenConfidenceLabel');
+    expect(scriptPayload).toContain('Operator Action Outcomes');
+    expect(scriptPayload).toContain('Why not blocked:');
     expect(scriptPayload).toContain('operator_action_required_workspace_conflict');
     expect(scriptPayload).toContain('Awaiting Human Review (Scope Incomplete)');
     expect(scriptPayload).toContain('Blocked reason: \' + getActionRequiredLabel(payload.blocked.stop_reason_code)');

@@ -51,3 +51,9 @@ export interface PersistedBlockedInputRecord {
   payload: string;
   updated_at: string;
 }
+
+export interface PersistedOperatorActionsRecord {
+  issue_id: string;
+  payload: string;
+  updated_at: string;
+}

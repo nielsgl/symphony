@@ -68,6 +68,10 @@ export const CANONICAL_EVENT = {
     phaseMarkerIgnored: 'orchestration.phase_marker.ignored',
     runningWaitStallThresholdExceeded: 'running_wait_stall_threshold_exceeded'
   },
+  progress: {
+    heartbeatOnlyDetected: 'runtime.progress.heartbeat_only_detected',
+    stalledWaitingDetected: 'runtime.progress.stalled_waiting_detected'
+  },
   agentRunner: {
     attemptStarted: 'agent_runner.attempt.started',
     attemptCompleted: 'agent_runner.attempt.completed',
@@ -127,7 +131,9 @@ export const CANONICAL_EVENT = {
     routeNotFound: 'api.route.not_found',
     methodNotAllowed: 'api.method.not_allowed',
     localError: 'api.error.local',
-    internalError: 'api.error.internal'
+    internalError: 'api.error.internal',
+    degradedRouteNotFound: 'api_degraded_route_not_found',
+    degradedSchemaMismatch: 'api_degraded_schema_mismatch'
   },
   persistence: {
     pruned: 'persistence.pruned',

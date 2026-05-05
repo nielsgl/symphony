@@ -6,6 +6,7 @@ import { redactUnknown } from '../security/redaction';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
 import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
+import { createApiDegradedDiagnostics } from './runtime-visibility';
 import { SnapshotService } from './snapshot-service';
 import type {
   ApiDiagnosticsResponse,
@@ -27,6 +28,8 @@ interface Endpoint {
   path: RegExp;
   routes: Route[];
 }
+
+const ISSUE_DETAIL_ROUTES = ['/api/v1/:issue_identifier', '/api/v1/issues/:issue_identifier'];
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode;
@@ -316,6 +319,9 @@ export class LocalApiServer {
         row.token_telemetry_status = 'available';
         row.token_telemetry_last_source = 'codex_home_state_sqlite';
         row.token_telemetry_last_at_ms = Date.now();
+        row.token_telemetry_confidence = 'backfilled';
+        row.token_telemetry_source = 'codex_home_state_sqlite';
+        row.token_telemetry_last_observed_at_ms = row.token_telemetry_last_at_ms;
         liveAggregate += liveTotal;
       }
     }
@@ -339,6 +345,9 @@ export class LocalApiServer {
       payload.running.token_telemetry_status = 'available';
       payload.running.token_telemetry_last_source = 'codex_home_state_sqlite';
       payload.running.token_telemetry_last_at_ms = Date.now();
+      payload.running.token_telemetry_confidence = 'backfilled';
+      payload.running.token_telemetry_source = 'codex_home_state_sqlite';
+      payload.running.token_telemetry_last_observed_at_ms = payload.running.token_telemetry_last_at_ms;
     }
   }
 
@@ -903,6 +912,32 @@ export class LocalApiServer {
         ]
       },
       {
+        path: /^\/api\/v1\/issues\/([^/]+)$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response, match) => {
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const state = this.snapshotSource.getStateSnapshot();
+              const payload = this.snapshotService.projectIssue(state, issueIdentifier);
+              this.enrichLiveTokenFallbackIssue(payload);
+              this.logger?.log({
+                level: 'info',
+                event: CANONICAL_EVENT.api.issueRequested,
+                message: 'served issue snapshot',
+                context: {
+                  issue_id: payload.issue_id,
+                  issue_identifier: payload.issue_identifier,
+                  session_id: payload.running?.session_id ?? null,
+                  route: '/api/v1/issues/:issue_identifier'
+                }
+              });
+              sendJson(response, 200, payload);
+            }
+          }
+        ]
+      },
+      {
         path: /^\/api\/v1\/([^/]+)$/,
         routes: [
           {
@@ -936,10 +971,16 @@ export class LocalApiServer {
     if (!endpointMatch) {
       this.logger?.log({
         level: 'warn',
-        event: CANONICAL_EVENT.api.routeNotFound,
+        event: CANONICAL_EVENT.api.degradedRouteNotFound,
         message: `route not found for ${urlPath}`
       });
-      sendError(res, 404, 'route_not_found', `Route ${urlPath} was not found`);
+      sendJson(res, 404, {
+        error: {
+          code: 'api_degraded_route_not_found',
+          message: `Route ${urlPath} was not found`
+        },
+        ...createApiDegradedDiagnostics('route_not_found', ISSUE_DETAIL_ROUTES)
+      });
       return;
     }
 

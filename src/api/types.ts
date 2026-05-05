@@ -4,6 +4,52 @@ import type { StructuredLogger } from '../observability';
 import type { DurableRunHistoryRecord, PersistenceHealth, UiContinuityState } from '../persistence';
 import type { SecurityProfile } from '../security';
 
+export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume';
+export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'stalled_waiting';
+export type SnapshotFreshnessState = 'fresh' | 'aging' | 'stale';
+export type TokenTelemetryConfidence = 'observed_live' | 'backfilled' | 'missing';
+export type ApiDegradedReasonCode = 'route_not_found' | 'schema_mismatch' | 'upstream_unavailable' | null;
+export type NotBlockedExplainerCode =
+  | 'active_turn_no_stop_reason'
+  | 'within_wait_threshold'
+  | 'awaiting_classifier_transition'
+  | null;
+
+export interface OperatorActionProjection {
+  action: 'resume' | 'cancel' | 'retry' | 'submit_input';
+  requested_at_ms: number;
+  result: 'accepted' | 'rejected' | 'failed';
+  result_code: string | null;
+  message: string | null;
+}
+
+export interface VisibilityProjectionFields {
+  turn_control_state: TurnControlState;
+  turn_control_reason_code: string | null;
+  turn_control_since_ms: number | null;
+  progress_signal_state: ProgressSignalState;
+  last_progress_transition_at_ms: number | null;
+  last_heartbeat_at_ms: number | null;
+}
+
+export interface TokenTelemetryQualityFields {
+  token_telemetry_confidence: TokenTelemetryConfidence;
+  token_telemetry_source: string | null;
+  token_telemetry_last_observed_at_ms: number | null;
+}
+
+export interface SnapshotFreshnessFields {
+  snapshot_generated_at_ms: number;
+  snapshot_age_ms: number;
+  snapshot_freshness_state: SnapshotFreshnessState;
+}
+
+export interface ApiDegradedFields {
+  api_degraded_mode: boolean;
+  api_degraded_reason_code: ApiDegradedReasonCode;
+  api_degraded_routes: string[];
+}
+
 export interface RuntimeSnapshotSource {
   getStateSnapshot(): OrchestratorState;
 }
@@ -120,7 +166,7 @@ export interface ApiBudgetProjection {
   budget_message?: string | null;
 }
 
-export interface ApiStateResponse {
+export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
   counts: {
     running: number;
@@ -178,6 +224,18 @@ export interface ApiStateResponse {
     token_telemetry_status: 'unavailable' | 'pending' | 'available';
     token_telemetry_last_source: string | null;
     token_telemetry_last_at_ms: number | null;
+    token_telemetry_confidence: TokenTelemetryConfidence;
+    token_telemetry_source: string | null;
+    token_telemetry_last_observed_at_ms: number | null;
+    turn_control_state: TurnControlState;
+    turn_control_reason_code: string | null;
+    turn_control_since_ms: number | null;
+    progress_signal_state: ProgressSignalState;
+    last_progress_transition_at_ms: number | null;
+    last_heartbeat_at_ms: number | null;
+    not_blocked_explainer_code: NotBlockedExplainerCode;
+    not_blocked_explainer_text: string | null;
+    operator_actions: OperatorActionProjection[];
     tokens: {
       input_tokens: number;
       output_tokens: number;
@@ -316,6 +374,13 @@ export interface ApiStateResponse {
     };
     required_actions?: string[];
     resume_override_reason?: string | null;
+    turn_control_state: TurnControlState;
+    turn_control_reason_code: string | null;
+    turn_control_since_ms: number | null;
+    progress_signal_state: ProgressSignalState;
+    last_progress_transition_at_ms: number | null;
+    last_heartbeat_at_ms: number | null;
+    operator_actions: OperatorActionProjection[];
     operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   codex_totals: {
@@ -361,10 +426,11 @@ export interface ApiStateErrorResponse {
 
 export type ApiStateSnapshotResponse = ApiStateResponse | ApiStateErrorResponse;
 
-export interface ApiIssueResponse {
+export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   issue_identifier: string;
   issue_id: string;
   status: 'running' | 'retrying' | 'blocked';
+  operator_actions: OperatorActionProjection[];
   operator_explainer: OperatorExplainer;
   workspace: {
     path: string | null;
@@ -421,6 +487,18 @@ export interface ApiIssueResponse {
     token_telemetry_status: 'unavailable' | 'pending' | 'available';
     token_telemetry_last_source: string | null;
     token_telemetry_last_at_ms: number | null;
+    token_telemetry_confidence: TokenTelemetryConfidence;
+    token_telemetry_source: string | null;
+    token_telemetry_last_observed_at_ms: number | null;
+    turn_control_state: TurnControlState;
+    turn_control_reason_code: string | null;
+    turn_control_since_ms: number | null;
+    progress_signal_state: ProgressSignalState;
+    last_progress_transition_at_ms: number | null;
+    last_heartbeat_at_ms: number | null;
+    not_blocked_explainer_code: NotBlockedExplainerCode;
+    not_blocked_explainer_text: string | null;
+    operator_actions: OperatorActionProjection[];
     tokens: {
       input_tokens: number;
       output_tokens: number;
@@ -553,6 +631,13 @@ export interface ApiIssueResponse {
     };
     required_actions?: string[];
     resume_override_reason?: string | null;
+    turn_control_state: TurnControlState;
+    turn_control_reason_code: string | null;
+    turn_control_since_ms: number | null;
+    progress_signal_state: ProgressSignalState;
+    last_progress_transition_at_ms: number | null;
+    last_heartbeat_at_ms: number | null;
+    operator_actions: OperatorActionProjection[];
   }) | null;
   phase_timeline: Array<{
     at: string;

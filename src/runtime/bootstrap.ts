@@ -767,6 +767,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       github_linking_mode: nextConfig.tracker.github_linking?.mode ?? 'off',
       stall_timeout_ms: nextConfig.codex.stall_timeout_ms,
       running_wait_stall_threshold_ms: nextConfig.codex.running_wait_stall_threshold_ms,
+      progress_heartbeat_only_warn_ms: nextConfig.codex.progress_heartbeat_only_warn_ms,
+      progress_stalled_waiting_ms: nextConfig.codex.progress_stalled_waiting_ms,
       budget: nextConfig.budget,
       worker_hosts: nextConfig.worker?.ssh_hosts ?? [],
       max_concurrent_agents_per_host: nextConfig.worker?.max_concurrent_agents_per_host ?? null
@@ -829,6 +831,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       github_linking_mode: effectiveConfig.tracker.github_linking?.mode ?? 'off',
       stall_timeout_ms: effectiveConfig.codex.stall_timeout_ms,
       running_wait_stall_threshold_ms: effectiveConfig.codex.running_wait_stall_threshold_ms,
+      progress_heartbeat_only_warn_ms: effectiveConfig.codex.progress_heartbeat_only_warn_ms,
+      progress_stalled_waiting_ms: effectiveConfig.codex.progress_stalled_waiting_ms,
       phase_markers_enabled: effectiveConfig.observability?.phase_markers_enabled ?? true,
       phase_timeline_limit: effectiveConfig.observability?.phase_timeline_limit ?? 30,
       budget: effectiveConfig.budget,
@@ -910,6 +914,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           },
           deleteBlockedInput: async (issue_id) => {
             persistenceStore.deleteBlockedInput(issue_id);
+          },
+          upsertOperatorActions: async (issue_id, payload) => {
+            persistenceStore.upsertOperatorActions(issue_id, payload);
           }
         }
       : undefined,
@@ -1129,9 +1136,22 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         breaker_first_hit_at_ms: entry.breaker_first_hit_at ? Date.parse(entry.breaker_first_hit_at) : null,
         breaker_last_hit_at_ms: entry.breaker_last_hit_at ? Date.parse(entry.breaker_last_hit_at) : null
       }));
+      const operatorActions = new Map(
+        persistenceStore
+          .listOperatorActions()
+          .map((record) => {
+            try {
+              return [record.issue_id, JSON.parse(record.payload)];
+            } catch {
+              return null;
+            }
+          })
+          .filter((entry): entry is [string, NonNullable<typeof entry>[1]] => entry !== null)
+      );
       orchestrator.restoreSuppressionState({
         blocked_entries: blockedEntries,
-        breaker_entries: breakerEntries
+        breaker_entries: breakerEntries,
+        operator_actions: operatorActions
       });
     }
 

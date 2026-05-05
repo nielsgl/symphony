@@ -2,6 +2,16 @@ import type { OrchestratorState, RunningEntry } from '../orchestrator';
 import { explainOperatorRuntimeState, toOperatorExplainerHint } from '../observability';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
+import {
+  createApiDegradedDiagnostics,
+  resolveBlockedProgressSignal,
+  resolveBlockedTurnControl,
+  resolveNotBlockedExplainer,
+  resolveProgressSignal,
+  resolveRunningTurnControl,
+  resolveSnapshotFreshness,
+  resolveTokenTelemetryQuality
+} from './runtime-visibility';
 import type { ApiBudgetProjection, ApiIssueResponse, ApiStateResponse } from './types';
 
 function asIsoDate(timestampMs: number): string {
@@ -22,6 +32,14 @@ function redactPromptPreview(input: string | null | undefined): string | null {
     .replace(/\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=***REDACTED***');
   const truncated = Array.from(redacted).slice(0, 160).join('').trim();
   return truncated && truncated !== '***REDACTED***' ? truncated : null;
+}
+
+function projectOperatorActions(state: OrchestratorState, issueId: string) {
+  return (state.operator_actions?.get(issueId) ?? []).map((action) => ({ ...action }));
+}
+
+function resolveStateFreshness(state: OrchestratorState, nowMs: number) {
+  return resolveSnapshotFreshness(state.snapshot_generated_at_ms ?? nowMs, nowMs);
 }
 
 function defaultBudgetProjection(windowMinutes = 1440): ApiBudgetProjection {
@@ -60,9 +78,24 @@ function explainRunningEntry(entry: RunningEntry) {
   });
 }
 
-function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number): ApiStateResponse['running'][number] {
+function toStateRunningRow(
+  issueId: string,
+  entry: RunningEntry,
+  nowMs: number,
+  operatorActions: OrchestratorState['operator_actions']
+): ApiStateResponse['running'][number] {
   const awaitingInput = Boolean(entry.awaiting_input_since_ms);
   const stalledWaiting = Boolean(entry.stalled_waiting_since_ms && entry.stalled_waiting_reason);
+  const progressSignal = resolveProgressSignal(entry);
+  const turnControl = resolveRunningTurnControl(entry);
+  const notBlockedExplainer = resolveNotBlockedExplainer({
+    blocked: false,
+    progress_signal_state: progressSignal.progress_signal_state,
+    awaiting_input: awaitingInput,
+    waiting_started_at_ms: entry.running_waiting_started_at_ms ?? null,
+    now_ms: nowMs,
+    stalled_waiting_ms: 300_000
+  });
   const operatorExplainer = explainRunningEntry(entry);
   return {
     issue_id: issueId,
@@ -110,6 +143,11 @@ function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number):
     token_telemetry_status: entry.token_telemetry_status,
     token_telemetry_last_source: entry.token_telemetry_last_source,
     token_telemetry_last_at_ms: entry.token_telemetry_last_at_ms,
+    ...turnControl,
+    ...progressSignal,
+    ...resolveTokenTelemetryQuality(entry),
+    ...notBlockedExplainer,
+    operator_actions: (operatorActions?.get(issueId) ?? []).map((action) => ({ ...action })),
     tokens: {
       input_tokens: entry.tokens.input_tokens,
       output_tokens: entry.tokens.output_tokens,
@@ -141,7 +179,10 @@ export class SnapshotService {
 
   projectState(state: OrchestratorState): ApiStateResponse {
     const nowMs = this.nowMs();
-    const running = Array.from(state.running.entries()).map(([issueId, entry]) => toStateRunningRow(issueId, entry, nowMs));
+    const freshness = resolveStateFreshness(state, nowMs);
+    const running = Array.from(state.running.entries()).map(([issueId, entry]) =>
+      toStateRunningRow(issueId, entry, nowMs, state.operator_actions)
+    );
     const retrying = Array.from(state.retry_attempts.values()).map((entry) => ({
       ...projectBudget(entry),
       issue_id: entry.issue_id,
@@ -177,102 +218,108 @@ export class SnapshotService {
         })
       )
     }));
-    const blocked = Array.from(state.blocked_inputs.values()).map((entry) => ({
-      ...projectBudget(entry),
-      ...(state.circuit_breakers.get(entry.issue_id)
-        ? {
-            breaker_active: state.circuit_breakers.get(entry.issue_id)?.breaker_active ?? false,
-            breaker_hit_count: state.circuit_breakers.get(entry.issue_id)?.breaker_hit_count ?? 0,
-            breaker_window_minutes: state.circuit_breakers.get(entry.issue_id)?.breaker_window_minutes ?? 0,
-            breaker_first_hit_at: state.circuit_breakers.get(entry.issue_id)?.breaker_first_hit_at_ms
-              ? asIsoDate(state.circuit_breakers.get(entry.issue_id)!.breaker_first_hit_at_ms!)
-              : null,
-            breaker_last_hit_at: state.circuit_breakers.get(entry.issue_id)?.breaker_last_hit_at_ms
-              ? asIsoDate(state.circuit_breakers.get(entry.issue_id)!.breaker_last_hit_at_ms!)
-              : null
-          }
-        : {
-            breaker_active: false,
-            breaker_hit_count: 0,
-            breaker_window_minutes: 0,
-            breaker_first_hit_at: null,
-            breaker_last_hit_at: null
-          }),
-      issue_id: entry.issue_id,
-      issue_identifier: entry.issue_identifier,
-      attempt: entry.attempt,
-      blocked_at: asIsoDate(entry.blocked_at_ms),
-      worker_host: entry.worker_host ?? null,
-      workspace_path: entry.workspace_path ?? null,
-      provisioner_type: entry.provisioner_type ?? null,
-      branch_name: entry.branch_name ?? null,
-      repo_root: entry.repo_root ?? null,
-      workspace_exists: entry.workspace_exists,
-      workspace_git_status: entry.workspace_git_status ?? null,
-      workspace_provisioned: entry.workspace_provisioned,
-      workspace_is_git_worktree: entry.workspace_is_git_worktree,
-      copy_ignored_applied: entry.copy_ignored_applied ?? false,
-      copy_ignored_status: entry.copy_ignored_status ?? null,
-      copy_ignored_summary: entry.copy_ignored_summary ?? null,
-      stop_reason_code: entry.stop_reason_code,
-      stop_reason_detail: entry.stop_reason_detail ?? null,
-      conflict_files: entry.conflict_files.map((file) => ({ ...file })),
-      classification_summary: entry.classification_summary ? { ...entry.classification_summary } : undefined,
-      resolution_hints: [...entry.resolution_hints],
-      previous_thread_id: entry.previous_thread_id ?? null,
-      previous_session_id: entry.previous_session_id ?? null,
-      last_phase: entry.last_phase ?? null,
-      last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
-      last_phase_detail: entry.last_phase_detail ?? null,
-      requires_manual_resume: true as const,
-      awaiting_operator: true as const,
-      awaiting_operator_reason_code: entry.awaiting_operator_reason_code ?? entry.stop_reason_code,
-      awaiting_operator_since: asIsoDate(entry.awaiting_operator_since_ms ?? entry.blocked_at_ms),
-      awaiting_operator_resume_nonce: entry.awaiting_operator_resume_nonce ?? 0,
-      quarantined_event_count: entry.quarantined_event_count ?? 0,
-      last_quarantined_event_at: entry.last_quarantined_event_at_ms ? asIsoDate(entry.last_quarantined_event_at_ms) : null,
-      attempt_count_window: entry.attempt_count_window,
-      window_minutes: entry.window_minutes,
-      last_known_commit_sha: entry.last_known_commit_sha ?? null,
-      last_progress_checkpoint_at: entry.last_progress_checkpoint_at ? asIsoDate(entry.last_progress_checkpoint_at) : null,
-      progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
-      required_actions: [...(entry.required_actions ?? [])],
-      resume_override_reason: entry.resume_override_reason ?? null,
-      operator_explainer_hint: toOperatorExplainerHint(
-        explainOperatorRuntimeState({
-          state_class: 'blocked',
-          reason_code: entry.stop_reason_code,
-          reason_detail: entry.stop_reason_detail
-        })
-      ),
-      pending_input: entry.pending_input
-        ? {
-            ...entry.pending_input,
-            input_required_at: asIsoDate(entry.pending_input.input_required_at_ms)
-          }
-        : null,
-      last_input_submit: entry.last_input_submit
-        ? {
-            submitted_at: asIsoDate(entry.last_input_submit.submitted_at_ms),
-            request_id: entry.last_input_submit.request_id,
-            resume_mode: entry.last_input_submit.resume_mode,
-            resume_reason_code: entry.last_input_submit.resume_reason_code
-          }
-        : null,
-      resume_history: (entry.resume_history ?? []).map((history) => ({
-        submitted_at: asIsoDate(history.submitted_at_ms),
-        request_id: history.request_id,
-        resume_mode: history.resume_mode,
-        resume_reason_code: history.resume_reason_code,
-        previous_thread_id: history.previous_thread_id ?? null,
-        previous_session_id: history.previous_session_id ?? null
-      })),
-      session_console: (entry.session_console ?? []).map((event) => ({
-        at: asIsoDate(event.at_ms),
-        event: event.event,
-        message: event.message
-      }))
-    }));
+    const blocked = Array.from(state.blocked_inputs.values()).map((entry) => {
+      const progressSignal = resolveBlockedProgressSignal(entry);
+      return {
+        ...projectBudget(entry),
+        ...(state.circuit_breakers.get(entry.issue_id)
+          ? {
+              breaker_active: state.circuit_breakers.get(entry.issue_id)?.breaker_active ?? false,
+              breaker_hit_count: state.circuit_breakers.get(entry.issue_id)?.breaker_hit_count ?? 0,
+              breaker_window_minutes: state.circuit_breakers.get(entry.issue_id)?.breaker_window_minutes ?? 0,
+              breaker_first_hit_at: state.circuit_breakers.get(entry.issue_id)?.breaker_first_hit_at_ms
+                ? asIsoDate(state.circuit_breakers.get(entry.issue_id)!.breaker_first_hit_at_ms!)
+                : null,
+              breaker_last_hit_at: state.circuit_breakers.get(entry.issue_id)?.breaker_last_hit_at_ms
+                ? asIsoDate(state.circuit_breakers.get(entry.issue_id)!.breaker_last_hit_at_ms!)
+                : null
+            }
+          : {
+              breaker_active: false,
+              breaker_hit_count: 0,
+              breaker_window_minutes: 0,
+              breaker_first_hit_at: null,
+              breaker_last_hit_at: null
+            }),
+        issue_id: entry.issue_id,
+        issue_identifier: entry.issue_identifier,
+        attempt: entry.attempt,
+        blocked_at: asIsoDate(entry.blocked_at_ms),
+        worker_host: entry.worker_host ?? null,
+        workspace_path: entry.workspace_path ?? null,
+        provisioner_type: entry.provisioner_type ?? null,
+        branch_name: entry.branch_name ?? null,
+        repo_root: entry.repo_root ?? null,
+        workspace_exists: entry.workspace_exists,
+        workspace_git_status: entry.workspace_git_status ?? null,
+        workspace_provisioned: entry.workspace_provisioned,
+        workspace_is_git_worktree: entry.workspace_is_git_worktree,
+        copy_ignored_applied: entry.copy_ignored_applied ?? false,
+        copy_ignored_status: entry.copy_ignored_status ?? null,
+        copy_ignored_summary: entry.copy_ignored_summary ?? null,
+        stop_reason_code: entry.stop_reason_code,
+        stop_reason_detail: entry.stop_reason_detail ?? null,
+        conflict_files: entry.conflict_files.map((file) => ({ ...file })),
+        classification_summary: entry.classification_summary ? { ...entry.classification_summary } : undefined,
+        resolution_hints: [...entry.resolution_hints],
+        previous_thread_id: entry.previous_thread_id ?? null,
+        previous_session_id: entry.previous_session_id ?? null,
+        last_phase: entry.last_phase ?? null,
+        last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
+        last_phase_detail: entry.last_phase_detail ?? null,
+        requires_manual_resume: true as const,
+        awaiting_operator: true as const,
+        awaiting_operator_reason_code: entry.awaiting_operator_reason_code ?? entry.stop_reason_code,
+        awaiting_operator_since: asIsoDate(entry.awaiting_operator_since_ms ?? entry.blocked_at_ms),
+        awaiting_operator_resume_nonce: entry.awaiting_operator_resume_nonce ?? 0,
+        quarantined_event_count: entry.quarantined_event_count ?? 0,
+        last_quarantined_event_at: entry.last_quarantined_event_at_ms ? asIsoDate(entry.last_quarantined_event_at_ms) : null,
+        attempt_count_window: entry.attempt_count_window,
+        window_minutes: entry.window_minutes,
+        last_known_commit_sha: entry.last_known_commit_sha ?? null,
+        last_progress_checkpoint_at: entry.last_progress_checkpoint_at ? asIsoDate(entry.last_progress_checkpoint_at) : null,
+        progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
+        required_actions: [...(entry.required_actions ?? [])],
+        resume_override_reason: entry.resume_override_reason ?? null,
+        ...resolveBlockedTurnControl(entry),
+        ...progressSignal,
+        operator_actions: projectOperatorActions(state, entry.issue_id),
+        operator_explainer_hint: toOperatorExplainerHint(
+          explainOperatorRuntimeState({
+            state_class: 'blocked',
+            reason_code: entry.stop_reason_code,
+            reason_detail: entry.stop_reason_detail
+          })
+        ),
+        pending_input: entry.pending_input
+          ? {
+              ...entry.pending_input,
+              input_required_at: asIsoDate(entry.pending_input.input_required_at_ms)
+            }
+          : null,
+        last_input_submit: entry.last_input_submit
+          ? {
+              submitted_at: asIsoDate(entry.last_input_submit.submitted_at_ms),
+              request_id: entry.last_input_submit.request_id,
+              resume_mode: entry.last_input_submit.resume_mode,
+              resume_reason_code: entry.last_input_submit.resume_reason_code
+            }
+          : null,
+        resume_history: (entry.resume_history ?? []).map((history) => ({
+          submitted_at: asIsoDate(history.submitted_at_ms),
+          request_id: history.request_id,
+          resume_mode: history.resume_mode,
+          resume_reason_code: history.resume_reason_code,
+          previous_thread_id: history.previous_thread_id ?? null,
+          previous_session_id: history.previous_session_id ?? null
+        })),
+        session_console: (entry.session_console ?? []).map((event) => ({
+          at: asIsoDate(event.at_ms),
+          event: event.event,
+          message: event.message
+        }))
+      };
+    });
 
     const activeSeconds = Array.from(state.running.values()).reduce((total, entry) => {
       const seconds = Math.max(0, Math.floor((nowMs - entry.started_at_ms) / 1000));
@@ -281,6 +328,8 @@ export class SnapshotService {
 
     return redactUnknown({
       generated_at: asIsoDate(nowMs),
+      ...freshness,
+      ...createApiDegradedDiagnostics(null, []),
       counts: {
         running: running.length,
         retrying: retrying.length,
@@ -332,6 +381,8 @@ export class SnapshotService {
   }
 
   projectIssue(state: OrchestratorState, issueIdentifier: string): ApiIssueResponse {
+    const nowMs = this.nowMs();
+    const freshness = resolveStateFreshness(state, nowMs);
     const runningEntry = Array.from(state.running.entries()).find(([, entry]) => entry.identifier === issueIdentifier);
     const retryEntry = Array.from(state.retry_attempts.values()).find((entry) => entry.identifier === issueIdentifier);
     const blockedEntry = Array.from(state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issueIdentifier);
@@ -348,11 +399,17 @@ export class SnapshotService {
     if (runningEntry) {
       const [issueId, entry] = runningEntry;
       const currentRetryAttempt = retryEntry?.attempt ?? 0;
+      const progressSignal = resolveProgressSignal(entry);
+      const turnControl = resolveRunningTurnControl(entry);
+      const blockedProgressSignal = blockedEntry ? resolveBlockedProgressSignal(blockedEntry) : null;
       const operatorExplainer = explainRunningEntry(entry);
       return redactUnknown({
         issue_identifier: issueIdentifier,
         issue_id: issueId,
         status: 'running',
+        ...freshness,
+        ...createApiDegradedDiagnostics(null, []),
+        operator_actions: projectOperatorActions(state, issueId),
         operator_explainer: operatorExplainer,
         workspace: {
           path: entry.workspace_path,
@@ -408,6 +465,18 @@ export class SnapshotService {
           token_telemetry_status: entry.token_telemetry_status,
           token_telemetry_last_source: entry.token_telemetry_last_source,
           token_telemetry_last_at_ms: entry.token_telemetry_last_at_ms,
+          ...turnControl,
+          ...progressSignal,
+          ...resolveTokenTelemetryQuality(entry),
+          ...resolveNotBlockedExplainer({
+            blocked: false,
+            progress_signal_state: progressSignal.progress_signal_state,
+            awaiting_input: Boolean(entry.awaiting_input_since_ms),
+            waiting_started_at_ms: entry.running_waiting_started_at_ms ?? null,
+            now_ms: nowMs,
+            stalled_waiting_ms: 300_000
+          }),
+          operator_actions: projectOperatorActions(state, issueId),
           tokens: {
             input_tokens: entry.tokens.input_tokens,
             output_tokens: entry.tokens.output_tokens,
@@ -484,6 +553,9 @@ export class SnapshotService {
       awaiting_operator_resume_nonce: blockedEntry.awaiting_operator_resume_nonce ?? 0,
       quarantined_event_count: blockedEntry.quarantined_event_count ?? 0,
       last_quarantined_event_at: blockedEntry.last_quarantined_event_at_ms ? asIsoDate(blockedEntry.last_quarantined_event_at_ms) : null,
+          ...resolveBlockedTurnControl(blockedEntry),
+          ...(blockedProgressSignal ?? resolveBlockedProgressSignal(blockedEntry)),
+          operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
           breaker_active: breakerEntry?.breaker_active ?? false,
           breaker_hit_count: breakerEntry?.breaker_hit_count ?? 0,
           breaker_window_minutes: breakerEntry?.breaker_window_minutes ?? 0,
@@ -549,6 +621,7 @@ export class SnapshotService {
     if (retryEntry) {
       const retryOnlyEntry = retryEntry;
       const issueId = retryOnlyEntry.issue_id;
+      const blockedProgressSignal = blockedEntry ? resolveBlockedProgressSignal(blockedEntry) : null;
       const operatorExplainer = explainOperatorRuntimeState({
         state_class: 'retrying',
         reason_code: retryOnlyEntry.stop_reason_code,
@@ -559,6 +632,9 @@ export class SnapshotService {
         issue_identifier: issueIdentifier,
         issue_id: issueId,
         status: 'retrying',
+        ...freshness,
+        ...createApiDegradedDiagnostics(null, []),
+        operator_actions: projectOperatorActions(state, issueId),
         operator_explainer: operatorExplainer,
         workspace: {
           path: retryOnlyEntry.workspace_path ?? null,
@@ -621,19 +697,26 @@ export class SnapshotService {
               last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
               last_phase_detail: blockedEntry.last_phase_detail ?? null,
               requires_manual_resume: true as const,
-      awaiting_operator: true as const,
-      awaiting_operator_reason_code: blockedEntry.awaiting_operator_reason_code ?? blockedEntry.stop_reason_code,
-      awaiting_operator_since: asIsoDate(blockedEntry.awaiting_operator_since_ms ?? blockedEntry.blocked_at_ms),
-      awaiting_operator_resume_nonce: blockedEntry.awaiting_operator_resume_nonce ?? 0,
-      quarantined_event_count: blockedEntry.quarantined_event_count ?? 0,
-      last_quarantined_event_at: blockedEntry.last_quarantined_event_at_ms ? asIsoDate(blockedEntry.last_quarantined_event_at_ms) : null,
-      attempt_count_window: blockedEntry.attempt_count_window,
-      window_minutes: blockedEntry.window_minutes,
-      last_known_commit_sha: blockedEntry.last_known_commit_sha ?? null,
-      last_progress_checkpoint_at: blockedEntry.last_progress_checkpoint_at ? asIsoDate(blockedEntry.last_progress_checkpoint_at) : null,
-      progress_signals: blockedEntry.progress_signals ? { ...blockedEntry.progress_signals } : undefined,
-      required_actions: [...(blockedEntry.required_actions ?? [])],
-      resume_override_reason: blockedEntry.resume_override_reason ?? null,
+              awaiting_operator: true as const,
+              awaiting_operator_reason_code: blockedEntry.awaiting_operator_reason_code ?? blockedEntry.stop_reason_code,
+              awaiting_operator_since: asIsoDate(blockedEntry.awaiting_operator_since_ms ?? blockedEntry.blocked_at_ms),
+              awaiting_operator_resume_nonce: blockedEntry.awaiting_operator_resume_nonce ?? 0,
+              quarantined_event_count: blockedEntry.quarantined_event_count ?? 0,
+              last_quarantined_event_at: blockedEntry.last_quarantined_event_at_ms
+                ? asIsoDate(blockedEntry.last_quarantined_event_at_ms)
+                : null,
+              attempt_count_window: blockedEntry.attempt_count_window,
+              window_minutes: blockedEntry.window_minutes,
+              last_known_commit_sha: blockedEntry.last_known_commit_sha ?? null,
+              last_progress_checkpoint_at: blockedEntry.last_progress_checkpoint_at
+                ? asIsoDate(blockedEntry.last_progress_checkpoint_at)
+                : null,
+              progress_signals: blockedEntry.progress_signals ? { ...blockedEntry.progress_signals } : undefined,
+              required_actions: [...(blockedEntry.required_actions ?? [])],
+              resume_override_reason: blockedEntry.resume_override_reason ?? null,
+              ...resolveBlockedTurnControl(blockedEntry),
+              ...(blockedProgressSignal ?? resolveBlockedProgressSignal(blockedEntry)),
+              operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
               pending_input: blockedEntry.pending_input
                 ? {
                     ...blockedEntry.pending_input,
@@ -698,6 +781,9 @@ export class SnapshotService {
       issue_identifier: issueIdentifier,
       issue_id: issueId,
       status: 'blocked',
+      ...freshness,
+      ...createApiDegradedDiagnostics(null, []),
+      operator_actions: projectOperatorActions(state, issueId),
       operator_explainer: operatorExplainer,
       workspace: {
         path: blockedEntry.workspace_path ?? null,
@@ -735,19 +821,26 @@ export class SnapshotService {
         last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
         last_phase_detail: blockedEntry.last_phase_detail ?? null,
         requires_manual_resume: true as const,
-      awaiting_operator: true as const,
-      awaiting_operator_reason_code: blockedEntry.awaiting_operator_reason_code ?? blockedEntry.stop_reason_code,
-      awaiting_operator_since: asIsoDate(blockedEntry.awaiting_operator_since_ms ?? blockedEntry.blocked_at_ms),
-      awaiting_operator_resume_nonce: blockedEntry.awaiting_operator_resume_nonce ?? 0,
-      quarantined_event_count: blockedEntry.quarantined_event_count ?? 0,
-      last_quarantined_event_at: blockedEntry.last_quarantined_event_at_ms ? asIsoDate(blockedEntry.last_quarantined_event_at_ms) : null,
-      attempt_count_window: blockedEntry.attempt_count_window,
-      window_minutes: blockedEntry.window_minutes,
-      last_known_commit_sha: blockedEntry.last_known_commit_sha ?? null,
-      last_progress_checkpoint_at: blockedEntry.last_progress_checkpoint_at ? asIsoDate(blockedEntry.last_progress_checkpoint_at) : null,
-      progress_signals: blockedEntry.progress_signals ? { ...blockedEntry.progress_signals } : undefined,
-      required_actions: [...(blockedEntry.required_actions ?? [])],
-      resume_override_reason: blockedEntry.resume_override_reason ?? null,
+        awaiting_operator: true as const,
+        awaiting_operator_reason_code: blockedEntry.awaiting_operator_reason_code ?? blockedEntry.stop_reason_code,
+        awaiting_operator_since: asIsoDate(blockedEntry.awaiting_operator_since_ms ?? blockedEntry.blocked_at_ms),
+        awaiting_operator_resume_nonce: blockedEntry.awaiting_operator_resume_nonce ?? 0,
+        quarantined_event_count: blockedEntry.quarantined_event_count ?? 0,
+        last_quarantined_event_at: blockedEntry.last_quarantined_event_at_ms
+          ? asIsoDate(blockedEntry.last_quarantined_event_at_ms)
+          : null,
+        attempt_count_window: blockedEntry.attempt_count_window,
+        window_minutes: blockedEntry.window_minutes,
+        last_known_commit_sha: blockedEntry.last_known_commit_sha ?? null,
+        last_progress_checkpoint_at: blockedEntry.last_progress_checkpoint_at
+          ? asIsoDate(blockedEntry.last_progress_checkpoint_at)
+          : null,
+        progress_signals: blockedEntry.progress_signals ? { ...blockedEntry.progress_signals } : undefined,
+        required_actions: [...(blockedEntry.required_actions ?? [])],
+        resume_override_reason: blockedEntry.resume_override_reason ?? null,
+        ...resolveBlockedTurnControl(blockedEntry),
+        ...resolveBlockedProgressSignal(blockedEntry),
+        operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
         pending_input: blockedEntry.pending_input
           ? {
               ...blockedEntry.pending_input,

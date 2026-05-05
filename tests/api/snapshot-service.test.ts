@@ -181,11 +181,34 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.token_telemetry_status).toBe('available');
     expect(projected.running[0]?.token_telemetry_last_source).toBe('terminal_turn_summary');
     expect(projected.running[0]?.token_telemetry_last_at_ms).toBe(Date.parse('2026-04-10T10:01:00.000Z'));
+    expect(projected.snapshot_generated_at_ms).toBe(Date.parse('2026-04-10T10:02:00.000Z'));
+    expect(projected.snapshot_age_ms).toBe(0);
+    expect(projected.snapshot_freshness_state).toBe('fresh');
+    expect(projected.api_degraded_mode).toBe(false);
+    expect(projected.running[0]?.turn_control_state).toBe('agent_turn');
+    expect(projected.running[0]?.progress_signal_state).toBe('advancing');
+    expect(projected.running[0]?.token_telemetry_confidence).toBe('observed_live');
     expect(projected.running[0]?.budget_status).toBe('ok');
     expect(projected.running[0]?.budget_usage_tokens).toBeNull();
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');
+  });
+
+  it('computes snapshot freshness from the source snapshot timestamp', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:02:40.000Z')
+    });
+
+    const projected = service.projectState(
+      makeState({
+        snapshot_generated_at_ms: Date.parse('2026-04-10T10:02:00.000Z')
+      })
+    );
+
+    expect(projected.snapshot_generated_at_ms).toBe(Date.parse('2026-04-10T10:02:00.000Z'));
+    expect(projected.snapshot_age_ms).toBe(40_000);
+    expect(projected.snapshot_freshness_state).toBe('stale');
   });
 
   it('projects additive budget fields for running and blocked rows', () => {
@@ -294,6 +317,9 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.pending_input_preview?.prompt_preview).toContain('***REDACTED***');
     expect(projected.running[0]?.stalled_waiting).toBe(true);
     expect(projected.running[0]?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+    expect(projected.running[0]?.turn_control_state).toBe('operator_turn');
+    expect(projected.running[0]?.progress_signal_state).toBe('stalled_waiting');
+    expect(projected.running[0]?.not_blocked_explainer_code).toBe('awaiting_classifier_transition');
     expect(projected.counts.running_stalled_waiting_count).toBe(1);
     expect(projected.counts.running_awaiting_input_count).toBe(0);
     expect(projected.running[0]?.operator_explainer_hint).toEqual({
@@ -396,10 +422,53 @@ describe('SnapshotService', () => {
     expect(projected.retry).toBeNull();
     expect(projected.blocked).toMatchObject({
       stop_reason_code: 'operator_action_required_workspace_conflict',
+      progress_signal_state: 'advancing',
       previous_session_id: 'thread-prev-turn-prev',
       requires_manual_resume: true,
       conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });
+  });
+
+  it('only projects no-progress blocked issues as stalled waiting', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      blocked_inputs: new Map([
+        [
+          'issue-stalled',
+          {
+            issue_id: 'issue-stalled',
+            issue_identifier: 'ABC-STALLED',
+            attempt: 2,
+            worker_host: null,
+            workspace_path: null,
+            provisioner_type: null,
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+            stop_reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+            conflict_files: [],
+            resolution_hints: [],
+            previous_thread_id: null,
+            previous_session_id: null,
+            blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            requires_manual_resume: true,
+            last_progress_checkpoint_at: null,
+            pending_input: null,
+            session_console: []
+          }
+        ]
+      ])
+    });
+
+    const projected = service.projectIssue(state, 'ABC-STALLED');
+    expect(projected.blocked?.progress_signal_state).toBe('stalled_waiting');
+    expect(projected.blocked?.last_progress_transition_at_ms).toBeNull();
   });
 
   it('projects breaker metadata on state and issue blocked payloads', () => {

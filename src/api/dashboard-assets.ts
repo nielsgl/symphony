@@ -46,6 +46,11 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     <div id="action-required-groups" class="inline-badges"></div>
   </section>
 
+  <section id="api-degraded-banner" class="api-degraded-banner hidden" role="region" aria-live="polite">
+    <strong>API Degraded</strong>
+    <span id="api-degraded-summary"></span>
+  </section>
+
   <main class="layout">
     <section id="snapshot-error-panel" class="panel panel-wide snapshot-error hidden">
       <div class="panel-head">
@@ -323,6 +328,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     actionRequiredTitle: document.getElementById('action-required-title'),
     actionRequiredSummary: document.getElementById('action-required-summary'),
     actionRequiredGroups: document.getElementById('action-required-groups'),
+    apiDegradedBanner: document.getElementById('api-degraded-banner'),
+    apiDegradedSummary: document.getElementById('api-degraded-summary'),
     snapshotErrorPanel: document.getElementById('snapshot-error-panel'),
     snapshotErrorMessage: document.getElementById('snapshot-error-message'),
     kpiGrid: document.getElementById('kpi-grid'),
@@ -385,6 +392,52 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     const remain = seconds % 60;
     return minutes + 'm ' + remain + 's';
   }
+
+  function formatDurationFromEpochMs(epochMs) {
+    if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) {
+      return 'n/a';
+    }
+    return formatDurationFromMs(epochMs);
+  }
+
+  function getTurnControlLabel(state) {
+    switch (state) {
+      case 'agent_turn':
+        return 'Agent Turn';
+      case 'operator_turn':
+        return 'Operator Turn';
+      case 'blocked_manual_resume':
+        return 'Manual Resume Required';
+      default:
+        return 'Turn Unknown';
+    }
+  }
+
+  function getProgressSignalLabel(state) {
+    switch (state) {
+      case 'advancing':
+        return 'Advancing';
+      case 'heartbeat_only':
+        return 'Heartbeat Only';
+      case 'stalled_waiting':
+        return 'Stalled Waiting';
+      default:
+        return 'Progress Unknown';
+    }
+  }
+
+  function getTokenConfidenceLabel(confidence) {
+    switch (confidence) {
+      case 'observed_live':
+        return 'Live';
+      case 'backfilled':
+        return 'Backfilled';
+      case 'missing':
+        return 'Missing';
+      default:
+        return 'Unknown';
+    }
+  }
   function formatDurationFromMs(timestampMs) {
     if (!Number.isFinite(timestampMs)) {
       return 'n/a';
@@ -403,7 +456,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   }
 
   function setLastUpdated(value) {
-    elements.lastUpdated.textContent = 'Last update: ' + formatDate(value);
+    const generatedAtMs = state.payload && typeof state.payload.snapshot_generated_at_ms === 'number'
+      ? state.payload.snapshot_generated_at_ms
+      : Date.parse(value || '');
+    const ageText = Number.isFinite(generatedAtMs) ? ' • age ' + formatDurationFromEpochMs(generatedAtMs) : '';
+    const freshness = state.payload && state.payload.snapshot_freshness_state ? ' • ' + state.payload.snapshot_freshness_state : '';
+    elements.lastUpdated.textContent = 'Last update: ' + formatDate(value) + ageText + freshness;
   }
 
   function setRefreshStatus(message, isError) {
@@ -614,6 +672,18 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       return button;
     });
     elements.actionRequiredGroups.replaceChildren(...groupNodes);
+  }
+
+  function renderApiDegradedBanner(payload) {
+    if (!payload || !payload.api_degraded_mode) {
+      elements.apiDegradedBanner.classList.add('hidden');
+      elements.apiDegradedSummary.textContent = '';
+      return;
+    }
+    const routes = Array.isArray(payload.api_degraded_routes) ? payload.api_degraded_routes.join(', ') : 'n/a';
+    elements.apiDegradedBanner.classList.remove('hidden');
+    elements.apiDegradedSummary.textContent =
+      (payload.api_degraded_reason_code || 'unknown') + ' • fallback routes: ' + routes;
   }
 
   function describeTransition(transition) {
@@ -966,6 +1036,14 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stateCell.appendChild(createStateBadge(entry.state));
       const stateFlags = document.createElement('div');
       stateFlags.className = 'inline-badges';
+      const turnBadge = document.createElement('span');
+      turnBadge.className = 'status-pill ' + (entry.turn_control_state === 'operator_turn' ? 'failed' : 'pending');
+      turnBadge.textContent = getTurnControlLabel(entry.turn_control_state);
+      stateFlags.append(turnBadge);
+      const progressBadge = document.createElement('span');
+      progressBadge.className = 'status-pill ' + (entry.progress_signal_state === 'stalled_waiting' ? 'failed' : 'pending');
+      progressBadge.textContent = getProgressSignalLabel(entry.progress_signal_state);
+      stateFlags.append(progressBadge);
       if (entry.awaiting_input) {
         const awaitingBadge = document.createElement('span');
         awaitingBadge.className = 'status-pill pending';
@@ -1040,6 +1118,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         stalledTimer.textContent = 'Stalled waiting: ' + formatDurationFromMs(entry.stalled_waiting_since_ms);
         runtimeCell.append(stalledTimer);
       }
+      if (entry.not_blocked_explainer_text) {
+        const explainer = document.createElement('div');
+        explainer.className = 'muted';
+        explainer.textContent = 'Why not blocked: ' + entry.not_blocked_explainer_text;
+        runtimeCell.append(explainer);
+      }
 
       const turnsCell = document.createElement('td');
       turnsCell.textContent = formatNumber(entry.turn_count);
@@ -1047,10 +1131,11 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const tokensCell = document.createElement('td');
       const tokenTotal = document.createElement('div');
       const telemetryStatus = entry.token_telemetry_status || 'unavailable';
+      const telemetryConfidence = entry.token_telemetry_confidence || (telemetryStatus === 'available' ? 'observed_live' : 'missing');
       if (telemetryStatus === 'pending') {
         tokenTotal.textContent = 'Pending';
-      } else if (telemetryStatus === 'unavailable') {
-        tokenTotal.textContent = 'Unavailable';
+      } else if (telemetryConfidence === 'missing') {
+        tokenTotal.textContent = 'Missing telemetry';
       } else {
         tokenTotal.textContent = 'Total: ' + formatNumber(entry.tokens.total_tokens);
       }
@@ -1062,11 +1147,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
           formatNumber(entry.tokens.input_tokens) +
           ' / Out ' +
           formatNumber(entry.tokens.output_tokens) +
-          (entry.token_telemetry_last_source ? ' • ' + entry.token_telemetry_last_source : '');
+          (entry.token_telemetry_source ? ' • ' + entry.token_telemetry_source : '');
       } else {
         tokenDetail.textContent = telemetryStatus === 'pending' ? 'Waiting for first usage payload' : 'No telemetry path detected';
       }
-      tokensCell.append(tokenTotal, tokenDetail);
+      const tokenBadge = document.createElement('span');
+      tokenBadge.className = 'mini-badge ' + (telemetryConfidence === 'missing' ? 'mini-badge-bad' : 'mini-badge-good');
+      tokenBadge.title = 'Token telemetry confidence/source quality';
+      tokenBadge.textContent = getTokenConfidenceLabel(telemetryConfidence);
+      tokensCell.append(tokenTotal, tokenBadge, tokenDetail);
       tokensCell.append(createBudgetBlock(entry));
 
       const eventCell = document.createElement('td');
@@ -1080,6 +1169,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
       const actionsCell = document.createElement('td');
       actionsCell.className = 'action-cell';
+      const lastAction = Array.isArray(entry.operator_actions) && entry.operator_actions.length
+        ? entry.operator_actions[entry.operator_actions.length - 1]
+        : null;
+      if (lastAction) {
+        const actionOutcome = document.createElement('div');
+        actionOutcome.className = 'muted';
+        actionOutcome.textContent = 'Last action: ' + lastAction.action + ' ' + lastAction.result + (lastAction.result_code ? ' (' + lastAction.result_code + ')' : '');
+        actionsCell.append(actionOutcome);
+      }
       const copySession = createActionButton('Copy Session', 'ghost-button', function () {
         copyText(entry.session_id || '');
       });
@@ -1361,10 +1459,20 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonCell.append(createBudgetBlock(entry));
       if (entry.stop_reason_code) {
         const stateLabel = document.createElement('div');
-        stateLabel.className = 'status-pill pending';
+        stateLabel.className = 'status-pill failed';
         stateLabel.textContent = getActionRequiredLabel(entry.stop_reason_code);
         stopReasonCell.append(stateLabel);
       }
+      const controlLine = document.createElement('div');
+      controlLine.className = 'inline-badges';
+      const turnBadge = document.createElement('span');
+      turnBadge.className = 'status-pill failed';
+      turnBadge.textContent = getTurnControlLabel(entry.turn_control_state);
+      const progressBadge = document.createElement('span');
+      progressBadge.className = 'status-pill failed';
+      progressBadge.textContent = getProgressSignalLabel(entry.progress_signal_state);
+      controlLine.append(turnBadge, progressBadge);
+      stopReasonCell.append(controlLine);
       const blockedHintBadge = createOperatorHintBadge(entry.operator_explainer_hint);
       if (blockedHintBadge) {
         stopReasonCell.append(blockedHintBadge);
@@ -1434,6 +1542,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       previousSessionCell.append(previousSessionValue, previousThreadValue);
 
       const actionsCell = document.createElement('td');
+      const lastAction = Array.isArray(entry.operator_actions) && entry.operator_actions.length
+        ? entry.operator_actions[entry.operator_actions.length - 1]
+        : null;
+      if (lastAction) {
+        const actionOutcome = document.createElement('div');
+        actionOutcome.className = 'muted';
+        actionOutcome.textContent = 'Last action: ' + lastAction.action + ' ' + lastAction.result + (lastAction.result_code ? ' (' + lastAction.result_code + ')' : '');
+        actionsCell.append(actionOutcome);
+      }
       const resumeButton = createActionButton('Mark Acceptance Complete + Resume', 'ghost-button', function () {
         void resumeBlockedIssue(entry.issue_identifier);
       });
@@ -1485,6 +1602,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     state.lastGoodPayload = payload;
     renderOverview(payload);
     renderActionRequiredBanner(payload);
+    renderApiDegradedBanner(payload);
     renderThroughput(payload);
     renderRunning(payload);
     renderRetry(payload);
@@ -1627,6 +1745,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       elements.issueInput.value = issueId;
       const summaryParts = [];
       summaryParts.push('Status: ' + (payload.status || 'unknown'));
+      summaryParts.push('Snapshot: ' + (payload.snapshot_freshness_state || 'unknown') + ' age ' + formatNumber(payload.snapshot_age_ms) + 'ms');
+      if (payload.api_degraded_mode) {
+        summaryParts.push('API degraded: ' + (payload.api_degraded_reason_code || 'unknown'));
+      }
       if (payload.workspace && payload.workspace.path) {
         summaryParts.push('Workspace: ' + payload.workspace.path);
       }
@@ -1644,6 +1766,19 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
       if (payload.running && payload.running.current_phase) {
         summaryParts.push('Current phase: ' + payload.running.current_phase);
+      }
+      if (payload.running && payload.running.turn_control_state) {
+        summaryParts.push('Turn control: ' + getTurnControlLabel(payload.running.turn_control_state));
+        summaryParts.push('Progress: ' + getProgressSignalLabel(payload.running.progress_signal_state));
+      }
+      if (payload.running && payload.running.token_telemetry_confidence) {
+        summaryParts.push('Token quality: ' + getTokenConfidenceLabel(payload.running.token_telemetry_confidence));
+      }
+      if (payload.running && payload.running.not_blocked_explainer_text) {
+        summaryParts.push('Why not blocked: ' + payload.running.not_blocked_explainer_text);
+      }
+      if (payload.blocked && payload.blocked.turn_control_state) {
+        summaryParts.push('Turn control: ' + getTurnControlLabel(payload.blocked.turn_control_state));
       }
       if ((payload.retry && payload.retry.last_phase) || (payload.blocked && payload.blocked.last_phase)) {
         summaryParts.push('Last phase before stop: ' + ((payload.retry && payload.retry.last_phase) || (payload.blocked && payload.blocked.last_phase)));
@@ -1683,6 +1818,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
           }).join('\\n')
         : 'No phase markers yet.';
       const operatorTimelineRows = deriveOperatorTransitionRows(issueId, payload);
+      const operatorActions = Array.isArray(payload.operator_actions) ? payload.operator_actions : [];
+      const operatorActionText = operatorActions.length
+        ? operatorActions.map(function (entry) {
+            return new Date(entry.requested_at_ms).toISOString() + ' | ' + entry.action + ' | ' + entry.result + ' | ' + (entry.result_code || 'n/a') + ' | ' + (entry.message || 'n/a');
+          }).join('\\n')
+        : 'No operator action outcomes.';
       const operatorTimelineText = operatorTimelineRows.length
         ? operatorTimelineRows
             .map(function (entry) {
@@ -1709,6 +1850,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       elements.issueOutput.textContent =
         'Operator Transition Timeline\\n' +
         operatorTimelineText +
+        '\\n\\nOperator Action Outcomes\\n' +
+        operatorActionText +
         '\\n\\nExecution Timeline\\n' +
         timelineText +
         '\\n\\nSession Console\\n' +
@@ -1722,9 +1865,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
       scheduleStateSave();
     } catch (error) {
-      elements.issueSummary.textContent = 'Issue load failed.';
+      elements.issueSummary.textContent = 'Issue detail degraded: fallback mode active.';
       renderIssueExplainer(null);
-      elements.issueOutput.textContent = 'Issue load failed: ' + String(error);
+      elements.issueOutput.textContent =
+        'Issue load failed: ' +
+        String(error) +
+        '\\n\\nFallback message\\nIssue detail payload is unavailable. Available actions remain resume, cancel, refresh, and JSON inspection when the state snapshot contains the issue.';
     }
   }
 
@@ -2136,6 +2282,19 @@ h1 {
   gap: 8px;
 }
 
+.api-degraded-banner {
+  margin: 10px 24px 0;
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .reason-chip {
   font-size: 11px;
   padding: 4px 8px;
@@ -2387,6 +2546,11 @@ td {
 .status-pill.pending {
   background: #fff1df;
   color: #8a4b12;
+}
+
+.status-pill.failed {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .status-pill.actionability-none,
