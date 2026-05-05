@@ -64,6 +64,7 @@ export interface DiagnosticsSource {
   getPersistenceHealth(): PersistenceHealth;
   listRunHistory(limit?: number): DurableRunHistoryRecord[];
   reconstructThreadLineage?: (threadId: string) => ExecutionGraphThreadLineage | null;
+  reconstructLatestThreadLineageByIssueIdentifier?: (issueIdentifier: string) => ExecutionGraphThreadLineage | null;
   getLoggingHealth(): {
     root: string;
     active_file: string;
@@ -666,6 +667,76 @@ export interface ApiRefreshAcceptedResponse {
   coalesced: boolean;
   requested_at: string;
   operations: ['poll', 'reconcile'];
+}
+
+export type ThreadDiagnosticsStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'stalled';
+
+export type ThreadDiagnosticsBlockerClassification =
+  | 'tool_waiting_long'
+  | 'tracker_transition_pending'
+  | 'input_required_pending'
+  | 'codex_no_progress'
+  | 'workspace_integrity_conflict'
+  | 'retry_backoff_wait';
+
+export interface ThreadDiagnosticsEvent {
+  at_ms: number;
+  event: string;
+  reason_code: string | null;
+  reason_detail: string | null;
+  thread_id: string;
+  turn_id: string | null;
+  session_id: string | null;
+}
+
+export interface ThreadDiagnosticsPhaseSpan {
+  phase: string;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  duration_ms: number | null;
+  status: string;
+  reason_code: string | null;
+  reason_detail: string | null;
+}
+
+export interface ThreadDiagnosticsToolSpan {
+  tool_name: string;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  duration_ms: number | null;
+  status: string;
+  reason_code: string | null;
+  reason_detail: string | null;
+}
+
+export interface ThreadDiagnosticsWaitSpan {
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  duration_ms: number | null;
+  status: string;
+  reason_code: string | null;
+  reason_detail: string | null;
+}
+
+export interface ThreadDiagnosticsBlocker {
+  classification: ThreadDiagnosticsBlockerClassification;
+  reason_code: string | null;
+  reason_detail: string | null;
+  actionability: 'none' | 'recommended' | 'required';
+  recommended_actions: string[];
+}
+
+export interface ThreadDiagnosticsResponse {
+  thread_id: string;
+  issue_identifier: string;
+  attempt: number;
+  status: ThreadDiagnosticsStatus;
+  timeline: ThreadDiagnosticsEvent[];
+  phase_spans: ThreadDiagnosticsPhaseSpan[];
+  tool_spans: ThreadDiagnosticsToolSpan[];
+  wait_spans: ThreadDiagnosticsWaitSpan[];
+  current_blocker: ThreadDiagnosticsBlocker | null;
+  last_meaningful_progress_at_ms: number | null;
 }
 
 export type ApiEventType = 'state_snapshot' | 'refresh_accepted' | 'runtime_health_changed' | 'heartbeat';
