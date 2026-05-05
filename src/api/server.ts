@@ -8,6 +8,7 @@ import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { createApiDegradedDiagnostics } from './runtime-visibility';
 import { SnapshotService } from './snapshot-service';
+import { buildThreadDiagnosticsByIssueIdentifier, buildThreadDiagnosticsByThreadId } from './thread-diagnostics';
 import type {
   ApiDiagnosticsResponse,
   ApiIssueResponse,
@@ -705,6 +706,51 @@ export class LocalApiServer {
               sendJson(response, 200, {
                 runs: this.diagnosticsSource.listRunHistory(limit)
               });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/threads\/([^/]+)$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response, match) => {
+              const threadId = decodeURIComponent(match[1]);
+              const lineage = this.diagnosticsSource?.reconstructThreadLineage
+                ? this.diagnosticsSource.reconstructThreadLineage(threadId)
+                : null;
+              const payload = buildThreadDiagnosticsByThreadId({
+                state: this.snapshotSource.getStateSnapshot(),
+                thread_id: threadId,
+                lineage
+              });
+              if (!payload) {
+                throw new LocalApiError('thread_diagnostics_not_found', `Thread ${threadId} was not found`, 404);
+              }
+
+              sendJson(response, 200, payload);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/issues\/([^/]+)\/diagnostics$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response, match) => {
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const payload = buildThreadDiagnosticsByIssueIdentifier({
+                state: this.snapshotSource.getStateSnapshot(),
+                issue_identifier: issueIdentifier,
+                reconstructThreadLineage: this.diagnosticsSource?.reconstructThreadLineage
+              });
+              if (!payload) {
+                throw new LocalApiError('thread_diagnostics_not_found', `Issue ${issueIdentifier} has no thread diagnostics`, 404);
+              }
+
+              sendJson(response, 200, payload);
             }
           }
         ]

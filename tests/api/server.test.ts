@@ -1699,6 +1699,262 @@ describe('LocalApiServer', () => {
     });
   });
 
+  it('serves canonical active thread diagnostics by thread id and issue identifier', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            recent_events: [
+              {
+                at_ms: Date.parse('2026-04-10T10:00:10.000Z'),
+                event: CANONICAL_EVENT.codex.turnStarted,
+                message: 'turn started'
+              },
+              {
+                at_ms: Date.parse('2026-04-10T10:00:20.000Z'),
+                event: 'codex.turn.waiting',
+                message: 'waiting for tool'
+              },
+              {
+                at_ms: Date.parse('2026-04-10T10:00:25.000Z'),
+                event: 'codex.turn.waiting',
+                message: 'waiting heartbeat'
+              }
+            ],
+            running_waiting_started_at_ms: Date.parse('2026-04-10T10:00:20.000Z'),
+            stalled_waiting_since_ms: Date.parse('2026-04-10T10:05:20.000Z'),
+            stalled_waiting_reason: 'turn_waiting_threshold_exceeded'
+          })
+        ]
+      ])
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const byThreadResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/threads/thread-1`);
+    const byThreadPayload = (await byThreadResponse.json()) as {
+      thread_id: string;
+      issue_identifier: string;
+      attempt: number;
+      status: string;
+      timeline: Array<{
+        at_ms: number;
+        event: string;
+        reason_code: string | null;
+        reason_detail: string | null;
+        thread_id: string;
+        turn_id: string | null;
+        session_id: string | null;
+      }>;
+      phase_spans: unknown[];
+      tool_spans: unknown[];
+      wait_spans: Array<{ started_at_ms: number; ended_at_ms: number | null; duration_ms: number | null }>;
+      current_blocker: { classification: string; recommended_actions: string[] } | null;
+      last_meaningful_progress_at_ms: number | null;
+    };
+
+    expect(byThreadResponse.status).toBe(200);
+    expect(byThreadPayload).toMatchObject({
+      thread_id: 'thread-1',
+      issue_identifier: 'ABC-1',
+      attempt: 0,
+      status: 'stalled',
+      phase_spans: [],
+      tool_spans: []
+    });
+    expect(byThreadPayload.timeline.map((event) => event.at_ms)).toEqual([
+      Date.parse('2026-04-10T10:00:10.000Z'),
+      Date.parse('2026-04-10T10:00:20.000Z'),
+      Date.parse('2026-04-10T10:00:25.000Z')
+    ]);
+    expect(byThreadPayload.timeline[0]).toHaveProperty('reason_code', null);
+    expect(byThreadPayload.wait_spans[0]).toMatchObject({
+      started_at_ms: Date.parse('2026-04-10T10:00:20.000Z'),
+      ended_at_ms: null,
+      duration_ms: null
+    });
+    expect(byThreadPayload.current_blocker?.classification).toBe('tool_waiting_long');
+    expect(byThreadPayload.current_blocker?.recommended_actions.length).toBeGreaterThan(0);
+    expect(byThreadPayload.last_meaningful_progress_at_ms).toBe(Date.parse('2026-04-10T10:00:10.000Z'));
+
+    const byIssueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/diagnostics`);
+    const byIssuePayload = (await byIssueResponse.json()) as { thread_id: string; current_blocker: { classification: string } };
+    expect(byIssueResponse.status).toBe(200);
+    expect(byIssuePayload.thread_id).toBe('thread-1');
+    expect(byIssuePayload.current_blocker.classification).toBe('tool_waiting_long');
+  });
+
+  it('serves deterministic persisted thread diagnostics with spans and additive null-safe fields', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        reconstructThreadLineage: (threadId: string) =>
+          threadId === 'thread-complete'
+            ? {
+                issue_run: {
+                  issue_run_id: 'issue_run_1',
+                  issue_id: 'issue-1',
+                  issue_identifier: 'ABC-1',
+                  started_at: '2026-04-10T10:00:00.000Z',
+                  ended_at: '2026-04-10T10:02:00.000Z',
+                  status: 'succeeded',
+                  reason_code: null,
+                  reason_detail: null
+                },
+                attempt: {
+                  attempt_id: 'attempt_1',
+                  issue_run_id: 'issue_run_1',
+                  attempt_number: 2,
+                  started_at: '2026-04-10T10:00:01.000Z',
+                  ended_at: '2026-04-10T10:02:00.000Z',
+                  status: 'succeeded',
+                  reason_code: null,
+                  reason_detail: null
+                },
+                thread: {
+                  thread_id: 'thread-complete',
+                  attempt_id: 'attempt_1',
+                  started_at: '2026-04-10T10:00:02.000Z',
+                  ended_at: '2026-04-10T10:02:00.000Z',
+                  status: 'succeeded',
+                  reason_code: null,
+                  reason_detail: null
+                },
+                turns: [
+                  {
+                    turn_id: 'turn-1',
+                    thread_id: 'thread-complete',
+                    turn_index: 0,
+                    started_at: '2026-04-10T10:00:04.000Z',
+                    ended_at: '2026-04-10T10:01:00.000Z',
+                    status: 'succeeded',
+                    reason_code: 'turn_completed',
+                    reason_detail: null,
+                    phase_spans: [
+                      {
+                        phase_span_id: 'phase-1',
+                        turn_id: 'turn-1',
+                        phase: 'implementation',
+                        started_at: '2026-04-10T10:00:05.000Z',
+                        ended_at: '2026-04-10T10:00:15.000Z',
+                        status: 'succeeded',
+                        reason_code: null,
+                        reason_detail: null
+                      }
+                    ],
+                    tool_spans: [
+                      {
+                        tool_span_id: 'tool-1',
+                        turn_id: 'turn-1',
+                        tool_name: 'exec_command',
+                        started_at: '2026-04-10T10:00:10.000Z',
+                        ended_at: '2026-04-10T10:00:12.000Z',
+                        status: 'succeeded',
+                        reason_code: null,
+                        reason_detail: null
+                      }
+                    ],
+                    state_transitions: []
+                  }
+                ],
+                state_transitions: [
+                  {
+                    state_transition_id: 'state-1',
+                    issue_run_id: 'issue_run_1',
+                    attempt_id: 'attempt_1',
+                    thread_id: 'thread-complete',
+                    turn_id: null,
+                    from_status: 'running',
+                    to_status: 'succeeded',
+                    transitioned_at: '2026-04-10T10:02:00.000Z',
+                    status: 'succeeded',
+                    reason_code: 'completed',
+                    reason_detail: null
+                  }
+                ]
+              }
+            : null
+      } as never
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const firstResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/threads/thread-complete`);
+    const secondResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/threads/thread-complete`);
+    const firstPayload = (await firstResponse.json()) as Record<string, unknown>;
+    const secondPayload = (await secondResponse.json()) as Record<string, unknown>;
+
+    expect(firstResponse.status).toBe(200);
+    expect(firstPayload).toEqual(secondPayload);
+    expect(firstPayload).toMatchObject({
+      thread_id: 'thread-complete',
+      issue_identifier: 'ABC-1',
+      attempt: 2,
+      status: 'completed',
+      current_blocker: null
+    });
+    expect(firstPayload).toHaveProperty('timeline');
+    expect(firstPayload).toHaveProperty('phase_spans');
+    expect(firstPayload).toHaveProperty('tool_spans');
+    expect(firstPayload).toHaveProperty('wait_spans');
+    expect((firstPayload.phase_spans as Array<{ duration_ms: number }>)[0].duration_ms).toBe(10_000);
+    expect((firstPayload.tool_spans as Array<{ tool_name: string; duration_ms: number }>)[0]).toMatchObject({
+      tool_name: 'exec_command',
+      duration_ms: 2_000
+    });
+    expect((firstPayload.timeline as Array<{ at_ms: number }>).map((event) => event.at_ms)).toEqual([
+      Date.parse('2026-04-10T10:00:00.000Z'),
+      Date.parse('2026-04-10T10:00:01.000Z'),
+      Date.parse('2026-04-10T10:00:02.000Z'),
+      Date.parse('2026-04-10T10:00:04.000Z'),
+      Date.parse('2026-04-10T10:01:00.000Z'),
+      Date.parse('2026-04-10T10:02:00.000Z')
+    ]);
+  });
+
+  it('returns typed not-found errors for missing thread diagnostics', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const threadResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/threads/missing-thread`);
+    const threadPayload = (await threadResponse.json()) as { error: { code: string; message: string } };
+    expect(threadResponse.status).toBe(404);
+    expect(threadPayload.error.code).toBe('thread_diagnostics_not_found');
+    expect(threadPayload.error.message).toContain('missing-thread');
+
+    const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-404/diagnostics`);
+    const issuePayload = (await issueResponse.json()) as { error: { code: string; message: string } };
+    expect(issueResponse.status).toBe(404);
+    expect(issuePayload.error.code).toBe('thread_diagnostics_not_found');
+    expect(issuePayload.error.message).toContain('ABC-404');
+  });
+
   it('reports observed token accounting dimensions in diagnostics from state snapshot', async () => {
     const state = makeState({
       running: new Map([
