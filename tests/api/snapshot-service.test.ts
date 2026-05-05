@@ -158,6 +158,8 @@ describe('SnapshotService', () => {
     const projected = service.projectState(state);
     expect(projected.counts.running).toBe(1);
     expect(projected.counts.blocked).toBe(0);
+    expect(projected.counts.running_stalled_waiting_count).toBe(0);
+    expect(projected.counts.running_awaiting_input_count).toBe(0);
     expect(projected.codex_totals.seconds_running).toBe(100);
     expect(projected.health.dispatch_validation).toBe('ok');
     expect(projected.running[0]?.session_id).toBe('thread-1-turn-3');
@@ -169,6 +171,11 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.awaiting_input).toBe(false);
     expect(projected.running[0]?.pending_input_preview).toBeNull();
     expect(projected.running[0]?.stalled_waiting).toBe(false);
+    expect(projected.running[0]?.operator_explainer_hint).toEqual({
+      classification: 'healthy',
+      actionability: 'none',
+      headline: 'Run is progressing'
+    });
     expect(projected.running[0]?.workspace_path).toBe('/tmp/symphony/ABC-1');
     expect(projected.running[0]?.token_telemetry_status).toBe('available');
     expect(projected.running[0]?.token_telemetry_last_source).toBe('terminal_turn_summary');
@@ -205,6 +212,27 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.pending_input_preview?.prompt_preview).toContain('***REDACTED***');
     expect(projected.running[0]?.stalled_waiting).toBe(true);
     expect(projected.running[0]?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+    expect(projected.counts.running_stalled_waiting_count).toBe(1);
+    expect(projected.counts.running_awaiting_input_count).toBe(0);
+    expect(projected.running[0]?.operator_explainer_hint).toEqual({
+      classification: 'stalled_waiting',
+      actionability: 'required',
+      headline: 'Run is alive but waiting too long'
+    });
+
+    const issue = service.projectIssue(state, 'ABC-1');
+    expect(issue.operator_explainer).toMatchObject({
+      version: expect.any(String),
+      classification: 'stalled_waiting',
+      actionability: 'required',
+      headline: 'Run is alive but waiting too long',
+      detail: expect.any(String),
+      recommended_action: 'Inspect recent events and decide whether to resume/cancel/restart',
+      expected_transition: null,
+      reason_code: 'turn_waiting_threshold_exceeded',
+      reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
+    });
+    expect(JSON.stringify(issue.operator_explainer)).toBe(JSON.stringify(service.projectIssue(state, 'ABC-1').operator_explainer));
   });
 
   it('truncates pending input previews by UTF-8 characters after redaction', () => {
@@ -345,6 +373,11 @@ describe('SnapshotService', () => {
     const stateProjection = service.projectState(state);
     expect(stateProjection.blocked[0]).toMatchObject({
       issue_identifier: 'ABC-9',
+      operator_explainer_hint: {
+        classification: 'blocked_input',
+        actionability: 'required',
+        headline: 'Run is blocked on operator input'
+      },
       breaker_active: true,
       breaker_hit_count: 5,
       breaker_window_minutes: 30,
@@ -354,6 +387,11 @@ describe('SnapshotService', () => {
 
     const issueProjection = service.projectIssue(state, 'ABC-9');
     expect(issueProjection.status).toBe('blocked');
+    expect(issueProjection.operator_explainer).toMatchObject({
+      classification: 'blocked_input',
+      actionability: 'required',
+      reason_code: 'operator_action_required_no_progress_redispatch_blocked'
+    });
     expect(issueProjection.blocked?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
   });
 
@@ -469,6 +507,13 @@ describe('SnapshotService', () => {
       last_phase_at: null,
       last_phase_detail: null
     });
+    expect(issue.operator_explainer).toMatchObject({
+      classification: 'healthy',
+      actionability: 'none'
+    });
+    expect(issue.retry).toMatchObject({
+      stop_reason_code: 'turn_input_required'
+    });
   });
 
   it('projects enriched optional token dimensions without breaking baseline token fields', () => {
@@ -575,6 +620,12 @@ describe('SnapshotService', () => {
       last_phase: null,
       last_phase_at: null,
       last_phase_detail: null
+    });
+    expect(projected.operator_explainer).toMatchObject({
+      classification: 'retrying',
+      actionability: 'recommended',
+      expected_transition: 'Automatic retry at 2026-04-10T10:02:30.000Z',
+      reason_code: 'turn_input_required'
     });
   });
 });
