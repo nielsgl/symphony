@@ -307,6 +307,17 @@ export interface OrchestratorPorts {
     message?: string;
     resume_context?: string;
   }>;
+  resolveProgressSignals?: (params: {
+    issue: Issue | null;
+    issue_id: string;
+    branch_name: string | null;
+    repo_root: string | null;
+    fallback_state_marker: string | null;
+  }) => Promise<{
+    commit_sha: string | null;
+    checklist_checkpoint: string | null;
+    state_marker: string | null;
+  }>;
   notifyObservers?: () => void;
 }
 

@@ -446,6 +446,17 @@ export interface ApiIssueResponse {
       message: string | null;
     }>;
     requires_manual_resume: true;
+    attempt_count_window?: number;
+    window_minutes?: number;
+    last_known_commit_sha?: string | null;
+    last_progress_checkpoint_at?: string | null;
+    progress_signals?: {
+      commit_sha: string | null;
+      checklist_checkpoint: string | null;
+      state_marker: string | null;
+    };
+    required_actions?: string[];
+    resume_override_reason?: string | null;
   } | null;
   phase_timeline: Array<{
     at: string;
@@ -504,6 +515,9 @@ export interface LocalApiServerOptions {
   issueControlSource?: {
     resumeBlockedIssue: (issueIdentifier: string, params?: { resume_override_reason?: string }) => Promise<
       { ok: true; issue_id: string } | { ok: false; code: string; message: string }
+    >;
+    cancelBlockedIssue: (issueIdentifier: string, params?: { cancel_reason?: string }) => Promise<
+      { ok: true; issue_id: string; moved_to_state: string } | { ok: false; code: string; message: string }
     >;
     submitBlockedIssueInput: (params: {
       issueIdentifier: string;

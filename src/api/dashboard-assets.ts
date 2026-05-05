@@ -966,7 +966,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         void resumeBlockedIssue(entry.issue_identifier, 'operator_override_push_additional_commit');
       });
       const cancelToBacklogButton = createActionButton('Cancel to Backlog', 'ghost-button', function () {
-        void resumeBlockedIssue(entry.issue_identifier, 'operator_override_cancel_return_to_backlog');
+        void cancelBlockedIssue(entry.issue_identifier, 'operator_cancel_return_to_backlog');
       });
       const replyButton = createActionButton('Reply', 'ghost-button', function () {
         void submitBlockedInput(entry);
@@ -1235,6 +1235,23 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
     } catch (error) {
       setRefreshStatus('Resume failed: ' + String(error), true);
+    }
+  }
+
+  async function cancelBlockedIssue(issueIdentifier, cancelReason) {
+    try {
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/cancel', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(cancelReason ? { cancel_reason: cancelReason } : {})
+      });
+      setRefreshStatus('Cancel requested for ' + payload.issue_identifier + ' -> ' + payload.moved_to_state, false);
+      await loadStateViaPoll();
+      if (state.selectedIssue === issueIdentifier) {
+        await loadIssue(issueIdentifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Cancel failed: ' + String(error), true);
     }
   }
 

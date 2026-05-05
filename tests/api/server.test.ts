@@ -535,6 +535,7 @@ describe('LocalApiServer', () => {
       },
       issueControlSource: {
         resumeBlockedIssue,
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
         submitBlockedIssueInput: vi.fn(async () => ({
           ok: true as const,
           issue_id: 'issue-3',
@@ -628,6 +629,7 @@ describe('LocalApiServer', () => {
       },
       issueControlSource: {
         resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
         submitBlockedIssueInput: vi.fn(async () => ({
           ok: false as const,
           code: 'request_mismatch',
@@ -652,6 +654,46 @@ describe('LocalApiServer', () => {
     expect(payload.error.code).toBe('request_mismatch');
   });
 
+  it('accepts cancel blocked issue requests and returns destination state', async () => {
+    const cancelBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue,
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cancel_reason: 'operator_cancel_return_to_backlog' })
+    });
+    const payload = (await response.json()) as { cancelled: boolean; issue_identifier: string; moved_to_state: string };
+
+    expect(response.status).toBe(202);
+    expect(payload.cancelled).toBe(true);
+    expect(payload.issue_identifier).toBe('ABC-3');
+    expect(payload.moved_to_state).toBe('Todo');
+    expect(cancelBlockedIssue).toHaveBeenCalledWith('ABC-3', { cancel_reason: 'operator_cancel_return_to_backlog' });
+  });
+
   it('accepts blocked input submit requests and resumes issue', async () => {
     const submitBlockedIssueInput = vi.fn(async () => ({
       ok: true as const,
@@ -671,6 +713,7 @@ describe('LocalApiServer', () => {
       },
       issueControlSource: {
         resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
         submitBlockedIssueInput
       }
     });
@@ -719,6 +762,7 @@ describe('LocalApiServer', () => {
       },
       issueControlSource: {
         resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
         submitBlockedIssueInput: vi.fn(async () => ({
           ok: true as const,
           issue_id: 'issue-3',
@@ -763,6 +807,7 @@ describe('LocalApiServer', () => {
       },
       issueControlSource: {
         resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
         submitBlockedIssueInput: vi.fn(async () => ({
           ok: false as const,
           code: 'invalid_answer',

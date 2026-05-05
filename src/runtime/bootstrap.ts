@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import dns from 'node:dns/promises';
 import path from 'node:path';
 import net from 'node:net';
+import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 import { LocalApiServer } from '../api';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
@@ -104,6 +106,42 @@ async function assertResolvableServerHost(host: string): Promise<void> {
   } catch {
     throw new WorkflowConfigError('invalid_server_host', `server.host '${host}' is not resolvable`);
   }
+}
+
+function resolveBranchHeadSha(repoRoot: string | null, branchName: string | null): string | null {
+  if (!repoRoot || !branchName) {
+    return null;
+  }
+  const refs = [branchName, `refs/heads/${branchName}`, `refs/remotes/origin/${branchName}`];
+  for (const ref of refs) {
+    const result = spawnSync('git', ['rev-parse', ref], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8'
+    });
+    if (result.status === 0) {
+      const value = result.stdout.trim();
+      if (value.length > 0) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+function extractChecklistCheckpoint(issueDescription: string | null): string | null {
+  if (!issueDescription || issueDescription.trim().length === 0) {
+    return null;
+  }
+  const checklistLines = issueDescription
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^[-*]\s+\[[ xX]\]\s+/.test(line));
+  if (checklistLines.length === 0) {
+    return null;
+  }
+  const normalized = checklistLines.join('\n');
+  return crypto.createHash('sha1').update(normalized).digest('hex');
 }
 
 class StructuredLoggerObserverSink implements LogSink {
@@ -821,6 +859,11 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           ...(nativeResult.message ? { message: nativeResult.message } : {})
         };
       },
+      resolveProgressSignals: async (params) => ({
+        commit_sha: resolveBranchHeadSha(params.repo_root, params.branch_name),
+        checklist_checkpoint: extractChecklistCheckpoint(params.issue?.description ?? null),
+        state_marker: params.fallback_state_marker
+      }),
       notifyObservers: () => {
         apiServer?.notifyStateChanged('orchestrator_observer');
       }
@@ -999,6 +1042,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           issueControlSource: {
             resumeBlockedIssue: async (issueIdentifier, params) =>
               orchestrator.resumeBlockedIssue(issueIdentifier, null, params?.resume_override_reason ?? null),
+            cancelBlockedIssue: async (issueIdentifier, params) =>
+              orchestrator.cancelBlockedIssue(issueIdentifier, params?.cancel_reason ?? null),
             submitBlockedIssueInput: async (params) =>
               orchestrator.submitBlockedIssueInput({
                 issue_identifier: params.issueIdentifier,

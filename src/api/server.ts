@@ -790,6 +790,46 @@ export class LocalApiServer {
         ]
       },
       {
+        path: /^\/api\/v1\/issues\/([^/]+)\/cancel$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response, match) => {
+              if (!this.issueControlSource) {
+                throw new LocalApiError('cancel_failed', 'Issue control source is not configured', 503);
+              }
+              const chunks: Buffer[] = [];
+              for await (const chunk of request) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+              }
+              let parsed: { cancel_reason?: string } | undefined;
+              const payloadText = Buffer.concat(chunks).toString('utf8').trim();
+              if (payloadText) {
+                try {
+                  parsed = JSON.parse(payloadText) as { cancel_reason?: string };
+                } catch {
+                  throw new LocalApiError('invalid_cancel_submit', 'Request body must be valid JSON', 400);
+                }
+              }
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const result = parsed?.cancel_reason
+                ? await this.issueControlSource.cancelBlockedIssue(issueIdentifier, { cancel_reason: parsed.cancel_reason })
+                : await this.issueControlSource.cancelBlockedIssue(issueIdentifier);
+              if (!result.ok) {
+                const status = result.code === 'issue_not_blocked' ? 404 : 422;
+                throw new LocalApiError(result.code, result.message, status);
+              }
+              sendJson(response, 202, {
+                cancelled: true,
+                issue_identifier: issueIdentifier,
+                moved_to_state: result.moved_to_state,
+                requested_at: new Date().toISOString()
+              });
+            }
+          }
+        ]
+      },
+      {
         path: /^\/api\/v1\/([^/]+)$/,
         routes: [
           {

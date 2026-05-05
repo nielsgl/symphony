@@ -55,6 +55,7 @@ interface ScheduleRetryParams {
   stop_reason_detail?: string | null;
   previous_thread_id?: string | null;
   previous_session_id?: string | null;
+  issue_snapshot?: Issue | null;
   progress_signals?: {
     commit_sha: string | null;
     checklist_checkpoint: string | null;
@@ -654,7 +655,8 @@ export class OrchestratorCore {
         stop_reason_code: 'normal_completion',
         stop_reason_detail: 'normal worker completion, continuing while issue is active',
         previous_thread_id: running.thread_id,
-        previous_session_id: running.session_id
+        previous_session_id: running.session_id,
+        issue_snapshot: running.issue
       });
       this.logger?.log({
         level: 'info',
@@ -795,7 +797,8 @@ export class OrchestratorCore {
         stop_reason_code: stopReasonCode,
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
-        previous_session_id: running.session_id
+        previous_session_id: running.session_id,
+        issue_snapshot: running.issue
       });
       this.emitPhaseMarker(issue_id, {
         phase: 'failed',
@@ -877,7 +880,8 @@ export class OrchestratorCore {
         stop_reason_code: 'retry_fetch_failed',
         stop_reason_detail: error instanceof Error ? error.message : 'unknown',
         previous_thread_id: retryEntry.previous_thread_id ?? null,
-        previous_session_id: retryEntry.previous_session_id ?? null
+        previous_session_id: retryEntry.previous_session_id ?? null,
+        issue_snapshot: null
       });
       return;
     }
@@ -920,7 +924,8 @@ export class OrchestratorCore {
           stop_reason_code: 'slots_exhausted',
           stop_reason_detail: 'no available orchestrator slots',
           previous_thread_id: retryEntry.previous_thread_id ?? null,
-          previous_session_id: retryEntry.previous_session_id ?? null
+          previous_session_id: retryEntry.previous_session_id ?? null,
+          issue_snapshot: issue
         });
       } else {
         this.state.claimed.delete(issue_id);
@@ -1202,7 +1207,8 @@ export class OrchestratorCore {
         stop_reason_code: 'worker_stalled',
         stop_reason_detail: 'worker stalled',
         previous_thread_id: runningEntry.thread_id,
-        previous_session_id: runningEntry.session_id
+        previous_session_id: runningEntry.session_id,
+        issue_snapshot: runningEntry.issue
       });
       this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
       this.logger?.log({
@@ -1278,7 +1284,8 @@ export class OrchestratorCore {
         copy_ignored_status: null,
         copy_ignored_summary: null,
         stop_reason_code: 'slots_exhausted',
-        stop_reason_detail: 'no available worker host slots'
+        stop_reason_detail: 'no available worker host slots',
+        issue_snapshot: issue
       });
       return;
     }
@@ -1322,7 +1329,8 @@ export class OrchestratorCore {
         copy_ignored_status: null,
         copy_ignored_summary: null,
         stop_reason_code: 'spawn_failed',
-        stop_reason_detail: spawned.error
+        stop_reason_detail: spawned.error,
+        issue_snapshot: issue
       });
       return;
     }
@@ -1479,6 +1487,14 @@ export class OrchestratorCore {
       }
     });
 
+    const resolvedProgressSignals =
+      params.progress_signals ??
+      (await this.captureProgressSignals({
+        issue: params.issue_snapshot ?? null,
+        issue_id: params.issue_id,
+        branch_name: params.branch_name ?? null,
+        repo_root: params.repo_root ?? null
+      }));
     this.state.retry_attempts.set(params.issue_id, {
       issue_id: params.issue_id,
       identifier: params.identifier,
@@ -1504,11 +1520,7 @@ export class OrchestratorCore {
       last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
       last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
-      progress_signals: params.progress_signals ?? {
-        commit_sha: null,
-        checklist_checkpoint: null,
-        state_marker: this.getLastPhaseMarker(params.issue_id)?.phase ?? null
-      },
+      progress_signals: resolvedProgressSignals,
       timer_handle: timerHandle
     });
 
@@ -1678,6 +1690,55 @@ export class OrchestratorCore {
     });
   }
 
+  private resolveBacklogStateName(): string {
+    const candidates = this.config.active_states ?? [];
+    const backlog = candidates.find((entry) => entry.trim().toLowerCase() === 'backlog');
+    if (backlog) {
+      return backlog;
+    }
+    const todo = candidates.find((entry) => entry.trim().toLowerCase() === 'todo');
+    if (todo) {
+      return todo;
+    }
+    return 'Todo';
+  }
+
+  private async captureProgressSignals(params: {
+    issue: Issue | null;
+    issue_id: string;
+    branch_name: string | null;
+    repo_root: string | null;
+  }): Promise<{
+    commit_sha: string | null;
+    checklist_checkpoint: string | null;
+    state_marker: string | null;
+  }> {
+    const fallbackStateMarker = this.getLastPhaseMarker(params.issue_id)?.phase ?? null;
+    if (!this.ports.resolveProgressSignals) {
+      return {
+        commit_sha: null,
+        checklist_checkpoint: null,
+        state_marker: fallbackStateMarker
+      };
+    }
+
+    try {
+      return await this.ports.resolveProgressSignals({
+        issue: params.issue,
+        issue_id: params.issue_id,
+        branch_name: params.branch_name,
+        repo_root: params.repo_root,
+        fallback_state_marker: fallbackStateMarker
+      });
+    } catch {
+      return {
+        commit_sha: null,
+        checklist_checkpoint: null,
+        state_marker: fallbackStateMarker
+      };
+    }
+  }
+
   async resumeBlockedIssue(
     issue_identifier: string,
     resume_context: string | null = null,
@@ -1727,11 +1788,12 @@ export class OrchestratorCore {
       };
     }
 
-    const currentSignals = {
-      commit_sha: null,
-      checklist_checkpoint: null,
-      state_marker: this.getLastPhaseMarker(blocked.issue_id)?.phase ?? null
-    };
+    const currentSignals = await this.captureProgressSignals({
+      issue,
+      issue_id: blocked.issue_id,
+      branch_name: blocked.branch_name,
+      repo_root: blocked.repo_root
+    });
     const hasProgressSignal =
       currentSignals.commit_sha !== (blocked.progress_signals?.commit_sha ?? null) ||
       currentSignals.checklist_checkpoint !== (blocked.progress_signals?.checklist_checkpoint ?? null) ||
@@ -1777,7 +1839,8 @@ export class OrchestratorCore {
         stop_reason_code: 'slots_exhausted',
         stop_reason_detail: 'resume blocked by no available orchestrator slots',
         previous_thread_id: blocked.previous_thread_id,
-        previous_session_id: blocked.previous_session_id
+        previous_session_id: blocked.previous_session_id,
+        issue_snapshot: issue
       });
     } else {
       await this.scheduleRetry({
@@ -1801,7 +1864,8 @@ export class OrchestratorCore {
         stop_reason_code: 'manual_resume',
         stop_reason_detail: 'manual resume requested',
         previous_thread_id: blocked.previous_thread_id,
-        previous_session_id: blocked.previous_session_id
+        previous_session_id: blocked.previous_session_id,
+        issue_snapshot: issue
       });
     }
 
@@ -1844,6 +1908,42 @@ export class OrchestratorCore {
       ok: true,
       issue_id: blocked.issue_id
     };
+  }
+
+  async cancelBlockedIssue(
+    issue_identifier: string,
+    cancel_reason: string | null = null
+  ): Promise<{ ok: true; issue_id: string; moved_to_state: string } | { ok: false; code: string; message: string }> {
+    const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
+    if (!blocked) {
+      return {
+        ok: false,
+        code: 'issue_not_blocked',
+        message: `Issue ${issue_identifier} is not blocked`
+      };
+    }
+
+    const targetState = this.resolveBacklogStateName();
+    try {
+      await this.ports.tracker.update_issue_state(blocked.issue_id, targetState);
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'cancel_failed',
+        message: error instanceof Error ? error.message : 'failed to move issue to backlog state'
+      };
+    }
+
+    this.clearBlockedInput(blocked.issue_id, 'operator_cancelled_to_backlog');
+    this.state.redispatch_progress?.delete(blocked.issue_id);
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked,
+      severity: 'info',
+      issue_identifier,
+      detail: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog'
+    });
+    this.ports.notifyObservers?.();
+    return { ok: true, issue_id: blocked.issue_id, moved_to_state: targetState };
   }
 
   async submitBlockedIssueInput(params: {

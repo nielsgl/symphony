@@ -53,6 +53,7 @@ function createHarness(options: {
   configOverrides?: Partial<OrchestratorConfig>;
   spawnWorker?: OrchestratorPorts['spawnWorker'];
   submitBlockedIssueInputNative?: OrchestratorPorts['submitBlockedIssueInputNative'];
+  resolveProgressSignals?: OrchestratorPorts['resolveProgressSignals'];
   logger?: StructuredLogger;
   persistence?: OrchestratorPersistencePort;
 } = {}): Harness {
@@ -107,6 +108,7 @@ function createHarness(options: {
         }
       },
       submitBlockedIssueInputNative: options.submitBlockedIssueInputNative,
+      resolveProgressSignals: options.resolveProgressSignals,
       notifyObservers: () => undefined
     },
     nowMs: () => now.value,
@@ -409,6 +411,54 @@ describe('OrchestratorCore', () => {
     expect(resumed).toEqual({ ok: true, issue_id: 'i-resume' });
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-resume')).toBe(false);
     expect(harness.spawned.map((entry) => entry.issue_id)).toContain('i-resume');
+  });
+
+  it('allows resume without override when real progress signals changed', async () => {
+    let commit = 'sha-old';
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1 },
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: commit,
+        checklist_checkpoint: 'chk-1',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({
+      id: 'i-progress',
+      identifier: 'ABC-PROGRESS',
+      state: 'In Progress',
+      tracker_meta: {
+        tracker_kind: 'github',
+        repository: 'repo/name',
+        pr_links: [{ number: 1, url: 'https://example.test/pr/1', state: 'open', merged: false }]
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-progress', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-progress')?.callback();
+
+    commit = 'sha-new';
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-PROGRESS');
+    expect(resumed).toEqual({ ok: true, issue_id: 'i-progress' });
+  });
+
+  it('cancels blocked issue to Todo/backlog state via dedicated path', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-cancel', identifier: 'ABC-CANCEL' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-cancel',
+      'abnormal',
+      'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
+    );
+
+    const cancelled = await harness.orchestrator.cancelBlockedIssue('ABC-CANCEL', 'operator_cancel_return_to_backlog');
+    expect(cancelled).toEqual({ ok: true, issue_id: 'i-cancel', moved_to_state: 'Todo' });
+    expect(harness.tracker.update_issue_state).toHaveBeenCalledWith('i-cancel', 'Todo');
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-cancel')).toBe(false);
   });
 
   it('submits blocked operator input and injects answer into resumed dispatch context', async () => {
