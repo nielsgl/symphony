@@ -28,8 +28,23 @@ const DEFAULT_WORKFLOW_PATH = 'WORKFLOW.md';
 const UI_EVIDENCE_MARKER_FILE = path.join('output', 'playwright', 'ui-e2e-evidence.txt');
 const UI_EVIDENCE_MARKER_LINE = 'UI_E2E_EVIDENCE=PASS';
 const UI_EVIDENCE_ALLOW_TRACKED_ENV = 'SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED';
+const REPO_HYGIENE_ALLOW_TRACKED_ENV = 'SYMPHONY_REPO_HYGIENE_ALLOW_TRACKED';
 const UI_EVIDENCE_TRACKED_PATH_PREFIX = 'output/playwright/';
 const UI_EVIDENCE_REFERENCE_PATTERN = /output\/playwright\/[^\s`"')\]}]+/g;
+const HYGIENE_REPO_ARTIFACT_TRACKED_FORBIDDEN = 'hygiene_repo_artifact_tracked_forbidden';
+const HYGIENE_REPO_ARTIFACT_UNEXPECTED_STATE = 'hygiene_repo_artifact_unexpected_state';
+const FORBIDDEN_REPO_ARTIFACTS = [
+  {
+    name: 'Playwright output artifact',
+    matcher: (file) => file.startsWith(UI_EVIDENCE_TRACKED_PATH_PREFIX),
+    cleanup: 'git restore --staged output/playwright/* && git rm --cached -r output/playwright/ && rm -rf output/playwright/'
+  },
+  {
+    name: 'workspace provision artifact',
+    matcher: (file) => file === '.symphony-provision.json',
+    cleanup: 'git restore --staged .symphony-provision.json && git rm --cached .symphony-provision.json && rm -f .symphony-provision.json'
+  }
+];
 
 function runNodeCheck(scriptPath) {
   const result = spawnSync('node', [scriptPath], { stdio: 'inherit' });
@@ -181,30 +196,71 @@ function isTrackedUiEvidenceAllowed() {
   return value === '1' || value === 'true' || value === 'yes';
 }
 
-function listTrackedUiEvidenceFiles() {
+function isTrackedRepoHygieneAllowed() {
+  const value = String(process.env[REPO_HYGIENE_ALLOW_TRACKED_ENV] || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+function normalizeGitPath(file) {
+  return String(file || '').replace(/\\/g, '/').trim();
+}
+
+function forbiddenArtifactForPath(file) {
+  const normalized = normalizeGitPath(file);
+  return FORBIDDEN_REPO_ARTIFACTS.find((artifact) => artifact.matcher(normalized)) || null;
+}
+
+function isForbiddenRepoArtifactAllowed(entry) {
+  if (isTrackedRepoHygieneAllowed()) {
+    return true;
+  }
+  return normalizeGitPath(entry?.path).startsWith(UI_EVIDENCE_TRACKED_PATH_PREFIX) && isTrackedUiEvidenceAllowed();
+}
+
+function emitRepoHygieneDiagnostic(code, message, entries, remediation) {
+  process.stderr.write(`${code}: ${message}\n`);
+  if (entries.length > 0) {
+    process.stderr.write('Artifacts:\n');
+    for (const entry of entries) {
+      const status = entry.status ? `${entry.status} ` : '';
+      const name = entry.name ? ` (${entry.name})` : '';
+      process.stderr.write(`  - ${status}${entry.path}${name}\n`);
+    }
+  }
+  process.stderr.write(`Remediation: ${remediation}\n`);
+}
+
+function collectForbiddenFromGitResult(result, target, entries) {
+  if (result.status !== 0) {
+    emitRepoHygieneDiagnostic(
+      HYGIENE_REPO_ARTIFACT_UNEXPECTED_STATE,
+      `unable to inspect repository artifact state via git ${target}`,
+      [],
+      'Confirm git is available and rerun `npm run check:meta` from the repository root.'
+    );
+    process.exit(1);
+  }
+
+  for (const file of result.stdout.split('\n').map(normalizeGitPath).filter(Boolean)) {
+    const artifact = forbiddenArtifactForPath(file);
+    if (artifact) {
+      entries.add(JSON.stringify({ path: file, name: artifact.name }));
+    }
+  }
+}
+
+function listTrackedForbiddenRepoArtifacts() {
   const tracked = new Set();
   let capturedCommittedDiff = false;
   const rootCommit = runGit(['rev-list', '--max-parents=0', '--max-count=1', 'HEAD']);
   const rootSha = rootCommit.status === 0 ? rootCommit.stdout.trim() : '';
-
-  const collectTracked = (result) => {
-    if (result.status !== 0) {
-      return;
-    }
-    for (const file of result.stdout.split('\n').map((line) => line.trim()).filter(Boolean)) {
-      const normalized = file.replace(/\\/g, '/');
-      if (normalized.startsWith(UI_EVIDENCE_TRACKED_PATH_PREFIX)) {
-        tracked.add(normalized);
-      }
-    }
-  };
 
   const baseRefCheck = runGit(['rev-parse', '--verify', '--quiet', 'origin/main']);
   if (baseRefCheck.status === 0) {
     const committed = runGit(['diff', '--name-only', '--diff-filter=ACMR', 'origin/main...HEAD']);
     if (committed.status === 0) {
       capturedCommittedDiff = true;
-      collectTracked(committed);
+      collectForbiddenFromGitResult(committed, 'diff origin/main...HEAD', tracked);
     }
   }
 
@@ -212,24 +268,32 @@ function listTrackedUiEvidenceFiles() {
     const committedFromRoot = runGit(['diff', '--name-only', '--diff-filter=ACMR', `${rootSha}..HEAD`]);
     if (committedFromRoot.status === 0) {
       capturedCommittedDiff = true;
-      collectTracked(committedFromRoot);
+      collectForbiddenFromGitResult(committedFromRoot, 'diff root..HEAD', tracked);
     }
   }
 
   if (!capturedCommittedDiff) {
-    collectTracked(runGit(['show', '--name-only', '--pretty=format:', '--diff-filter=ACMR', 'HEAD']));
+    collectForbiddenFromGitResult(runGit(['show', '--name-only', '--pretty=format:', '--diff-filter=ACMR', 'HEAD']), 'show HEAD', tracked);
   }
 
-  collectTracked(runGit(['diff', '--cached', '--name-only', '--diff-filter=ACMR']));
-  collectTracked(runGit(['diff', '--name-only', '--diff-filter=ACMR']));
+  collectForbiddenFromGitResult(runGit(['diff', '--cached', '--name-only', '--diff-filter=ACMR']), 'diff --cached', tracked);
+  collectForbiddenFromGitResult(runGit(['diff', '--name-only', '--diff-filter=ACMR']), 'diff', tracked);
 
-  return Array.from(tracked).sort();
+  return Array.from(tracked)
+    .map((entry) => JSON.parse(entry))
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function listStagedUiEvidenceEntries() {
+function listStagedForbiddenRepoArtifactEntries() {
   const staged = runGit(['diff', '--cached', '--name-status']);
   if (staged.status !== 0) {
-    return [];
+    emitRepoHygieneDiagnostic(
+      HYGIENE_REPO_ARTIFACT_UNEXPECTED_STATE,
+      'unable to inspect staged repository artifact state',
+      [],
+      'Confirm git is available and rerun `npm run check:meta` from the repository root.'
+    );
+    process.exit(1);
   }
 
   const entries = [];
@@ -243,11 +307,11 @@ function listStagedUiEvidenceEntries() {
       continue;
     }
     const status = parts[0];
-    const pathCandidate = parts[parts.length - 1].replace(/\\/g, '/');
-    if (!pathCandidate.startsWith(UI_EVIDENCE_TRACKED_PATH_PREFIX)) {
-      continue;
+    const pathCandidate = normalizeGitPath(parts[parts.length - 1]);
+    const artifact = forbiddenArtifactForPath(pathCandidate);
+    if (artifact) {
+      entries.push({ status, path: pathCandidate, name: artifact.name });
     }
-    entries.push({ status, path: pathCandidate });
   }
   return entries;
 }
@@ -472,36 +536,34 @@ function enforceUiEvidenceGate() {
   const uiEvidenceProfile = resolveUiEvidenceProfile();
   process.stdout.write(`UI evidence profile active: ${uiEvidenceProfile.profile} (${uiEvidenceProfile.source}).\n`);
 
-  if (!isTrackedUiEvidenceAllowed()) {
-    const stagedEvidenceEntries = listStagedUiEvidenceEntries();
+  if (!isTrackedRepoHygieneAllowed()) {
+    const stagedEvidenceEntries = listStagedForbiddenRepoArtifactEntries().filter((entry) => !isForbiddenRepoArtifactAllowed(entry));
     if (stagedEvidenceEntries.length > 0) {
-      process.stderr.write('Meta check failed: staged UI evidence entries are not allowed under output/playwright/.\n');
-      process.stderr.write('Publish artifacts to review surfaces, then unstage/remove them before commit.\n');
-      process.stderr.write(`To bypass intentionally, set ${UI_EVIDENCE_ALLOW_TRACKED_ENV}=1.\n`);
-      process.stderr.write('Staged evidence entries:\n');
-      for (const entry of stagedEvidenceEntries) {
-        process.stderr.write(`  - ${entry.status} ${entry.path}\n`);
-      }
+      emitRepoHygieneDiagnostic(
+        HYGIENE_REPO_ARTIFACT_TRACKED_FORBIDDEN,
+        'staged UI evidence entries are not allowed under output/playwright/ and provision artifacts are not allowed at repository root.',
+        stagedEvidenceEntries,
+        `Publish review artifacts externally, unstage/remove forbidden files, or intentionally bypass with ${REPO_HYGIENE_ALLOW_TRACKED_ENV}=1.`
+      );
       process.stderr.write('Suggested cleanup:\n');
-      process.stderr.write('  - git restore --staged output/playwright/*\n');
-      process.stderr.write('  - git rm --cached -r output/playwright/  # if already tracked in commit history\n');
-      process.stderr.write('  - rm -rf output/playwright/\n');
+      process.stderr.write('  - git restore --staged output/playwright/* .symphony-provision.json\n');
+      process.stderr.write('  - git rm --cached -r output/playwright/ .symphony-provision.json  # if already tracked in commit history\n');
+      process.stderr.write('  - rm -rf output/playwright/ .symphony-provision.json\n');
       process.exit(1);
     }
 
-    const trackedEvidenceFiles = listTrackedUiEvidenceFiles();
+    const trackedEvidenceFiles = listTrackedForbiddenRepoArtifacts().filter((entry) => !isForbiddenRepoArtifactAllowed(entry));
     if (trackedEvidenceFiles.length > 0) {
-      process.stderr.write('Meta check failed: tracked UI evidence artifacts are not allowed under output/playwright/.\n');
-      process.stderr.write('Publish artifacts to review surfaces, then unstage/remove them before commit.\n');
-      process.stderr.write(`To bypass intentionally, set ${UI_EVIDENCE_ALLOW_TRACKED_ENV}=1.\n`);
-      process.stderr.write('Tracked evidence files:\n');
-      for (const file of trackedEvidenceFiles) {
-        process.stderr.write(`  - ${file}\n`);
-      }
+      emitRepoHygieneDiagnostic(
+        HYGIENE_REPO_ARTIFACT_TRACKED_FORBIDDEN,
+        'tracked UI evidence artifacts are not allowed under output/playwright/ and provision artifacts are not allowed at repository root.',
+        trackedEvidenceFiles,
+        `Publish review artifacts externally, unstage/remove forbidden files, or intentionally bypass with ${REPO_HYGIENE_ALLOW_TRACKED_ENV}=1.`
+      );
       process.stderr.write('Suggested cleanup:\n');
-      process.stderr.write('  - git restore --staged output/playwright/*\n');
-      process.stderr.write('  - git rm --cached -r output/playwright/  # if already tracked in commit history\n');
-      process.stderr.write('  - rm -rf output/playwright/\n');
+      process.stderr.write('  - git restore --staged output/playwright/* .symphony-provision.json\n');
+      process.stderr.write('  - git rm --cached -r output/playwright/ .symphony-provision.json  # if already tracked in commit history\n');
+      process.stderr.write('  - rm -rf output/playwright/ .symphony-provision.json\n');
       process.exit(1);
     }
   }
