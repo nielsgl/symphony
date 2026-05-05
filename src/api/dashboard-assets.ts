@@ -183,6 +183,35 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
             <button id="issue-open-json" type="button">Open JSON</button>
           </div>
           <p id="issue-summary" class="muted">No issue selected.</p>
+          <div id="issue-explainer-card" class="operator-explainer hidden" aria-live="polite">
+            <div class="operator-explainer-head">
+              <span id="issue-explainer-actionability" class="status-pill">none</span>
+              <strong id="issue-explainer-headline">No diagnostics loaded</strong>
+            </div>
+            <dl class="operator-explainer-grid">
+              <div>
+                <dt>Classification</dt>
+                <dd id="issue-explainer-classification">n/a</dd>
+              </div>
+              <div>
+                <dt>Reason</dt>
+                <dd id="issue-explainer-reason">n/a</dd>
+              </div>
+              <div>
+                <dt>Recommended Action</dt>
+                <dd id="issue-explainer-action">n/a</dd>
+              </div>
+              <div>
+                <dt>Expected Transition</dt>
+                <dd id="issue-explainer-transition">n/a</dd>
+              </div>
+              <div>
+                <dt>Map Version</dt>
+                <dd id="issue-explainer-version">n/a</dd>
+              </div>
+            </dl>
+            <p id="issue-explainer-detail" class="muted"></p>
+          </div>
           <pre id="issue-output" class="code-block">Select a running issue or enter an issue identifier.</pre>
         </div>
       </details>
@@ -311,6 +340,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     issueLoad: document.getElementById('issue-load'),
     issueOpenJson: document.getElementById('issue-open-json'),
     issueSummary: document.getElementById('issue-summary'),
+    issueExplainerCard: document.getElementById('issue-explainer-card'),
+    issueExplainerActionability: document.getElementById('issue-explainer-actionability'),
+    issueExplainerHeadline: document.getElementById('issue-explainer-headline'),
+    issueExplainerClassification: document.getElementById('issue-explainer-classification'),
+    issueExplainerReason: document.getElementById('issue-explainer-reason'),
+    issueExplainerAction: document.getElementById('issue-explainer-action'),
+    issueExplainerTransition: document.getElementById('issue-explainer-transition'),
+    issueExplainerVersion: document.getElementById('issue-explainer-version'),
+    issueExplainerDetail: document.getElementById('issue-explainer-detail'),
     issueOutput: document.getElementById('issue-output'),
     runtimeEventsPanel: document.getElementById('runtime-events-panel'),
     eventFeedFilter: document.getElementById('event-feed-filter'),
@@ -514,6 +552,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       createMetricCard('Running', formatNumber(payload.counts.running)),
       createMetricCard('Retrying', formatNumber(payload.counts.retrying)),
       createMetricCard('Blocked', formatNumber(payload.counts.blocked)),
+      createMetricCard('Stalled Waiting', formatNumber(payload.counts.running_stalled_waiting_count || 0)),
+      createMetricCard('Awaiting Input', formatNumber(payload.counts.running_awaiting_input_count || 0)),
       createMetricCard('Total Tokens', formatNumber(payload.codex_totals.total_tokens)),
       createMetricCard('Input Tokens', formatNumber(payload.codex_totals.input_tokens)),
       createMetricCard('Output Tokens', formatNumber(payload.codex_totals.output_tokens)),
@@ -791,6 +831,42 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return badge;
   }
 
+  function normalizeActionability(value) {
+    const actionability = String(value || 'none');
+    return actionability === 'required' || actionability === 'recommended' ? actionability : 'none';
+  }
+
+  function createOperatorHintBadge(hint) {
+    if (!hint) {
+      return null;
+    }
+    const actionability = normalizeActionability(hint.actionability);
+    const badge = document.createElement('span');
+    badge.className = 'operator-hint actionability-' + actionability;
+    badge.textContent = String(hint.headline || hint.classification || 'Runtime diagnostics');
+    badge.title = 'Actionability: ' + actionability + ' • Classification: ' + String(hint.classification || 'unknown');
+    return badge;
+  }
+
+  function renderIssueExplainer(explainer) {
+    if (!explainer) {
+      elements.issueExplainerCard.classList.add('hidden');
+      return;
+    }
+    const actionability = normalizeActionability(explainer.actionability);
+    elements.issueExplainerCard.className = 'operator-explainer actionability-' + actionability;
+    elements.issueExplainerActionability.className = 'status-pill actionability-' + actionability;
+    elements.issueExplainerActionability.textContent = actionability;
+    elements.issueExplainerHeadline.textContent = explainer.headline || 'Runtime diagnostics unavailable';
+    elements.issueExplainerClassification.textContent = explainer.classification || 'unknown';
+    elements.issueExplainerReason.textContent =
+      (explainer.reason_code || 'n/a') + (explainer.reason_detail ? ' • ' + explainer.reason_detail : '');
+    elements.issueExplainerAction.textContent = explainer.recommended_action || 'No operator action required';
+    elements.issueExplainerTransition.textContent = explainer.expected_transition || 'No automatic transition expected';
+    elements.issueExplainerVersion.textContent = explainer.version || 'unknown';
+    elements.issueExplainerDetail.textContent = explainer.detail || '';
+  }
+
   function formatInputDecisionContext(detail) {
     if (!detail) {
       return null;
@@ -901,6 +977,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         stalledBadge.className = 'status-pill failed';
         stalledBadge.textContent = 'Stalled Waiting';
         stateFlags.append(stalledBadge);
+      }
+      const runningHintBadge = createOperatorHintBadge(entry.operator_explainer_hint);
+      if (runningHintBadge && entry.operator_explainer_hint.actionability !== 'none') {
+        stateFlags.append(runningHintBadge);
       }
       if (stateFlags.childNodes.length > 0) {
         stateCell.append(stateFlags);
@@ -1128,6 +1208,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
       stopReasonCell.append(createBudgetBlock(entry));
+      const retryHintBadge = createOperatorHintBadge(entry.operator_explainer_hint);
+      if (retryHintBadge) {
+        stopReasonCell.append(retryHintBadge);
+      }
       const lastPhaseLine = document.createElement('div');
       lastPhaseLine.className = 'muted';
       lastPhaseLine.textContent = 'Last phase: ' + (entry.last_phase || 'n/a') + (entry.last_phase_at ? ' @ ' + formatDate(entry.last_phase_at) : '');
@@ -1280,6 +1364,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         stateLabel.className = 'status-pill pending';
         stateLabel.textContent = getActionRequiredLabel(entry.stop_reason_code);
         stopReasonCell.append(stateLabel);
+      }
+      const blockedHintBadge = createOperatorHintBadge(entry.operator_explainer_hint);
+      if (blockedHintBadge) {
+        stopReasonCell.append(blockedHintBadge);
       }
       const lastPhaseLine = document.createElement('div');
       lastPhaseLine.className = 'muted';
@@ -1560,6 +1648,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if ((payload.retry && payload.retry.last_phase) || (payload.blocked && payload.blocked.last_phase)) {
         summaryParts.push('Last phase before stop: ' + ((payload.retry && payload.retry.last_phase) || (payload.blocked && payload.blocked.last_phase)));
       }
+      if (payload.operator_explainer) {
+        summaryParts.push('Actionability: ' + payload.operator_explainer.actionability);
+      }
       const runningOrRetry = payload.running || payload.retry || payload.blocked;
       if (runningOrRetry && runningOrRetry.provisioner_type) {
         summaryParts.push('Provisioner: ' + runningOrRetry.provisioner_type);
@@ -1583,6 +1674,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);
       }
       elements.issueSummary.textContent = summaryParts.join(' • ');
+      renderIssueExplainer(payload.operator_explainer || null);
       const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
       const sessionConsole = payload.blocked && Array.isArray(payload.blocked.session_console) ? payload.blocked.session_console : [];
       const timelineText = timeline.length
@@ -1631,6 +1723,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       scheduleStateSave();
     } catch (error) {
       elements.issueSummary.textContent = 'Issue load failed.';
+      renderIssueExplainer(null);
       elements.issueOutput.textContent = 'Issue load failed: ' + String(error);
     }
   }
@@ -2294,6 +2387,81 @@ td {
 .status-pill.pending {
   background: #fff1df;
   color: #8a4b12;
+}
+
+.status-pill.actionability-none,
+.operator-hint.actionability-none {
+  background: #eef0f2;
+  color: #425264;
+}
+
+.status-pill.actionability-recommended,
+.operator-hint.actionability-recommended {
+  background: #e8f1ff;
+  color: #1f4f99;
+}
+
+.status-pill.actionability-required,
+.operator-hint.actionability-required {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.operator-hint {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.operator-explainer {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fcf7;
+}
+
+.operator-explainer.actionability-required {
+  border-color: #efaaa1;
+  background: #fff7f5;
+}
+
+.operator-explainer.actionability-recommended {
+  border-color: #a8c4ee;
+  background: #f4f8ff;
+}
+
+.operator-explainer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.operator-explainer-grid {
+  margin: 10px 0 0;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.operator-explainer-grid div {
+  min-width: 0;
+}
+
+.operator-explainer-grid dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.operator-explainer-grid dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .action-cell {

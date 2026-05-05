@@ -6,6 +6,8 @@ type DashboardStatePayload = {
     running: number;
     retrying: number;
     blocked: number;
+    running_stalled_waiting_count: number;
+    running_awaiting_input_count: number;
   };
   codex_totals: {
     total_tokens: number;
@@ -36,7 +38,9 @@ function baseState(overrides: Partial<DashboardStatePayload> = {}): DashboardSta
     counts: {
       running: 0,
       retrying: 0,
-      blocked: 0
+      blocked: 0,
+      running_stalled_waiting_count: 0,
+      running_awaiting_input_count: 0
     },
     codex_totals: {
       total_tokens: 0,
@@ -197,6 +201,126 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#running-rows')).toContainText('NIE-22');
     await expect(page.locator('#running-rows')).toContainText('planning');
     await expect(page.locator('#running-rows')).toContainText('No phase movement yet');
+  });
+
+  test('renders operator explainer counters, row hints, and stalled-wait issue detail card', async ({ page }) => {
+    await installDashboardApiMocks(page, {
+      state: baseState({
+        counts: {
+          running: 1,
+          retrying: 0,
+          blocked: 1,
+          running_stalled_waiting_count: 1,
+          running_awaiting_input_count: 0
+        },
+        running: [
+          {
+            issue_identifier: 'NIE-49',
+            state: 'running',
+            session_id: 'session-stalled',
+            worker_host: 'hessian',
+            workspace_path: '/tmp/workspaces/NIE-49',
+            provisioner_type: 'git_worktree',
+            branch_name: 'feature/NIE-49',
+            workspace_git_status: 'clean',
+            started_at: ISO_OLD,
+            turn_count: 8,
+            tokens: { total_tokens: 1200, input_tokens: 800, output_tokens: 400 },
+            last_event_summary: 'codex.turn.waiting heartbeat',
+            last_event: 'codex.turn.waiting',
+            last_message: 'waiting',
+            last_event_at: ISO_NOW,
+            thread_id: 'thread-stalled',
+            turn_id: 'turn-stalled',
+            current_phase: 'implementation',
+            current_phase_at: ISO_OLD,
+            phase_elapsed_ms: 120000,
+            phase_detail: 'waiting heartbeat',
+            awaiting_input: false,
+            stalled_waiting: true,
+            stalled_waiting_since_ms: Date.parse('2026-04-30T09:59:00.000Z'),
+            stalled_waiting_reason: 'turn_waiting_threshold_exceeded',
+            operator_explainer_hint: {
+              classification: 'stalled_waiting',
+              actionability: 'required',
+              headline: 'Run is alive but waiting too long'
+            }
+          }
+        ],
+        blocked: [
+          {
+            issue_identifier: 'NIE-50',
+            attempt: 1,
+            blocked_at: ISO_NOW,
+            worker_host: 'hessian',
+            workspace_path: '/tmp/workspaces/NIE-50',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: 'turn_input_required',
+            stop_reason_detail: 'operator input required',
+            previous_session_id: 'session-prev-blocked',
+            previous_thread_id: 'thread-prev-blocked',
+            operator_explainer_hint: {
+              classification: 'blocked_input',
+              actionability: 'required',
+              headline: 'Run is blocked on operator input'
+            }
+          }
+        ]
+      }),
+      issues: {
+        'NIE-49': {
+          issue_identifier: 'NIE-49',
+          issue_id: 'issue-nie-49',
+          status: 'running',
+          operator_explainer: {
+            version: '2026-05-05.v1',
+            classification: 'stalled_waiting',
+            actionability: 'required',
+            headline: 'Run is alive but waiting too long',
+            detail: 'The run is still alive through codex.turn.waiting heartbeats after the configured wait threshold.',
+            recommended_action: 'Inspect recent events and decide whether to resume/cancel/restart',
+            expected_transition: null,
+            reason_code: 'turn_waiting_threshold_exceeded',
+            reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
+          },
+          workspace: { path: '/tmp/workspaces/NIE-49' },
+          running: {
+            current_phase: 'implementation',
+            provisioner_type: 'git_worktree',
+            branch_name: 'feature/NIE-49',
+            workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true
+          },
+          retry: null,
+          blocked: null,
+          phase_timeline: [],
+          recent_events: [
+            {
+              at: ISO_NOW,
+              event: 'codex.turn.waiting',
+              message: 'waiting'
+            }
+          ]
+        }
+      }
+    });
+
+    await page.goto('/');
+
+    await expect(page.locator('#kpi-grid')).toContainText('Stalled Waiting');
+    await expect(page.locator('#kpi-grid')).toContainText('Awaiting Input');
+    await expect(page.locator('#running-rows')).toContainText('Run is alive but waiting too long');
+    await expect(page.locator('#blocked-rows')).toContainText('Run is blocked on operator input');
+
+    await page.locator('#issue-input').fill('NIE-49');
+    await page.getByRole('button', { name: 'Load' }).click();
+
+    await expect(page.locator('#issue-explainer-card')).toContainText('Run is alive but waiting too long');
+    await expect(page.locator('#issue-explainer-card')).toContainText('required');
+    await expect(page.locator('#issue-explainer-card')).toContainText('Inspect recent events and decide whether to resume/cancel/restart');
+    await expect(page.locator('#issue-summary')).toContainText('Actionability: required');
   });
 
   test('retrying and blocked views show last_phase context', async ({ page }) => {

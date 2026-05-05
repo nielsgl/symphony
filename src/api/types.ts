@@ -1,5 +1,5 @@
 import type { OrchestratorState, TickReason } from '../orchestrator';
-import type { PhaseMarkerName } from '../observability';
+import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
 import type { StructuredLogger } from '../observability';
 import type { DurableRunHistoryRecord, PersistenceHealth, UiContinuityState } from '../persistence';
 import type { SecurityProfile } from '../security';
@@ -126,6 +126,8 @@ export interface ApiStateResponse {
     running: number;
     retrying: number;
     blocked: number;
+    running_stalled_waiting_count: number;
+    running_awaiting_input_count: number;
   };
   running: Array<ApiBudgetProjection & {
     issue_id: string;
@@ -184,6 +186,7 @@ export interface ApiStateResponse {
       reasoning_output_tokens?: number;
       model_context_window?: number;
     };
+    operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   retrying: Array<ApiBudgetProjection & {
     issue_id: string;
@@ -216,6 +219,7 @@ export interface ApiStateResponse {
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
+    operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   blocked: Array<ApiBudgetProjection & {
     issue_id: string;
@@ -312,6 +316,7 @@ export interface ApiStateResponse {
     };
     required_actions?: string[];
     resume_override_reason?: string | null;
+    operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   codex_totals: {
     input_tokens: number;
@@ -360,6 +365,7 @@ export interface ApiIssueResponse {
   issue_identifier: string;
   issue_id: string;
   status: 'running' | 'retrying' | 'blocked';
+  operator_explainer: OperatorExplainer;
   workspace: {
     path: string | null;
     host: string | null;
