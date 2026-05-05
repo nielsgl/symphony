@@ -8,6 +8,7 @@ import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { SnapshotService } from './snapshot-service';
 import type {
+  ApiDiagnosticsResponse,
   ApiIssueResponse,
   ApiEventEnvelope,
   ApiStateResponse,
@@ -312,6 +313,9 @@ export class LocalApiServer {
       const liveTotal = liveTotals.get(row.thread_id);
       if (typeof liveTotal === 'number' && liveTotal > 0) {
         row.tokens.total_tokens = liveTotal;
+        row.token_telemetry_status = 'available';
+        row.token_telemetry_last_source = 'codex_home_state_sqlite';
+        row.token_telemetry_last_at_ms = Date.now();
         liveAggregate += liveTotal;
       }
     }
@@ -332,7 +336,41 @@ export class LocalApiServer {
     const liveTotal = this.resolveLiveThreadTokenTotals([threadId]).get(threadId);
     if (typeof liveTotal === 'number' && liveTotal > 0) {
       payload.running.tokens.total_tokens = liveTotal;
+      payload.running.token_telemetry_status = 'available';
+      payload.running.token_telemetry_last_source = 'codex_home_state_sqlite';
+      payload.running.token_telemetry_last_at_ms = Date.now();
     }
+  }
+
+  private summarizeTokenTelemetry(payload: ApiStateResponse): Pick<
+    ApiDiagnosticsResponse,
+    'token_telemetry_status' | 'token_telemetry_last_source' | 'token_telemetry_last_at_ms'
+  > {
+    const rank = {
+      unavailable: 0,
+      pending: 1,
+      available: 2
+    } as const;
+    let selected: ApiStateResponse['running'][number] | null = null;
+    for (const row of payload.running) {
+      if (!selected) {
+        selected = row;
+        continue;
+      }
+      const rowRank = rank[row.token_telemetry_status];
+      const selectedRank = rank[selected.token_telemetry_status];
+      const rowAt = row.token_telemetry_last_at_ms ?? Number.NEGATIVE_INFINITY;
+      const selectedAt = selected.token_telemetry_last_at_ms ?? Number.NEGATIVE_INFINITY;
+      if (rowRank > selectedRank || (rowRank === selectedRank && rowAt > selectedAt)) {
+        selected = row;
+      }
+    }
+
+    return {
+      token_telemetry_status: selected?.token_telemetry_status ?? 'unavailable',
+      token_telemetry_last_source: selected?.token_telemetry_last_source ?? null,
+      token_telemetry_last_at_ms: selected?.token_telemetry_last_at_ms ?? null
+    };
   }
 
   private registerEventStream(_request: IncomingMessage, response: ServerResponse): void {
@@ -534,13 +572,24 @@ export class LocalApiServer {
                 reasoning_output_tokens: false,
                 model_context_window: false
               };
+              let tokenTelemetry: Pick<
+                ApiDiagnosticsResponse,
+                'token_telemetry_status' | 'token_telemetry_last_source' | 'token_telemetry_last_at_ms'
+              > = {
+                token_telemetry_status: 'unavailable',
+                token_telemetry_last_source: null,
+                token_telemetry_last_at_ms: null
+              };
               try {
                 const snapshot = this.snapshotSource.getStateSnapshot();
+                const projected = this.snapshotService.projectState(snapshot);
+                this.enrichLiveTokenFallbackState(projected);
                 observedDimensions = {
-                  cached_input_tokens: typeof snapshot.codex_totals.cached_input_tokens === 'number',
-                  reasoning_output_tokens: typeof snapshot.codex_totals.reasoning_output_tokens === 'number',
-                  model_context_window: typeof snapshot.codex_totals.model_context_window === 'number'
+                  cached_input_tokens: typeof projected.codex_totals.cached_input_tokens === 'number',
+                  reasoning_output_tokens: typeof projected.codex_totals.reasoning_output_tokens === 'number',
+                  model_context_window: typeof projected.codex_totals.model_context_window === 'number'
                 };
+                tokenTelemetry = this.summarizeTokenTelemetry(projected);
               } catch {
                 // Diagnostics should remain available even when state snapshotting is degraded.
               }
@@ -553,16 +602,20 @@ export class LocalApiServer {
                 token_accounting: {
                   mode: 'strict_canonical',
                   canonical_precedence: [
+                    'terminal_turn_summary',
                     'thread/tokenUsage/updated.params.tokenUsage.total',
                     'params.info.total_token_usage',
                     'params.info.totalTokenUsage',
                     'params.total_token_usage',
                     'params.totalTokenUsage',
                     'params.usage.total_token_usage',
-                    'params.usage.totalTokenUsage'
+                    'params.usage.totalTokenUsage',
+                    'last_token_usage',
+                    'persisted_fallback_usage'
                   ],
                   excludes_generic_usage_for_totals: true,
-                  excludes_last_usage_for_totals: true,
+                  excludes_last_usage_for_totals: false,
+                  no_telemetry_warning_threshold_ms: 120_000,
                   optional_dimensions: [
                     'cached_input_tokens',
                     'reasoning_output_tokens',
@@ -570,6 +623,7 @@ export class LocalApiServer {
                   ],
                   observed_dimensions: observedDimensions
                 },
+                ...tokenTelemetry,
                 workflow: {
                   prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
                 },

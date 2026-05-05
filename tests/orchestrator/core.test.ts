@@ -1144,6 +1144,9 @@ describe('OrchestratorCore', () => {
         reasoning_output_tokens: 2,
         model_context_window: 8192
       },
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'terminal_turn_summary',
+      token_telemetry_last_at_ms: harness.now.value + 100,
       detail: 'done'
     });
 
@@ -1156,6 +1159,9 @@ describe('OrchestratorCore', () => {
     expect(running?.codex_app_server_pid).toBe('4321');
     expect(running?.last_event_summary).toBe('codex turn completed: done');
     expect(running?.tokens.total_tokens).toBe(14);
+    expect(running?.token_telemetry_status).toBe('available');
+    expect(running?.token_telemetry_last_source).toBe('terminal_turn_summary');
+    expect(running?.token_telemetry_last_at_ms).toBe(harness.now.value + 100);
     expect(running?.tokens.cached_input_tokens).toBe(3);
     expect(running?.tokens.reasoning_output_tokens).toBe(2);
     expect(running?.tokens.model_context_window).toBe(8192);
@@ -1164,6 +1170,74 @@ describe('OrchestratorCore', () => {
     expect(snapshot.codex_totals.cached_input_tokens).toBe(3);
     expect(snapshot.codex_totals.reasoning_output_tokens).toBe(2);
     expect(snapshot.codex_totals.model_context_window).toBe(8192);
+  });
+
+  it('tracks pending telemetry and emits a threshold warning while a turn is active', async () => {
+    const harness = createHarness({
+      configOverrides: { no_telemetry_warning_threshold_ms: 120_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-pending-telemetry' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-pending-telemetry', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-pending-telemetry', {
+      timestamp_ms: harness.now.value + 120_001,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      detail: 'waiting_for_turn_completion elapsed_s=120'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-pending-telemetry');
+    expect(running?.token_telemetry_status).toBe('pending');
+    expect(
+      snapshot.recent_runtime_events.some(
+        (event) => event.event === CANONICAL_EVENT.codex.tokenTelemetryMissingThresholdExceeded && event.severity === 'warn'
+      )
+    ).toBe(true);
+  });
+
+  it('marks terminal no-usage turns unavailable instead of pending', async () => {
+    const terminalEvents = [
+      CANONICAL_EVENT.codex.turnCompleted,
+      CANONICAL_EVENT.codex.turnFailed,
+      CANONICAL_EVENT.codex.turnCancelled
+    ];
+
+    for (const terminalEvent of terminalEvents) {
+      const harness = createHarness();
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-no-usage-terminal' })]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-no-usage-terminal', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1'
+      });
+      harness.orchestrator.onWorkerEvent('i-no-usage-terminal', {
+        timestamp_ms: harness.now.value + 100,
+        event: terminalEvent,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        detail: 'terminal event without usage payload'
+      });
+
+      const snapshot = harness.orchestrator.getStateSnapshot();
+      const running = snapshot.running.get('i-no-usage-terminal');
+      expect(running?.token_telemetry_status).toBe('unavailable');
+      expect(running?.token_telemetry_last_source).toBeNull();
+      expect(running?.token_telemetry_last_at_ms).toBeNull();
+      expect(typeof running?.tokens.input_tokens).toBe('number');
+      expect(typeof running?.tokens.output_tokens).toBe('number');
+      expect(typeof running?.tokens.total_tokens).toBe('number');
+    }
   });
 
   it('ignores usage aggregation when worker event thread_id mismatches active running thread', async () => {

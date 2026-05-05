@@ -1,5 +1,5 @@
 import type { Issue, TrackerAdapter } from '../tracker';
-import type { CodexUsageTotals } from '../codex';
+import type { CodexUsageTotals, TokenTelemetryStatus } from '../codex';
 import type { StructuredLogger } from '../observability';
 import type { PhaseMarker, PhaseMarkerName } from '../observability';
 import type { RunTerminalStatus } from '../persistence';
@@ -45,6 +45,11 @@ export interface RunningEntry {
   last_message: string | null;
   tokens: CodexUsageTotals;
   last_reported_tokens: CodexUsageTotals;
+  token_telemetry_status: TokenTelemetryStatus;
+  token_telemetry_last_source: string | null;
+  token_telemetry_last_at_ms: number | null;
+  token_telemetry_turn_started_at_ms: number | null;
+  token_telemetry_warning_emitted: boolean;
   recent_events: Array<{
     at_ms: number;
     event: string;
@@ -377,6 +382,9 @@ export interface WorkerObservabilityEvent {
   codex_app_server_pid?: number | null;
   detail?: string;
   usage?: CodexUsageTotals;
+  token_telemetry_status?: TokenTelemetryStatus;
+  token_telemetry_last_source?: string | null;
+  token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
 }
 
@@ -391,6 +399,7 @@ export interface OrchestratorConfig {
   terminal_states: string[];
   github_linking_mode?: 'off' | 'warn' | 'required' | string;
   stall_timeout_ms: number;
+  no_telemetry_warning_threshold_ms?: number;
   phase_markers_enabled?: boolean;
   phase_timeline_limit?: number;
   worker_hosts?: string[];

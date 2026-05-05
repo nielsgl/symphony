@@ -48,6 +48,14 @@ export interface CodexUsageTotals {
   model_context_window?: number;
 }
 
+export type TokenTelemetryStatus = 'unavailable' | 'pending' | 'available';
+
+export interface TokenTelemetrySnapshot {
+  token_telemetry_status: TokenTelemetryStatus;
+  token_telemetry_last_source: string | null;
+  token_telemetry_last_at_ms: number | null;
+}
+
 export interface CodexInputRequestOption {
   label: string;
   value?: string;
@@ -80,6 +88,9 @@ export interface CodexTurnResult {
   input_required_payload?: CodexInputRequestPayload;
   turns_completed: number;
   usage?: CodexUsageTotals;
+  token_telemetry_status?: TokenTelemetryStatus;
+  token_telemetry_last_source?: string | null;
+  token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
 }
 
@@ -91,6 +102,9 @@ export interface CodexRunnerEvent {
   turn_id?: string;
   session_id?: string;
   usage?: CodexUsageTotals;
+  token_telemetry_status?: TokenTelemetryStatus;
+  token_telemetry_last_source?: string | null;
+  token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
   detail?: string;
 }

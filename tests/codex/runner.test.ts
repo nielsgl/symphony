@@ -97,6 +97,9 @@ describe('CodexRunner', () => {
         output_tokens: 0,
         total_tokens: 0
       },
+      token_telemetry_status: 'unavailable',
+      token_telemetry_last_source: null,
+      token_telemetry_last_at_ms: null,
       rate_limits: null
     });
 
@@ -1132,6 +1135,113 @@ describe('CodexRunner', () => {
         model_context_window: 131072
       }
     });
+  });
+
+  it('applies token telemetry precedence across terminal, incremental, and persisted fallback payloads', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"codex/persistedUsage","params":{"persisted_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"turn/completed","params":{"usage":{"input_tokens":30,"output_tokens":12,"total_tokens":42}}}\n'
+    );
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 30,
+        output_tokens: 12,
+        total_tokens: 42
+      },
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'terminal_turn_summary'
+    });
+  });
+
+  it('keeps incremental usage ahead of a later persisted fallback record', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":8,"output_tokens":4,"total_tokens":12}}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"codex/persistedUsage","params":{"persisted_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 8,
+        output_tokens: 4,
+        total_tokens: 12
+      },
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'last_token_usage'
+    });
+  });
+
+  it('collects terminal usage across Codex home, model, and reasoning command variants', async () => {
+    const variants = [
+      { codexHome: 'default', model: false, reasoning: false },
+      { codexHome: 'default', model: false, reasoning: true },
+      { codexHome: 'default', model: true, reasoning: false },
+      { codexHome: 'default', model: true, reasoning: true },
+      { codexHome: 'alternate', model: false, reasoning: false },
+      { codexHome: 'alternate', model: false, reasoning: true },
+      { codexHome: 'alternate', model: true, reasoning: false },
+      { codexHome: 'alternate', model: true, reasoning: true }
+    ];
+
+    for (const variant of variants) {
+      const fake = new FakeProcess();
+      const workspaceCwd = makeWorkspace();
+      const commandParts = [
+        variant.codexHome === 'alternate' ? 'SYMPHONY_CODEX_HOME=/tmp/symphony-codex-home codex app-server' : 'codex app-server',
+        variant.model ? '--config model="gpt-5.4"' : '',
+        variant.reasoning ? '--config model_reasoning_effort="high"' : ''
+      ].filter(Boolean);
+      const runner = new CodexRunner({ spawnProcess: () => fake });
+
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          command: commandParts.join(' ')
+        })
+      );
+
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+      fake.emitStdout(
+        '{"method":"turn/completed","params":{"summary":{"usage":{"inputTokens":21,"outputTokens":9,"totalTokens":30}}}}\n'
+      );
+
+      await expect(promise).resolves.toMatchObject({
+        usage: {
+          input_tokens: 21,
+          output_tokens: 9,
+          total_tokens: 30
+        },
+        token_telemetry_status: 'available',
+        token_telemetry_last_source: 'terminal_turn_summary'
+      });
+    }
   });
 
   it('handles a bounded high-volume stream deterministically', async () => {

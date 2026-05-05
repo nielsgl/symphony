@@ -31,7 +31,8 @@ export const CANONICAL_EVENT = {
     sideOutput: 'codex.side_output',
     turnWaiting: 'codex.turn.waiting',
     commandLegacyPathUsed: 'codex.command.legacy_path_used',
-    commandMixedTypedOverridesApplied: 'codex.command.mixed_typed_overrides_applied'
+    commandMixedTypedOverridesApplied: 'codex.command.mixed_typed_overrides_applied',
+    tokenTelemetryMissingThresholdExceeded: 'token_telemetry_missing_threshold_exceeded'
   },
   orchestration: {
     dispatchValidationFailed: 'orchestration.dispatch.validation.failed',

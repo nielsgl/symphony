@@ -147,6 +147,9 @@ export interface ApiStateResponse {
     phase_detail: string | null;
     started_at: string;
     last_event_at: string | null;
+    token_telemetry_status: 'unavailable' | 'pending' | 'available';
+    token_telemetry_last_source: string | null;
+    token_telemetry_last_at_ms: number | null;
     tokens: {
       input_tokens: number;
       output_tokens: number;
@@ -367,6 +370,9 @@ export interface ApiIssueResponse {
     phase_elapsed_ms: number | null;
     phase_detail: string | null;
     last_event_at: string | null;
+    token_telemetry_status: 'unavailable' | 'pending' | 'available';
+    token_telemetry_last_source: string | null;
+    token_telemetry_last_at_ms: number | null;
     tokens: {
       input_tokens: number;
       output_tokens: number;
@@ -599,16 +605,20 @@ export interface ApiDiagnosticsResponse {
   token_accounting: {
     mode: 'strict_canonical';
     canonical_precedence: [
+      'terminal_turn_summary',
       'thread/tokenUsage/updated.params.tokenUsage.total',
       'params.info.total_token_usage',
       'params.info.totalTokenUsage',
       'params.total_token_usage',
       'params.totalTokenUsage',
       'params.usage.total_token_usage',
-      'params.usage.totalTokenUsage'
+      'params.usage.totalTokenUsage',
+      'last_token_usage',
+      'persisted_fallback_usage'
     ];
     excludes_generic_usage_for_totals: true;
-    excludes_last_usage_for_totals: true;
+    excludes_last_usage_for_totals: false;
+    no_telemetry_warning_threshold_ms: number;
     optional_dimensions: ['cached_input_tokens', 'reasoning_output_tokens', 'model_context_window'];
     observed_dimensions: {
       cached_input_tokens: boolean;
@@ -616,6 +626,9 @@ export interface ApiDiagnosticsResponse {
       model_context_window: boolean;
     };
   };
+  token_telemetry_status: 'unavailable' | 'pending' | 'available';
+  token_telemetry_last_source: string | null;
+  token_telemetry_last_at_ms: number | null;
   workflow: {
     prompt_fallback_active: boolean;
   };

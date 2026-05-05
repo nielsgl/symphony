@@ -38,6 +38,9 @@ function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number):
     phase_detail: entry.phase_detail ?? null,
     started_at: asIsoDate(entry.started_at_ms),
     last_event_at: entry.last_codex_timestamp_ms !== null ? asIsoDate(entry.last_codex_timestamp_ms) : null,
+    token_telemetry_status: entry.token_telemetry_status,
+    token_telemetry_last_source: entry.token_telemetry_last_source,
+    token_telemetry_last_at_ms: entry.token_telemetry_last_at_ms,
     tokens: {
       input_tokens: entry.tokens.input_tokens,
       output_tokens: entry.tokens.output_tokens,
@@ -288,6 +291,9 @@ export class SnapshotService {
           phase_elapsed_ms: entry.current_phase_at_ms ? Math.max(0, this.nowMs() - entry.current_phase_at_ms) : null,
           phase_detail: entry.phase_detail ?? null,
           last_event_at: entry.last_codex_timestamp_ms !== null ? asIsoDate(entry.last_codex_timestamp_ms) : null,
+          token_telemetry_status: entry.token_telemetry_status,
+          token_telemetry_last_source: entry.token_telemetry_last_source,
+          token_telemetry_last_at_ms: entry.token_telemetry_last_at_ms,
           tokens: {
             input_tokens: entry.tokens.input_tokens,
             output_tokens: entry.tokens.output_tokens,
