@@ -1,3 +1,7 @@
+import {
+  ACTION_REQUIRED_REASON_LABELS
+} from './dashboard-view-model';
+
 interface DashboardClientConfig {
   dashboard_enabled: boolean;
   refresh_ms: number;
@@ -231,8 +235,27 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     render_interval_ms: Math.max(250, Number(config.render_interval_ms) || 1000),
     phase_stale_warn_ms: Math.max(1000, Number(config.phase_stale_warn_ms) || 45000)
   };
+  const actionRequiredReasonLabels = JSON.stringify(ACTION_REQUIRED_REASON_LABELS);
+  const operatorTransitionRules = JSON.stringify({
+    detailMap: {
+      'completion gate blocked redispatch because no progress signal was detected': 'completion_gate_blocked',
+      'pr is open but scope is incomplete and no progress signal was detected': 'completion_gate_blocked',
+      'respawn circuit breaker opened': 'circuit_breaker_opened',
+      'resume accepted': 'resume_accepted',
+      'resume rejected': 'resume_rejected',
+      'cancel accepted': 'cancel_accepted',
+      'cancel rejected': 'cancel_rejected'
+    },
+    eventMap: {
+      'orchestrator.redispatch.completion_gate_blocked': 'completion_gate_blocked',
+      'orchestrator.redispatch.circuit_breaker_opened': 'circuit_breaker_opened',
+      'orchestration.blocked_input.resumed': 'resume_accepted'
+    }
+  });
   return `(() => {
   const DASHBOARD_CONFIG = ${JSON.stringify(safeConfig)};
+  const ACTION_REQUIRED_CODES = ${actionRequiredReasonLabels};
+  const OPERATOR_TRANSITION_RULES = ${operatorTransitionRules};
   const state = {
     payload: null,
     lastGoodPayload: null,
@@ -341,12 +364,6 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.refreshStatus.className = isError ? 'status-error' : 'status-ok';
   }
 
-  const ACTION_REQUIRED_CODES = {
-    operator_action_required_workspace_conflict: 'Workspace Conflict',
-    operator_action_required_no_progress_redispatch_blocked: 'No Progress Redispatch Blocked',
-    awaiting_human_review_scope_incomplete: 'Awaiting Human Review (Scope Incomplete)'
-  };
-
   function getActionRequiredLabel(code) {
     return ACTION_REQUIRED_CODES[code] || code || 'unknown';
   }
@@ -414,28 +431,29 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
   function renderActionRequiredBanner(payload) {
     const blockedEntries = Array.isArray(payload && payload.blocked) ? payload.blocked : [];
-    const grouped = new Map();
-    for (const entry of blockedEntries) {
+    const grouped = blockedEntries.reduce(function (acc, entry) {
       if (!isActionRequiredCode(entry.stop_reason_code)) {
-        continue;
+        return acc;
       }
-      const count = grouped.get(entry.stop_reason_code) || 0;
-      grouped.set(entry.stop_reason_code, count + 1);
-    }
-    if (!grouped.size) {
+      acc[entry.stop_reason_code] = (acc[entry.stop_reason_code] || 0) + 1;
+      return acc;
+    }, {});
+    const groupedEntries = Object.entries(grouped);
+    if (!groupedEntries.length) {
       elements.actionRequiredBanner.classList.add('hidden');
       elements.actionRequiredSummary.textContent = '';
       elements.actionRequiredGroups.replaceChildren();
       return;
     }
 
-    const total = Array.from(grouped.values()).reduce(function (sum, count) {
+    const total = groupedEntries.reduce(function (sum, entry) {
+      const count = entry[1];
       return sum + count;
     }, 0);
     elements.actionRequiredBanner.classList.remove('hidden');
     elements.actionRequiredSummary.textContent = total + ' blocked run' + (total === 1 ? '' : 's') + ' need operator action.';
 
-    const groupNodes = Array.from(grouped.entries()).map(function (entry) {
+    const groupNodes = groupedEntries.map(function (entry) {
       const code = entry[0];
       const count = entry[1];
       const button = document.createElement('button');
@@ -456,6 +474,86 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       return button;
     });
     elements.actionRequiredGroups.replaceChildren(...groupNodes);
+  }
+
+  function describeTransition(transition) {
+    switch (transition) {
+      case 'completion_gate_blocked':
+        return { label: 'Completion Gate Blocked', result: 'failure', detail: 'No progress signal detected in redispatch window.' };
+      case 'circuit_breaker_opened':
+        return { label: 'Circuit Breaker Opened', result: 'failure', detail: 'Respawn threshold reached; operator intervention required.' };
+      case 'resume_accepted':
+        return { label: 'Resume Accepted', result: 'success', detail: 'Resume request accepted and redispatch restarted.' };
+      case 'resume_rejected':
+        return { label: 'Resume Rejected', result: 'failure', detail: 'Resume request rejected; resolve blocking condition first.' };
+      case 'cancel_accepted':
+        return { label: 'Cancel Accepted', result: 'success', detail: 'Issue returned to backlog.' };
+      case 'cancel_rejected':
+        return { label: 'Cancel Rejected', result: 'failure', detail: 'Cancel request rejected; tracker state unchanged.' };
+      default:
+        return null;
+    }
+  }
+
+  function deriveOperatorTransitionRows(issueId, payload) {
+    const rows = [];
+    const seen = new Set();
+    function addRow(at, transition, detail) {
+      const key = transition + ':' + String(at || 'n/a') + ':' + String(detail || '');
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      const descriptor = describeTransition(transition);
+      if (!descriptor) {
+        return;
+      }
+      rows.push({
+        at: at || 'n/a',
+        issue_identifier: issueId,
+        label: descriptor.label,
+        result: descriptor.result,
+        detail: detail && detail.trim ? (detail.trim() ? detail : descriptor.detail) : descriptor.detail
+      });
+    }
+
+    const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
+    for (const marker of timeline) {
+      const normalized = String(marker && marker.detail ? marker.detail : '').trim().toLowerCase();
+      const transition = OPERATOR_TRANSITION_RULES.detailMap[normalized];
+      if (transition) {
+        addRow(marker.at, transition, marker.detail || null);
+      }
+    }
+    const events = Array.isArray(payload.recent_events) ? payload.recent_events : [];
+    for (const entry of events) {
+      const transitionByEvent = OPERATOR_TRANSITION_RULES.eventMap[String(entry && entry.event ? entry.event : '')];
+      if (transitionByEvent) {
+        addRow(entry.at, transitionByEvent, entry.message || null);
+      }
+      const normalizedMessage = String(entry && entry.message ? entry.message : '').trim().toLowerCase();
+      const transitionByMessage = OPERATOR_TRANSITION_RULES.detailMap[normalizedMessage];
+      if (transitionByMessage) {
+        addRow(entry.at, transitionByMessage, entry.message || null);
+      }
+    }
+    if (payload.blocked && (payload.blocked.stop_reason_code === 'operator_action_required_no_progress_redispatch_blocked' || payload.blocked.stop_reason_code === 'awaiting_human_review_scope_incomplete')) {
+      addRow('n/a', 'completion_gate_blocked', payload.blocked.stop_reason_detail || null);
+    }
+    return rows.sort(function (a, b) {
+      const atA = Date.parse(a.at);
+      const atB = Date.parse(b.at);
+      if (Number.isFinite(atA) && Number.isFinite(atB)) {
+        return atA - atB;
+      }
+      if (Number.isFinite(atA)) {
+        return -1;
+      }
+      if (Number.isFinite(atB)) {
+        return 1;
+      }
+      return a.label.localeCompare(b.label);
+    });
   }
 
   function renderThroughput(payload) {
@@ -1328,30 +1426,36 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const sessionConsole = payload.blocked && Array.isArray(payload.blocked.session_console) ? payload.blocked.session_console : [];
       const timelineText = timeline.length
         ? timeline.map(function (marker) {
-            let detail = marker.detail || 'n/a';
-            if (detail.includes('completion gate blocked')) {
-              detail = 'completion gate blocked';
-            } else if (detail.includes('respawn circuit breaker opened')) {
-              detail = 'circuit breaker opened';
-            } else if (detail.includes('resume accepted')) {
-              detail = 'resume accepted';
-            } else if (detail.includes('resume rejected')) {
-              detail = 'resume rejected';
-            } else if (detail.includes('cancel accepted')) {
-              detail = 'cancel accepted';
-            } else if (detail.includes('cancel rejected')) {
-              detail = 'cancel rejected';
-            }
-            return marker.at + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + detail + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
+            return marker.at + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + (marker.detail || 'n/a') + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
           }).join('\\n')
         : 'No phase markers yet.';
+      const operatorTimelineRows = deriveOperatorTransitionRows(issueId, payload);
+      const operatorTimelineText = operatorTimelineRows.length
+        ? operatorTimelineRows
+            .map(function (entry) {
+              return (
+                entry.at +
+                ' | ' +
+                entry.label +
+                ' | issue ' +
+                entry.issue_identifier +
+                ' | ' +
+                entry.result +
+                ' | ' +
+                entry.detail
+              );
+            })
+            .join('\\n')
+        : 'No operator transition entries.';
       const sessionConsoleText = sessionConsole.length
         ? sessionConsole.map(function (event) {
             return event.at + ' | ' + event.event + ' | ' + (event.message || 'n/a');
           }).join('\\n')
         : 'No session console entries.';
       elements.issueOutput.textContent =
-        'Execution Timeline\\n' +
+        'Operator Transition Timeline\\n' +
+        operatorTimelineText +
+        '\\n\\nExecution Timeline\\n' +
         timelineText +
         '\\n\\nSession Console\\n' +
         sessionConsoleText +
