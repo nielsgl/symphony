@@ -396,7 +396,7 @@ describe('meta check scripts', () => {
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43'
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo-root'
         },
         null,
         2
@@ -436,13 +436,13 @@ describe('meta check scripts', () => {
             {
               path: 'output/playwright/demo.webm',
               type: 'video',
-              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo'
             }
           ],
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43'
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo-root'
         },
         null,
         2
@@ -523,13 +523,13 @@ describe('meta check scripts', () => {
             {
               path: 'output/playwright/demo.webm',
               type: 'video',
-              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo'
             }
           ],
           ui_paths: ['src/api/dashboard-assets.ts'],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43'
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo-root'
         },
         null,
         2
@@ -570,7 +570,7 @@ describe('meta check scripts', () => {
             {
               path: 'output/playwright/demo.webm',
               type: 'video',
-              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo'
             }
           ],
           ui_paths: [UI_FIXTURE_PATH],
@@ -618,7 +618,7 @@ describe('meta check scripts', () => {
             {
               path: 'output/playwright/demo.webm',
               type: 'video',
-              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo'
             }
           ],
           ui_paths: [UI_FIXTURE_PATH],

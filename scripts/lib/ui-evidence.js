@@ -5,7 +5,7 @@ const MANIFEST_RELATIVE_PATH = path.join('output', 'playwright', 'ui-evidence.js
 const ARTIFACT_BASE_DIR = path.join('output', 'playwright');
 const ARTIFACT_PATH_PREFIX = 'output/playwright/';
 
-const LINEAR_REFERENCE_PATTERN = /^https:\/\/linear\.app\/[^/]+\/issue\/[A-Z]+-\d+(?:[/?#].*)?$/;
+const LINEAR_REFERENCE_PATTERN = /^https:\/\/linear\.app\/[^/]+\/issue\/[A-Z]+-\d+\/[^?\s#]+(?:[?#].*)?$/;
 const GITHUB_PR_COMMENT_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+#issuecomment-\d+$/;
 
 function normalizeArtifactPath(filePath) {
@@ -155,7 +155,7 @@ function validateManifestObject(repoRoot, parsed, options = {}) {
   if (!publishReference || !isValidPublishReference(publishReference)) {
     return toTypedError(
       'ui_evidence_publish_reference_invalid',
-      'manifest.publish_reference must match allowed Linear issue URL or GitHub PR comment URL'
+      'manifest.publish_reference must match allowed Linear issue publication URL (/issue/<ID>/...) or GitHub PR comment URL'
     );
   }
 

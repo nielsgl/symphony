@@ -23,7 +23,7 @@ describe('ui evidence helper', () => {
       '--summary',
       'UI evidence capture',
       '--publish-reference',
-      'https://linear.app/nielsgl/issue/NIE-48#comment-1',
+      'https://linear.app/nielsgl/issue/NIE-48/comment/demo-1',
       '--ui-path',
       'src/api/dashboard-assets.ts'
     ]);
@@ -43,7 +43,7 @@ describe('ui evidence helper', () => {
       '--summary',
       'UI evidence capture',
       '--publish-reference',
-      'https://linear.app/nielsgl/issue/NIE-48#comment-1',
+      'https://linear.app/nielsgl/issue/NIE-48/comment/demo-1',
       '--ui-path',
       'src/api/dashboard-assets.ts'
     ]);
@@ -60,7 +60,7 @@ describe('ui evidence helper', () => {
       '--summary',
       'UI evidence capture',
       '--publish-reference',
-      'https://linear.app/nielsgl/issue/NIE-48#comment-1',
+      'https://linear.app/nielsgl/issue/NIE-48/comment/demo-1',
       '--ui-path',
       'src/api/dashboard-assets.ts'
     ]);
@@ -86,6 +86,23 @@ describe('ui evidence helper', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
+  it('fails with typed error for hash-only Linear issue publish reference', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-evidence-helper-'));
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.png'), 'stub', 'utf8');
+    const result = runHelper(tempRoot, [
+      '--summary',
+      'UI evidence capture',
+      '--publish-reference',
+      'https://linear.app/nielsgl/issue/NIE-48#comment-1',
+      '--ui-path',
+      'src/api/dashboard-assets.ts'
+    ]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ui_evidence_publish_reference_invalid');
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
   it('fails strict linear proof mode when reference is GitHub-only', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-evidence-helper-'));
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
@@ -101,6 +118,24 @@ describe('ui evidence helper', () => {
     ]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('ui_evidence_publish_reference_missing_linear_proof');
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails strict linear proof mode when publish reference is bare Linear issue URL', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-evidence-helper-'));
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub', 'utf8');
+    const result = runHelper(tempRoot, [
+      '--summary',
+      'UI evidence capture',
+      '--publish-reference',
+      'https://linear.app/nielsgl/issue/NIE-48',
+      '--ui-path',
+      'src/api/dashboard-assets.ts',
+      '--strict-linear-proof'
+    ]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ui_evidence_publish_reference_invalid');
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 });
