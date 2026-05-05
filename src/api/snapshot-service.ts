@@ -96,6 +96,25 @@ export class SnapshotService {
       last_phase_detail: entry.last_phase_detail ?? null
     }));
     const blocked = Array.from(state.blocked_inputs.values()).map((entry) => ({
+      ...(state.circuit_breakers.get(entry.issue_id)
+        ? {
+            breaker_active: state.circuit_breakers.get(entry.issue_id)?.breaker_active ?? false,
+            breaker_hit_count: state.circuit_breakers.get(entry.issue_id)?.breaker_hit_count ?? 0,
+            breaker_window_minutes: state.circuit_breakers.get(entry.issue_id)?.breaker_window_minutes ?? 0,
+            breaker_first_hit_at: state.circuit_breakers.get(entry.issue_id)?.breaker_first_hit_at_ms
+              ? asIsoDate(state.circuit_breakers.get(entry.issue_id)!.breaker_first_hit_at_ms!)
+              : null,
+            breaker_last_hit_at: state.circuit_breakers.get(entry.issue_id)?.breaker_last_hit_at_ms
+              ? asIsoDate(state.circuit_breakers.get(entry.issue_id)!.breaker_last_hit_at_ms!)
+              : null
+          }
+        : {
+            breaker_active: false,
+            breaker_hit_count: 0,
+            breaker_window_minutes: 0,
+            breaker_first_hit_at: null,
+            breaker_last_hit_at: null
+          }),
       issue_id: entry.issue_id,
       issue_identifier: entry.issue_identifier,
       attempt: entry.attempt,
@@ -115,6 +134,7 @@ export class SnapshotService {
       stop_reason_code: entry.stop_reason_code,
       stop_reason_detail: entry.stop_reason_detail ?? null,
       conflict_files: entry.conflict_files.map((file) => ({ ...file })),
+      classification_summary: entry.classification_summary ? { ...entry.classification_summary } : undefined,
       resolution_hints: [...entry.resolution_hints],
       previous_thread_id: entry.previous_thread_id ?? null,
       previous_session_id: entry.previous_session_id ?? null,
@@ -215,6 +235,7 @@ export class SnapshotService {
     const runningEntry = Array.from(state.running.entries()).find(([, entry]) => entry.identifier === issueIdentifier);
     const retryEntry = Array.from(state.retry_attempts.values()).find((entry) => entry.identifier === issueIdentifier);
     const blockedEntry = Array.from(state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issueIdentifier);
+    const breakerEntry = blockedEntry ? state.circuit_breakers.get(blockedEntry.issue_id) : undefined;
 
     if (!runningEntry && !retryEntry && !blockedEntry) {
       throw new LocalApiError(
@@ -326,14 +347,20 @@ export class SnapshotService {
               copy_ignored_summary: blockedEntry.copy_ignored_summary ?? null,
               stop_reason_code: blockedEntry.stop_reason_code,
               stop_reason_detail: blockedEntry.stop_reason_detail ?? null,
-              conflict_files: blockedEntry.conflict_files.map((file) => ({ ...file })),
+          conflict_files: blockedEntry.conflict_files.map((file) => ({ ...file })),
+          classification_summary: blockedEntry.classification_summary ? { ...blockedEntry.classification_summary } : undefined,
               resolution_hints: [...blockedEntry.resolution_hints],
               previous_thread_id: blockedEntry.previous_thread_id ?? null,
               previous_session_id: blockedEntry.previous_session_id ?? null,
               last_phase: blockedEntry.last_phase ?? null,
               last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
               last_phase_detail: blockedEntry.last_phase_detail ?? null,
-              requires_manual_resume: true as const,
+          requires_manual_resume: true as const,
+          breaker_active: breakerEntry?.breaker_active ?? false,
+          breaker_hit_count: breakerEntry?.breaker_hit_count ?? 0,
+          breaker_window_minutes: breakerEntry?.breaker_window_minutes ?? 0,
+          breaker_first_hit_at: breakerEntry?.breaker_first_hit_at_ms ? asIsoDate(breakerEntry.breaker_first_hit_at_ms) : null,
+          breaker_last_hit_at: breakerEntry?.breaker_last_hit_at_ms ? asIsoDate(breakerEntry.breaker_last_hit_at_ms) : null,
       attempt_count_window: blockedEntry.attempt_count_window,
       window_minutes: blockedEntry.window_minutes,
       last_known_commit_sha: blockedEntry.last_known_commit_sha ?? null,

@@ -175,6 +175,7 @@ async function renderWorkspaceConflictError(error: unknown, workspacePath: strin
     code: 'operator_action_required_workspace_conflict',
     detail: structuredPreflight?.detail ?? typed.message,
     conflict_files: mergedConflictFiles,
+    classification_summary: structuredPreflight?.classification_summary,
     resolution_hints:
       structuredPreflight?.resolution_hints ?? [
         'Resolve workspace git conflicts in the issue worktree.',
@@ -187,7 +188,16 @@ async function renderWorkspaceConflictError(error: unknown, workspacePath: strin
 
 function parsePreflightConflictMessage(message: string): {
   detail: string;
-  conflict_files: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>;
+  conflict_files: Array<{
+    path: string;
+    status: 'staged' | 'unstaged' | 'unknown';
+    classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
+  }>;
+  classification_summary?: {
+    ephemeral: number;
+    tracked_ephemeral: number;
+    unknown_non_ephemeral: number;
+  };
   resolution_hints: string[];
 } | null {
   const prefix = 'workspace_preflight_conflict:';
@@ -197,17 +207,24 @@ function parsePreflightConflictMessage(message: string): {
   try {
     const parsed = JSON.parse(message.slice(prefix.length)) as {
       detail?: unknown;
-      conflict_files?: Array<{ path?: unknown; status?: unknown }>;
+      conflict_files?: Array<{ path?: unknown; status?: unknown; classification?: unknown }>;
+      classification_summary?: { ephemeral?: unknown; tracked_ephemeral?: unknown; unknown_non_ephemeral?: unknown };
       resolution_hints?: unknown;
     };
     const conflict_files = Array.isArray(parsed.conflict_files)
       ? parsed.conflict_files
-          .map((entry) => {
+          .map((entry): { path: string; status: 'staged' | 'unstaged' | 'unknown'; classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral' } | null => {
             const path = typeof entry.path === 'string' ? entry.path.trim() : '';
             const status = entry.status === 'staged' || entry.status === 'unstaged' ? entry.status : 'unknown';
-            return path ? { path, status } : null;
+            const classification =
+              entry.classification === 'ephemeral' ||
+              entry.classification === 'tracked_ephemeral' ||
+              entry.classification === 'unknown_non_ephemeral'
+                ? entry.classification
+                : undefined;
+            return path ? { path, status, classification } : null;
           })
-          .filter((entry): entry is { path: string; status: 'staged' | 'unstaged' | 'unknown' } => Boolean(entry))
+          .filter((entry) => entry !== null)
       : [];
     const resolution_hints = Array.isArray(parsed.resolution_hints)
       ? parsed.resolution_hints.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -215,6 +232,13 @@ function parsePreflightConflictMessage(message: string): {
     return {
       detail: typeof parsed.detail === 'string' && parsed.detail.trim().length > 0 ? parsed.detail : 'workspace preflight conflict',
       conflict_files,
+      classification_summary: parsed.classification_summary
+        ? {
+            ephemeral: Number(parsed.classification_summary.ephemeral ?? 0),
+            tracked_ephemeral: Number(parsed.classification_summary.tracked_ephemeral ?? 0),
+            unknown_non_ephemeral: Number(parsed.classification_summary.unknown_non_ephemeral ?? 0)
+          }
+        : undefined,
       resolution_hints
     };
   } catch {

@@ -78,6 +78,7 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
     claimed: new Set(),
     retry_attempts: new Map(),
     blocked_inputs: new Map(),
+    circuit_breakers: new Map(),
     completed: new Set(),
     codex_totals: {
       input_tokens: 10,
@@ -214,6 +215,71 @@ describe('SnapshotService', () => {
       requires_manual_resume: true,
       conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });
+  });
+
+  it('projects breaker metadata on state and issue blocked payloads', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      blocked_inputs: new Map([
+        [
+          'issue-9',
+          {
+            issue_id: 'issue-9',
+            issue_identifier: 'ABC-9',
+            attempt: 4,
+            worker_host: null,
+            workspace_path: null,
+            provisioner_type: null,
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'dirty',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+            stop_reason_detail: 'blocked',
+            conflict_files: [],
+            resolution_hints: [],
+            previous_thread_id: null,
+            previous_session_id: null,
+            blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            requires_manual_resume: true,
+            pending_input: null,
+            session_console: []
+          }
+        ]
+      ]),
+      circuit_breakers: new Map([
+        [
+          'issue-9',
+          {
+            issue_id: 'issue-9',
+            issue_identifier: 'ABC-9',
+            breaker_active: true,
+            breaker_hit_count: 5,
+            breaker_window_minutes: 30,
+            breaker_first_hit_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+            breaker_last_hit_at_ms: Date.parse('2026-04-10T10:04:00.000Z')
+          }
+        ]
+      ])
+    });
+
+    const stateProjection = service.projectState(state);
+    expect(stateProjection.blocked[0]).toMatchObject({
+      issue_identifier: 'ABC-9',
+      breaker_active: true,
+      breaker_hit_count: 5,
+      breaker_window_minutes: 30,
+      breaker_first_hit_at: '2026-04-10T10:00:00.000Z',
+      breaker_last_hit_at: '2026-04-10T10:04:00.000Z'
+    });
+
+    const issueProjection = service.projectIssue(state, 'ABC-9');
+    expect(issueProjection.status).toBe('blocked');
+    expect(issueProjection.blocked?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
   });
 
   it('projects failed health state and issue recent events for diagnostics', () => {

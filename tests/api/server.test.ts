@@ -87,6 +87,7 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
     claimed: new Set(),
     retry_attempts: new Map(),
     blocked_inputs: new Map(),
+    circuit_breakers: new Map(),
     completed: new Set(),
     codex_totals: {
       input_tokens: 0,
@@ -464,7 +465,18 @@ describe('LocalApiServer', () => {
           blocked_files: 0,
           bytes_copied: 0,
           duration_ms: 0
-        })
+        }),
+        getBreakerStatuses: () => [
+          {
+            issue_id: 'issue-1',
+            issue_identifier: 'ABC-1',
+            breaker_active: true,
+            breaker_hit_count: 4,
+            breaker_window_minutes: 30,
+            breaker_first_hit_at: '2026-04-10T10:00:00.000Z',
+            breaker_last_hit_at: '2026-04-10T10:03:00.000Z'
+          }
+        ]
       }
     });
 
@@ -1245,7 +1257,18 @@ describe('LocalApiServer', () => {
           blocked_files: 0,
           bytes_copied: 0,
           duration_ms: 0
-        })
+        }),
+        getBreakerStatuses: () => [
+          {
+            issue_id: 'issue-1',
+            issue_identifier: 'ABC-1',
+            breaker_active: true,
+            breaker_hit_count: 4,
+            breaker_window_minutes: 30,
+            breaker_first_hit_at: '2026-04-10T10:00:00.000Z',
+            breaker_last_hit_at: '2026-04-10T10:03:00.000Z'
+          }
+        ]
       }
     });
 
@@ -1257,6 +1280,14 @@ describe('LocalApiServer', () => {
       active_profile: { name: string };
       persistence: { retention_days: number };
       logging: { root: string; active_file: string; sinks: string[] };
+      breaker_statuses: Array<{
+        issue_identifier: string;
+        breaker_active: boolean;
+        breaker_hit_count: number;
+        breaker_window_minutes: number;
+        breaker_first_hit_at: string | null;
+        breaker_last_hit_at: string | null;
+      }>;
       event_vocabulary_version: string;
       workflow: {
         prompt_fallback_active: boolean;
@@ -1277,6 +1308,17 @@ describe('LocalApiServer', () => {
     expect(diagnosticsPayload.logging.root).toBe('/tmp/log');
     expect(diagnosticsPayload.logging.active_file).toBe('/tmp/log/symphony.log');
     expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file']);
+    expect(diagnosticsPayload.breaker_statuses).toEqual([
+      {
+        issue_id: 'issue-1',
+        issue_identifier: 'ABC-1',
+        breaker_active: true,
+        breaker_hit_count: 4,
+        breaker_window_minutes: 30,
+        breaker_first_hit_at: '2026-04-10T10:00:00.000Z',
+        breaker_last_hit_at: '2026-04-10T10:03:00.000Z'
+      }
+    ]);
     expect(diagnosticsPayload.event_vocabulary_version).toBe(EVENT_VOCABULARY_VERSION);
     expect(diagnosticsPayload.workflow.prompt_fallback_active).toBe(false);
     expect(diagnosticsPayload.token_accounting.mode).toBe('strict_canonical');
