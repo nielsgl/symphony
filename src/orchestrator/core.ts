@@ -239,6 +239,31 @@ function defaultBudgetProjection(windowMinutes = 1440): BudgetRuntimeProjection 
   };
 }
 
+type BudgetScope = 'per_run_total_tokens' | 'per_issue_rolling_tokens';
+
+interface BudgetCandidate {
+  scope: BudgetScope;
+  usage: number;
+  limit: number;
+  warning_threshold: number;
+  status: Exclude<BudgetRuntimeProjection['budget_status'], 'telemetry_unavailable'>;
+}
+
+function budgetScopeLabel(scope: BudgetScope): string {
+  return scope === 'per_issue_rolling_tokens' ? 'rolling issue budget' : 'per-run budget';
+}
+
+function budgetStatusRank(status: BudgetCandidate['status']): number {
+  switch (status) {
+    case 'hard_limited':
+      return 2;
+    case 'warning':
+      return 1;
+    case 'ok':
+      return 0;
+  }
+}
+
 export class OrchestratorCore {
   private readonly config: OrchestratorOptions['config'];
   private readonly ports: OrchestratorOptions['ports'];
@@ -752,6 +777,46 @@ export class OrchestratorCore {
     return samples;
   }
 
+  private selectBudgetCandidate(issueId: string, currentAttemptTokens: number): BudgetCandidate | null {
+    const budget = this.config.budget;
+    if (!budget) {
+      return null;
+    }
+
+    const currentUsage = Math.max(0, currentAttemptTokens);
+    const samples = this.pruneBudgetSamples(issueId, this.nowMs());
+    const rollingUsage = samples.reduce((sum, sample) => sum + sample.total_tokens, 0) + currentUsage;
+    const candidates: BudgetCandidate[] = [];
+    const addCandidate = (scope: BudgetScope, usage: number, limit: number) => {
+      const warningThreshold = Math.ceil(limit * budget.warning_threshold_ratio);
+      candidates.push({
+        scope,
+        usage,
+        limit,
+        warning_threshold: warningThreshold,
+        status: usage >= limit ? 'hard_limited' : usage >= warningThreshold ? 'warning' : 'ok'
+      });
+    };
+    if (typeof budget.per_run_total_tokens === 'number') {
+      addCandidate('per_run_total_tokens', currentUsage, budget.per_run_total_tokens);
+    }
+    if (typeof budget.per_issue_rolling_tokens === 'number') {
+      addCandidate('per_issue_rolling_tokens', rollingUsage, budget.per_issue_rolling_tokens);
+    }
+    const [selected] = candidates.sort((a, b) => {
+      const statusDelta = budgetStatusRank(b.status) - budgetStatusRank(a.status);
+      if (statusDelta !== 0) {
+        return statusDelta;
+      }
+      const ratioDelta = b.usage / b.limit - a.usage / a.limit;
+      if (ratioDelta !== 0) {
+        return ratioDelta;
+      }
+      return a.scope.localeCompare(b.scope);
+    });
+    return selected ?? null;
+  }
+
   private computeBudgetProjection(
     issueId: string,
     currentAttemptTokens: number,
@@ -764,27 +829,19 @@ export class OrchestratorCore {
       return defaultBudgetProjection();
     }
 
-    const samples = this.pruneBudgetSamples(issueId, this.nowMs());
-    const rollingUsage = samples.reduce((sum, sample) => sum + sample.total_tokens, 0) + Math.max(0, currentAttemptTokens);
-    const perRunLimit = budget.per_run_total_tokens;
-    const rollingLimit = budget.per_issue_rolling_tokens;
-    const applicableLimits = [perRunLimit, rollingLimit].filter((value): value is number => typeof value === 'number');
-    const limit = applicableLimits.length > 0 ? Math.min(...applicableLimits) : null;
-    const usage = rollingLimit !== undefined ? rollingUsage : Math.max(0, currentAttemptTokens);
+    const selected = this.selectBudgetCandidate(issueId, currentAttemptTokens);
     let status: BudgetRuntimeProjection['budget_status'] = 'ok';
     if (forcedStatus) {
       status = forcedStatus;
     } else if (this.budgetConfigured() && telemetryStatus === 'unavailable') {
       status = 'telemetry_unavailable';
-    } else if (limit !== null && usage >= limit) {
-      status = 'hard_limited';
-    } else if (limit !== null && usage >= Math.ceil(limit * budget.warning_threshold_ratio)) {
-      status = 'warning';
+    } else if (selected) {
+      status = selected.status;
     }
 
     return {
-      budget_usage_tokens: this.budgetConfigured() && telemetryStatus !== 'unavailable' ? usage : null,
-      budget_limit_tokens: limit,
+      budget_usage_tokens: this.budgetConfigured() && telemetryStatus !== 'unavailable' ? selected?.usage ?? null : null,
+      budget_limit_tokens: selected?.limit ?? null,
       budget_window_minutes: budget.rolling_window_minutes,
       budget_status: status,
       budget_policy: this.budgetConfigured() ? budget.hard_limit_policy : null,
@@ -865,8 +922,10 @@ export class OrchestratorCore {
       return;
     }
 
-      runningEntry.budget_hard_limit_enforced = true;
-    const detail = `Budget hard limit exceeded: usage ${projection.budget_usage_tokens} tokens, limit ${projection.budget_limit_tokens} tokens.`;
+    const triggeringCandidate = this.selectBudgetCandidate(issueId, runningEntry.tokens.total_tokens);
+    runningEntry.budget_hard_limit_enforced = true;
+    const scopeDetail = triggeringCandidate ? `${budgetScopeLabel(triggeringCandidate.scope)} ` : '';
+    const detail = `Budget hard limit exceeded: ${scopeDetail}usage ${projection.budget_usage_tokens} tokens, limit ${projection.budget_limit_tokens} tokens.`;
     runningEntry.budget = {
       ...projection,
       budget_message:
@@ -893,13 +952,34 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: runningEntry.budget?.budget_message ?? detail
     });
-    void this.enforceBudgetHardLimit(issueId, timestampMs);
+    this.enforceBudgetHardLimit(issueId, runningEntry, timestampMs).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      const failureDetail = `Budget hard limit cleanup failed: ${message}`;
+      this.state.health.last_error = failureDetail;
+      this.logger?.log({
+        level: 'error',
+        event: CANONICAL_EVENT.budget.hardLimitExceeded,
+        message: 'budget hard limit cleanup failed',
+        context: {
+          issue_id: issueId,
+          issue_identifier: runningEntry.identifier,
+          error: message
+        }
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.budget.hardLimitExceeded,
+        severity: 'error',
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id ?? undefined,
+        detail: failureDetail
+      });
+      this.ports.notifyObservers?.();
+    });
   }
 
-  private async enforceBudgetHardLimit(issueId: string, timestampMs: number): Promise<void> {
-    const running = this.state.running.get(issueId);
+  private async enforceBudgetHardLimit(issueId: string, running: RunningEntry, timestampMs: number): Promise<void> {
     const budget = this.config.budget;
-    if (!running || !budget) {
+    if (!budget) {
       return;
     }
 
@@ -919,20 +999,13 @@ export class OrchestratorCore {
       session_id: running.session_id
     });
 
-    await this.ports.terminateWorker({
-      issue_id: issueId,
-      worker_handle: running.worker_handle,
-      cleanup_workspace: false,
-      reason: stopReasonCode
-    });
     this.addRuntimeSecondsFromEntry(running);
     this.recordBudgetUsageSample(issueId, running.tokens.total_tokens, timestampMs);
     this.state.running.delete(issueId);
     this.state.health.last_error = stopReasonDetail;
-    await this.completeRunRecord(running, 'failed', stopReasonCode);
 
     if (budget.hard_limit_policy === 'block_requires_resume') {
-      await this.scheduleBlockedInput({
+      void this.scheduleBlockedInput({
         issue_id: issueId,
         issue_identifier: running.identifier,
         attempt: running.retry_attempt + 1,
@@ -955,12 +1028,33 @@ export class OrchestratorCore {
         previous_session_id: running.session_id,
         required_actions: ['Increase budget and resume', 'Cancel and return to backlog'],
         budget: running.budget
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.state.health.last_error = `Budget hard limit block scheduling failed: ${message}`;
+        this.logger?.log({
+          level: 'error',
+          event: CANONICAL_EVENT.budget.hardLimitExceeded,
+          message: 'budget hard limit block scheduling failed',
+          context: {
+            issue_id: issueId,
+            issue_identifier: running.identifier,
+            error: message
+          }
+        });
       });
     } else {
       this.state.claimed.delete(issueId);
     }
 
     this.ports.notifyObservers?.();
+
+    await this.ports.terminateWorker({
+      issue_id: issueId,
+      worker_handle: running.worker_handle,
+      cleanup_workspace: false,
+      reason: stopReasonCode
+    });
+    await this.completeRunRecord(running, 'failed', stopReasonCode);
   }
 
   private recordBudgetUsageSample(issueId: string, totalTokens: number, timestampMs: number): void {
