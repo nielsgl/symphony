@@ -102,6 +102,76 @@ function listChangedFiles() {
   return Array.from(changed).sort();
 }
 
+function walkFiles(root, files = []) {
+  if (!fs.existsSync(root)) {
+    return files;
+  }
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const absolute = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      walkFiles(absolute, files);
+    } else if (entry.isFile() && /\.(ts|tsx|js|jsx)$/.test(entry.name)) {
+      files.push(absolute);
+    }
+  }
+  return files;
+}
+
+function collectCanonicalReasonLiterals() {
+  const registryPath = path.join(process.cwd(), 'src', 'observability', 'reason-codes.ts');
+  if (!fs.existsSync(registryPath)) {
+    return { ok: false, reason: 'missing_registry', literals: [] };
+  }
+  const content = fs.readFileSync(registryPath, 'utf8');
+  const reasonCodesBlock = content.match(/export const REASON_CODES = \{([\s\S]*?)\} as const;/);
+  if (!reasonCodesBlock) {
+    return { ok: false, reason: 'missing_reason_codes_object', literals: [] };
+  }
+  const literals = Array.from(reasonCodesBlock[1].matchAll(/:\s*'([a-z0-9_.-]+)'/g))
+    .map((match) => match[1])
+    .filter((literal) => literal.includes('_') && !literal.startsWith('2026_'));
+  return { ok: true, reason: null, literals: Array.from(new Set(literals)).sort() };
+}
+
+function enforceCanonicalReasonLiterals() {
+  const collected = collectCanonicalReasonLiterals();
+  if (!collected.ok) {
+    process.stderr.write('Meta check failed: canonical reason-code registry is missing at src/observability/reason-codes.ts.\n');
+    process.exit(1);
+  }
+
+  const allowedFiles = new Set([
+    path.join(process.cwd(), 'src', 'observability', 'reason-codes.ts')
+  ]);
+  const violations = [];
+  const sourceFiles = walkFiles(path.join(process.cwd(), 'src'));
+  for (const file of sourceFiles) {
+    if (allowedFiles.has(file)) {
+      continue;
+    }
+    const content = fs.readFileSync(file, 'utf8');
+    const relative = path.relative(process.cwd(), file).replace(/\\/g, '/');
+    for (const literal of collected.literals) {
+      const quoted = new RegExp(`['"\`]${literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`, 'g');
+      let match;
+      while ((match = quoted.exec(content)) !== null) {
+        const line = content.slice(0, match.index).split(/\r?\n/).length;
+        violations.push(`${relative}:${line}: ${literal}`);
+      }
+    }
+  }
+
+  if (violations.length > 0) {
+    process.stderr.write('Meta check failed: reason-code literals must be referenced through src/observability/reason-codes.ts.\n');
+    process.stderr.write('Violations:\n');
+    for (const violation of violations) {
+      process.stderr.write(`  - ${violation}\n`);
+    }
+    process.exit(1);
+  }
+  process.stdout.write('Reason-code literal guard passed.\n');
+}
+
 function hasUiAffectingChange(files) {
   return files.some((file) => UI_PATH_PATTERNS.some((pattern) => pattern.test(file)));
 }
@@ -495,5 +565,6 @@ if (runUpstreamParity) {
   }
 }
 
+enforceCanonicalReasonLiterals();
 enforceUiEvidenceGate();
 process.stdout.write('Meta checks passed.\n');
