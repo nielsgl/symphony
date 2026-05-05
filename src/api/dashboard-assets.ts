@@ -1,6 +1,7 @@
 import {
   ACTION_REQUIRED_REASON_LABELS
 } from './dashboard-view-model';
+import { REASON_CODES } from '../observability/reason-codes';
 
 interface DashboardClientConfig {
   dashboard_enabled: boolean;
@@ -747,7 +748,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         addRow(entry.at, transitionByMessage, entry.message || null);
       }
     }
-    if (payload.blocked && (payload.blocked.stop_reason_code === 'operator_action_required_no_progress_redispatch_blocked' || payload.blocked.stop_reason_code === 'awaiting_human_review_scope_incomplete')) {
+    if (payload.blocked && (payload.blocked.stop_reason_code === '${REASON_CODES.operatorNoProgressRedispatchBlocked}' || payload.blocked.stop_reason_code === '${REASON_CODES.awaitingHumanReviewScopeIncomplete}')) {
       addRow('n/a', 'completion_gate_blocked', payload.blocked.stop_reason_detail || null);
     }
     return rows.sort(function (a, b) {
@@ -931,7 +932,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.issueExplainerClassification.textContent = explainer.classification || 'unknown';
     elements.issueExplainerReason.textContent =
       (explainer.reason_code || 'n/a') + (explainer.reason_detail ? ' • ' + explainer.reason_detail : '');
-    elements.issueExplainerAction.textContent = explainer.recommended_action || 'No operator action required';
+    elements.issueExplainerAction.textContent =
+      Array.isArray(explainer.recommended_actions) && explainer.recommended_actions.length
+        ? explainer.recommended_actions.join('; ')
+        : 'No operator action required';
     elements.issueExplainerTransition.textContent = explainer.expected_transition || 'No automatic transition expected';
     elements.issueExplainerVersion.textContent = explainer.version || 'unknown';
     elements.issueExplainerDetail.textContent = explainer.detail || '';

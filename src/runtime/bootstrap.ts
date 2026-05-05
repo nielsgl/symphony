@@ -17,6 +17,7 @@ import {
   type StructuredLogger
 } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
+import { REASON_CODES } from '../observability/reason-codes';
 import { SqlitePersistenceStore } from '../persistence';
 import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult } from '../orchestrator';
 import type { WorkerObservabilityEvent } from '../orchestrator';
@@ -645,7 +646,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         cleaned_files: JSON.stringify(result.cleaned_files),
         conflict_files: JSON.stringify(parsedConflictFiles),
         resolution_hints: JSON.stringify(result.resolution_hints),
-        stop_reason_code: 'operator_action_required_workspace_conflict',
+        stop_reason_code: REASON_CODES.operatorWorkspaceConflict,
         classification_summary: JSON.stringify(classificationSummary),
         next_operator_action: 'issue.resume',
         next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'

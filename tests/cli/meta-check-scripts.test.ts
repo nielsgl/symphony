@@ -173,6 +173,72 @@ describe('meta check scripts', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
+  it('fails aggregate meta check when source files add ad-hoc reason-code literals outside the registry', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-meta-reason-code-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+
+    const offenderPath = path.join(tempRoot, 'src/api/ad-hoc-reason.ts');
+    fs.writeFileSync(offenderPath, "export const reason = 'turn_input_required';\n", 'utf8');
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('reason-code literals must be referenced');
+    expect(result.stderr).toContain('src/api/ad-hoc-reason.ts');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails aggregate meta check when source files add unknown reason-code field literals', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-meta-unknown-reason-code-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+
+    const offenderPath = path.join(tempRoot, 'src/api/unknown-runtime-reason.ts');
+    fs.writeFileSync(
+      offenderPath,
+      "export const blocked = { stop_reason_code: 'new_runtime_blocker_reason' };\n",
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('reason-code-bearing fields must use canonical registry values');
+    expect(result.stderr).toContain('src/api/unknown-runtime-reason.ts');
+    expect(result.stderr).toContain('new_runtime_blocker_reason');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails aggregate meta check when source files add reason-code prefix literals', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-meta-reason-prefix-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+
+    const offenderPath = path.join(tempRoot, 'src/orchestrator/ad-hoc-prefix.ts');
+    fs.writeFileSync(offenderPath, "export const prefix = 'turn_input_required:';\n", 'utf8');
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('reason-code-bearing fields must use canonical registry values');
+    expect(result.stderr).toContain('src/orchestrator/ad-hoc-prefix.ts');
+    expect(result.stderr).toContain('turn_input_required:');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
   it('fails ui evidence gate when dashboard UI changes exist without evidence markers', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));

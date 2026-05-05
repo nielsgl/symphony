@@ -1,5 +1,5 @@
 import type { OrchestratorState, RunningEntry } from '../orchestrator';
-import { explainOperatorRuntimeState, toOperatorExplainerHint } from '../observability';
+import { explainOperatorRuntimeState, REASON_CODES, toOperatorExplainerHint } from '../observability';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
 import {
@@ -67,8 +67,8 @@ function explainRunningEntry(entry: RunningEntry) {
       entry.stalled_waiting_since_ms && entry.stalled_waiting_reason
         ? entry.stalled_waiting_reason
         : entry.awaiting_input_since_ms
-          ? 'turn_input_required'
-          : entry.last_event,
+          ? REASON_CODES.turnInputRequired
+          : null,
     reason_detail:
       entry.stalled_waiting_since_ms && entry.stalled_waiting_reason
         ? 'codex.turn.waiting heartbeat loop exceeded threshold'
@@ -133,7 +133,7 @@ function toStateRunningRow(
       : null,
     stalled_waiting: stalledWaiting,
     stalled_waiting_since_ms: stalledWaiting ? entry.stalled_waiting_since_ms ?? null : null,
-    stalled_waiting_reason: stalledWaiting ? 'turn_waiting_threshold_exceeded' : null,
+    stalled_waiting_reason: stalledWaiting ? REASON_CODES.turnWaitingThresholdExceeded : null,
     current_phase: entry.current_phase ?? null,
     current_phase_at: entry.current_phase_at_ms ? asIsoDate(entry.current_phase_at_ms) : null,
     phase_elapsed_ms: entry.current_phase_at_ms ? Math.max(0, nowMs - entry.current_phase_at_ms) : null,
@@ -456,7 +456,7 @@ export class SnapshotService {
           stalled_waiting_since_ms:
             entry.stalled_waiting_since_ms && entry.stalled_waiting_reason ? entry.stalled_waiting_since_ms : null,
           stalled_waiting_reason:
-            entry.stalled_waiting_since_ms && entry.stalled_waiting_reason ? 'turn_waiting_threshold_exceeded' : null,
+            entry.stalled_waiting_since_ms && entry.stalled_waiting_reason ? REASON_CODES.turnWaitingThresholdExceeded : null,
           current_phase: entry.current_phase ?? null,
           current_phase_at: entry.current_phase_at_ms ? asIsoDate(entry.current_phase_at_ms) : null,
           phase_elapsed_ms: entry.current_phase_at_ms ? Math.max(0, this.nowMs() - entry.current_phase_at_ms) : null,

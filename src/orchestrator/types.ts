@@ -2,6 +2,7 @@ import type { Issue, TrackerAdapter } from '../tracker';
 import type { CodexUsageTotals, TokenTelemetryStatus } from '../codex';
 import type { StructuredLogger } from '../observability';
 import type { PhaseMarker, PhaseMarkerName } from '../observability';
+import { REASON_CODES } from '../observability/reason-codes';
 import type { RunTerminalStatus } from '../persistence';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
@@ -61,7 +62,7 @@ export interface RunningEntry {
     option_count: number | null;
   } | null;
   stalled_waiting_since_ms?: number | null;
-  stalled_waiting_reason?: 'turn_waiting_threshold_exceeded' | null;
+  stalled_waiting_reason?: typeof REASON_CODES.turnWaitingThresholdExceeded | null;
   running_waiting_started_at_ms?: number | null;
   last_progress_transition_at_ms?: number | null;
   last_heartbeat_at_ms?: number | null;

@@ -335,7 +335,7 @@ describe('SnapshotService', () => {
       actionability: 'required',
       headline: 'Run is alive but waiting too long',
       detail: expect.any(String),
-      recommended_action: 'Inspect recent events and decide whether to resume/cancel/restart',
+      recommended_actions: ['Inspect recent events and decide whether to resume, cancel, or restart'],
       expected_transition: null,
       reason_code: 'turn_waiting_threshold_exceeded',
       reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
@@ -773,8 +773,8 @@ describe('SnapshotService', () => {
       last_phase_detail: null
     });
     expect(projected.operator_explainer).toMatchObject({
-      classification: 'retrying',
-      actionability: 'recommended',
+      classification: 'awaiting_input',
+      actionability: 'required',
       expected_transition: 'Automatic retry at 2026-04-10T10:02:30.000Z',
       reason_code: 'turn_input_required'
     });
