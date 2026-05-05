@@ -3175,7 +3175,7 @@ export class OrchestratorCore {
         questions: []
       };
     }
-    const prefix = 'turn_input_required:';
+    const prefix = `${REASON_CODES.turnInputRequired}:`;
     if (error.toLowerCase().startsWith(prefix)) {
       const rawDetail = error.slice(prefix.length).trim() || 'input_required_unanswerable';
       try {

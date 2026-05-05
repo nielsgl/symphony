@@ -148,6 +148,52 @@ function collectCanonicalReasonLiterals() {
   return { ok: true, reason: null, literals: Array.from(new Set(literals)).sort() };
 }
 
+function lineNumberForIndex(content, index) {
+  return content.slice(0, index).split(/\r?\n/).length;
+}
+
+function isReasonLikeLiteral(value) {
+  return /^[a-z][a-z0-9_.-]*_[a-z0-9_.-]*$/.test(value);
+}
+
+function collectUnknownReasonContextViolations(content, relative, allowedReasonLiterals) {
+  const violations = [];
+  const reasonFieldPattern =
+    /(?:^|[\s{,(])(?<field>reason_code|stop_reason_code|stalled_waiting_reason|awaiting_operator_reason_code|error_code)\s*:\s*(['"`])(?<value>[a-z][a-z0-9_.-]*_[a-z0-9_.-]*)\2/gm;
+  const reasonAssignmentPattern =
+    /(?:^|[\s;(])(?<field>reasonCode|stopReasonCode|stalledWaitingReason|awaitingOperatorReasonCode|reason_code|stop_reason_code|stalled_waiting_reason|awaiting_operator_reason_code)\s*=\s*(['"`])(?<value>[a-z][a-z0-9_.-]*_[a-z0-9_.-]*)\2/gm;
+  const reasonPrefixPattern = /(['"`])(?<value>[a-z][a-z0-9_.-]*_[a-z0-9_.-]*):\1/gm;
+  const runtimeErrorCodeFile =
+    relative.startsWith('src/orchestrator/') || relative.startsWith('src/runtime/');
+
+  for (const pattern of [reasonFieldPattern, reasonAssignmentPattern]) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      const value = match.groups?.value;
+      const field = match.groups?.field ?? 'reason-code field';
+      if (field === 'error_code' && !runtimeErrorCodeFile) {
+        continue;
+      }
+      if (value && !allowedReasonLiterals.has(value)) {
+        const line = lineNumberForIndex(content, match.index);
+        violations.push(`${relative}:${line}: ${field}=${value}`);
+      }
+    }
+  }
+
+  let prefixMatch;
+  while ((prefixMatch = reasonPrefixPattern.exec(content)) !== null) {
+    const value = prefixMatch.groups?.value;
+    if (!value || !isReasonLikeLiteral(value) || !allowedReasonLiterals.has(value)) {
+      continue;
+    }
+    const line = lineNumberForIndex(content, prefixMatch.index);
+    violations.push(`${relative}:${line}: canonical prefix literal=${value}:`);
+  }
+
+  return violations;
+}
+
 function enforceCanonicalReasonLiterals() {
   const collected = collectCanonicalReasonLiterals();
   if (!collected.ok) {
@@ -155,6 +201,7 @@ function enforceCanonicalReasonLiterals() {
     process.exit(1);
   }
 
+  const allowedReasonLiterals = new Set(collected.literals);
   const allowedFiles = new Set([
     path.join(process.cwd(), 'src', 'observability', 'reason-codes.ts')
   ]);
@@ -174,10 +221,11 @@ function enforceCanonicalReasonLiterals() {
         violations.push(`${relative}:${line}: ${literal}`);
       }
     }
+    violations.push(...collectUnknownReasonContextViolations(content, relative, allowedReasonLiterals));
   }
 
   if (violations.length > 0) {
-    process.stderr.write('Meta check failed: reason-code literals must be referenced through src/observability/reason-codes.ts.\n');
+    process.stderr.write('Meta check failed: reason-code literals must be referenced through src/observability/reason-codes.ts and reason-code-bearing fields must use canonical registry values.\n');
     process.stderr.write('Violations:\n');
     for (const violation of violations) {
       process.stderr.write(`  - ${violation}\n`);
