@@ -741,6 +741,55 @@ describe('meta check scripts', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
+  it('fails with typed hygiene diagnostic when provision artifact is staged', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-repo-hygiene-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    fs.writeFileSync(path.join(tempRoot, '.symphony-provision.json'), '{}\n', 'utf8');
+    expect(runGit(['add', '.symphony-provision.json'], tempRoot).status).toBe(0);
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline',
+      SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED: '0',
+      SYMPHONY_REPO_HYGIENE_ALLOW_TRACKED: '0'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('hygiene_repo_artifact_tracked_forbidden');
+    expect(result.stderr).toContain('.symphony-provision.json');
+    expect(result.stderr).toContain('Remediation:');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('allows known hygiene artifacts when explicit allow env is set', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-repo-hygiene-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    fs.writeFileSync(path.join(tempRoot, '.symphony-provision.json'), '{}\n', 'utf8');
+    expect(runGit(['add', '.symphony-provision.json'], tempRoot).status).toBe(0);
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline',
+      SYMPHONY_REPO_HYGIENE_ALLOW_TRACKED: '1'
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Meta checks passed');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
   it('resolves strict profile from WORKFLOW.md validation config', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
