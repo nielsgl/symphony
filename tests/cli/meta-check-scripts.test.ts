@@ -274,7 +274,7 @@ describe('meta check scripts', () => {
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('strict UI evidence profile requires manifest-backed artifacts');
-    expect(result.stderr).toContain('missing manifest file: output/playwright/ui-evidence.json');
+    expect(result.stderr).toContain('ui_evidence_manifest_missing');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -306,7 +306,7 @@ describe('meta check scripts', () => {
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-123456'
         },
         null,
         2
@@ -320,7 +320,7 @@ describe('meta check scripts', () => {
     });
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('UI evidence profile active: strict');
-    expect(result.stderr).toContain('manifest artifact file is missing: output/playwright/demo.webm');
+    expect(result.stderr).toContain('ui_evidence_missing_artifacts');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -365,7 +365,7 @@ describe('meta check scripts', () => {
       SYMPHONY_UI_EVIDENCE_PROFILE: 'strict'
     });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('manifest.publish_reference must be a non-empty string');
+    expect(result.stderr).toContain('ui_evidence_publish_reference_invalid');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -396,7 +396,7 @@ describe('meta check scripts', () => {
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43'
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo-root'
         },
         null,
         2
@@ -436,13 +436,13 @@ describe('meta check scripts', () => {
             {
               path: 'output/playwright/demo.webm',
               type: 'video',
-              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo'
             }
           ],
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43'
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo-root'
         },
         null,
         2
@@ -484,7 +484,7 @@ describe('meta check scripts', () => {
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-123456'
         },
         null,
         2
@@ -497,7 +497,52 @@ describe('meta check scripts', () => {
       SYMPHONY_UI_EVIDENCE_PROFILE: 'strict'
     });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('path escapes output/playwright/');
+    expect(result.stderr).toContain('ui_evidence_invalid_artifact_type');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails strict profile when changed UI path is missing from manifest.ui_paths', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    appendUiFixtureMarker(tempRoot, '// ui evidence strict ui path mismatch');
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub-video', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'output/playwright/ui-evidence.json'),
+      JSON.stringify(
+        {
+          artifacts: [
+            {
+              path: 'output/playwright/demo.webm',
+              type: 'video',
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo'
+            }
+          ],
+          ui_paths: ['src/api/dashboard-assets.ts'],
+          captured_at: '2026-05-01T00:00:00.000Z',
+          summary: 'Demo capture',
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo-root'
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'strict'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ui_evidence_ui_paths_mismatch');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -525,13 +570,13 @@ describe('meta check scripts', () => {
             {
               path: 'output/playwright/demo.webm',
               type: 'video',
-              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo'
             }
           ],
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-123456'
         },
         null,
         2
@@ -573,13 +618,13 @@ describe('meta check scripts', () => {
             {
               path: 'output/playwright/demo.webm',
               type: 'video',
-              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo'
             }
           ],
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-123456'
         },
         null,
         2
@@ -626,7 +671,7 @@ describe('meta check scripts', () => {
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
-          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
+          publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-123456'
         },
         null,
         2
