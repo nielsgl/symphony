@@ -1378,6 +1378,108 @@ describe('OrchestratorCore', () => {
     expect(persistenceFailure?.context.session_id).toBe('thread-9-turn-1');
   });
 
+  it('persists normalized execution graph from real dispatch and worker lifecycle events', async () => {
+    const issueRuns: Array<Record<string, unknown>> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    const threads: Array<Record<string, unknown>> = [];
+    const turns: Array<Record<string, unknown>> = [];
+    const phaseSpans: Array<Record<string, unknown>> = [];
+    const toolSpans: Array<Record<string, unknown>> = [];
+    const transitions: Array<Record<string, unknown>> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-1',
+      appendIssueRun: async (params) => {
+        issueRuns.push(params);
+        return 'issue_run_1';
+      },
+      appendAttempt: async (params) => {
+        attempts.push(params);
+        return 'attempt_1';
+      },
+      appendThread: async (params) => {
+        threads.push(params);
+        return String(params.thread_id);
+      },
+      appendTurn: async (params) => {
+        turns.push(params);
+        return String(params.turn_id);
+      },
+      appendPhaseSpan: async (params) => {
+        phaseSpans.push(params);
+        return `phase_${phaseSpans.length}`;
+      },
+      appendToolSpan: async (params) => {
+        toolSpans.push(params);
+        return `tool_${toolSpans.length}`;
+      },
+      appendStateTransition: async (params) => {
+        transitions.push(params);
+        return `transition_${transitions.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({ persistence });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-lineage', identifier: 'ABC-LIN' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      detail: 'waiting_for_turn_completion elapsed_s=0'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 30,
+      event: CANONICAL_EVENT.codex.toolCallCompleted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      detail: 'exec_command'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 40,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      detail: 'done'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.orchestrator.onWorkerExit('i-lineage', 'normal');
+
+    expect(issueRuns).toEqual([
+      expect.objectContaining({
+        issue_id: 'i-lineage',
+        issue_identifier: 'ABC-LIN',
+        status: 'running',
+        reason_code: 'dispatch_started'
+      })
+    ]);
+    expect(attempts).toEqual([expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_number: 0 })]);
+    expect(threads).toEqual([expect.objectContaining({ attempt_id: 'attempt_1', thread_id: 'thread-1' })]);
+    expect(turns).toEqual([expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', turn_index: 0 })]);
+    expect(phaseSpans).toHaveLength(2);
+    expect(phaseSpans).toEqual(expect.arrayContaining([
+      expect.objectContaining({ turn_id: 'turn-1', phase: 'planning', reason_code: 'codex_phase_planning' }),
+      expect.objectContaining({ turn_id: 'turn-1', phase: 'validation', reason_code: 'codex_turn_completed' })
+    ]));
+    expect(toolSpans).toEqual([expect.objectContaining({ turn_id: 'turn-1', tool_name: 'exec_command', status: 'succeeded' })]);
+    expect(transitions).toHaveLength(4);
+    expect(transitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_1', to_status: 'running', reason_code: 'dispatch_started' }),
+      expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'running', reason_code: 'codex_turn_started' }),
+      expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'succeeded', reason_code: 'codex_turn_completed' }),
+      expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'retrying', reason_code: 'normal_completion' })
+    ]));
+  });
+
   it('aggregates worker event usage and turn counts deterministically', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-usage' })]);

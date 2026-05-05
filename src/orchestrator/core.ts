@@ -102,6 +102,7 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     issue: cloneIssue(entry.issue),
     tokens: { ...entry.tokens },
     last_reported_tokens: { ...entry.last_reported_tokens },
+    persisted_turn_ids: [...(entry.persisted_turn_ids ?? [])],
     recent_events: entry.recent_events.map((event) => ({ ...event })),
     copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null,
     awaiting_input_since_ms: entry.awaiting_input_since_ms ?? null,
@@ -234,6 +235,10 @@ function severityForRuntimeEvent(eventName: string): 'info' | 'warn' | 'error' {
     return 'warn';
   }
   return 'info';
+}
+
+function asIso(timestampMs: number): string {
+  return new Date(timestampMs).toISOString();
 }
 
 function defaultBudgetProjection(windowMinutes = 1440): BudgetRuntimeProjection {
@@ -758,6 +763,8 @@ export class OrchestratorCore {
           });
     }
 
+    void this.persistExecutionGraphWorkerEvent(issue_id, runningEntry, workerEvent);
+
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.workerEvent,
@@ -783,6 +790,219 @@ export class OrchestratorCore {
     });
     if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
       this.emitMappedPhaseMarker(issue_id, workerEvent);
+    }
+  }
+
+  private async persistExecutionGraphWorkerEvent(
+    issueId: string,
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): Promise<void> {
+    if (!this.persistence || !runningEntry.issue_run_id || !runningEntry.attempt_id) {
+      return;
+    }
+
+    try {
+      const at = asIso(workerEvent.timestamp_ms);
+      const threadId = workerEvent.thread_id ?? runningEntry.thread_id;
+      const turnId = workerEvent.turn_id ?? runningEntry.turn_id;
+
+      if (threadId && runningEntry.persisted_thread_id !== threadId) {
+        runningEntry.persisted_thread_id = threadId;
+        await this.persistence.appendThread?.({
+          attempt_id: runningEntry.attempt_id,
+          thread_id: threadId,
+          started_at: at,
+          status: 'running',
+          reason_code: 'codex_session_started',
+          reason_detail: workerEvent.session_id ?? runningEntry.session_id
+        });
+      }
+
+      const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
+      if (threadId && turnId && !persistedTurnIds.includes(turnId)) {
+        persistedTurnIds.push(turnId);
+        await this.persistence.appendTurn?.({
+          thread_id: threadId,
+          turn_id: turnId,
+          turn_index: Math.max(0, runningEntry.turn_count - 1),
+          started_at: at,
+          status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+          reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+          reason_detail: workerEvent.detail ?? null
+        });
+      }
+
+      if (turnId) {
+        const phase = this.phaseSpanNameForWorkerEvent(workerEvent.event);
+        if (phase) {
+          await this.persistence.appendPhaseSpan?.({
+            turn_id: turnId,
+            phase,
+            started_at: at,
+            ended_at: at,
+            status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+            reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+            reason_detail: workerEvent.detail ?? null
+          });
+        }
+
+        const toolName = this.toolNameForWorkerEvent(workerEvent);
+        if (toolName) {
+          await this.persistence.appendToolSpan?.({
+            turn_id: turnId,
+            tool_name: toolName,
+            started_at: at,
+            ended_at: at,
+            status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+            reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+            reason_detail: workerEvent.detail ?? null
+          });
+        }
+      }
+
+      const toStatus = this.transitionStatusForWorkerEvent(workerEvent.event);
+      if (toStatus) {
+        await this.persistence.appendStateTransition?.({
+          issue_run_id: runningEntry.issue_run_id,
+          attempt_id: runningEntry.attempt_id,
+          thread_id: threadId ?? null,
+          turn_id: turnId ?? null,
+          from_status: null,
+          to_status: toStatus,
+          transitioned_at: at,
+          status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+          reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+          reason_detail: workerEvent.detail ?? null
+        });
+      }
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist execution graph event for ${runningEntry.identifier}`,
+        context: {
+          issue_id: issueId,
+          issue_identifier: runningEntry.identifier,
+          session_id: runningEntry.session_id,
+          thread_id: runningEntry.thread_id,
+          turn_id: runningEntry.turn_id,
+          event: workerEvent.event
+        }
+      });
+    }
+  }
+
+  private executionGraphStatusForWorkerEvent(eventName: string): 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' {
+    switch (eventName) {
+      case CANONICAL_EVENT.codex.turnCompleted:
+      case CANONICAL_EVENT.codex.toolCallCompleted:
+        return 'succeeded';
+      case CANONICAL_EVENT.codex.turnFailed:
+      case CANONICAL_EVENT.codex.toolCallFailed:
+      case CANONICAL_EVENT.codex.unsupportedToolCall:
+        return 'failed';
+      case CANONICAL_EVENT.codex.turnInputRequired:
+        return 'blocked';
+      case CANONICAL_EVENT.codex.turnCancelled:
+        return 'cancelled';
+      default:
+        return 'running';
+    }
+  }
+
+  private reasonCodeForWorkerEvent(eventName: string): string {
+    return eventName.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+  }
+
+  private phaseSpanNameForWorkerEvent(eventName: string): string | null {
+    switch (eventName) {
+      case CANONICAL_EVENT.codex.promptSent:
+        return 'prompt_sent';
+      case CANONICAL_EVENT.codex.phasePlanning:
+      case CANONICAL_EVENT.codex.turnWaiting:
+        return 'planning';
+      case CANONICAL_EVENT.codex.phaseImplementation:
+        return 'implementation';
+      case CANONICAL_EVENT.codex.phaseValidation:
+      case CANONICAL_EVENT.codex.turnCompleted:
+        return 'validation';
+      case CANONICAL_EVENT.codex.turnFailed:
+        return 'failed';
+      case CANONICAL_EVENT.codex.turnInputRequired:
+        return 'blocked_input';
+      default:
+        return null;
+    }
+  }
+
+  private toolNameForWorkerEvent(workerEvent: WorkerObservabilityEvent): string | null {
+    if (
+      workerEvent.event !== CANONICAL_EVENT.codex.toolCallCompleted &&
+      workerEvent.event !== CANONICAL_EVENT.codex.toolCallFailed &&
+      workerEvent.event !== CANONICAL_EVENT.codex.unsupportedToolCall
+    ) {
+      return null;
+    }
+    const detail = workerEvent.detail?.trim();
+    return detail && detail.length > 0 ? detail : 'unknown_tool';
+  }
+
+  private transitionStatusForWorkerEvent(eventName: string): string | null {
+    switch (eventName) {
+      case CANONICAL_EVENT.codex.turnStarted:
+        return 'running';
+      case CANONICAL_EVENT.codex.turnInputRequired:
+        return 'blocked';
+      case CANONICAL_EVENT.codex.turnCompleted:
+        return 'succeeded';
+      case CANONICAL_EVENT.codex.turnFailed:
+        return 'failed';
+      case CANONICAL_EVENT.codex.turnCancelled:
+        return 'cancelled';
+      default:
+        return null;
+    }
+  }
+
+  private async persistExecutionGraphStateTransition(
+    runningEntry: RunningEntry,
+    toStatus: string,
+    status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying',
+    reasonCode: string,
+    reasonDetail: string | null
+  ): Promise<void> {
+    if (!this.persistence || !runningEntry.issue_run_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendStateTransition?.({
+        issue_run_id: runningEntry.issue_run_id,
+        attempt_id: runningEntry.attempt_id,
+        thread_id: runningEntry.thread_id,
+        turn_id: runningEntry.turn_id,
+        from_status: null,
+        to_status: toStatus,
+        transitioned_at: asIso(this.nowMs()),
+        status,
+        reason_code: reasonCode,
+        reason_detail: reasonDetail
+      });
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist execution graph transition for ${runningEntry.identifier}`,
+        context: {
+          issue_id: runningEntry.issue.id,
+          issue_identifier: runningEntry.identifier,
+          session_id: runningEntry.session_id,
+          thread_id: runningEntry.thread_id,
+          turn_id: runningEntry.turn_id,
+          reason_code: reasonCode
+        }
+      });
     }
   }
 
@@ -1154,6 +1374,7 @@ export class OrchestratorCore {
         session_id: running.session_id
       });
       await this.completeRunRecord(running, 'succeeded', null);
+      await this.persistExecutionGraphStateTransition(running, 'retrying', 'retrying', 'normal_completion', 'normal worker completion, continuing while issue is active');
       this.state.completed.add(issue_id);
       await this.scheduleRetry({
         issue_id,
@@ -1244,6 +1465,7 @@ export class OrchestratorCore {
             error: stopReasonDetail
           }
         });
+        await this.persistExecutionGraphStateTransition(running, 'blocked', 'blocked', 'turn_input_required', stopReasonDetail);
         this.ports.notifyObservers?.();
         return;
       }
@@ -1295,6 +1517,13 @@ export class OrchestratorCore {
             error: workspaceConflict.detail
           }
         });
+        await this.persistExecutionGraphStateTransition(
+          running,
+          'blocked',
+          'blocked',
+          'operator_action_required_workspace_conflict',
+          workspaceConflict.detail
+        );
         this.ports.notifyObservers?.();
         return;
       }
@@ -1345,6 +1574,13 @@ export class OrchestratorCore {
           error: error ?? null
         }
       });
+      await this.persistExecutionGraphStateTransition(
+        running,
+        'retrying',
+        'retrying',
+        stopReasonCode,
+        error ?? `worker exited: ${reason}`
+      );
     }
 
     this.ports.notifyObservers?.();
@@ -1970,10 +2206,13 @@ export class OrchestratorCore {
       }
     });
 
+    const startedAtMs = this.nowMs();
     this.state.running.set(issue.id, {
       issue,
       identifier: issue.identifier,
       run_id: null,
+      issue_run_id: null,
+      attempt_id: null,
       worker_handle: spawned.worker_handle,
       monitor_handle: spawned.monitor_handle,
       retry_attempt: attempt ?? 0,
@@ -1992,6 +2231,8 @@ export class OrchestratorCore {
       session_id: null,
       thread_id: null,
       turn_id: null,
+      persisted_thread_id: null,
+      persisted_turn_ids: [],
       codex_app_server_pid: null,
       turn_count: 0,
       last_event: null,
@@ -2002,7 +2243,7 @@ export class OrchestratorCore {
       stalled_waiting_since_ms: null,
       stalled_waiting_reason: null,
       running_waiting_started_at_ms: null,
-      last_progress_transition_at_ms: this.nowMs(),
+      last_progress_transition_at_ms: startedAtMs,
       last_heartbeat_at_ms: null,
       heartbeat_only_event_emitted: false,
       running_wait_stall_event_emitted: false,
@@ -2025,7 +2266,7 @@ export class OrchestratorCore {
       budget_hard_limit_enforced: false,
       budget: this.computeBudgetProjection(issue.id, 0, 'unavailable'),
       recent_events: [],
-      started_at_ms: this.nowMs(),
+      started_at_ms: startedAtMs,
       last_codex_timestamp_ms: null,
       current_phase: null,
       current_phase_at_ms: null,
@@ -2044,6 +2285,37 @@ export class OrchestratorCore {
           issue_id: issue.id,
           issue_identifier: issue.identifier
         });
+        const startedAt = asIso(runningEntry.started_at_ms);
+        runningEntry.issue_run_id =
+          (await this.persistence.appendIssueRun?.({
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            started_at: startedAt,
+            status: 'running',
+            reason_code: 'dispatch_started',
+            reason_detail: 'dispatch attempt started'
+          })) ?? null;
+        if (runningEntry.issue_run_id) {
+          runningEntry.attempt_id =
+            (await this.persistence.appendAttempt?.({
+              issue_run_id: runningEntry.issue_run_id,
+              attempt_number: runningEntry.retry_attempt,
+              started_at: startedAt,
+              status: 'running',
+              reason_code: 'attempt_started',
+              reason_detail: 'worker spawned'
+            })) ?? null;
+          await this.persistence.appendStateTransition?.({
+            issue_run_id: runningEntry.issue_run_id,
+            attempt_id: runningEntry.attempt_id,
+            from_status: null,
+            to_status: 'running',
+            transitioned_at: startedAt,
+            status: 'running',
+            reason_code: 'dispatch_started',
+            reason_detail: 'dispatch attempt started'
+          });
+        }
       } catch {
         this.logger?.log({
           level: 'warn',

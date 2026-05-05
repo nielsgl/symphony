@@ -177,6 +177,38 @@ describe('SqlitePersistenceStore', () => {
       started_at: '2026-04-11T10:00:03.000Z',
       status: 'running'
     });
+    const secondAttemptId = store.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 1,
+      started_at: '2026-04-11T10:00:04.000Z',
+      status: 'running'
+    });
+    const secondThreadId = store.appendThread({
+      attempt_id: secondAttemptId,
+      thread_id: 'thread-2',
+      started_at: '2026-04-11T10:00:05.000Z',
+      status: 'running'
+    });
+    store.appendTurn({
+      thread_id: secondThreadId,
+      turn_index: 0,
+      turn_id: 'turn-2',
+      started_at: '2026-04-11T10:00:06.000Z',
+      status: 'running'
+    });
+    const sameAttemptThreadId = store.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'thread-3',
+      started_at: '2026-04-11T10:00:06.500Z',
+      status: 'running'
+    });
+    const sameAttemptTurnId = store.appendTurn({
+      thread_id: sameAttemptThreadId,
+      turn_index: 0,
+      turn_id: 'turn-3',
+      started_at: '2026-04-11T10:00:06.600Z',
+      status: 'running'
+    });
 
     expect(() =>
       store.appendPhaseSpan({
@@ -200,10 +232,33 @@ describe('SqlitePersistenceStore', () => {
       thread_id: threadId,
       turn_id: turnId,
       to_status: 'running',
-      transitioned_at: '2026-04-11T10:00:04.000Z',
+      transitioned_at: '2026-04-11T10:00:07.000Z',
       status: 'running',
       reason_code: 'turn_started'
     });
+    expect(() =>
+      store.appendStateTransition({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: secondThreadId,
+        to_status: 'running',
+        transitioned_at: '2026-04-11T10:00:08.000Z',
+        status: 'running',
+        reason_code: 'lineage_mismatch'
+      })
+    ).toThrow(/does not belong to attempt/);
+    expect(() =>
+      store.appendStateTransition({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: sameAttemptTurnId,
+        to_status: 'running',
+        transitioned_at: '2026-04-11T10:00:09.000Z',
+        status: 'running',
+        reason_code: 'lineage_mismatch'
+      })
+    ).toThrow(/does not belong to thread/);
     expect(() =>
       store.appendStateTransition({
         issue_run_id: issueRunId,

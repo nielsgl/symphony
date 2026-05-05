@@ -747,14 +747,17 @@ export class SqlitePersistenceStore {
     if (params.thread_id) {
       const thread = this.db
         .prepare(
-          `SELECT thread.started_at, attempt.issue_run_id
+          `SELECT thread.started_at, thread.attempt_id, attempt.issue_run_id
            FROM thread
            JOIN attempt ON attempt.attempt_id = thread.attempt_id
            WHERE thread.thread_id = ?`
         )
-        .get(params.thread_id) as { started_at: string; issue_run_id: string } | undefined;
+        .get(params.thread_id) as { started_at: string; attempt_id: string; issue_run_id: string } | undefined;
       if (!thread || thread.issue_run_id !== params.issue_run_id) {
         throw new Error(`thread ${params.thread_id} does not belong to issue_run ${params.issue_run_id}`);
+      }
+      if (params.attempt_id && thread.attempt_id !== params.attempt_id) {
+        throw new Error(`thread ${params.thread_id} does not belong to attempt ${params.attempt_id}`);
       }
       ensureMonotonicTimestamp(params.transitioned_at, thread.started_at, 'state_transition');
     }
@@ -762,15 +765,21 @@ export class SqlitePersistenceStore {
     if (params.turn_id) {
       const turn = this.db
         .prepare(
-          `SELECT turn.started_at, attempt.issue_run_id
+          `SELECT turn.started_at, turn.thread_id, thread.attempt_id, attempt.issue_run_id
            FROM turn
            JOIN thread ON thread.thread_id = turn.thread_id
            JOIN attempt ON attempt.attempt_id = thread.attempt_id
            WHERE turn.turn_id = ?`
         )
-        .get(params.turn_id) as { started_at: string; issue_run_id: string } | undefined;
+        .get(params.turn_id) as { started_at: string; thread_id: string; attempt_id: string; issue_run_id: string } | undefined;
       if (!turn || turn.issue_run_id !== params.issue_run_id) {
         throw new Error(`turn ${params.turn_id} does not belong to issue_run ${params.issue_run_id}`);
+      }
+      if (params.attempt_id && turn.attempt_id !== params.attempt_id) {
+        throw new Error(`turn ${params.turn_id} does not belong to attempt ${params.attempt_id}`);
+      }
+      if (params.thread_id && turn.thread_id !== params.thread_id) {
+        throw new Error(`turn ${params.turn_id} does not belong to thread ${params.thread_id}`);
       }
       ensureMonotonicTimestamp(params.transitioned_at, turn.started_at, 'state_transition');
     }

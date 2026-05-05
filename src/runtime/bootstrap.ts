@@ -894,6 +894,13 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     persistence: persistenceStore
       ? {
           startRun: async (params) => persistenceStore.startRun(params),
+          appendIssueRun: async (params) => persistenceStore.appendIssueRun(params),
+          appendAttempt: async (params) => persistenceStore.appendAttempt(params),
+          appendThread: async (params) => persistenceStore.appendThread(params),
+          appendTurn: async (params) => persistenceStore.appendTurn(params),
+          appendPhaseSpan: async (params) => persistenceStore.appendPhaseSpan(params),
+          appendToolSpan: async (params) => persistenceStore.appendToolSpan(params),
+          appendStateTransition: async (params) => persistenceStore.appendStateTransition(params),
           recordSession: async (params) => {
             persistenceStore.recordSession(params.run_id, params.session_id);
           },
