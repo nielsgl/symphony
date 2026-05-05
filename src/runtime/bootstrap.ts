@@ -708,6 +708,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       max_concurrent_agents: nextConfig.agent.max_concurrent_agents,
       max_concurrent_agents_by_state: nextConfig.agent.max_concurrent_agents_by_state,
       max_retry_backoff_ms: nextConfig.agent.max_retry_backoff_ms,
+      respawn_window_minutes: nextConfig.agent.respawn_window_minutes ?? 30,
+      respawn_max_attempts_without_progress: nextConfig.agent.respawn_max_attempts_without_progress ?? 3,
       active_states: nextConfig.tracker.active_states,
       terminal_states: nextConfig.tracker.terminal_states,
       github_linking_mode: nextConfig.tracker.github_linking?.mode ?? 'off',
@@ -766,6 +768,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       max_concurrent_agents: effectiveConfig.agent.max_concurrent_agents,
       max_concurrent_agents_by_state: effectiveConfig.agent.max_concurrent_agents_by_state,
       max_retry_backoff_ms: effectiveConfig.agent.max_retry_backoff_ms,
+      respawn_window_minutes: effectiveConfig.agent.respawn_window_minutes ?? 30,
+      respawn_max_attempts_without_progress: effectiveConfig.agent.respawn_max_attempts_without_progress ?? 3,
       active_states: effectiveConfig.tracker.active_states,
       terminal_states: effectiveConfig.tracker.terminal_states,
       github_linking_mode: effectiveConfig.tracker.github_linking?.mode ?? 'off',
@@ -993,7 +997,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             }
           },
           issueControlSource: {
-            resumeBlockedIssue: async (issueIdentifier) => orchestrator.resumeBlockedIssue(issueIdentifier),
+            resumeBlockedIssue: async (issueIdentifier, params) =>
+              orchestrator.resumeBlockedIssue(issueIdentifier, null, params?.resume_override_reason ?? null),
             submitBlockedIssueInput: async (params) =>
               orchestrator.submitBlockedIssueInput({
                 issue_identifier: params.issueIdentifier,

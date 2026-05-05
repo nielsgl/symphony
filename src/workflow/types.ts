@@ -25,6 +25,8 @@ export type ValidationErrorCode =
   | 'invalid_agent_max_concurrent_agents'
   | 'invalid_agent_max_turns'
   | 'invalid_agent_max_retry_backoff_ms'
+  | 'invalid_agent_respawn_window_minutes'
+  | 'invalid_agent_respawn_max_attempts_without_progress'
   | 'invalid_agent_max_concurrent_agents_by_state'
   | 'invalid_codex_turn_timeout_ms'
   | 'invalid_codex_read_timeout_ms'
@@ -76,6 +78,8 @@ export interface HooksConfig {
 export interface AgentConfig {
   max_concurrent_agents: number;
   max_retry_backoff_ms: number;
+  respawn_window_minutes?: number;
+  respawn_max_attempts_without_progress?: number;
   max_turns: number;
   max_concurrent_agents_by_state: Record<string, number>;
 }

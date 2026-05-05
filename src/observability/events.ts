@@ -51,6 +51,9 @@ export const CANONICAL_EVENT = {
     blockedInputSubmitFallbackUsed: 'orchestration.blocked_input.submit.fallback_used',
     blockedInputResumed: 'orchestration.blocked_input.resumed',
     blockedInputCleared: 'orchestration.blocked_input.cleared',
+    redispatchCircuitBreakerOpened: 'orchestrator.redispatch.circuit_breaker_opened',
+    redispatchCompletionGateBlocked: 'orchestrator.redispatch.completion_gate_blocked',
+    stateAwaitingHumanReviewScopeIncomplete: 'orchestrator.state.awaiting_human_review_scope_incomplete',
     phaseMarkerEmitted: 'orchestration.phase_marker.emitted',
     phaseMarkerIgnored: 'orchestration.phase_marker.ignored'
   },

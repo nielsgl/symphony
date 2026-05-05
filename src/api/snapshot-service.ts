@@ -122,6 +122,13 @@ export class SnapshotService {
       last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
       last_phase_detail: entry.last_phase_detail ?? null,
       requires_manual_resume: true as const,
+      attempt_count_window: entry.attempt_count_window,
+      window_minutes: entry.window_minutes,
+      last_known_commit_sha: entry.last_known_commit_sha ?? null,
+      last_progress_checkpoint_at: entry.last_progress_checkpoint_at ? asIsoDate(entry.last_progress_checkpoint_at) : null,
+      progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
+      required_actions: [...(entry.required_actions ?? [])],
+      resume_override_reason: entry.resume_override_reason ?? null,
       pending_input: entry.pending_input
         ? {
             ...entry.pending_input,
@@ -327,6 +334,13 @@ export class SnapshotService {
               last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
               last_phase_detail: blockedEntry.last_phase_detail ?? null,
               requires_manual_resume: true as const,
+      attempt_count_window: blockedEntry.attempt_count_window,
+      window_minutes: blockedEntry.window_minutes,
+      last_known_commit_sha: blockedEntry.last_known_commit_sha ?? null,
+      last_progress_checkpoint_at: blockedEntry.last_progress_checkpoint_at ? asIsoDate(blockedEntry.last_progress_checkpoint_at) : null,
+      progress_signals: blockedEntry.progress_signals ? { ...blockedEntry.progress_signals } : undefined,
+      required_actions: [...(blockedEntry.required_actions ?? [])],
+      resume_override_reason: blockedEntry.resume_override_reason ?? null,
               pending_input: blockedEntry.pending_input
                 ? {
                     ...blockedEntry.pending_input,
@@ -443,6 +457,13 @@ export class SnapshotService {
               last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
               last_phase_detail: blockedEntry.last_phase_detail ?? null,
               requires_manual_resume: true as const,
+      attempt_count_window: blockedEntry.attempt_count_window,
+      window_minutes: blockedEntry.window_minutes,
+      last_known_commit_sha: blockedEntry.last_known_commit_sha ?? null,
+      last_progress_checkpoint_at: blockedEntry.last_progress_checkpoint_at ? asIsoDate(blockedEntry.last_progress_checkpoint_at) : null,
+      progress_signals: blockedEntry.progress_signals ? { ...blockedEntry.progress_signals } : undefined,
+      required_actions: [...(blockedEntry.required_actions ?? [])],
+      resume_override_reason: blockedEntry.resume_override_reason ?? null,
               pending_input: blockedEntry.pending_input
                 ? {
                     ...blockedEntry.pending_input,
@@ -537,6 +558,13 @@ export class SnapshotService {
         last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
         last_phase_detail: blockedEntry.last_phase_detail ?? null,
         requires_manual_resume: true as const,
+      attempt_count_window: blockedEntry.attempt_count_window,
+      window_minutes: blockedEntry.window_minutes,
+      last_known_commit_sha: blockedEntry.last_known_commit_sha ?? null,
+      last_progress_checkpoint_at: blockedEntry.last_progress_checkpoint_at ? asIsoDate(blockedEntry.last_progress_checkpoint_at) : null,
+      progress_signals: blockedEntry.progress_signals ? { ...blockedEntry.progress_signals } : undefined,
+      required_actions: [...(blockedEntry.required_actions ?? [])],
+      resume_override_reason: blockedEntry.resume_override_reason ?? null,
         pending_input: blockedEntry.pending_input
           ? {
               ...blockedEntry.pending_input,
