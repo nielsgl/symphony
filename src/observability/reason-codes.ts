@@ -23,6 +23,9 @@ export interface ReasonCodeDefinition {
 
 export const REASON_CODES = {
   normalCompletion: 'normal_completion',
+  dispatchStarted: 'dispatch_started',
+  attemptStarted: 'attempt_started',
+  codexSessionStarted: 'codex_session_started',
   workerExitAbnormal: 'worker_exit_abnormal',
   workerStalled: 'worker_stalled',
   slotsExhausted: 'slots_exhausted',
@@ -54,6 +57,36 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Run is progressing',
     detail: 'The worker completed normally and the orchestrator is continuing while the issue remains active.',
     expected_transition: 'Run continues until completion or a runtime signal changes state'
+  },
+  [REASON_CODES.dispatchStarted]: {
+    reason_code: REASON_CODES.dispatchStarted,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Dispatch Started',
+    headline: 'Run dispatch started',
+    detail: 'The orchestrator started dispatching an attempt.',
+    expected_transition: 'Worker spawn and attempt lifecycle events follow'
+  },
+  [REASON_CODES.attemptStarted]: {
+    reason_code: REASON_CODES.attemptStarted,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Attempt Started',
+    headline: 'Attempt started',
+    detail: 'A worker attempt was persisted under the execution graph.',
+    expected_transition: 'Thread and turn lifecycle events follow'
+  },
+  [REASON_CODES.codexSessionStarted]: {
+    reason_code: REASON_CODES.codexSessionStarted,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Codex Session Started',
+    headline: 'Codex session started',
+    detail: 'A Codex thread was persisted under the current attempt.',
+    expected_transition: 'Turn lifecycle events follow'
   },
   [REASON_CODES.workerExitAbnormal]: {
     reason_code: REASON_CODES.workerExitAbnormal,

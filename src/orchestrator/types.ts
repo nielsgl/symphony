@@ -1,9 +1,9 @@
 import type { Issue, TrackerAdapter } from '../tracker';
 import type { CodexUsageTotals, TokenTelemetryStatus } from '../codex';
 import type { StructuredLogger } from '../observability';
-import type { PhaseMarker, PhaseMarkerName } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
-import type { RunTerminalStatus } from '../persistence';
+import type { PhaseMarker, PhaseMarkerName } from '../observability';
+import type { ExecutionGraphEntityStatus, RunTerminalStatus } from '../persistence';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
 export type WorkerExitReason = 'normal' | 'abnormal';
@@ -24,6 +24,8 @@ export interface RunningEntry {
   issue: Issue;
   identifier: string;
   run_id: string | null;
+  issue_run_id?: string | null;
+  attempt_id?: string | null;
   worker_handle: unknown;
   monitor_handle: unknown;
   retry_attempt: number;
@@ -50,6 +52,8 @@ export interface RunningEntry {
   session_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
+  persisted_thread_id?: string | null;
+  persisted_turn_ids?: string[];
   codex_app_server_pid: string | null;
   turn_count: number;
   last_event: string | null;
@@ -102,6 +106,8 @@ export interface RetryEntry {
   issue_id: string;
   identifier: string;
   attempt: number;
+  issue_run_id?: string | null;
+  previous_attempt_id?: string | null;
   due_at_ms: number;
   error: string | null;
   worker_host: string | null;
@@ -152,6 +158,8 @@ export interface BlockedEntry {
   issue_id: string;
   issue_identifier: string;
   attempt: number;
+  issue_run_id?: string | null;
+  previous_attempt_id?: string | null;
   worker_host: string | null;
   workspace_path: string | null;
   provisioner_type: string | null;
@@ -407,6 +415,78 @@ export interface PhaseMarkerSettings {
 
 export interface OrchestratorPersistencePort {
   startRun: (params: { issue_id: string; issue_identifier: string }) => Promise<string>;
+  appendIssueRun?: (params: {
+    issue_id: string;
+    issue_identifier: string;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    issue_run_id?: string;
+  }) => Promise<string>;
+  appendAttempt?: (params: {
+    issue_run_id: string;
+    attempt_number: number;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    attempt_id?: string;
+  }) => Promise<string>;
+  appendThread?: (params: {
+    attempt_id: string;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    thread_id?: string;
+  }) => Promise<string>;
+  appendTurn?: (params: {
+    thread_id: string;
+    turn_index: number;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    turn_id?: string;
+  }) => Promise<string>;
+  appendPhaseSpan?: (params: {
+    turn_id: string;
+    phase: string;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    phase_span_id?: string;
+  }) => Promise<string>;
+  appendToolSpan?: (params: {
+    turn_id: string;
+    tool_name: string;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    tool_span_id?: string;
+  }) => Promise<string>;
+  appendStateTransition?: (params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    from_status?: string | null;
+    to_status: string;
+    transitioned_at: string;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    state_transition_id?: string;
+  }) => Promise<string>;
   recordSession: (params: { run_id: string; session_id: string }) => Promise<void>;
   recordEvent: (params: {
     run_id: string;

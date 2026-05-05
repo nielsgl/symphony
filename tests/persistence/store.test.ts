@@ -48,6 +48,271 @@ describe('SqlitePersistenceStore', () => {
     expect(history[0].session_ids).toEqual(['thread-1-turn-1']);
   });
 
+  it('persists normalized execution graph lineage across restart', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    const issueRunId = storeA.appendIssueRun({
+      issue_id: 'issue-1',
+      issue_identifier: 'ABC-1',
+      started_at: '2026-04-11T10:00:00.000Z',
+      status: 'running',
+      reason_code: 'dispatch_started',
+      reason_detail: 'initial dispatch'
+    });
+    const attemptId = storeA.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-11T10:00:01.000Z',
+      status: 'running',
+      reason_code: 'attempt_started',
+      reason_detail: null
+    });
+    const threadId = storeA.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'thread-1',
+      started_at: '2026-04-11T10:00:02.000Z',
+      status: 'running',
+      reason_code: 'codex_session_started',
+      reason_detail: null
+    });
+    const turnId = storeA.appendTurn({
+      thread_id: threadId,
+      turn_index: 0,
+      turn_id: 'turn-1',
+      started_at: '2026-04-11T10:00:03.000Z',
+      ended_at: '2026-04-11T10:04:00.000Z',
+      status: 'succeeded',
+      reason_code: 'turn_completed',
+      reason_detail: 'ok'
+    });
+    storeA.appendPhaseSpan({
+      turn_id: turnId,
+      phase: 'planning',
+      started_at: '2026-04-11T10:00:04.000Z',
+      ended_at: '2026-04-11T10:01:00.000Z',
+      status: 'succeeded',
+      reason_code: 'phase_completed',
+      reason_detail: null
+    });
+    storeA.appendToolSpan({
+      turn_id: turnId,
+      tool_name: 'exec_command',
+      started_at: '2026-04-11T10:01:10.000Z',
+      ended_at: '2026-04-11T10:01:11.000Z',
+      status: 'succeeded',
+      reason_code: 'tool_completed',
+      reason_detail: 'token=abcd1234'
+    });
+    storeA.appendStateTransition({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      from_status: 'running',
+      to_status: 'retrying',
+      transitioned_at: '2026-04-11T10:04:01.000Z',
+      status: 'retrying',
+      reason_code: 'normal_completion',
+      reason_detail: 'normal worker completion, continuing while issue is active'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const lineage = storeB.reconstructThreadLineage(threadId);
+
+    expect(lineage?.issue_run.issue_run_id).toBe(issueRunId);
+    expect(lineage?.attempt.attempt_id).toBe(attemptId);
+    expect(lineage?.thread.thread_id).toBe(threadId);
+    expect(lineage?.turns).toHaveLength(1);
+    expect(lineage?.turns[0].turn_id).toBe(turnId);
+    expect(lineage?.turns[0].phase_spans[0]).toMatchObject({ phase: 'planning' });
+    expect(lineage?.turns[0].tool_spans[0]).toMatchObject({
+      tool_name: 'exec_command',
+      reason_detail: 'token=***REDACTED***'
+    });
+    expect(lineage?.state_transitions).toEqual([
+      expect.objectContaining({
+        from_status: 'running',
+        to_status: 'retrying',
+        reason_code: 'normal_completion'
+      })
+    ]);
+  });
+
+  it('enforces execution graph references and monotonic timestamps', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-integrity-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(store);
+
+    const issueRunId = store.appendIssueRun({
+      issue_id: 'issue-1',
+      issue_identifier: 'ABC-1',
+      started_at: '2026-04-11T10:00:00.000Z',
+      status: 'running'
+    });
+    const attemptId = store.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-11T10:00:01.000Z',
+      status: 'running'
+    });
+    const threadId = store.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'thread-1',
+      started_at: '2026-04-11T10:00:02.000Z',
+      status: 'running'
+    });
+    const turnId = store.appendTurn({
+      thread_id: threadId,
+      turn_index: 0,
+      turn_id: 'turn-1',
+      started_at: '2026-04-11T10:00:03.000Z',
+      status: 'running'
+    });
+    const secondAttemptId = store.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 1,
+      started_at: '2026-04-11T10:00:04.000Z',
+      status: 'running'
+    });
+    const secondThreadId = store.appendThread({
+      attempt_id: secondAttemptId,
+      thread_id: 'thread-2',
+      started_at: '2026-04-11T10:00:05.000Z',
+      status: 'running'
+    });
+    store.appendTurn({
+      thread_id: secondThreadId,
+      turn_index: 0,
+      turn_id: 'turn-2',
+      started_at: '2026-04-11T10:00:06.000Z',
+      status: 'running'
+    });
+    const sameAttemptThreadId = store.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'thread-3',
+      started_at: '2026-04-11T10:00:06.500Z',
+      status: 'running'
+    });
+    const sameAttemptTurnId = store.appendTurn({
+      thread_id: sameAttemptThreadId,
+      turn_index: 0,
+      turn_id: 'turn-3',
+      started_at: '2026-04-11T10:00:06.600Z',
+      status: 'running'
+    });
+
+    expect(() =>
+      store.appendPhaseSpan({
+        turn_id: 'missing-turn',
+        phase: 'planning',
+        started_at: '2026-04-11T10:00:04.000Z',
+        status: 'running'
+      })
+    ).toThrow(/does not exist/);
+    expect(() =>
+      store.appendToolSpan({
+        turn_id: turnId,
+        tool_name: 'exec_command',
+        started_at: '2026-04-11T09:59:59.000Z',
+        status: 'running'
+      })
+    ).toThrow(/monotonic/);
+    store.appendStateTransition({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      to_status: 'running',
+      transitioned_at: '2026-04-11T10:00:07.000Z',
+      status: 'running',
+      reason_code: 'turn_started'
+    });
+    expect(() =>
+      store.appendStateTransition({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: secondThreadId,
+        to_status: 'running',
+        transitioned_at: '2026-04-11T10:00:08.000Z',
+        status: 'running',
+        reason_code: 'lineage_mismatch'
+      })
+    ).toThrow(/does not belong to attempt/);
+    expect(() =>
+      store.appendStateTransition({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: sameAttemptTurnId,
+        to_status: 'running',
+        transitioned_at: '2026-04-11T10:00:09.000Z',
+        status: 'running',
+        reason_code: 'lineage_mismatch'
+      })
+    ).toThrow(/does not belong to thread/);
+    expect(() =>
+      store.appendStateTransition({
+        issue_run_id: issueRunId,
+        to_status: 'failed',
+        transitioned_at: '2026-04-11T10:00:03.000Z',
+        status: 'failed',
+        reason_code: 'out_of_order'
+      })
+    ).toThrow(/monotonic/);
+  });
+
+  it('migrates existing persistence databases without breaking run history', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-migration-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const legacyStore = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(legacyStore);
+    const legacyRunId = legacyStore.startRun({ issue_id: 'legacy-1', issue_identifier: 'LEG-1' });
+    legacyStore.recordSession(legacyRunId, 'legacy-thread-legacy-turn');
+    legacyStore.completeRun({ run_id: legacyRunId, terminal_status: 'succeeded' });
+    legacyStore.close();
+    stores.pop();
+
+    const migratedStore = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(migratedStore);
+    const issueRunId = migratedStore.appendIssueRun({
+      issue_id: 'issue-2',
+      issue_identifier: 'ABC-2',
+      started_at: '2026-04-11T11:00:00.000Z',
+      status: 'running'
+    });
+    const attemptId = migratedStore.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-11T11:00:01.000Z',
+      status: 'running'
+    });
+    const threadId = migratedStore.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'thread-migrated',
+      started_at: '2026-04-11T11:00:02.000Z',
+      status: 'running'
+    });
+
+    expect(migratedStore.listRunHistory()[0]).toMatchObject({
+      run_id: legacyRunId,
+      issue_identifier: 'LEG-1',
+      terminal_status: 'succeeded'
+    });
+    expect(migratedStore.reconstructThreadLineage(threadId)?.issue_run.issue_identifier).toBe('ABC-2');
+    expect(migratedStore.health().integrity_ok).toBe(true);
+  });
+
   it('persists UI continuity state', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-ui-state-'));
     dirs.push(dir);

@@ -1378,6 +1378,428 @@ describe('OrchestratorCore', () => {
     expect(persistenceFailure?.context.session_id).toBe('thread-9-turn-1');
   });
 
+  it('persists normalized execution graph from real dispatch and worker lifecycle events', async () => {
+    const issueRuns: Array<Record<string, unknown>> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    const threads: Array<Record<string, unknown>> = [];
+    const turns: Array<Record<string, unknown>> = [];
+    const phaseSpans: Array<Record<string, unknown>> = [];
+    const toolSpans: Array<Record<string, unknown>> = [];
+    const transitions: Array<Record<string, unknown>> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-1',
+      appendIssueRun: async (params) => {
+        issueRuns.push(params);
+        return 'issue_run_1';
+      },
+      appendAttempt: async (params) => {
+        attempts.push(params);
+        return 'attempt_1';
+      },
+      appendThread: async (params) => {
+        threads.push(params);
+        return String(params.thread_id);
+      },
+      appendTurn: async (params) => {
+        turns.push(params);
+        return String(params.turn_id);
+      },
+      appendPhaseSpan: async (params) => {
+        phaseSpans.push(params);
+        return `phase_${phaseSpans.length}`;
+      },
+      appendToolSpan: async (params) => {
+        toolSpans.push(params);
+        return `tool_${toolSpans.length}`;
+      },
+      appendStateTransition: async (params) => {
+        transitions.push(params);
+        return `transition_${transitions.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({ persistence });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-lineage', identifier: 'ABC-LIN' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      detail: 'waiting_for_turn_completion elapsed_s=0'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 30,
+      event: CANONICAL_EVENT.codex.toolCallCompleted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      detail: 'exec_command'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 40,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      detail: 'done'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.orchestrator.onWorkerExit('i-lineage', 'normal');
+
+    expect(issueRuns).toEqual([
+      expect.objectContaining({
+        issue_id: 'i-lineage',
+        issue_identifier: 'ABC-LIN',
+        status: 'running',
+        reason_code: 'dispatch_started'
+      })
+    ]);
+    expect(attempts).toEqual([expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_number: 0 })]);
+    expect(threads).toEqual([expect.objectContaining({ attempt_id: 'attempt_1', thread_id: 'thread-1' })]);
+    expect(turns).toEqual([expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', turn_index: 0 })]);
+    expect(phaseSpans).toHaveLength(2);
+    expect(phaseSpans).toEqual(expect.arrayContaining([
+      expect.objectContaining({ turn_id: 'turn-1', phase: 'planning', reason_code: 'codex_phase_planning' }),
+      expect.objectContaining({ turn_id: 'turn-1', phase: 'validation', reason_code: 'codex_turn_completed' })
+    ]));
+    expect(toolSpans).toEqual([expect.objectContaining({ turn_id: 'turn-1', tool_name: 'exec_command', status: 'succeeded' })]);
+    expect(transitions).toHaveLength(4);
+    expect(transitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_1', to_status: 'running', reason_code: 'dispatch_started' }),
+      expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'running', reason_code: 'codex_turn_started' }),
+      expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'succeeded', reason_code: 'codex_turn_completed' }),
+      expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'retrying', reason_code: 'normal_completion' })
+    ]));
+  });
+
+  it('persists retry timer redispatch attempts under the original issue run', async () => {
+    const issueRuns: Array<Record<string, unknown>> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    const threads: Array<Record<string, unknown>> = [];
+    const transitions: Array<Record<string, unknown>> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => `legacy-run-${attempts.length + 1}`,
+      appendIssueRun: async (params) => {
+        issueRuns.push(params);
+        return `issue_run_${issueRuns.length}`;
+      },
+      appendAttempt: async (params) => {
+        attempts.push(params);
+        return `attempt_${attempts.length}`;
+      },
+      appendThread: async (params) => {
+        threads.push(params);
+        return String(params.thread_id);
+      },
+      appendTurn: async (params) => String(params.turn_id),
+      appendStateTransition: async (params) => {
+        transitions.push(params);
+        return `transition_${transitions.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      persistence,
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-new',
+        checklist_checkpoint: 'chk-new',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({ id: 'i-retry-lineage', identifier: 'ABC-RETRY', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-retry-lineage', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-0',
+      turn_id: 'turn-0'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.orchestrator.onWorkerExit('i-retry-lineage', 'normal');
+
+    const internals = harness.orchestrator as unknown as {
+      state: {
+        redispatch_progress: Map<
+          string,
+          Array<{ at_ms: number; commit_sha: string | null; checklist_checkpoint: string | null; state_marker: string | null; pr_open: boolean }>
+        >;
+      };
+    };
+    internals.state.redispatch_progress = new Map([
+      [
+        'i-retry-lineage',
+        [{ at_ms: harness.now.value - 1, commit_sha: 'sha-old', checklist_checkpoint: 'chk-old', state_marker: null, pr_open: false }]
+      ]
+    ]);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-retry-lineage')?.callback();
+    harness.orchestrator.onWorkerEvent('i-retry-lineage', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(issueRuns).toHaveLength(1);
+    expect(attempts).toEqual([
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_number: 0 }),
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_number: 1 })
+    ]);
+    expect(threads).toEqual([
+      expect.objectContaining({ attempt_id: 'attempt_1', thread_id: 'thread-0' }),
+      expect.objectContaining({ attempt_id: 'attempt_2', thread_id: 'thread-1' })
+    ]);
+    expect(transitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_1', reason_code: 'normal_completion' }),
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_2', reason_code: 'dispatch_started' })
+    ]));
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-retry-lineage').map((entry) => entry.attempt)).toEqual([null, 1]);
+  });
+
+  it('persists redispatch gate blocks on the retry lineage issue run', async () => {
+    const issueRuns: Array<Record<string, unknown>> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    const transitions: Array<Record<string, unknown>> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-1',
+      appendIssueRun: async (params) => {
+        issueRuns.push(params);
+        return `issue_run_${issueRuns.length}`;
+      },
+      appendAttempt: async (params) => {
+        attempts.push(params);
+        return `attempt_${attempts.length}`;
+      },
+      appendThread: async (params) => String(params.thread_id),
+      appendTurn: async (params) => String(params.turn_id),
+      appendStateTransition: async (params) => {
+        transitions.push(params);
+        return `transition_${transitions.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      persistence,
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({ id: 'i-retry-blocked', identifier: 'ABC-BLOCK', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-retry-blocked', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-0',
+      turn_id: 'turn-0'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.orchestrator.onWorkerExit('i-retry-blocked', 'normal');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-retry-blocked')?.callback();
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-retry-blocked');
+    expect(issueRuns).toHaveLength(1);
+    expect(blocked?.issue_run_id).toBe('issue_run_1');
+    expect(blocked?.previous_attempt_id).toBe('attempt_1');
+    expect(transitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        thread_id: 'thread-0',
+        to_status: 'blocked',
+        reason_code: 'operator_action_required_no_progress_redispatch_blocked'
+      })
+    ]));
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-retry-blocked')).toHaveLength(1);
+  });
+
+  it('persists spawn failure retries under one issue run when the retry timer succeeds', async () => {
+    const issueRuns: Array<Record<string, unknown>> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    const threads: Array<Record<string, unknown>> = [];
+    const transitions: Array<Record<string, unknown>> = [];
+    let spawnCount = 0;
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => `legacy-run-${spawnCount}`,
+      appendIssueRun: async (params) => {
+        issueRuns.push(params);
+        return `issue_run_${issueRuns.length}`;
+      },
+      appendAttempt: async (params) => {
+        attempts.push(params);
+        return `attempt_${attempts.length}`;
+      },
+      appendThread: async (params) => {
+        threads.push(params);
+        return String(params.thread_id);
+      },
+      appendTurn: async (params) => String(params.turn_id),
+      appendStateTransition: async (params) => {
+        transitions.push(params);
+        return `transition_${transitions.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      persistence,
+      spawnWorker: async ({ issue, attempt, worker_host, resume_context }) => {
+        spawnCount += 1;
+        harness.spawned.push({ issue_id: issue.id, attempt, worker_host, resume_context });
+        if (spawnCount === 1) {
+          return { ok: false, error: 'agent binary missing' };
+        }
+        return {
+          ok: true,
+          worker_handle: { issue_id: issue.id },
+          monitor_handle: { issue_id: issue.id },
+          worker_host
+        };
+      },
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-new',
+        checklist_checkpoint: 'chk-new',
+        state_marker: fallback_state_marker
+      })
+    });
+    const issue = makeIssue({ id: 'i-spawn-retry-lineage', identifier: 'ABC-SPAWN', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-spawn-retry-lineage');
+    expect(retryEntry?.issue_run_id).toBe('issue_run_1');
+    expect(retryEntry?.previous_attempt_id).toBe('attempt_1');
+    expect(retryEntry?.stop_reason_code).toBe('spawn_failed');
+
+    const internals = harness.orchestrator as unknown as {
+      state: {
+        redispatch_progress: Map<
+          string,
+          Array<{ at_ms: number; commit_sha: string | null; checklist_checkpoint: string | null; state_marker: string | null; pr_open: boolean }>
+        >;
+      };
+    };
+    internals.state.redispatch_progress = new Map([
+      [
+        'i-spawn-retry-lineage',
+        [{ at_ms: harness.now.value - 1, commit_sha: 'sha-old', checklist_checkpoint: 'chk-old', state_marker: null, pr_open: false }]
+      ]
+    ]);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-spawn-retry-lineage')?.callback();
+    harness.orchestrator.onWorkerEvent('i-spawn-retry-lineage', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-after-spawn-retry',
+      turn_id: 'turn-after-spawn-retry'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(issueRuns).toHaveLength(1);
+    expect(attempts).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_number: 0,
+        status: 'failed',
+        reason_code: 'spawn_failed',
+        reason_detail: 'agent binary missing'
+      }),
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_number: 1,
+        status: 'running',
+        reason_code: 'attempt_started'
+      })
+    ]);
+    expect(threads).toEqual([expect.objectContaining({ attempt_id: 'attempt_2', thread_id: 'thread-after-spawn-retry' })]);
+    expect(transitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_1', to_status: 'failed', reason_code: 'spawn_failed' }),
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_1', to_status: 'retrying', reason_code: 'spawn_failed' }),
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_2', to_status: 'running', reason_code: 'dispatch_started' })
+    ]));
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-spawn-retry-lineage').map((entry) => entry.attempt)).toEqual([null, 1]);
+  });
+
+  it('persists worker-host capacity retries with graph lineage before a worker is spawned', async () => {
+    const issueRuns: Array<Record<string, unknown>> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    const transitions: Array<Record<string, unknown>> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => `legacy-run-${attempts.length + 1}`,
+      appendIssueRun: async (params) => {
+        issueRuns.push(params);
+        return `issue_run_${issueRuns.length}`;
+      },
+      appendAttempt: async (params) => {
+        attempts.push(params);
+        return `attempt_${attempts.length}`;
+      },
+      appendThread: async (params) => String(params.thread_id),
+      appendTurn: async (params) => String(params.turn_id),
+      appendStateTransition: async (params) => {
+        transitions.push(params);
+        return `transition_${transitions.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      persistence,
+      configOverrides: {
+        max_concurrent_agents: 2,
+        worker_hosts: ['build-1'],
+        max_concurrent_agents_per_host: 1
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-capacity-lineage-1', identifier: 'ABC-CAP-1' }),
+      makeIssue({ id: 'i-capacity-lineage-2', identifier: 'ABC-CAP-2' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-capacity-lineage-2');
+    expect(retryEntry?.issue_run_id).toBe('issue_run_2');
+    expect(retryEntry?.previous_attempt_id).toBe('attempt_2');
+    expect(retryEntry?.stop_reason_code).toBe('slots_exhausted');
+    expect(issueRuns).toHaveLength(2);
+    expect(attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_number: 0, status: 'running' }),
+      expect.objectContaining({
+        issue_run_id: 'issue_run_2',
+        attempt_number: 0,
+        status: 'blocked',
+        reason_code: 'slots_exhausted',
+        reason_detail: 'no available worker host slots'
+      })
+    ]));
+    expect(transitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issue_run_id: 'issue_run_2', attempt_id: 'attempt_2', to_status: 'blocked', reason_code: 'slots_exhausted' }),
+      expect.objectContaining({ issue_run_id: 'issue_run_2', attempt_id: 'attempt_2', to_status: 'retrying', reason_code: 'slots_exhausted' })
+    ]));
+    expect(harness.spawned).toEqual([{ issue_id: 'i-capacity-lineage-1', attempt: null, worker_host: 'build-1', resume_context: null }]);
+  });
+
   it('aggregates worker event usage and turn counts deterministically', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-usage' })]);

@@ -33,6 +33,8 @@ interface ScheduleRetryParams {
   issue_id: string;
   identifier: string;
   attempt: number;
+  issue_run_id?: string | null;
+  previous_attempt_id?: string | null;
   delay_type: RetryDelayType;
   error?: string | null;
   worker_host?: string | null;
@@ -83,6 +85,11 @@ interface WorkspaceConflictContext {
   resolution_hints: string[];
 }
 
+interface DispatchGraphContext {
+  issue_run_id?: string | null;
+  previous_attempt_id?: string | null;
+}
+
 function cloneIssue(issue: Issue): Issue {
   return {
     ...issue,
@@ -103,6 +110,7 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     issue: cloneIssue(entry.issue),
     tokens: { ...entry.tokens },
     last_reported_tokens: { ...entry.last_reported_tokens },
+    persisted_turn_ids: [...(entry.persisted_turn_ids ?? [])],
     recent_events: entry.recent_events.map((event) => ({ ...event })),
     copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null,
     awaiting_input_since_ms: entry.awaiting_input_since_ms ?? null,
@@ -130,6 +138,8 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     issue_id: entry.issue_id,
     identifier: entry.identifier,
     attempt: entry.attempt,
+    issue_run_id: entry.issue_run_id ?? null,
+    previous_attempt_id: entry.previous_attempt_id ?? null,
     due_at_ms: entry.due_at_ms,
     error: entry.error,
     worker_host: entry.worker_host,
@@ -162,6 +172,8 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     issue_id: entry.issue_id,
     issue_identifier: entry.issue_identifier,
     attempt: entry.attempt,
+    issue_run_id: entry.issue_run_id ?? null,
+    previous_attempt_id: entry.previous_attempt_id ?? null,
     worker_host: entry.worker_host,
     workspace_path: entry.workspace_path,
     provisioner_type: entry.provisioner_type,
@@ -235,6 +247,10 @@ function severityForRuntimeEvent(eventName: string): 'info' | 'warn' | 'error' {
     return 'warn';
   }
   return 'info';
+}
+
+function asIso(timestampMs: number): string {
+  return new Date(timestampMs).toISOString();
 }
 
 function defaultBudgetProjection(windowMinutes = 1440): BudgetRuntimeProjection {
@@ -759,6 +775,8 @@ export class OrchestratorCore {
           });
     }
 
+    void this.persistExecutionGraphWorkerEvent(issue_id, runningEntry, workerEvent);
+
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.workerEvent,
@@ -784,6 +802,340 @@ export class OrchestratorCore {
     });
     if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
       this.emitMappedPhaseMarker(issue_id, workerEvent);
+    }
+  }
+
+  private async persistExecutionGraphWorkerEvent(
+    issueId: string,
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): Promise<void> {
+    if (!this.persistence || !runningEntry.issue_run_id || !runningEntry.attempt_id) {
+      return;
+    }
+
+    try {
+      const at = asIso(workerEvent.timestamp_ms);
+      const threadId = workerEvent.thread_id ?? runningEntry.thread_id;
+      const turnId = workerEvent.turn_id ?? runningEntry.turn_id;
+
+      if (threadId && runningEntry.persisted_thread_id !== threadId) {
+        runningEntry.persisted_thread_id = threadId;
+        await this.persistence.appendThread?.({
+          attempt_id: runningEntry.attempt_id,
+          thread_id: threadId,
+          started_at: at,
+          status: 'running',
+          reason_code: REASON_CODES.codexSessionStarted,
+          reason_detail: workerEvent.session_id ?? runningEntry.session_id
+        });
+      }
+
+      const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
+      if (threadId && turnId && !persistedTurnIds.includes(turnId)) {
+        persistedTurnIds.push(turnId);
+        await this.persistence.appendTurn?.({
+          thread_id: threadId,
+          turn_id: turnId,
+          turn_index: Math.max(0, runningEntry.turn_count - 1),
+          started_at: at,
+          status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+          reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+          reason_detail: workerEvent.detail ?? null
+        });
+      }
+
+      if (turnId) {
+        const phase = this.phaseSpanNameForWorkerEvent(workerEvent.event);
+        if (phase) {
+          await this.persistence.appendPhaseSpan?.({
+            turn_id: turnId,
+            phase,
+            started_at: at,
+            ended_at: at,
+            status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+            reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+            reason_detail: workerEvent.detail ?? null
+          });
+        }
+
+        const toolName = this.toolNameForWorkerEvent(workerEvent);
+        if (toolName) {
+          await this.persistence.appendToolSpan?.({
+            turn_id: turnId,
+            tool_name: toolName,
+            started_at: at,
+            ended_at: at,
+            status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+            reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+            reason_detail: workerEvent.detail ?? null
+          });
+        }
+      }
+
+      const toStatus = this.transitionStatusForWorkerEvent(workerEvent.event);
+      if (toStatus) {
+        await this.persistence.appendStateTransition?.({
+          issue_run_id: runningEntry.issue_run_id,
+          attempt_id: runningEntry.attempt_id,
+          thread_id: threadId ?? null,
+          turn_id: turnId ?? null,
+          from_status: null,
+          to_status: toStatus,
+          transitioned_at: at,
+          status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+          reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+          reason_detail: workerEvent.detail ?? null
+        });
+      }
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist execution graph event for ${runningEntry.identifier}`,
+        context: {
+          issue_id: issueId,
+          issue_identifier: runningEntry.identifier,
+          session_id: runningEntry.session_id,
+          thread_id: runningEntry.thread_id,
+          turn_id: runningEntry.turn_id,
+          event: workerEvent.event
+        }
+      });
+    }
+  }
+
+  private executionGraphStatusForWorkerEvent(eventName: string): 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' {
+    switch (eventName) {
+      case CANONICAL_EVENT.codex.turnCompleted:
+      case CANONICAL_EVENT.codex.toolCallCompleted:
+        return 'succeeded';
+      case CANONICAL_EVENT.codex.turnFailed:
+      case CANONICAL_EVENT.codex.toolCallFailed:
+      case CANONICAL_EVENT.codex.unsupportedToolCall:
+        return 'failed';
+      case CANONICAL_EVENT.codex.turnInputRequired:
+        return 'blocked';
+      case CANONICAL_EVENT.codex.turnCancelled:
+        return 'cancelled';
+      default:
+        return 'running';
+    }
+  }
+
+  private reasonCodeForWorkerEvent(eventName: string): string {
+    return eventName.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+  }
+
+  private phaseSpanNameForWorkerEvent(eventName: string): string | null {
+    switch (eventName) {
+      case CANONICAL_EVENT.codex.promptSent:
+        return 'prompt_sent';
+      case CANONICAL_EVENT.codex.phasePlanning:
+      case CANONICAL_EVENT.codex.turnWaiting:
+        return 'planning';
+      case CANONICAL_EVENT.codex.phaseImplementation:
+        return 'implementation';
+      case CANONICAL_EVENT.codex.phaseValidation:
+      case CANONICAL_EVENT.codex.turnCompleted:
+        return 'validation';
+      case CANONICAL_EVENT.codex.turnFailed:
+        return 'failed';
+      case CANONICAL_EVENT.codex.turnInputRequired:
+        return 'blocked_input';
+      default:
+        return null;
+    }
+  }
+
+  private toolNameForWorkerEvent(workerEvent: WorkerObservabilityEvent): string | null {
+    if (
+      workerEvent.event !== CANONICAL_EVENT.codex.toolCallCompleted &&
+      workerEvent.event !== CANONICAL_EVENT.codex.toolCallFailed &&
+      workerEvent.event !== CANONICAL_EVENT.codex.unsupportedToolCall
+    ) {
+      return null;
+    }
+    const detail = workerEvent.detail?.trim();
+    return detail && detail.length > 0 ? detail : 'unknown_tool';
+  }
+
+  private transitionStatusForWorkerEvent(eventName: string): string | null {
+    switch (eventName) {
+      case CANONICAL_EVENT.codex.turnStarted:
+        return 'running';
+      case CANONICAL_EVENT.codex.turnInputRequired:
+        return 'blocked';
+      case CANONICAL_EVENT.codex.turnCompleted:
+        return 'succeeded';
+      case CANONICAL_EVENT.codex.turnFailed:
+        return 'failed';
+      case CANONICAL_EVENT.codex.turnCancelled:
+        return 'cancelled';
+      default:
+        return null;
+    }
+  }
+
+  private async persistExecutionGraphStateTransition(
+    runningEntry: RunningEntry,
+    toStatus: string,
+    status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying',
+    reasonCode: string,
+    reasonDetail: string | null
+  ): Promise<void> {
+    if (!this.persistence || !runningEntry.issue_run_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendStateTransition?.({
+        issue_run_id: runningEntry.issue_run_id,
+        attempt_id: runningEntry.attempt_id,
+        thread_id: runningEntry.thread_id,
+        turn_id: runningEntry.turn_id,
+        from_status: null,
+        to_status: toStatus,
+        transitioned_at: asIso(this.nowMs()),
+        status,
+        reason_code: reasonCode,
+        reason_detail: reasonDetail
+      });
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist execution graph transition for ${runningEntry.identifier}`,
+        context: {
+          issue_id: runningEntry.issue.id,
+          issue_identifier: runningEntry.identifier,
+          session_id: runningEntry.session_id,
+          thread_id: runningEntry.thread_id,
+          turn_id: runningEntry.turn_id,
+          reason_code: reasonCode
+        }
+      });
+    }
+  }
+
+  private async persistExecutionGraphRetryTransition(
+    retryEntry: RetryEntry,
+    toStatus: string,
+    status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying',
+    reasonCode: string,
+    reasonDetail: string | null
+  ): Promise<void> {
+    if (!this.persistence || !retryEntry.issue_run_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendStateTransition?.({
+        issue_run_id: retryEntry.issue_run_id,
+        attempt_id: retryEntry.previous_attempt_id,
+        thread_id: retryEntry.previous_thread_id,
+        turn_id: null,
+        from_status: null,
+        to_status: toStatus,
+        transitioned_at: asIso(this.nowMs()),
+        status,
+        reason_code: reasonCode,
+        reason_detail: reasonDetail
+      });
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist execution graph retry transition for ${retryEntry.identifier}`,
+        context: {
+          issue_id: retryEntry.issue_id,
+          issue_identifier: retryEntry.identifier,
+          thread_id: retryEntry.previous_thread_id,
+          reason_code: reasonCode
+        }
+      });
+    }
+  }
+
+  private async persistPreSpawnExecutionGraphAttempt(params: {
+    issue: Issue;
+    attempt: number | null;
+    graphContext: DispatchGraphContext;
+    status: 'failed' | 'blocked';
+    reasonCode: string;
+    reasonDetail: string | null;
+  }): Promise<DispatchGraphContext> {
+    if (!this.persistence) {
+      return params.graphContext;
+    }
+
+    try {
+      const startedAt = asIso(this.nowMs());
+      const issueRunId =
+        params.graphContext.issue_run_id ??
+        (await this.persistence.appendIssueRun?.({
+          issue_id: params.issue.id,
+          issue_identifier: params.issue.identifier,
+          started_at: startedAt,
+          status: 'running',
+          reason_code: REASON_CODES.dispatchStarted,
+          reason_detail: 'dispatch attempt started'
+        })) ??
+        null;
+      if (!issueRunId) {
+        return params.graphContext;
+      }
+
+      const attemptId =
+        (await this.persistence.appendAttempt?.({
+          issue_run_id: issueRunId,
+          attempt_number: params.attempt ?? 0,
+          started_at: startedAt,
+          ended_at: startedAt,
+          status: params.status,
+          reason_code: params.reasonCode,
+          reason_detail: params.reasonDetail
+        })) ?? null;
+
+      if (attemptId) {
+        await this.persistence.appendStateTransition?.({
+          issue_run_id: issueRunId,
+          attempt_id: attemptId,
+          from_status: null,
+          to_status: params.status,
+          transitioned_at: startedAt,
+          status: params.status,
+          reason_code: params.reasonCode,
+          reason_detail: params.reasonDetail
+        });
+        await this.persistence.appendStateTransition?.({
+          issue_run_id: issueRunId,
+          attempt_id: attemptId,
+          from_status: params.status,
+          to_status: 'retrying',
+          transitioned_at: startedAt,
+          status: 'retrying',
+          reason_code: params.reasonCode,
+          reason_detail: params.reasonDetail
+        });
+      }
+
+      return {
+        issue_run_id: issueRunId,
+        previous_attempt_id: attemptId ?? params.graphContext.previous_attempt_id ?? null
+      };
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist pre-spawn execution graph attempt for ${params.issue.identifier}`,
+        context: {
+          issue_id: params.issue.id,
+          issue_identifier: params.issue.identifier,
+          reason_code: params.reasonCode
+        }
+      });
+      return params.graphContext;
     }
   }
 
@@ -1037,6 +1389,8 @@ export class OrchestratorCore {
         issue_id: issueId,
         issue_identifier: running.identifier,
         attempt: running.retry_attempt + 1,
+        issue_run_id: running.issue_run_id ?? null,
+        previous_attempt_id: running.attempt_id ?? null,
         worker_host: running.worker_host ?? null,
         workspace_path: running.workspace_path ?? null,
         provisioner_type: running.provisioner_type ?? null,
@@ -1155,11 +1509,20 @@ export class OrchestratorCore {
         session_id: running.session_id
       });
       await this.completeRunRecord(running, 'succeeded', null);
+      await this.persistExecutionGraphStateTransition(
+        running,
+        'retrying',
+        'retrying',
+        REASON_CODES.normalCompletion,
+        'normal worker completion, continuing while issue is active'
+      );
       this.state.completed.add(issue_id);
       await this.scheduleRetry({
         issue_id,
         identifier: running.identifier,
         attempt: 1,
+        issue_run_id: running.issue_run_id ?? null,
+        previous_attempt_id: running.attempt_id ?? null,
         delay_type: 'continuation',
         error: null,
         worker_host: running.worker_host ?? null,
@@ -1212,6 +1575,8 @@ export class OrchestratorCore {
           issue_id,
           issue_identifier: running.identifier,
           attempt: running.retry_attempt + 1,
+          issue_run_id: running.issue_run_id ?? null,
+          previous_attempt_id: running.attempt_id ?? null,
           worker_host: running.worker_host ?? null,
           workspace_path: running.workspace_path ?? null,
           provisioner_type: running.provisioner_type ?? null,
@@ -1245,6 +1610,7 @@ export class OrchestratorCore {
             error: stopReasonDetail
           }
         });
+        await this.persistExecutionGraphStateTransition(running, 'blocked', 'blocked', REASON_CODES.turnInputRequired, stopReasonDetail);
         this.ports.notifyObservers?.();
         return;
       }
@@ -1261,6 +1627,8 @@ export class OrchestratorCore {
           issue_id,
           issue_identifier: running.identifier,
           attempt: running.retry_attempt + 1,
+          issue_run_id: running.issue_run_id ?? null,
+          previous_attempt_id: running.attempt_id ?? null,
           worker_host: running.worker_host ?? null,
           workspace_path: running.workspace_path ?? null,
           provisioner_type: running.provisioner_type ?? null,
@@ -1296,6 +1664,13 @@ export class OrchestratorCore {
             error: workspaceConflict.detail
           }
         });
+        await this.persistExecutionGraphStateTransition(
+          running,
+          'blocked',
+          'blocked',
+          REASON_CODES.operatorWorkspaceConflict,
+          workspaceConflict.detail
+        );
         this.ports.notifyObservers?.();
         return;
       }
@@ -1304,6 +1679,8 @@ export class OrchestratorCore {
         issue_id,
         identifier: running.identifier,
         attempt: running.retry_attempt + 1,
+        issue_run_id: running.issue_run_id ?? null,
+        previous_attempt_id: running.attempt_id ?? null,
         delay_type: 'failure',
         error: error ?? `worker exited: ${reason}`,
         worker_host: running.worker_host ?? null,
@@ -1346,6 +1723,13 @@ export class OrchestratorCore {
           error: error ?? null
         }
       });
+      await this.persistExecutionGraphStateTransition(
+        running,
+        'retrying',
+        'retrying',
+        stopReasonCode,
+        error ?? `worker exited: ${reason}`
+      );
     }
 
     this.ports.notifyObservers?.();
@@ -1388,6 +1772,8 @@ export class OrchestratorCore {
         issue_id,
         identifier: retryEntry.identifier,
         attempt: retryEntry.attempt + 1,
+        issue_run_id: retryEntry.issue_run_id,
+        previous_attempt_id: retryEntry.previous_attempt_id,
         delay_type: 'failure',
         error: 'retry poll failed',
         worker_host: retryEntry.worker_host ?? null,
@@ -1432,6 +1818,8 @@ export class OrchestratorCore {
           issue_id,
           identifier: issue.identifier,
           attempt: retryEntry.attempt + 1,
+          issue_run_id: retryEntry.issue_run_id,
+          previous_attempt_id: retryEntry.previous_attempt_id,
           delay_type: 'failure',
           error: 'no available orchestrator slots',
           worker_host: retryEntry.worker_host ?? null,
@@ -1471,6 +1859,8 @@ export class OrchestratorCore {
         issue_id,
         issue_identifier: retryEntry.identifier,
         attempt: retryEntry.attempt,
+        issue_run_id: retryEntry.issue_run_id,
+        previous_attempt_id: retryEntry.previous_attempt_id,
         worker_host: retryEntry.worker_host ?? null,
         workspace_path: retryEntry.workspace_path ?? null,
         provisioner_type: retryEntry.provisioner_type ?? null,
@@ -1499,6 +1889,13 @@ export class OrchestratorCore {
         ],
         apply_circuit_breaker: gateEvaluation.breaker_hit
       });
+      await this.persistExecutionGraphRetryTransition(
+        retryEntry,
+        'blocked',
+        'blocked',
+        stopReasonCode,
+        stopReasonDetail
+      );
       const eventName = gateEvaluation.awaiting_human_review_scope_incomplete
         ? CANONICAL_EVENT.orchestration.stateAwaitingHumanReviewScopeIncomplete
         : CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked;
@@ -1557,7 +1954,10 @@ export class OrchestratorCore {
       return;
     }
 
-    await this.dispatchIssue(issue, retryEntry.attempt);
+    await this.dispatchIssue(issue, retryEntry.attempt, null, {
+      issue_run_id: retryEntry.issue_run_id,
+      previous_attempt_id: retryEntry.previous_attempt_id
+    });
   }
 
   private evaluateRedispatchGate(
@@ -1816,6 +2216,8 @@ export class OrchestratorCore {
         issue_id: issueId,
         identifier: runningEntry.identifier,
         attempt: runningEntry.retry_attempt + 1,
+        issue_run_id: runningEntry.issue_run_id ?? null,
+        previous_attempt_id: runningEntry.attempt_id ?? null,
         delay_type: 'failure',
         error: 'worker stalled',
         worker_host: runningEntry.worker_host ?? null,
@@ -1858,9 +2260,14 @@ export class OrchestratorCore {
     }
   }
 
-  private async dispatchIssue(issue: Issue, attempt: number | null, resume_context: string | null = null): Promise<void> {
+  private async dispatchIssue(
+    issue: Issue,
+    attempt: number | null,
+    resume_context: string | null = null,
+    graphContext: DispatchGraphContext = {}
+  ): Promise<void> {
     this.emitPhaseMarker(issue.id, {
-      phase: 'dispatch_started',
+      phase: REASON_CODES.dispatchStarted,
       detail: 'dispatch attempt started',
       attempt: attempt ?? 0
     });
@@ -1891,10 +2298,20 @@ export class OrchestratorCore {
         issue_identifier: issue.identifier,
         detail: 'no available worker host slots'
       });
+      const retryGraphContext = await this.persistPreSpawnExecutionGraphAttempt({
+        issue,
+        attempt,
+        graphContext,
+        status: 'blocked',
+        reasonCode: REASON_CODES.slotsExhausted,
+        reasonDetail: 'no available worker host slots'
+      });
       await this.scheduleRetry({
         issue_id: issue.id,
         identifier: issue.identifier,
         attempt: nextAttempt(attempt),
+        issue_run_id: retryGraphContext.issue_run_id ?? null,
+        previous_attempt_id: retryGraphContext.previous_attempt_id ?? null,
         delay_type: 'failure',
         error: 'no available worker host slots',
         worker_host: workerHost,
@@ -1936,10 +2353,20 @@ export class OrchestratorCore {
           error: spawned.error
         }
       });
+      const retryGraphContext = await this.persistPreSpawnExecutionGraphAttempt({
+        issue,
+        attempt,
+        graphContext,
+        status: 'failed',
+        reasonCode: REASON_CODES.spawnFailed,
+        reasonDetail: spawned.error
+      });
       await this.scheduleRetry({
         issue_id: issue.id,
         identifier: issue.identifier,
         attempt: nextAttempt(attempt),
+        issue_run_id: retryGraphContext.issue_run_id ?? null,
+        previous_attempt_id: retryGraphContext.previous_attempt_id ?? null,
         delay_type: 'failure',
         error: 'failed to spawn agent',
         worker_host: workerHost,
@@ -1971,10 +2398,13 @@ export class OrchestratorCore {
       }
     });
 
+    const startedAtMs = this.nowMs();
     this.state.running.set(issue.id, {
       issue,
       identifier: issue.identifier,
       run_id: null,
+      issue_run_id: graphContext.issue_run_id ?? null,
+      attempt_id: null,
       worker_handle: spawned.worker_handle,
       monitor_handle: spawned.monitor_handle,
       retry_attempt: attempt ?? 0,
@@ -1993,6 +2423,8 @@ export class OrchestratorCore {
       session_id: null,
       thread_id: null,
       turn_id: null,
+      persisted_thread_id: null,
+      persisted_turn_ids: [],
       codex_app_server_pid: null,
       turn_count: 0,
       last_event: null,
@@ -2003,7 +2435,7 @@ export class OrchestratorCore {
       stalled_waiting_since_ms: null,
       stalled_waiting_reason: null,
       running_waiting_started_at_ms: null,
-      last_progress_transition_at_ms: this.nowMs(),
+      last_progress_transition_at_ms: startedAtMs,
       last_heartbeat_at_ms: null,
       heartbeat_only_event_emitted: false,
       running_wait_stall_event_emitted: false,
@@ -2026,7 +2458,7 @@ export class OrchestratorCore {
       budget_hard_limit_enforced: false,
       budget: this.computeBudgetProjection(issue.id, 0, 'unavailable'),
       recent_events: [],
-      started_at_ms: this.nowMs(),
+      started_at_ms: startedAtMs,
       last_codex_timestamp_ms: null,
       current_phase: null,
       current_phase_at_ms: null,
@@ -2045,6 +2477,39 @@ export class OrchestratorCore {
           issue_id: issue.id,
           issue_identifier: issue.identifier
         });
+        const startedAt = asIso(runningEntry.started_at_ms);
+        runningEntry.issue_run_id =
+          graphContext.issue_run_id ??
+          (await this.persistence.appendIssueRun?.({
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            started_at: startedAt,
+            status: 'running',
+            reason_code: REASON_CODES.dispatchStarted,
+            reason_detail: 'dispatch attempt started'
+          })) ??
+          null;
+        if (runningEntry.issue_run_id) {
+          runningEntry.attempt_id =
+            (await this.persistence.appendAttempt?.({
+              issue_run_id: runningEntry.issue_run_id,
+              attempt_number: runningEntry.retry_attempt,
+              started_at: startedAt,
+              status: 'running',
+              reason_code: REASON_CODES.attemptStarted,
+              reason_detail: 'worker spawned'
+            })) ?? null;
+          await this.persistence.appendStateTransition?.({
+            issue_run_id: runningEntry.issue_run_id,
+            attempt_id: runningEntry.attempt_id,
+            from_status: null,
+            to_status: 'running',
+            transitioned_at: startedAt,
+            status: 'running',
+            reason_code: REASON_CODES.dispatchStarted,
+            reason_detail: 'dispatch attempt started'
+          });
+        }
       } catch {
         this.logger?.log({
           level: 'warn',
@@ -2142,6 +2607,8 @@ export class OrchestratorCore {
       issue_id: params.issue_id,
       identifier: params.identifier,
       attempt: params.attempt,
+      issue_run_id: params.issue_run_id ?? null,
+      previous_attempt_id: params.previous_attempt_id ?? null,
       due_at_ms: dueAtMs,
       error: params.error ?? null,
       worker_host: params.worker_host ?? null,
@@ -2189,6 +2656,8 @@ export class OrchestratorCore {
     issue_id: string;
     issue_identifier: string;
     attempt: number;
+    issue_run_id?: string | null;
+    previous_attempt_id?: string | null;
     worker_host: string | null;
     workspace_path: string | null;
     provisioner_type: string | null;
@@ -2260,6 +2729,8 @@ export class OrchestratorCore {
       issue_id: params.issue_id,
       issue_identifier: params.issue_identifier,
       attempt: params.attempt,
+      issue_run_id: params.issue_run_id ?? null,
+      previous_attempt_id: params.previous_attempt_id ?? null,
       worker_host: params.worker_host,
       workspace_path: params.workspace_path,
       provisioner_type: params.provisioner_type,
@@ -2529,12 +3000,17 @@ export class OrchestratorCore {
 
     const eligibility = shouldDispatchIssue(issue, this.state, this.config);
     if (eligibility.eligible) {
-      await this.dispatchIssue(issue, blocked.attempt, resume_context);
+      await this.dispatchIssue(issue, blocked.attempt, resume_context, {
+        issue_run_id: blocked.issue_run_id,
+        previous_attempt_id: blocked.previous_attempt_id
+      });
     } else if (eligibility.reason === 'global_slots_exhausted' || eligibility.reason === 'state_slots_exhausted') {
       await this.scheduleRetry({
         issue_id: blocked.issue_id,
         identifier: blocked.issue_identifier,
         attempt: blocked.attempt,
+        issue_run_id: blocked.issue_run_id,
+        previous_attempt_id: blocked.previous_attempt_id,
         delay_type: 'failure',
         error: 'no available orchestrator slots',
         worker_host: blocked.worker_host,
@@ -2560,6 +3036,8 @@ export class OrchestratorCore {
         issue_id: blocked.issue_id,
         identifier: blocked.issue_identifier,
         attempt: blocked.attempt,
+        issue_run_id: blocked.issue_run_id,
+        previous_attempt_id: blocked.previous_attempt_id,
         delay_type: 'continuation',
         error: null,
         worker_host: blocked.worker_host,
@@ -2923,7 +3401,7 @@ export class OrchestratorCore {
   private mapPhaseForWorkerEvent(eventName: string): PhaseMarkerName | null {
     switch (eventName) {
       case CANONICAL_EVENT.codex.sessionStarted:
-        return 'codex_session_started';
+        return REASON_CODES.codexSessionStarted;
       case CANONICAL_EVENT.codex.turnStarted:
         return 'codex_turn_started';
       case CANONICAL_EVENT.codex.turnWaiting:

@@ -1423,6 +1423,56 @@ describe('LocalApiServer', () => {
             session_ids: ['thread-1-turn-1']
           }
         ],
+        reconstructThreadLineage: (threadId) =>
+          threadId === 'thread-1'
+            ? {
+                issue_run: {
+                  issue_run_id: 'issue_run_1',
+                  issue_id: 'issue-1',
+                  issue_identifier: 'ABC-1',
+                  started_at: '2026-04-10T10:00:00.000Z',
+                  ended_at: null,
+                  status: 'running',
+                  reason_code: 'dispatch_started',
+                  reason_detail: null
+                },
+                attempt: {
+                  attempt_id: 'attempt_1',
+                  issue_run_id: 'issue_run_1',
+                  attempt_number: 0,
+                  started_at: '2026-04-10T10:00:01.000Z',
+                  ended_at: null,
+                  status: 'running',
+                  reason_code: 'attempt_started',
+                  reason_detail: null
+                },
+                thread: {
+                  thread_id: 'thread-1',
+                  attempt_id: 'attempt_1',
+                  started_at: '2026-04-10T10:00:02.000Z',
+                  ended_at: null,
+                  status: 'running',
+                  reason_code: 'codex_session_started',
+                  reason_detail: null
+                },
+                turns: [],
+                state_transitions: [
+                  {
+                    state_transition_id: 'state_transition_1',
+                    issue_run_id: 'issue_run_1',
+                    attempt_id: 'attempt_1',
+                    thread_id: 'thread-1',
+                    turn_id: null,
+                    from_status: 'running',
+                    to_status: 'retrying',
+                    transitioned_at: '2026-04-10T10:01:00.000Z',
+                    status: 'retrying',
+                    reason_code: 'normal_completion',
+                    reason_detail: 'continuation scheduled'
+                  }
+                ]
+              }
+            : null,
         getUiState: () => ({
           selected_issue: 'ABC-1',
           filters: { status: 'all', query: 'ABC' },
@@ -1595,6 +1645,22 @@ describe('LocalApiServer', () => {
     const historyPayload = (await historyResponse.json()) as { runs: Array<{ run_id: string }> };
     expect(historyResponse.status).toBe(200);
     expect(historyPayload.runs[0].run_id).toBe('run-1');
+
+    const lineageResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history/threads/thread-1`);
+    const lineagePayload = (await lineageResponse.json()) as {
+      lineage: {
+        issue_run: { issue_identifier: string };
+        thread: { thread_id: string };
+        state_transitions: Array<{ to_status: string; reason_code: string | null }>;
+      };
+    };
+    expect(lineageResponse.status).toBe(200);
+    expect(lineagePayload.lineage.issue_run.issue_identifier).toBe('ABC-1');
+    expect(lineagePayload.lineage.thread.thread_id).toBe('thread-1');
+    expect(lineagePayload.lineage.state_transitions[0]).toMatchObject({
+      to_status: 'retrying',
+      reason_code: 'normal_completion'
+    });
 
     const uiStateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ui-state`);
     const uiStatePayload = (await uiStateResponse.json()) as {

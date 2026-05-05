@@ -1,8 +1,10 @@
+import { REASON_CODES } from './reason-codes';
+
 export const PHASE_SEQUENCE = [
-  'dispatch_started',
+  REASON_CODES.dispatchStarted,
   'workspace_ready',
   'prompt_sent',
-  'codex_session_started',
+  REASON_CODES.codexSessionStarted,
   'codex_turn_started',
   'planning',
   'implementation',

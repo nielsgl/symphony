@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -6,10 +6,19 @@ import { redactUnknown } from '../security/redaction';
 import type {
   BreakerMetadataRecord,
   DurableRunHistoryRecord,
+  AttemptRecord,
+  ExecutionGraphEntityStatus,
+  ExecutionGraphThreadLineage,
+  IssueRunRecord,
+  PhaseSpanRecord,
   PersistedBlockedInputRecord,
   PersistedOperatorActionsRecord,
   PersistenceHealth,
   RunTerminalStatus,
+  StateTransitionRecord,
+  ThreadRecord,
+  ToolSpanRecord,
+  TurnRecord,
   UiContinuityState
 } from './types';
 
@@ -21,6 +30,28 @@ interface PersistenceStoreOptions {
 
 function asIso(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
+}
+
+function asExecutionGraphId(kind: string, parts: Array<string | number | null | undefined>): string {
+  const hash = createHash('sha256')
+    .update(kind)
+    .update('\0')
+    .update(parts.map((part) => String(part ?? '')).join('\0'))
+    .digest('hex')
+    .slice(0, 32);
+  return `${kind}_${hash}`;
+}
+
+function ensureMonotonicTimestamp(next: string, previous: string | null | undefined, label: string): void {
+  if (previous && next < previous) {
+    throw new Error(`${label} timestamp must be monotonic`);
+  }
+}
+
+function ensureEndedAfterStarted(startedAt: string, endedAt: string | null | undefined, label: string): void {
+  if (endedAt && endedAt < startedAt) {
+    throw new Error(`${label} ended_at must be greater than or equal to started_at`);
+  }
 }
 
 export class SqlitePersistenceStore {
@@ -60,8 +91,100 @@ export class SqlitePersistenceStore {
 
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
+    this.db.exec('PRAGMA foreign_keys = ON;');
 
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS issue_run (
+        issue_run_id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL,
+        issue_identifier TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        status TEXT NOT NULL,
+        reason_code TEXT,
+        reason_detail TEXT,
+        CHECK (ended_at IS NULL OR ended_at >= started_at)
+      );
+      CREATE TABLE IF NOT EXISTS attempt (
+        attempt_id TEXT PRIMARY KEY,
+        issue_run_id TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        status TEXT NOT NULL,
+        reason_code TEXT,
+        reason_detail TEXT,
+        UNIQUE (issue_run_id, attempt_number),
+        CHECK (attempt_number >= 0),
+        CHECK (ended_at IS NULL OR ended_at >= started_at),
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS thread (
+        thread_id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        status TEXT NOT NULL,
+        reason_code TEXT,
+        reason_detail TEXT,
+        CHECK (ended_at IS NULL OR ended_at >= started_at),
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS turn (
+        turn_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        turn_index INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        status TEXT NOT NULL,
+        reason_code TEXT,
+        reason_detail TEXT,
+        UNIQUE (thread_id, turn_index),
+        CHECK (turn_index >= 0),
+        CHECK (ended_at IS NULL OR ended_at >= started_at),
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS phase_span (
+        phase_span_id TEXT PRIMARY KEY,
+        turn_id TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        status TEXT NOT NULL,
+        reason_code TEXT,
+        reason_detail TEXT,
+        CHECK (ended_at IS NULL OR ended_at >= started_at),
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS tool_span (
+        tool_span_id TEXT PRIMARY KEY,
+        turn_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        status TEXT NOT NULL,
+        reason_code TEXT,
+        reason_detail TEXT,
+        CHECK (ended_at IS NULL OR ended_at >= started_at),
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS state_transition (
+        state_transition_id TEXT PRIMARY KEY,
+        issue_run_id TEXT NOT NULL,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        from_status TEXT,
+        to_status TEXT NOT NULL,
+        transitioned_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reason_code TEXT,
+        reason_detail TEXT,
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
       CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY,
         issue_id TEXT NOT NULL,
@@ -140,6 +263,297 @@ export class SqlitePersistenceStore {
     this.db
       .prepare('INSERT INTO run_events (run_id, at, event, message) VALUES (?, ?, ?, ?)')
       .run(params.run_id, asIso(params.timestamp_ms), params.event, redactedMessage);
+  }
+
+  appendIssueRun(params: {
+    issue_id: string;
+    issue_identifier: string;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    issue_run_id?: string;
+  }): string {
+    ensureEndedAfterStarted(params.started_at, params.ended_at, 'issue_run');
+    const issueRunId = params.issue_run_id ?? asExecutionGraphId('issue_run', [params.issue_id, params.issue_identifier, params.started_at]);
+    this.db
+      .prepare(
+        `INSERT INTO issue_run
+        (issue_run_id, issue_id, issue_identifier, started_at, ended_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        issueRunId,
+        params.issue_id,
+        params.issue_identifier,
+        params.started_at,
+        params.ended_at ?? null,
+        params.status,
+        params.reason_code ?? null,
+        redactUnknown(params.reason_detail ?? null)
+      );
+    return issueRunId;
+  }
+
+  appendAttempt(params: {
+    issue_run_id: string;
+    attempt_number: number;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    attempt_id?: string;
+  }): string {
+    ensureEndedAfterStarted(params.started_at, params.ended_at, 'attempt');
+    const parent = this.db.prepare('SELECT started_at FROM issue_run WHERE issue_run_id = ?').get(params.issue_run_id) as
+      | { started_at: string }
+      | undefined;
+    if (!parent) {
+      throw new Error(`issue_run ${params.issue_run_id} does not exist`);
+    }
+    ensureMonotonicTimestamp(params.started_at, parent.started_at, 'attempt');
+    const attemptId = params.attempt_id ?? asExecutionGraphId('attempt', [params.issue_run_id, params.attempt_number]);
+    this.db
+      .prepare(
+        `INSERT INTO attempt
+        (attempt_id, issue_run_id, attempt_number, started_at, ended_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        attemptId,
+        params.issue_run_id,
+        params.attempt_number,
+        params.started_at,
+        params.ended_at ?? null,
+        params.status,
+        params.reason_code ?? null,
+        redactUnknown(params.reason_detail ?? null)
+      );
+    return attemptId;
+  }
+
+  appendThread(params: {
+    attempt_id: string;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    thread_id?: string;
+  }): string {
+    ensureEndedAfterStarted(params.started_at, params.ended_at, 'thread');
+    const parent = this.db.prepare('SELECT started_at FROM attempt WHERE attempt_id = ?').get(params.attempt_id) as
+      | { started_at: string }
+      | undefined;
+    if (!parent) {
+      throw new Error(`attempt ${params.attempt_id} does not exist`);
+    }
+    ensureMonotonicTimestamp(params.started_at, parent.started_at, 'thread');
+    const threadId = params.thread_id ?? asExecutionGraphId('thread', [params.attempt_id, params.started_at]);
+    this.db
+      .prepare(
+        `INSERT INTO thread
+        (thread_id, attempt_id, started_at, ended_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        threadId,
+        params.attempt_id,
+        params.started_at,
+        params.ended_at ?? null,
+        params.status,
+        params.reason_code ?? null,
+        redactUnknown(params.reason_detail ?? null)
+      );
+    return threadId;
+  }
+
+  appendTurn(params: {
+    thread_id: string;
+    turn_index: number;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    turn_id?: string;
+  }): string {
+    ensureEndedAfterStarted(params.started_at, params.ended_at, 'turn');
+    const parent = this.db.prepare('SELECT started_at FROM thread WHERE thread_id = ?').get(params.thread_id) as
+      | { started_at: string }
+      | undefined;
+    if (!parent) {
+      throw new Error(`thread ${params.thread_id} does not exist`);
+    }
+    ensureMonotonicTimestamp(params.started_at, parent.started_at, 'turn');
+    const turnId = params.turn_id ?? asExecutionGraphId('turn', [params.thread_id, params.turn_index]);
+    this.db
+      .prepare(
+        `INSERT INTO turn
+        (turn_id, thread_id, turn_index, started_at, ended_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        turnId,
+        params.thread_id,
+        params.turn_index,
+        params.started_at,
+        params.ended_at ?? null,
+        params.status,
+        params.reason_code ?? null,
+        redactUnknown(params.reason_detail ?? null)
+      );
+    return turnId;
+  }
+
+  appendPhaseSpan(params: {
+    turn_id: string;
+    phase: string;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    phase_span_id?: string;
+  }): string {
+    ensureEndedAfterStarted(params.started_at, params.ended_at, 'phase_span');
+    this.ensureTurnTimestamp(params.turn_id, params.started_at, 'phase_span');
+    const phaseSpanId = params.phase_span_id ?? asExecutionGraphId('phase_span', [params.turn_id, params.phase, params.started_at]);
+    this.db
+      .prepare(
+        `INSERT INTO phase_span
+        (phase_span_id, turn_id, phase, started_at, ended_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        phaseSpanId,
+        params.turn_id,
+        params.phase,
+        params.started_at,
+        params.ended_at ?? null,
+        params.status,
+        params.reason_code ?? null,
+        redactUnknown(params.reason_detail ?? null)
+      );
+    return phaseSpanId;
+  }
+
+  appendToolSpan(params: {
+    turn_id: string;
+    tool_name: string;
+    started_at: string;
+    ended_at?: string | null;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    tool_span_id?: string;
+  }): string {
+    ensureEndedAfterStarted(params.started_at, params.ended_at, 'tool_span');
+    this.ensureTurnTimestamp(params.turn_id, params.started_at, 'tool_span');
+    const toolSpanId = params.tool_span_id ?? asExecutionGraphId('tool_span', [params.turn_id, params.tool_name, params.started_at]);
+    this.db
+      .prepare(
+        `INSERT INTO tool_span
+        (tool_span_id, turn_id, tool_name, started_at, ended_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        toolSpanId,
+        params.turn_id,
+        params.tool_name,
+        params.started_at,
+        params.ended_at ?? null,
+        params.status,
+        params.reason_code ?? null,
+        redactUnknown(params.reason_detail ?? null)
+      );
+    return toolSpanId;
+  }
+
+  appendStateTransition(params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    from_status?: string | null;
+    to_status: string;
+    transitioned_at: string;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    state_transition_id?: string;
+  }): string {
+    this.ensureStateTransitionReferences(params);
+    const latest = this.db
+      .prepare('SELECT transitioned_at FROM state_transition WHERE issue_run_id = ? ORDER BY transitioned_at DESC LIMIT 1')
+      .get(params.issue_run_id) as { transitioned_at: string } | undefined;
+    ensureMonotonicTimestamp(params.transitioned_at, latest?.transitioned_at, 'state_transition');
+    const stateTransitionId =
+      params.state_transition_id ??
+      asExecutionGraphId('state_transition', [
+        params.issue_run_id,
+        params.attempt_id,
+        params.thread_id,
+        params.turn_id,
+        params.from_status,
+        params.to_status,
+        params.transitioned_at,
+        params.reason_code
+      ]);
+    this.db
+      .prepare(
+        `INSERT INTO state_transition
+        (state_transition_id, issue_run_id, attempt_id, thread_id, turn_id, from_status, to_status, transitioned_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        stateTransitionId,
+        params.issue_run_id,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.from_status ?? null,
+        params.to_status,
+        params.transitioned_at,
+        params.status,
+        params.reason_code ?? null,
+        redactUnknown(params.reason_detail ?? null)
+      );
+    return stateTransitionId;
+  }
+
+  reconstructThreadLineage(threadId: string): ExecutionGraphThreadLineage | null {
+    const thread = this.db.prepare('SELECT * FROM thread WHERE thread_id = ?').get(threadId) as ThreadRecord | undefined;
+    if (!thread) {
+      return null;
+    }
+    const attempt = this.db.prepare('SELECT * FROM attempt WHERE attempt_id = ?').get(thread.attempt_id) as AttemptRecord;
+    const issueRun = this.db.prepare('SELECT * FROM issue_run WHERE issue_run_id = ?').get(attempt.issue_run_id) as IssueRunRecord;
+    const transitions = this.db
+      .prepare('SELECT * FROM state_transition WHERE issue_run_id = ? ORDER BY transitioned_at ASC, state_transition_id ASC')
+      .all(issueRun.issue_run_id) as StateTransitionRecord[];
+    const turns = this.db
+      .prepare('SELECT * FROM turn WHERE thread_id = ? ORDER BY turn_index ASC, started_at ASC')
+      .all(threadId) as TurnRecord[];
+
+    return {
+      issue_run: issueRun,
+      attempt,
+      thread,
+      turns: turns.map((turn) => ({
+        ...turn,
+        phase_spans: this.db
+          .prepare('SELECT * FROM phase_span WHERE turn_id = ? ORDER BY started_at ASC, phase_span_id ASC')
+          .all(turn.turn_id) as PhaseSpanRecord[],
+        tool_spans: this.db
+          .prepare('SELECT * FROM tool_span WHERE turn_id = ? ORDER BY started_at ASC, tool_span_id ASC')
+          .all(turn.turn_id) as ToolSpanRecord[],
+        state_transitions: transitions.filter((transition) => transition.turn_id === turn.turn_id)
+      })),
+      state_transitions: transitions
+    };
   }
 
   completeRun(params: { run_id: string; terminal_status: RunTerminalStatus; error_code?: string | null }): void {
@@ -295,6 +709,80 @@ export class SqlitePersistenceStore {
     return this.db
       .prepare('SELECT issue_id, payload, updated_at FROM operator_actions ORDER BY updated_at DESC')
       .all() as PersistedOperatorActionsRecord[];
+  }
+
+  private ensureTurnTimestamp(turnId: string, timestamp: string, label: string): void {
+    const parent = this.db.prepare('SELECT started_at FROM turn WHERE turn_id = ?').get(turnId) as { started_at: string } | undefined;
+    if (!parent) {
+      throw new Error(`turn ${turnId} does not exist`);
+    }
+    ensureMonotonicTimestamp(timestamp, parent.started_at, label);
+  }
+
+  private ensureStateTransitionReferences(params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    transitioned_at: string;
+  }): void {
+    const issueRun = this.db.prepare('SELECT started_at FROM issue_run WHERE issue_run_id = ?').get(params.issue_run_id) as
+      | { started_at: string }
+      | undefined;
+    if (!issueRun) {
+      throw new Error(`issue_run ${params.issue_run_id} does not exist`);
+    }
+    ensureMonotonicTimestamp(params.transitioned_at, issueRun.started_at, 'state_transition');
+
+    if (params.attempt_id) {
+      const attempt = this.db.prepare('SELECT issue_run_id, started_at FROM attempt WHERE attempt_id = ?').get(params.attempt_id) as
+        | { issue_run_id: string; started_at: string }
+        | undefined;
+      if (!attempt || attempt.issue_run_id !== params.issue_run_id) {
+        throw new Error(`attempt ${params.attempt_id} does not belong to issue_run ${params.issue_run_id}`);
+      }
+      ensureMonotonicTimestamp(params.transitioned_at, attempt.started_at, 'state_transition');
+    }
+
+    if (params.thread_id) {
+      const thread = this.db
+        .prepare(
+          `SELECT thread.started_at, thread.attempt_id, attempt.issue_run_id
+           FROM thread
+           JOIN attempt ON attempt.attempt_id = thread.attempt_id
+           WHERE thread.thread_id = ?`
+        )
+        .get(params.thread_id) as { started_at: string; attempt_id: string; issue_run_id: string } | undefined;
+      if (!thread || thread.issue_run_id !== params.issue_run_id) {
+        throw new Error(`thread ${params.thread_id} does not belong to issue_run ${params.issue_run_id}`);
+      }
+      if (params.attempt_id && thread.attempt_id !== params.attempt_id) {
+        throw new Error(`thread ${params.thread_id} does not belong to attempt ${params.attempt_id}`);
+      }
+      ensureMonotonicTimestamp(params.transitioned_at, thread.started_at, 'state_transition');
+    }
+
+    if (params.turn_id) {
+      const turn = this.db
+        .prepare(
+          `SELECT turn.started_at, turn.thread_id, thread.attempt_id, attempt.issue_run_id
+           FROM turn
+           JOIN thread ON thread.thread_id = turn.thread_id
+           JOIN attempt ON attempt.attempt_id = thread.attempt_id
+           WHERE turn.turn_id = ?`
+        )
+        .get(params.turn_id) as { started_at: string; thread_id: string; attempt_id: string; issue_run_id: string } | undefined;
+      if (!turn || turn.issue_run_id !== params.issue_run_id) {
+        throw new Error(`turn ${params.turn_id} does not belong to issue_run ${params.issue_run_id}`);
+      }
+      if (params.attempt_id && turn.attempt_id !== params.attempt_id) {
+        throw new Error(`turn ${params.turn_id} does not belong to attempt ${params.attempt_id}`);
+      }
+      if (params.thread_id && turn.thread_id !== params.thread_id) {
+        throw new Error(`turn ${params.turn_id} does not belong to thread ${params.thread_id}`);
+      }
+      ensureMonotonicTimestamp(params.transitioned_at, turn.started_at, 'state_transition');
+    }
   }
 
   pruneExpiredRuns(): number {
