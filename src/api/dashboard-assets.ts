@@ -36,6 +36,12 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     </div>
   </header>
 
+  <section id="action-required-banner" class="action-required-banner hidden" role="region" aria-live="polite">
+    <strong id="action-required-title">Action Required</strong>
+    <span id="action-required-summary"></span>
+    <div id="action-required-groups" class="inline-badges"></div>
+  </section>
+
   <main class="layout">
     <section id="snapshot-error-panel" class="panel panel-wide snapshot-error hidden">
       <div class="panel-head">
@@ -243,7 +249,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     filter: {
       query: '',
       status: 'all',
-      eventFeedSeverity: 'all'
+      eventFeedSeverity: 'all',
+      blockedReason: 'all'
     },
     panels: {
       throughputOpen: true,
@@ -260,6 +267,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     refreshStatus: document.getElementById('refresh-status'),
     healthMessage: document.getElementById('health-message'),
     lastError: document.getElementById('last-error'),
+    actionRequiredBanner: document.getElementById('action-required-banner'),
+    actionRequiredTitle: document.getElementById('action-required-title'),
+    actionRequiredSummary: document.getElementById('action-required-summary'),
+    actionRequiredGroups: document.getElementById('action-required-groups'),
     snapshotErrorPanel: document.getElementById('snapshot-error-panel'),
     snapshotErrorMessage: document.getElementById('snapshot-error-message'),
     kpiGrid: document.getElementById('kpi-grid'),
@@ -330,6 +341,33 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.refreshStatus.className = isError ? 'status-error' : 'status-ok';
   }
 
+  const ACTION_REQUIRED_CODES = {
+    operator_action_required_workspace_conflict: 'Workspace Conflict',
+    operator_action_required_no_progress_redispatch_blocked: 'No Progress Redispatch Blocked',
+    awaiting_human_review_scope_incomplete: 'Awaiting Human Review (Scope Incomplete)'
+  };
+
+  function getActionRequiredLabel(code) {
+    return ACTION_REQUIRED_CODES[code] || code || 'unknown';
+  }
+
+  function isActionRequiredCode(code) {
+    return Boolean(code && ACTION_REQUIRED_CODES[code]);
+  }
+
+  function formatApiError(payload, fallbackMessage) {
+    if (!payload || !payload.error) {
+      return fallbackMessage;
+    }
+    if (payload.error.code && payload.error.message) {
+      return payload.error.code + ': ' + payload.error.message;
+    }
+    if (payload.error.message) {
+      return String(payload.error.message);
+    }
+    return fallbackMessage;
+  }
+
   function createMetricCard(label, value) {
     const card = document.createElement('article');
     card.className = 'kpi-card';
@@ -372,6 +410,52 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
     const rateLimits = payload.rate_limits;
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+  }
+
+  function renderActionRequiredBanner(payload) {
+    const blockedEntries = Array.isArray(payload && payload.blocked) ? payload.blocked : [];
+    const grouped = new Map();
+    for (const entry of blockedEntries) {
+      if (!isActionRequiredCode(entry.stop_reason_code)) {
+        continue;
+      }
+      const count = grouped.get(entry.stop_reason_code) || 0;
+      grouped.set(entry.stop_reason_code, count + 1);
+    }
+    if (!grouped.size) {
+      elements.actionRequiredBanner.classList.add('hidden');
+      elements.actionRequiredSummary.textContent = '';
+      elements.actionRequiredGroups.replaceChildren();
+      return;
+    }
+
+    const total = Array.from(grouped.values()).reduce(function (sum, count) {
+      return sum + count;
+    }, 0);
+    elements.actionRequiredBanner.classList.remove('hidden');
+    elements.actionRequiredSummary.textContent = total + ' blocked run' + (total === 1 ? '' : 's') + ' need operator action.';
+
+    const groupNodes = Array.from(grouped.entries()).map(function (entry) {
+      const code = entry[0];
+      const count = entry[1];
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ghost-button reason-chip';
+      button.textContent = getActionRequiredLabel(code) + ' (' + count + ')';
+      button.title = 'Filter blocked rows for ' + getActionRequiredLabel(code);
+      button.addEventListener('click', function () {
+        state.filter.status = 'blocked';
+        state.filter.blockedReason = code;
+        elements.statusFilter.value = 'blocked';
+        if (state.payload) {
+          renderRunning(state.payload);
+          renderRetry(state.payload);
+          renderBlocked(state.payload);
+        }
+      });
+      return button;
+    });
+    elements.actionRequiredGroups.replaceChildren(...groupNodes);
   }
 
   function renderThroughput(payload) {
@@ -880,6 +964,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if (state.filter.status === 'running' || state.filter.status === 'retrying') {
         return false;
       }
+      if (state.filter.blockedReason !== 'all' && entry.stop_reason_code !== state.filter.blockedReason) {
+        return false;
+      }
       if (!state.filter.query) {
         return true;
       }
@@ -932,6 +1019,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       stopReasonDetail.className = 'muted';
       stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      if (entry.stop_reason_code) {
+        const stateLabel = document.createElement('div');
+        stateLabel.className = 'status-pill pending';
+        stateLabel.textContent = getActionRequiredLabel(entry.stop_reason_code);
+        stopReasonCell.append(stateLabel);
+      }
       const lastPhaseLine = document.createElement('div');
       lastPhaseLine.className = 'muted';
       lastPhaseLine.textContent = 'Last phase: ' + (entry.last_phase || 'n/a') + (entry.last_phase_at ? ' @ ' + formatDate(entry.last_phase_at) : '');
@@ -949,6 +1042,44 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         decisionLine.textContent = inputDecision;
         stopReasonCell.append(decisionLine);
       }
+      if (Array.isArray(entry.conflict_files) && entry.conflict_files.length) {
+        const conflictTitle = document.createElement('div');
+        conflictTitle.className = 'muted';
+        conflictTitle.textContent = 'Conflict files';
+        stopReasonCell.append(conflictTitle);
+        const conflictChips = document.createElement('div');
+        conflictChips.className = 'inline-badges';
+        for (const conflict of entry.conflict_files) {
+          const chip = document.createElement('span');
+          chip.className = 'mini-badge ' + (conflict.status === 'staged' ? 'mini-badge-good' : 'mini-badge-bad');
+          chip.textContent = conflict.path + ' (' + (conflict.status || 'unknown') + ')';
+          conflictChips.append(chip);
+        }
+        stopReasonCell.append(conflictChips);
+      }
+      if (Array.isArray(entry.required_actions) && entry.required_actions.length) {
+        const requiredActions = document.createElement('div');
+        requiredActions.className = 'muted';
+        requiredActions.textContent = 'Required actions: ' + entry.required_actions.join(', ');
+        stopReasonCell.append(requiredActions);
+      }
+      const countWindow = document.createElement('div');
+      countWindow.className = 'muted';
+      countWindow.textContent =
+        'Attempt window: ' +
+        formatNumber(entry.attempt_count_window) +
+        ' in ' +
+        formatNumber(entry.window_minutes) +
+        ' minute(s)';
+      stopReasonCell.append(countWindow);
+      const progressLine = document.createElement('div');
+      progressLine.className = 'muted';
+      progressLine.textContent =
+        'Last progress: ' +
+        (entry.last_known_commit_sha || 'n/a') +
+        ' @ ' +
+        (entry.last_progress_checkpoint_at ? formatDate(entry.last_progress_checkpoint_at) : 'n/a');
+      stopReasonCell.append(progressLine);
 
       const previousSessionCell = document.createElement('td');
       const previousSessionValue = document.createElement('div');
@@ -1009,6 +1140,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     state.payload = payload;
     state.lastGoodPayload = payload;
     renderOverview(payload);
+    renderActionRequiredBanner(payload);
     renderThroughput(payload);
     renderRunning(payload);
     renderRetry(payload);
@@ -1036,7 +1168,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     const response = await fetch(url, init);
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload && payload.error ? payload.error.message : 'Request failed');
+      throw new Error(formatApiError(payload, 'Request failed'));
     }
     return payload;
   }
@@ -1158,7 +1290,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         summaryParts.push('Stop reason: ' + payload.retry.stop_reason_code);
       }
       if (payload.blocked && payload.blocked.stop_reason_code) {
-        summaryParts.push('Blocked reason: ' + payload.blocked.stop_reason_code);
+        summaryParts.push('Blocked reason: ' + getActionRequiredLabel(payload.blocked.stop_reason_code));
       }
       if (payload.retry && payload.retry.previous_session_id) {
         summaryParts.push('Previous session: ' + payload.retry.previous_session_id);
@@ -1196,7 +1328,21 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const sessionConsole = payload.blocked && Array.isArray(payload.blocked.session_console) ? payload.blocked.session_console : [];
       const timelineText = timeline.length
         ? timeline.map(function (marker) {
-            return marker.at + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + (marker.detail || 'n/a') + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
+            let detail = marker.detail || 'n/a';
+            if (detail.includes('completion gate blocked')) {
+              detail = 'completion gate blocked';
+            } else if (detail.includes('respawn circuit breaker opened')) {
+              detail = 'circuit breaker opened';
+            } else if (detail.includes('resume accepted')) {
+              detail = 'resume accepted';
+            } else if (detail.includes('resume rejected')) {
+              detail = 'resume rejected';
+            } else if (detail.includes('cancel accepted')) {
+              detail = 'cancel accepted';
+            } else if (detail.includes('cancel rejected')) {
+              detail = 'cancel rejected';
+            }
+            return marker.at + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + detail + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
           }).join('\\n')
         : 'No phase markers yet.';
       const sessionConsoleText = sessionConsole.length
@@ -1446,6 +1592,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
     elements.statusFilter.addEventListener('change', function (event) {
       state.filter.status = event.target && event.target.value ? event.target.value : 'all';
+      if (state.filter.status !== 'blocked') {
+        state.filter.blockedReason = 'all';
+      }
       if (state.payload) {
         renderRunning(state.payload);
         renderRetry(state.payload);
@@ -1611,6 +1760,26 @@ h1 {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.action-required-banner {
+  margin: 10px 24px 0;
+  border: 1px solid #d58a44;
+  background: #fff5e8;
+  color: #8a4b12;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reason-chip {
+  font-size: 11px;
+  padding: 4px 8px;
+  color: #8a4b12;
+  border-color: #e9c9a4;
 }
 
 button,
@@ -1844,6 +2013,19 @@ td {
 .mini-badge-bad {
   background: #f8e8e8;
   color: #8a2f2f;
+}
+
+.status-pill {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-pill.pending {
+  background: #fff1df;
+  color: #8a4b12;
 }
 
 .action-cell {
