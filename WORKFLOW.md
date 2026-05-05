@@ -234,7 +234,8 @@ Use this only when completion is blocked by missing required tools or missing au
     - Revert every temporary proof edit before commit/push.
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
-    - For UI-affecting diffs in strict UI evidence mode, env/marker-only evidence is insufficient: capture at least one screenshot (`.png`) or short video (`.mp4`/`.webm`), persist under `output/playwright/`, and publish `output/playwright/ui-evidence.json` with artifact list, changed UI paths, capture time, summary, and a publish reference link/token for reviewer access.
+    - For UI-affecting diffs in strict UI evidence mode, env/marker-only evidence is insufficient: capture at least one screenshot (`.png`) or short video (`.mp4`/`.webm`), persist under `output/playwright/`, and publish `output/playwright/ui-evidence.json` with artifact list, changed UI paths, capture time, summary, and per-artifact publish evidence (`publish_reference`, `linear_attachment_id`, or `published_url`) for reviewer access.
+    - If any PR/review/workpad payload references `output/playwright/*`, run `npm run check:meta` with the outgoing body supplied as `SYMPHONY_PR_BODY` and/or `SYMPHONY_REVIEW_BODY` before marking review-ready.
     - After publishing evidence, unstage/remove `output/playwright/*` before commit. `check:meta` deterministically fails when evidence artifacts are staged/committed unless `SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED=1` is intentionally set.
 6.  Re-check all acceptance criteria and close any gaps.
     - Enforce a behavior-first gate: verify `Semantic acceptance` is complete, not just `Surface acceptance`.

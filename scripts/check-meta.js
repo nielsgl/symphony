@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { assertHumanReadableMarkdownBody } = require('./lib/markdown-body');
 
 const checks = [
   'scripts/check-api-contract.js',
@@ -29,6 +30,7 @@ const UI_EVIDENCE_MANIFEST_FILE = path.join('output', 'playwright', 'ui-evidence
 const UI_EVIDENCE_ARTIFACT_BASE_DIR = path.join('output', 'playwright');
 const UI_EVIDENCE_ALLOW_TRACKED_ENV = 'SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED';
 const UI_EVIDENCE_TRACKED_PATH_PREFIX = 'output/playwright/';
+const UI_EVIDENCE_REFERENCE_PATTERN = /output\/playwright\/[^\s`"')\]}]+/g;
 
 function runNodeCheck(scriptPath) {
   const result = spawnSync('node', [scriptPath], { stdio: 'inherit' });
@@ -280,6 +282,122 @@ function validateStrictUiEvidenceManifest(changedUiPaths) {
   return { ok: true, mode: `file:${UI_EVIDENCE_MANIFEST_FILE}` };
 }
 
+function extractArtifactReferences(text) {
+  if (typeof text !== 'string' || text.length === 0) {
+    return [];
+  }
+  return Array.from(new Set((text.match(UI_EVIDENCE_REFERENCE_PATTERN) || []).map((entry) => entry.replace(/\\/g, '/'))));
+}
+
+function collectPublishedArtifactReferences(parsedManifest) {
+  const published = new Set();
+  if (!parsedManifest || typeof parsedManifest !== 'object') {
+    return published;
+  }
+
+  const artifacts = Array.isArray(parsedManifest.artifacts) ? parsedManifest.artifacts : [];
+  for (const artifact of artifacts) {
+    if (!artifact || typeof artifact !== 'object') {
+      continue;
+    }
+    const artifactPath = typeof artifact.path === 'string' ? artifact.path.replace(/\\/g, '/').trim() : '';
+    if (!artifactPath.startsWith('output/playwright/')) {
+      continue;
+    }
+    const hasPublishRef = typeof artifact.publish_reference === 'string' && artifact.publish_reference.trim().length > 0;
+    const hasAttachmentId = typeof artifact.linear_attachment_id === 'string' && artifact.linear_attachment_id.trim().length > 0;
+    const hasPublishedUrl = typeof artifact.published_url === 'string' && artifact.published_url.trim().length > 0;
+    if (hasPublishRef || hasAttachmentId || hasPublishedUrl) {
+      published.add(artifactPath);
+    }
+  }
+
+  const mapped = parsedManifest.published_artifacts;
+  if (mapped && typeof mapped === 'object') {
+    for (const [artifactPath, reference] of Object.entries(mapped)) {
+      const normalizedPath = String(artifactPath || '').replace(/\\/g, '/').trim();
+      if (!normalizedPath.startsWith('output/playwright/')) {
+        continue;
+      }
+      if (typeof reference === 'string' && reference.trim().length > 0) {
+        published.add(normalizedPath);
+      }
+    }
+  }
+  return published;
+}
+
+function enforceEvidencePublicationReferences() {
+  const references = new Set();
+  const bodyInputs = [String(process.env.SYMPHONY_PR_BODY || ''), String(process.env.SYMPHONY_REVIEW_BODY || '')];
+  const bodyFileInputs = [String(process.env.SYMPHONY_PR_BODY_FILE || ''), String(process.env.SYMPHONY_REVIEW_BODY_FILE || '')]
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  try {
+    for (const body of bodyInputs) {
+      const normalized = assertHumanReadableMarkdownBody(body);
+      for (const match of extractArtifactReferences(normalized)) {
+        references.add(match);
+      }
+    }
+    for (const bodyPath of bodyFileInputs) {
+      const resolvedPath = path.resolve(process.cwd(), bodyPath);
+      if (!fs.existsSync(resolvedPath)) {
+        continue;
+      }
+      const normalized = assertHumanReadableMarkdownBody(fs.readFileSync(resolvedPath, 'utf8'));
+      for (const match of extractArtifactReferences(normalized)) {
+        references.add(match);
+      }
+    }
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : 'pr_body_escaped_newlines: body contains escaped newline sequences; normalize before submit'}\n`);
+    process.exit(1);
+  }
+
+  const manifestPath = path.join(process.cwd(), UI_EVIDENCE_MANIFEST_FILE);
+  if (fs.existsSync(manifestPath)) {
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    } catch {
+      parsed = null;
+    }
+    if (parsed && Array.isArray(parsed.artifacts)) {
+      for (const artifact of parsed.artifacts) {
+        if (!artifact || typeof artifact !== 'object') {
+          continue;
+        }
+        const artifactPath = typeof artifact.path === 'string' ? artifact.path.replace(/\\/g, '/').trim() : '';
+        if (artifactPath.startsWith('output/playwright/')) {
+          references.add(artifactPath);
+        }
+      }
+    }
+
+    if (references.size > 0) {
+      const published = collectPublishedArtifactReferences(parsed);
+      for (const artifactPath of references) {
+        if (!published.has(artifactPath)) {
+          process.stderr.write(
+            'ui_evidence_unpublished: artifact referenced without Linear attachment/publish_reference\n'
+          );
+          process.stderr.write(`Artifact: ${artifactPath}\n`);
+          process.stderr.write(
+            'Add one of artifact.publish_reference, artifact.linear_attachment_id, artifact.published_url, or published_artifacts[path].\n'
+          );
+          process.exit(1);
+        }
+      }
+    }
+  } else if (references.size > 0) {
+    process.stderr.write('ui_evidence_unpublished: artifact referenced without Linear attachment/publish_reference\n');
+    process.stderr.write(`Expected manifest: ${UI_EVIDENCE_MANIFEST_FILE}\n`);
+    process.exit(1);
+  }
+}
+
 function tryLoadSharedFrontmatterParser(repoRoot) {
   const candidates = [
     path.join(repoRoot, 'dist/src/workflow/frontmatter.js'),
@@ -404,6 +522,7 @@ function enforceUiEvidenceGate() {
 
   const changedFiles = listChangedFiles();
   if (!hasUiAffectingChange(changedFiles)) {
+    enforceEvidencePublicationReferences();
     process.stdout.write('UI evidence gate skipped: no UI-affecting paths changed.\n');
     return;
   }
@@ -418,12 +537,14 @@ function enforceUiEvidenceGate() {
       process.stderr.write(`Expected manifest: ${UI_EVIDENCE_MANIFEST_FILE}\n`);
       process.exit(1);
     }
+    enforceEvidencePublicationReferences();
     process.stdout.write(`UI evidence gate passed via ${strictEvidence.mode}.\n`);
     return;
   }
 
   const evidence = hasUiEvidence();
   if (evidence.ok) {
+    enforceEvidencePublicationReferences();
     process.stdout.write(`UI evidence gate passed via ${evidence.mode}.\n`);
     return;
   }

@@ -53,7 +53,12 @@ description:
      just newest commits).
 7. If a PR template exists in the target repo, follow it exactly. Otherwise use
    the structured body above and ensure governance checks pass.
-8. Reply with the PR URL from `gh pr view`.
+8. Submit/update through the governed wrapper (mandatory):
+   - `npm run submit:pr-governed -- --mode create --title "<clear PR title written for this change>"`
+   - `npm run submit:pr-governed -- --mode edit`
+   - Wrapper sequence is deterministic and mandatory: normalize body -> `check:pr-governance` -> `check:meta` -> `gh pr create/edit --body-file <normalized-file>`.
+9. If body/review text references `output/playwright/*`, ensure each referenced artifact has Linear publication evidence in `output/playwright/ui-evidence.json` (`artifact.publish_reference`, `artifact.linear_attachment_id`, or `artifact.published_url`) before wrapper submit.
+10. Reply with the PR URL from `gh pr view`.
 
 ## Commands
 
@@ -88,16 +93,19 @@ fi
 
 # Write a clear, human-friendly title that summarizes the shipped change.
 pr_title="<clear PR title written for this change>"
-if [ -z "$pr_state" ]; then
-  gh pr create --title "$pr_title"
-else
-  # Reconsider title on every branch update; edit if scope shifted.
-  gh pr edit --title "$pr_title"
-fi
 
 # Write/edit PR body to include Summary, Spec Alignment, and Verification.
 # If this repo has a PR template, follow it; otherwise keep the above sections.
 # Ensure governance checks are green before finalizing push/PR.
+cat > .git/.symphony-pr-body.md <<'MD'
+<full markdown PR body>
+MD
+if [ -z "$pr_state" ]; then
+  npm run submit:pr-governed -- --mode create --title "$pr_title"
+else
+  # Reconsider title on every branch update; edit if scope shifted.
+  npm run submit:pr-governed -- --mode edit
+fi
 
 # Show PR URL for the reply
 gh pr view --json url -q .url
