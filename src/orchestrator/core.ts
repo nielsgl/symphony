@@ -167,6 +167,10 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     last_phase_detail: entry.last_phase_detail,
     blocked_at_ms: entry.blocked_at_ms,
     requires_manual_resume: true,
+    awaiting_operator: true,
+    awaiting_operator_reason_code: entry.awaiting_operator_reason_code ?? entry.stop_reason_code,
+    awaiting_operator_since_ms: entry.awaiting_operator_since_ms ?? entry.blocked_at_ms,
+    awaiting_operator_resume_nonce: entry.awaiting_operator_resume_nonce ?? 0,
     attempt_count_window: entry.attempt_count_window,
     window_minutes: entry.window_minutes,
     last_known_commit_sha: entry.last_known_commit_sha ?? null,
@@ -183,7 +187,10 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
           }))
         }
       : null,
-    session_console: (entry.session_console ?? []).map((event) => ({ ...event }))
+    session_console: (entry.session_console ?? []).map((event) => ({ ...event })),
+    quarantined_events: (entry.quarantined_events ?? []).map((event) => ({ ...event })),
+    quarantined_event_count: entry.quarantined_event_count ?? 0,
+    last_quarantined_event_at_ms: entry.last_quarantined_event_at_ms ?? null
   };
 }
 
@@ -477,6 +484,10 @@ export class OrchestratorCore {
   onWorkerEvent(issue_id: string, workerEvent: WorkerObservabilityEvent): void {
     const runningEntry = this.state.running.get(issue_id);
     if (!runningEntry) {
+      const blockedEntry = this.state.blocked_inputs.get(issue_id);
+      if (blockedEntry?.awaiting_operator) {
+        this.quarantineBlockedWorkerEvent(blockedEntry, workerEvent, 'awaiting_operator_latch');
+      }
       return;
     }
 
@@ -656,6 +667,48 @@ export class OrchestratorCore {
     if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
       this.emitMappedPhaseMarker(issue_id, workerEvent);
     }
+  }
+
+  private quarantineBlockedWorkerEvent(
+    blockedEntry: BlockedEntry,
+    workerEvent: WorkerObservabilityEvent,
+    reason: 'awaiting_operator_latch' | 'lineage_mismatch'
+  ): void {
+    const quarantinedEvent = {
+      at_ms: workerEvent.timestamp_ms,
+      event: workerEvent.event,
+      message: workerEvent.detail ?? null,
+      session_id: workerEvent.session_id ?? null,
+      thread_id: workerEvent.thread_id ?? null,
+      turn_id: workerEvent.turn_id ?? null,
+      reason
+    };
+    blockedEntry.quarantined_events = [...(blockedEntry.quarantined_events ?? []), quarantinedEvent].slice(-40);
+    blockedEntry.quarantined_event_count = (blockedEntry.quarantined_event_count ?? 0) + 1;
+    blockedEntry.last_quarantined_event_at_ms = workerEvent.timestamp_ms;
+    void this.persistence
+      ?.upsertBlockedInput?.(blockedEntry.issue_id, JSON.stringify(blockedEntry))
+      .catch(() => undefined);
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.blockedWorkerEventQuarantined,
+      message: 'worker event quarantined while awaiting operator action',
+      context: {
+        issue_id: blockedEntry.issue_id,
+        issue_identifier: blockedEntry.issue_identifier,
+        stop_reason_code: blockedEntry.stop_reason_code,
+        quarantined_event: workerEvent.event,
+        reason
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.blockedWorkerEventQuarantined,
+      severity: 'warn',
+      issue_identifier: blockedEntry.issue_identifier,
+      session_id: workerEvent.session_id,
+      detail: `event=${workerEvent.event} reason=${reason}`
+    });
+    this.ports.notifyObservers?.();
   }
 
   async onWorkerExit(issue_id: string, reason: WorkerExitReason, error?: string): Promise<void> {
@@ -1159,6 +1212,24 @@ export class OrchestratorCore {
 
   getCircuitBreakerSnapshot(): CircuitBreakerEntry[] {
     return Array.from(this.state.circuit_breakers.values()).map((entry) => ({ ...entry }));
+  }
+
+  getBlockedLatchDiagnostics(): {
+    blocked_latch_active_count: number;
+    blocked_event_quarantine_total: number;
+    blocked_event_allowlist_total: number;
+    blocked_event_reject_total: number;
+    blocked_latch_violation_total: number;
+  } {
+    const blocked = Array.from(this.state.blocked_inputs.values());
+    const quarantineTotal = blocked.reduce((sum, entry) => sum + (entry.quarantined_event_count ?? 0), 0);
+    return {
+      blocked_latch_active_count: blocked.filter((entry) => entry.awaiting_operator).length,
+      blocked_event_quarantine_total: quarantineTotal,
+      blocked_event_allowlist_total: 0,
+      blocked_event_reject_total: 0,
+      blocked_latch_violation_total: 0
+    };
   }
 
   restoreSuppressionState(params: { blocked_entries: BlockedEntry[]; breaker_entries: CircuitBreakerEntry[] }): void {
@@ -1750,6 +1821,10 @@ export class OrchestratorCore {
       last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
       blocked_at_ms: this.nowMs(),
       requires_manual_resume: true,
+      awaiting_operator: true,
+      awaiting_operator_reason_code: params.stop_reason_code,
+      awaiting_operator_since_ms: this.nowMs(),
+      awaiting_operator_resume_nonce: (existingBlocked?.awaiting_operator_resume_nonce ?? 0) + 1,
       attempt_count_window: params.attempt_count_window,
       window_minutes: params.window_minutes,
       last_known_commit_sha: params.last_known_commit_sha ?? null,
@@ -1775,7 +1850,10 @@ export class OrchestratorCore {
         : null,
       last_input_submit: null,
       resume_history: [],
-      session_console: (params.session_console ?? []).slice(-40)
+      session_console: (params.session_console ?? []).slice(-40),
+      quarantined_events: [],
+      quarantined_event_count: 0,
+      last_quarantined_event_at_ms: null
     };
     this.state.blocked_inputs.set(params.issue_id, blockedEntry);
     this.state.claimed.add(params.issue_id);

@@ -155,6 +155,10 @@ export interface BlockedEntry {
   last_phase_detail?: string | null;
   blocked_at_ms: number;
   requires_manual_resume: true;
+  awaiting_operator?: true;
+  awaiting_operator_reason_code?: string;
+  awaiting_operator_since_ms?: number;
+  awaiting_operator_resume_nonce?: number;
   attempt_count_window?: number;
   window_minutes?: number;
   last_known_commit_sha?: string | null;
@@ -197,6 +201,17 @@ export interface BlockedEntry {
     event: string;
     message: string | null;
   }>;
+  quarantined_events?: Array<{
+    at_ms: number;
+    event: string;
+    message: string | null;
+    session_id: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+    reason: 'awaiting_operator_latch' | 'lineage_mismatch';
+  }>;
+  quarantined_event_count?: number;
+  last_quarantined_event_at_ms?: number | null;
 }
 
 export interface CircuitBreakerEntry {

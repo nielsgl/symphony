@@ -95,6 +95,13 @@ export interface DiagnosticsSource {
     breaker_first_hit_at: string | null;
     breaker_last_hit_at: string | null;
   }>;
+  getBlockedLatchStats?(): {
+    blocked_latch_active_count: number;
+    blocked_event_quarantine_total: number;
+    blocked_event_allowlist_total: number;
+    blocked_event_reject_total: number;
+    blocked_latch_violation_total: number;
+  };
 }
 
 export interface LocalApiErrorEnvelope {
@@ -264,6 +271,12 @@ export interface ApiStateResponse {
       message: string | null;
     }>;
     requires_manual_resume: true;
+    awaiting_operator: true;
+    awaiting_operator_reason_code: string;
+    awaiting_operator_since: string;
+    awaiting_operator_resume_nonce: number;
+    quarantined_event_count: number;
+    last_quarantined_event_at: string | null;
     breaker_active: boolean;
     breaker_hit_count: number;
     breaker_window_minutes: number;
@@ -483,6 +496,12 @@ export interface ApiIssueResponse {
       message: string | null;
     }>;
     requires_manual_resume: true;
+    awaiting_operator: true;
+    awaiting_operator_reason_code: string;
+    awaiting_operator_since: string;
+    awaiting_operator_resume_nonce: number;
+    quarantined_event_count: number;
+    last_quarantined_event_at: string | null;
     breaker_active: boolean;
     breaker_hit_count: number;
     breaker_window_minutes: number;
@@ -695,4 +714,11 @@ export interface ApiDiagnosticsResponse {
     breaker_first_hit_at: string | null;
     breaker_last_hit_at: string | null;
   }>;
+  blocked_latch: {
+    blocked_latch_active_count: number;
+    blocked_event_quarantine_total: number;
+    blocked_event_allowlist_total: number;
+    blocked_event_reject_total: number;
+    blocked_latch_violation_total: number;
+  };
 }

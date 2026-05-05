@@ -594,7 +594,14 @@ describe('LocalApiServer', () => {
             breaker_first_hit_at: '2026-04-10T10:00:00.000Z',
             breaker_last_hit_at: '2026-04-10T10:03:00.000Z'
           }
-        ]
+        ],
+        getBlockedLatchStats: () => ({
+          blocked_latch_active_count: 1,
+          blocked_event_quarantine_total: 2,
+          blocked_event_allowlist_total: 0,
+          blocked_event_reject_total: 0,
+          blocked_latch_violation_total: 0
+        })
       }
     });
 
@@ -1386,7 +1393,14 @@ describe('LocalApiServer', () => {
             breaker_first_hit_at: '2026-04-10T10:00:00.000Z',
             breaker_last_hit_at: '2026-04-10T10:03:00.000Z'
           }
-        ]
+        ],
+        getBlockedLatchStats: () => ({
+          blocked_latch_active_count: 1,
+          blocked_event_quarantine_total: 2,
+          blocked_event_allowlist_total: 0,
+          blocked_event_reject_total: 0,
+          blocked_latch_violation_total: 0
+        })
       }
     });
 
@@ -1424,6 +1438,13 @@ describe('LocalApiServer', () => {
       token_telemetry_status: 'unavailable' | 'pending' | 'available';
       token_telemetry_last_source: string | null;
       token_telemetry_last_at_ms: number | null;
+      blocked_latch: {
+        blocked_latch_active_count: number;
+        blocked_event_quarantine_total: number;
+        blocked_event_allowlist_total: number;
+        blocked_event_reject_total: number;
+        blocked_latch_violation_total: number;
+      };
     };
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.active_profile.name).toBe('balanced');
@@ -1462,6 +1483,13 @@ describe('LocalApiServer', () => {
     expect(diagnosticsPayload.token_telemetry_status).toBe('unavailable');
     expect(diagnosticsPayload.token_telemetry_last_source).toBeNull();
     expect(diagnosticsPayload.token_telemetry_last_at_ms).toBeNull();
+    expect(diagnosticsPayload.blocked_latch).toEqual({
+      blocked_latch_active_count: 1,
+      blocked_event_quarantine_total: 2,
+      blocked_event_allowlist_total: 0,
+      blocked_event_reject_total: 0,
+      blocked_latch_violation_total: 0
+    });
     expect(diagnosticsPayload.token_accounting.observed_dimensions.cached_input_tokens).toBe(false);
     expect((diagnosticsPayload as Record<string, unknown>).runtime_resolution).toMatchObject({
       workflow_path: '/tmp/WORKFLOW.md',

@@ -54,6 +54,7 @@ export const CANONICAL_EVENT = {
     blockedInputSubmitFallbackUsed: 'orchestration.blocked_input.submit.fallback_used',
     blockedInputResumed: 'orchestration.blocked_input.resumed',
     blockedInputCleared: 'orchestration.blocked_input.cleared',
+    blockedWorkerEventQuarantined: 'orchestration.blocked_worker_event.quarantined',
     redispatchCircuitBreakerOpened: 'orchestrator.redispatch.circuit_breaker_opened',
     redispatchCompletionGateBlocked: 'orchestrator.redispatch.completion_gate_blocked',
     cancelToBacklogExecuted: 'orchestrator.cancel_to_backlog.executed',

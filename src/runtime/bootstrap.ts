@@ -965,6 +965,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
                 breaker_first_hit_at: entry.breaker_first_hit_at_ms ? new Date(entry.breaker_first_hit_at_ms).toISOString() : null,
                 breaker_last_hit_at: entry.breaker_last_hit_at_ms ? new Date(entry.breaker_last_hit_at_ms).toISOString() : null
               })),
+            getBlockedLatchStats: () => orchestrator.getBlockedLatchDiagnostics(),
             getRuntimeResolution: () => ({
               workflow_path: currentWorkflowPath,
               workflow_dir: workflowDir,

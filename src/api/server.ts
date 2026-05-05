@@ -637,6 +637,15 @@ export class LocalApiServer {
                 breaker_statuses: this.diagnosticsSource.getBreakerStatuses
                   ? this.diagnosticsSource.getBreakerStatuses()
                   : [],
+                blocked_latch: this.diagnosticsSource.getBlockedLatchStats
+                  ? this.diagnosticsSource.getBlockedLatchStats()
+                  : {
+                      blocked_latch_active_count: 0,
+                      blocked_event_quarantine_total: 0,
+                      blocked_event_allowlist_total: 0,
+                      blocked_event_reject_total: 0,
+                      blocked_latch_violation_total: 0
+                    },
                 runtime_resolution: this.diagnosticsSource.getRuntimeResolution(),
                 workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner(),
                 workspace_copy_ignored: this.diagnosticsSource.getWorkspaceCopyIgnored()

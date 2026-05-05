@@ -762,6 +762,35 @@ describe('OrchestratorCore', () => {
     expect(resumedSpawn?.resume_context ?? null).toBeNull();
   });
 
+  it('quarantines late worker events for blocked issues awaiting operator action', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-quarantine', identifier: 'ABC-QUAR' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-quarantine',
+      'abnormal',
+      'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
+    );
+
+    harness.orchestrator.onWorkerEvent('i-quarantine', {
+      timestamp_ms: Date.now(),
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'late event after blocked state',
+      thread_id: 'thread-stale',
+      session_id: 'thread-stale-turn-1'
+    });
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-quarantine');
+    expect(blocked?.awaiting_operator).toBe(true);
+    expect(blocked?.quarantined_event_count).toBe(1);
+    expect(blocked?.quarantined_events?.[0]?.event).toBe(CANONICAL_EVENT.codex.turnWaiting);
+    expect(
+      harness.orchestrator
+        .getStateSnapshot()
+        .recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.orchestration.blockedWorkerEventQuarantined)
+    ).toBe(true);
+  });
+
   it('clears blocked issue state when tracker reports non-active or terminal state', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-clear', identifier: 'ABC-CLEAR' })]);
