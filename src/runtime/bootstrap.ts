@@ -951,6 +951,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
                     integrity_ok: true
                   },
             listRunHistory: (limit) => (persistenceStore ? persistenceStore.listRunHistory(limit) : []),
+            reconstructThreadLineage: (threadId) => (persistenceStore ? persistenceStore.reconstructThreadLineage(threadId) : null),
             getLoggingHealth: () => ({
               root: loggingResolution.logsRoot,
               active_file: activeLogFile,

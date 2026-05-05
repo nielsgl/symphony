@@ -664,6 +664,31 @@ export class LocalApiServer {
         ]
       },
       {
+        path: /^\/api\/v1\/history\/threads\/([^/]+)$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (request, response) => {
+              if (!this.diagnosticsSource?.reconstructThreadLineage) {
+                throw new LocalApiError('thread_lineage_unavailable', 'Thread lineage source is not configured', 503);
+              }
+
+              const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+              const [, encodedThreadId] = requestUrl.pathname.match(/^\/api\/v1\/history\/threads\/([^/]+)$/) ?? [];
+              const threadId = encodedThreadId ? decodeURIComponent(encodedThreadId) : '';
+              const lineage = this.diagnosticsSource.reconstructThreadLineage(threadId);
+              if (!lineage) {
+                throw new LocalApiError('thread_lineage_not_found', `Thread ${threadId} was not found in persisted lineage`, 404);
+              }
+
+              sendJson(response, 200, {
+                lineage
+              });
+            }
+          }
+        ]
+      },
+      {
         path: /^\/api\/v1\/history$/,
         routes: [
           {

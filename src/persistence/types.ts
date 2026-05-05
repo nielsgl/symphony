@@ -1,4 +1,76 @@
 export type RunTerminalStatus = 'succeeded' | 'failed' | 'timed_out' | 'stalled' | 'cancelled';
+export type ExecutionGraphEntityStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying';
+
+export interface ExecutionGraphReasonFields {
+  status: ExecutionGraphEntityStatus;
+  reason_code: string | null;
+  reason_detail: string | null;
+}
+
+export interface ExecutionGraphTimestampFields extends ExecutionGraphReasonFields {
+  started_at: string;
+  ended_at: string | null;
+}
+
+export interface IssueRunRecord extends ExecutionGraphTimestampFields {
+  issue_run_id: string;
+  issue_id: string;
+  issue_identifier: string;
+}
+
+export interface AttemptRecord extends ExecutionGraphTimestampFields {
+  attempt_id: string;
+  issue_run_id: string;
+  attempt_number: number;
+}
+
+export interface ThreadRecord extends ExecutionGraphTimestampFields {
+  thread_id: string;
+  attempt_id: string;
+}
+
+export interface TurnRecord extends ExecutionGraphTimestampFields {
+  turn_id: string;
+  thread_id: string;
+  turn_index: number;
+}
+
+export interface PhaseSpanRecord extends ExecutionGraphTimestampFields {
+  phase_span_id: string;
+  turn_id: string;
+  phase: string;
+}
+
+export interface ToolSpanRecord extends ExecutionGraphTimestampFields {
+  tool_span_id: string;
+  turn_id: string;
+  tool_name: string;
+}
+
+export interface StateTransitionRecord extends ExecutionGraphReasonFields {
+  state_transition_id: string;
+  issue_run_id: string;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  from_status: string | null;
+  to_status: string;
+  transitioned_at: string;
+}
+
+export interface ExecutionGraphThreadLineage {
+  issue_run: IssueRunRecord;
+  attempt: AttemptRecord;
+  thread: ThreadRecord;
+  turns: Array<
+    TurnRecord & {
+      phase_spans: PhaseSpanRecord[];
+      tool_spans: ToolSpanRecord[];
+      state_transitions: StateTransitionRecord[];
+    }
+  >;
+  state_transitions: StateTransitionRecord[];
+}
 
 export interface DurableRunHistoryRecord {
   run_id: string;

@@ -1,7 +1,7 @@
 import type { OrchestratorState, TickReason } from '../orchestrator';
 import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
 import type { StructuredLogger } from '../observability';
-import type { DurableRunHistoryRecord, PersistenceHealth, UiContinuityState } from '../persistence';
+import type { DurableRunHistoryRecord, ExecutionGraphThreadLineage, PersistenceHealth, UiContinuityState } from '../persistence';
 import type { SecurityProfile } from '../security';
 
 export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume';
@@ -62,6 +62,7 @@ export interface DiagnosticsSource {
   getActiveProfile(): SecurityProfile;
   getPersistenceHealth(): PersistenceHealth;
   listRunHistory(limit?: number): DurableRunHistoryRecord[];
+  reconstructThreadLineage?: (threadId: string) => ExecutionGraphThreadLineage | null;
   getLoggingHealth(): {
     root: string;
     active_file: string;
