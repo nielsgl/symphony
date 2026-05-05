@@ -148,6 +148,37 @@ export class ConfigValidator {
       };
     }
 
+    const reasoningEffort = effectiveConfig.codex.effective_reasoning_effort;
+    if (
+      reasoningEffort !== null &&
+      reasoningEffort !== undefined &&
+      reasoningEffort !== 'low' &&
+      reasoningEffort !== 'medium' &&
+      reasoningEffort !== 'high' &&
+      reasoningEffort !== 'xhigh'
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_reasoning_effort',
+        message: "codex.reasoning_effort must be one of: low, medium, high, xhigh",
+        at
+      };
+    }
+
+    const extraFlags = effectiveConfig.codex.effective_extra_flags ?? [];
+    if (
+      !Array.isArray(extraFlags) ||
+      extraFlags.length > 32 ||
+      extraFlags.some((entry) => typeof entry !== 'string' || entry.length > 120)
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_extra_flags',
+        message: 'codex.extra_flags must be a string array with at most 32 entries and 120 chars per entry',
+        at
+      };
+    }
+
     if (!Number.isFinite(effectiveConfig.polling.interval_ms) || effectiveConfig.polling.interval_ms <= 0) {
       return {
         ok: false,

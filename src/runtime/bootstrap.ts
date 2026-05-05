@@ -977,7 +977,12 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               provisioner_type: effectiveConfig.workspace.provisioner.type,
               repo_root: effectiveConfig.workspace.provisioner.repo_root ?? null,
               base_ref: effectiveConfig.workspace.provisioner.base_ref ?? null,
-              branch_name_template: effectiveConfig.workspace.provisioner.branch_template ?? null
+              branch_name_template: effectiveConfig.workspace.provisioner.branch_template ?? null,
+              effective_codex_home: effectiveConfig.codex.effective_codex_home ?? null,
+              effective_codex_model: effectiveConfig.codex.effective_codex_model ?? null,
+              effective_reasoning_effort: effectiveConfig.codex.effective_reasoning_effort ?? null,
+              effective_extra_flags_count: effectiveConfig.codex.effective_extra_flags_count ?? 0,
+              codex_resolution_mode: effectiveConfig.codex.codex_resolution_mode ?? 'legacy'
             }),
             getWorkspaceProvisioner: () => ({
               provisioner_type: effectiveConfig.workspace.provisioner.type,
@@ -1093,6 +1098,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             render_interval_ms: effectiveConfig.observability?.render_interval_ms ?? 1000,
             phase_stale_warn_ms: effectiveConfig.observability?.phase_stale_warn_ms ?? 45000
           },
+          codexStateDbPath: path.join(effectiveConfig.codex.effective_codex_home ?? `${process.env.HOME ?? ''}/.codex`, 'state_5.sqlite'),
           logger,
           nowMs
         });

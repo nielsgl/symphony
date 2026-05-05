@@ -154,6 +154,40 @@ function readStringList(value: unknown, fallback: string[]): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
+function readOptionalStringList(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new WorkflowConfigError('invalid_codex_extra_flags', 'codex.extra_flags must be a string array');
+  }
+
+  return value.map((entry) => {
+    if (typeof entry !== 'string') {
+      throw new WorkflowConfigError('invalid_codex_extra_flags', 'codex.extra_flags must be a string array');
+    }
+    return entry;
+  });
+}
+
+function readEnvStringList(value: string | undefined): string[] | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new WorkflowConfigError('invalid_codex_extra_flags', 'SYMPHONY_CODEX_FLAGS must be a JSON string array');
+  }
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
+    throw new WorkflowConfigError('invalid_codex_extra_flags', 'SYMPHONY_CODEX_FLAGS must be a JSON string array');
+  }
+  return parsed as string[];
+}
+
 function resolveEnvToken(value: string, env: NodeJS.ProcessEnv): string {
   if (!value.startsWith('$')) {
     return value;
@@ -177,6 +211,37 @@ function expandHome(value: string, homedir: string): string {
   }
 
   return value;
+}
+
+function expandCodexHome(value: string, homedir: string): string {
+  if (value === '$HOME') {
+    return homedir;
+  }
+
+  if (value.startsWith('$HOME/') || value.startsWith('$HOME\\')) {
+    return path.join(homedir, value.slice(6));
+  }
+
+  return expandHome(value, homedir);
+}
+
+function resolveCodexHome(value: string, homedir: string): string {
+  const expanded = expandCodexHome(value, homedir);
+  if (!path.isAbsolute(expanded) && hasPathSeparator(expanded)) {
+    return path.normalize(expanded);
+  }
+  return expanded;
+}
+
+function readReasoningEffort(value: unknown): 'low' | 'medium' | 'high' | 'xhigh' | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh') {
+    return normalized;
+  }
+  return undefined;
 }
 
 function hasPathSeparator(value: string): boolean {
@@ -345,7 +410,53 @@ export class ConfigResolver {
 
     const hooksTimeoutMs = readIntStrict(hooks.timeout_ms, 60000);
 
+    const codexCommandSource =
+      typeof codex.command === 'string' && codex.command.trim().length > 0 ? 'workflow' : 'default';
     const codexCommand = readString(codex.command, 'codex app-server');
+    const codexHomeTyped = readString(codex.home, '').trim() || undefined;
+    const codexModelTyped = readString(codex.model, '').trim() || undefined;
+    const codexReasoningTyped = readReasoningEffort(codex.reasoning_effort);
+    if (codex.reasoning_effort !== undefined && codexReasoningTyped === undefined) {
+      throw new WorkflowConfigError(
+        'invalid_codex_reasoning_effort',
+        "codex.reasoning_effort must be one of: low, medium, high, xhigh"
+      );
+    }
+    const codexExtraFlagsTyped = readOptionalStringList(codex.extra_flags);
+    const codexHomeEnv = readString(this.env.SYMPHONY_CODEX_HOME, '').trim() || undefined;
+    const codexModelEnv = readString(this.env.SYMPHONY_CODEX_MODEL, '').trim() || undefined;
+    const codexReasoningEnv = readReasoningEffort(this.env.SYMPHONY_CODEX_REASONING);
+    if (
+      this.env.SYMPHONY_CODEX_REASONING !== undefined &&
+      this.env.SYMPHONY_CODEX_REASONING.trim().length > 0 &&
+      codexReasoningEnv === undefined
+    ) {
+      throw new WorkflowConfigError(
+        'invalid_codex_reasoning_effort',
+        'SYMPHONY_CODEX_REASONING must be one of: low, medium, high, xhigh'
+      );
+    }
+    const codexExtraFlagsEnv = readEnvStringList(this.env.SYMPHONY_CODEX_FLAGS);
+    const codexHomeRaw = codexHomeTyped ?? codexHomeEnv ?? path.join(this.homedir(), '.codex');
+    const effectiveCodexHome = resolveCodexHome(codexHomeRaw, this.homedir());
+    const effectiveCodexModel = codexModelTyped ?? codexModelEnv ?? null;
+    const effectiveReasoningEffort = codexReasoningTyped ?? codexReasoningEnv ?? null;
+    const effectiveExtraFlags = codexExtraFlagsTyped ?? codexExtraFlagsEnv ?? [];
+    const hasTypedCodexField =
+      codexHomeTyped !== undefined ||
+      codexModelTyped !== undefined ||
+      codexReasoningTyped !== undefined ||
+      codexExtraFlagsTyped !== undefined ||
+      codexHomeEnv !== undefined ||
+      codexModelEnv !== undefined ||
+      codexReasoningEnv !== undefined ||
+      codexExtraFlagsEnv !== undefined;
+    const codexResolutionMode =
+      codexCommandSource === 'workflow' && hasTypedCodexField
+        ? 'mixed'
+        : codexCommandSource === 'workflow'
+          ? 'legacy'
+          : 'typed';
     const workflowScopedPersistencePath =
       workflowResolvedPath !== null
         ? path.join(workflowDir, '.symphony', 'runtime.sqlite')
@@ -428,6 +539,17 @@ export class ConfigResolver {
       },
       codex: {
         command: codexCommand,
+        command_source: codexCommandSource,
+        home: codexHomeTyped,
+        model: codexModelTyped,
+        reasoning_effort: codexReasoningTyped,
+        extra_flags: codexExtraFlagsTyped,
+        effective_codex_home: effectiveCodexHome,
+        effective_codex_model: effectiveCodexModel,
+        effective_reasoning_effort: effectiveReasoningEffort,
+        effective_extra_flags: effectiveExtraFlags,
+        effective_extra_flags_count: effectiveExtraFlags.length,
+        codex_resolution_mode: codexResolutionMode,
         security_profile: readString(codex.security_profile, '') || undefined,
         approval_policy: parseApprovalPolicy(codex.approval_policy),
         thread_sandbox: readString(codex.thread_sandbox, '') || undefined,

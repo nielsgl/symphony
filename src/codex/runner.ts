@@ -26,7 +26,13 @@ interface RunnerProcess {
   once: (event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void) => void;
 }
 
-type SpawnProcess = (params: { command: string; cwd: string; workerHost?: string }) => RunnerProcess;
+type SpawnProcess = (params: {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd: string;
+  workerHost?: string;
+}) => RunnerProcess;
 
 interface WaitForTerminalResult {
   terminal: 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required';
@@ -487,10 +493,24 @@ class UsageTracker {
   }
 }
 
-function defaultSpawnProcess(params: { command: string; cwd: string; workerHost?: string }): RunnerProcess {
+function renderShellCommand(command: string, args?: string[], env?: Record<string, string>): string {
+  const commandWithArgs = args ? [command, ...args].map(shellEscape).join(' ') : command;
+  const envPrefix = Object.entries(env ?? {})
+    .map(([key, value]) => `${key}=${shellEscape(value)}`)
+    .join(' ');
+  return envPrefix ? `${envPrefix} ${commandWithArgs}` : commandWithArgs;
+}
+
+function defaultSpawnProcess(params: {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd: string;
+  workerHost?: string;
+}): RunnerProcess {
   const workerHost = params.workerHost?.trim();
   if (workerHost) {
-    const remoteCommand = `cd ${shellEscape(params.cwd)} && exec ${params.command}`;
+    const remoteCommand = `cd ${shellEscape(params.cwd)} && exec ${renderShellCommand(params.command, params.args, params.env)}`;
     const child: ChildProcessWithoutNullStreams = spawn('ssh', buildSshSpawnArgs(workerHost, remoteCommand), {
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -498,10 +518,19 @@ function defaultSpawnProcess(params: { command: string; cwd: string; workerHost?
     return child;
   }
 
-  const child: ChildProcessWithoutNullStreams = spawn('bash', ['-lc', params.command], {
-    cwd: params.cwd,
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
+  const child: ChildProcessWithoutNullStreams = params.args
+    ? spawn(params.command, params.args, {
+        cwd: params.cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          ...(params.env ?? {})
+        }
+      })
+    : spawn('bash', ['-lc', params.command], {
+        cwd: params.cwd,
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
 
   return child;
 }
@@ -571,7 +600,13 @@ export class CodexRunner {
     let processHandle: RunnerProcess;
     let shouldTerminateProcess = true;
     try {
-      processHandle = this.spawnProcess({ command: input.command, cwd: input.workspaceCwd, workerHost: input.workerHost });
+      processHandle = this.spawnProcess({
+        command: input.command,
+        args: input.commandArgs,
+        env: input.commandEnv,
+        cwd: input.workspaceCwd,
+        workerHost: input.workerHost
+      });
     } catch {
       throw new CodexRunnerError('invalid_workspace_cwd', `Failed to launch codex process in cwd: ${input.workspaceCwd}`);
     }

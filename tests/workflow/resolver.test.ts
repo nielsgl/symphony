@@ -335,6 +335,138 @@ describe('ConfigResolver', () => {
     });
 
     expect(config.codex.command).toBe('codex app-server --profile danger-full-access');
+    expect(config.codex.codex_resolution_mode).toBe('legacy');
+    expect(config.codex.effective_codex_home).toBe(path.normalize('/home/tester/.codex'));
+  });
+
+  it('resolves typed codex fields with workflow over environment precedence', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        SYMPHONY_CODEX_HOME: '/env/codex',
+        SYMPHONY_CODEX_MODEL: 'env-model',
+        SYMPHONY_CODEX_REASONING: 'low',
+        SYMPHONY_CODEX_FLAGS: '["--env-flag"]'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve({
+      config: {
+        codex: {
+          home: '$HOME/custom-codex',
+          model: 'workflow-model',
+          reasoning_effort: 'xhigh',
+          extra_flags: ['--config', 'shell_environment_policy.inherit=all']
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.codex.codex_resolution_mode).toBe('typed');
+    expect(config.codex.effective_codex_home).toBe(path.normalize('/home/tester/custom-codex'));
+    expect(config.codex.effective_codex_model).toBe('workflow-model');
+    expect(config.codex.effective_reasoning_effort).toBe('xhigh');
+    expect(config.codex.effective_extra_flags).toEqual(['--config', 'shell_environment_policy.inherit=all']);
+    expect(config.codex.effective_extra_flags_count).toBe(2);
+  });
+
+  it('uses environment overrides before defaults for typed codex fields', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        SYMPHONY_CODEX_HOME: '~/env-codex',
+        SYMPHONY_CODEX_MODEL: 'env-model',
+        SYMPHONY_CODEX_REASONING: 'medium',
+        SYMPHONY_CODEX_FLAGS: '["--config","sandbox_workspace_write.network_access=true"]'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve({ config: {}, prompt_template: 'prompt' });
+
+    expect(config.codex.codex_resolution_mode).toBe('typed');
+    expect(config.codex.effective_codex_home).toBe(path.normalize('/home/tester/env-codex'));
+    expect(config.codex.effective_codex_model).toBe('env-model');
+    expect(config.codex.effective_reasoning_effort).toBe('medium');
+    expect(config.codex.effective_extra_flags).toEqual(['--config', 'sandbox_workspace_write.network_access=true']);
+  });
+
+  it('rejects non-JSON SYMPHONY_CODEX_FLAGS values', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        SYMPHONY_CODEX_FLAGS: '--config sandbox_workspace_write.network_access=true'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    expect(() => resolver.resolve({ config: {}, prompt_template: 'prompt' })).toThrow(
+      'SYMPHONY_CODEX_FLAGS must be a JSON string array'
+    );
+  });
+
+  it('does not interpolate arbitrary environment variables in codex.home', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        TMPDIR: '/tmp/secret'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve({
+      config: {
+        codex: { home: '$TMPDIR/codex' }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.codex.effective_codex_home).toBe('$TMPDIR/codex');
+  });
+
+  it('reports mixed mode when legacy command and typed codex fields are both set', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        codex: {
+          command: 'CODEX_HOME="$HOME/.codex" codex --config model="old" app-server',
+          model: 'typed-model'
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.codex.codex_resolution_mode).toBe('mixed');
+    expect(config.codex.command).toContain('CODEX_HOME');
+    expect(config.codex.effective_codex_model).toBe('typed-model');
+  });
+
+  it('rejects invalid typed codex field shapes during resolution', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    expect(() =>
+      resolver.resolve({
+        config: {
+          codex: {
+            reasoning_effort: 'maximum'
+          }
+        },
+        prompt_template: 'prompt'
+      })
+    ).toThrow('codex.reasoning_effort must be one of: low, medium, high, xhigh');
+
+    expect(() =>
+      resolver.resolve({
+        config: {
+          codex: {
+            extra_flags: '--config model="bad"'
+          }
+        },
+        prompt_template: 'prompt'
+      })
+    ).toThrow('codex.extra_flags must be a string array');
   });
 
   it('preserves configured hooks timeout when provided for strict validation', () => {
