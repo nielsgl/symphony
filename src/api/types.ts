@@ -81,6 +81,15 @@ export interface DiagnosticsSource {
     timeline_limit: number;
     last_emit_error_code: string | null;
   };
+  getBreakerStatuses?(): Array<{
+    issue_id: string;
+    issue_identifier: string;
+    breaker_active: boolean;
+    breaker_hit_count: number;
+    breaker_window_minutes: number;
+    breaker_first_hit_at: string | null;
+    breaker_last_hit_at: string | null;
+  }>;
 }
 
 export interface LocalApiErrorEnvelope {
@@ -202,7 +211,13 @@ export interface ApiStateResponse {
     conflict_files: Array<{
       path: string;
       status: 'staged' | 'unstaged' | 'unknown';
+      classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
     }>;
+    classification_summary?: {
+      ephemeral: number;
+      tracked_ephemeral: number;
+      unknown_non_ephemeral: number;
+    };
     resolution_hints: string[];
     previous_thread_id: string | null;
     previous_session_id: string | null;
@@ -241,6 +256,11 @@ export interface ApiStateResponse {
       message: string | null;
     }>;
     requires_manual_resume: true;
+    breaker_active: boolean;
+    breaker_hit_count: number;
+    breaker_window_minutes: number;
+    breaker_first_hit_at: string | null;
+    breaker_last_hit_at: string | null;
     attempt_count_window?: number;
     window_minutes?: number;
     last_known_commit_sha?: string | null;
@@ -407,7 +427,13 @@ export interface ApiIssueResponse {
     conflict_files: Array<{
       path: string;
       status: 'staged' | 'unstaged' | 'unknown';
+      classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
     }>;
+    classification_summary?: {
+      ephemeral: number;
+      tracked_ephemeral: number;
+      unknown_non_ephemeral: number;
+    };
     resolution_hints: string[];
     previous_thread_id: string | null;
     previous_session_id: string | null;
@@ -446,6 +472,11 @@ export interface ApiIssueResponse {
       message: string | null;
     }>;
     requires_manual_resume: true;
+    breaker_active: boolean;
+    breaker_hit_count: number;
+    breaker_window_minutes: number;
+    breaker_first_hit_at: string | null;
+    breaker_last_hit_at: string | null;
     attempt_count_window?: number;
     window_minutes?: number;
     last_known_commit_sha?: string | null;
@@ -631,4 +662,13 @@ export interface ApiDiagnosticsResponse {
     timeline_limit: number;
     last_emit_error_code: string | null;
   };
+  breaker_statuses: Array<{
+    issue_id: string;
+    issue_identifier: string;
+    breaker_active: boolean;
+    breaker_hit_count: number;
+    breaker_window_minutes: number;
+    breaker_first_hit_at: string | null;
+    breaker_last_hit_at: string | null;
+  }>;
 }

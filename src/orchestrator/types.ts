@@ -135,7 +135,13 @@ export interface BlockedEntry {
   conflict_files: Array<{
     path: string;
     status: 'staged' | 'unstaged' | 'unknown';
+    classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
   }>;
+  classification_summary?: {
+    ephemeral: number;
+    tracked_ephemeral: number;
+    unknown_non_ephemeral: number;
+  };
   resolution_hints: string[];
   previous_thread_id: string | null;
   previous_session_id: string | null;
@@ -188,6 +194,16 @@ export interface BlockedEntry {
   }>;
 }
 
+export interface CircuitBreakerEntry {
+  issue_id: string;
+  issue_identifier: string;
+  breaker_active: boolean;
+  breaker_hit_count: number;
+  breaker_window_minutes: number;
+  breaker_first_hit_at_ms: number | null;
+  breaker_last_hit_at_ms: number | null;
+}
+
 export interface OrchestratorState {
   poll_interval_ms: number;
   max_concurrent_agents: number;
@@ -195,6 +211,7 @@ export interface OrchestratorState {
   claimed: Set<string>;
   retry_attempts: Map<string, RetryEntry>;
   blocked_inputs: Map<string, BlockedEntry>;
+  circuit_breakers: Map<string, CircuitBreakerEntry>;
   redispatch_progress?: Map<string, RedispatchProgressSample[]>;
   phase_timeline?: Map<string, PhaseMarker[]>;
   completed: Set<string>;
@@ -337,6 +354,18 @@ export interface OrchestratorPersistencePort {
     message: string | null;
   }) => Promise<void>;
   completeRun: (params: { run_id: string; terminal_status: RunTerminalStatus; error_code?: string | null }) => Promise<void>;
+  upsertBreaker?: (params: {
+    issue_id: string;
+    issue_identifier: string;
+    breaker_active: boolean;
+    breaker_hit_count: number;
+    breaker_window_minutes: number;
+    breaker_first_hit_at: string | null;
+    breaker_last_hit_at: string | null;
+  }) => Promise<void>;
+  deleteBreaker?: (issue_id: string) => Promise<void>;
+  upsertBlockedInput?: (issue_id: string, payload: string) => Promise<void>;
+  deleteBlockedInput?: (issue_id: string) => Promise<void>;
 }
 
 export interface WorkerObservabilityEvent {

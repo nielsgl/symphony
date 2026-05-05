@@ -95,7 +95,16 @@ export interface WorkspaceManagerOptions {
     workspace_path: string;
     status: 'cleaned' | 'conflict';
     cleaned_files: Array<{ path: string; action: 'unstage' | 'untrack' | 'remove' | 'restore' }>;
-    conflict_files: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>;
+    conflict_files: Array<{
+      path: string;
+      status: 'staged' | 'unstaged' | 'unknown';
+      classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
+    }>;
+    classification_summary?: {
+      ephemeral: number;
+      tracked_ephemeral: number;
+      unknown_non_ephemeral: number;
+    };
     resolution_hints: string[];
   }) => void;
 }

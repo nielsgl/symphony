@@ -35,3 +35,19 @@ export interface PersistenceHealth {
   last_pruned_at: string | null;
   integrity_ok: boolean;
 }
+
+export interface BreakerMetadataRecord {
+  issue_id: string;
+  issue_identifier: string;
+  breaker_active: boolean;
+  breaker_hit_count: number;
+  breaker_window_minutes: number;
+  breaker_first_hit_at: string | null;
+  breaker_last_hit_at: string | null;
+}
+
+export interface PersistedBlockedInputRecord {
+  issue_id: string;
+  payload: string;
+  updated_at: string;
+}

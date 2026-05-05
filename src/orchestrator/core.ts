@@ -14,6 +14,7 @@ import {
 } from './decisions';
 import type {
   BlockedEntry,
+  CircuitBreakerEntry,
   OrchestratorOptions,
   OrchestratorState,
   PhaseMarkerSettings,
@@ -68,7 +69,13 @@ interface WorkspaceConflictContext {
   conflict_files: Array<{
     path: string;
     status: 'staged' | 'unstaged' | 'unknown';
+    classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
   }>;
+  classification_summary?: {
+    ephemeral: number;
+    tracked_ephemeral: number;
+    unknown_non_ephemeral: number;
+  };
   resolution_hints: string[];
 }
 
@@ -151,6 +158,7 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
     conflict_files: (entry.conflict_files ?? []).map((file) => ({ ...file })),
+    classification_summary: entry.classification_summary ? { ...entry.classification_summary } : undefined,
     resolution_hints: [...(entry.resolution_hints ?? [])],
     previous_thread_id: entry.previous_thread_id,
     previous_session_id: entry.previous_session_id,
@@ -177,6 +185,10 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
       : null,
     session_console: (entry.session_console ?? []).map((event) => ({ ...event }))
   };
+}
+
+function cloneCircuitBreakerEntry(entry: CircuitBreakerEntry): CircuitBreakerEntry {
+  return { ...entry };
 }
 
 function humanizeWorkerEvent(event: WorkerObservabilityEvent): string {
@@ -229,6 +241,7 @@ export class OrchestratorCore {
       claimed: new Set(),
       retry_attempts: new Map(),
       blocked_inputs: new Map(),
+      circuit_breakers: new Map(),
       redispatch_progress: new Map(),
       phase_timeline: new Map(),
       completed: new Set(),
@@ -268,6 +281,9 @@ export class OrchestratorCore {
       ),
       blocked_inputs: new Map(
         Array.from(this.state.blocked_inputs.entries()).map(([issueId, entry]) => [issueId, cloneBlockedEntry(entry)])
+      ),
+      circuit_breakers: new Map(
+        Array.from(this.state.circuit_breakers.entries()).map(([issueId, entry]) => [issueId, cloneCircuitBreakerEntry(entry)])
       ),
       redispatch_progress: new Map(
         Array.from((this.state.redispatch_progress ?? new Map<string, Array<{ at_ms: number; commit_sha: string | null; checklist_checkpoint: string | null; state_marker: string | null; pr_open: boolean }>>()).entries()).map(([issueId, entries]) => [
@@ -404,6 +420,10 @@ export class OrchestratorCore {
       }
 
       if (this.state.blocked_inputs.has(issue.id)) {
+        continue;
+      }
+
+      if (this.state.circuit_breakers.get(issue.id)?.breaker_active) {
         continue;
       }
 
@@ -753,6 +773,7 @@ export class OrchestratorCore {
           stop_reason_code: 'operator_action_required_workspace_conflict',
           stop_reason_detail: workspaceConflict.detail,
           conflict_files: workspaceConflict.conflict_files,
+          classification_summary: workspaceConflict.classification_summary,
           resolution_hints: workspaceConflict.resolution_hints,
           session_console: running.recent_events,
           previous_thread_id: running.thread_id,
@@ -971,7 +992,8 @@ export class OrchestratorCore {
           'Mark acceptance complete and resume',
           'Push additional commit and resume',
           'Cancel and return to backlog'
-        ]
+        ],
+        apply_circuit_breaker: gateEvaluation.breaker_hit
       });
       const eventName = gateEvaluation.awaiting_human_review_scope_incomplete
         ? CANONICAL_EVENT.orchestration.stateAwaitingHumanReviewScopeIncomplete
@@ -993,7 +1015,7 @@ export class OrchestratorCore {
           window_minutes: gateEvaluation.window_minutes
         }
       });
-      if (gateEvaluation.attempt_count_window >= (this.config.respawn_max_attempts_without_progress ?? 3)) {
+      if (gateEvaluation.breaker_hit) {
         this.recordRuntimeEvent({
           event: CANONICAL_EVENT.orchestration.redispatchCircuitBreakerOpened,
           severity: 'warn',
@@ -1014,6 +1036,7 @@ export class OrchestratorCore {
   ): {
     allow_redispatch: boolean;
     awaiting_human_review_scope_incomplete: boolean;
+    breaker_hit: boolean;
     attempt_count_window: number;
     window_minutes: number;
     last_known_commit_sha: string | null;
@@ -1052,6 +1075,7 @@ export class OrchestratorCore {
     return {
       allow_redispatch: !noProgress,
       awaiting_human_review_scope_incomplete: awaitingHuman,
+      breaker_hit: breakerHit,
       attempt_count_window: attemptCountWindow,
       window_minutes: windowMinutes,
       last_known_commit_sha: sample.commit_sha,
@@ -1063,6 +1087,38 @@ export class OrchestratorCore {
   private hasOpenPullRequest(issue: Issue): boolean {
     const links = issue.tracker_meta?.pr_links ?? [];
     return links.some((link) => !link.merged && String(link.state).toLowerCase() === 'open');
+  }
+
+  private async upsertCircuitBreaker(entry: CircuitBreakerEntry): Promise<void> {
+    this.state.circuit_breakers.set(entry.issue_id, { ...entry });
+    await this.persistence?.upsertBreaker?.({
+      issue_id: entry.issue_id,
+      issue_identifier: entry.issue_identifier,
+      breaker_active: entry.breaker_active,
+      breaker_hit_count: entry.breaker_hit_count,
+      breaker_window_minutes: entry.breaker_window_minutes,
+      breaker_first_hit_at: entry.breaker_first_hit_at_ms ? new Date(entry.breaker_first_hit_at_ms).toISOString() : null,
+      breaker_last_hit_at: entry.breaker_last_hit_at_ms ? new Date(entry.breaker_last_hit_at_ms).toISOString() : null
+    });
+  }
+
+  private async clearCircuitBreaker(issueId: string): Promise<void> {
+    this.state.circuit_breakers.delete(issueId);
+    await this.persistence?.deleteBreaker?.(issueId);
+  }
+
+  getCircuitBreakerSnapshot(): CircuitBreakerEntry[] {
+    return Array.from(this.state.circuit_breakers.values()).map((entry) => ({ ...entry }));
+  }
+
+  restoreSuppressionState(params: { blocked_entries: BlockedEntry[]; breaker_entries: CircuitBreakerEntry[] }): void {
+    for (const entry of params.breaker_entries) {
+      this.state.circuit_breakers.set(entry.issue_id, cloneCircuitBreakerEntry(entry));
+    }
+    for (const entry of params.blocked_entries) {
+      this.state.blocked_inputs.set(entry.issue_id, cloneBlockedEntry(entry));
+      this.state.claimed.add(entry.issue_id);
+    }
   }
 
   async reconcileRunningIssues(): Promise<void> {
@@ -1570,7 +1626,13 @@ export class OrchestratorCore {
     conflict_files?: Array<{
       path: string;
       status: 'staged' | 'unstaged' | 'unknown';
+      classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
     }>;
+    classification_summary?: {
+      ephemeral: number;
+      tracked_ephemeral: number;
+      unknown_non_ephemeral: number;
+    };
     resolution_hints?: string[];
     pending_input?: {
       detail: string;
@@ -1592,6 +1654,7 @@ export class OrchestratorCore {
       state_marker: string | null;
     };
     required_actions?: string[];
+    apply_circuit_breaker?: boolean;
   }): Promise<void> {
     const existingRetry = this.state.retry_attempts.get(params.issue_id);
     if (existingRetry) {
@@ -1599,7 +1662,12 @@ export class OrchestratorCore {
       this.state.retry_attempts.delete(params.issue_id);
     }
 
-    this.state.blocked_inputs.set(params.issue_id, {
+    const existingBlocked = this.state.blocked_inputs.get(params.issue_id);
+    if (existingBlocked && existingBlocked.stop_reason_code === params.stop_reason_code && existingBlocked.requires_manual_resume) {
+      return;
+    }
+
+    const blockedEntry: BlockedEntry = {
       issue_id: params.issue_id,
       issue_identifier: params.issue_identifier,
       attempt: params.attempt,
@@ -1618,6 +1686,7 @@ export class OrchestratorCore {
       stop_reason_code: params.stop_reason_code,
       stop_reason_detail: params.stop_reason_detail,
       conflict_files: (params.conflict_files ?? []).map((file) => ({ ...file })),
+      classification_summary: params.classification_summary ? { ...params.classification_summary } : undefined,
       resolution_hints: [...(params.resolution_hints ?? [])],
       previous_thread_id: params.previous_thread_id,
       previous_session_id: params.previous_session_id,
@@ -1652,8 +1721,23 @@ export class OrchestratorCore {
       last_input_submit: null,
       resume_history: [],
       session_console: (params.session_console ?? []).slice(-40)
-    });
+    };
+    this.state.blocked_inputs.set(params.issue_id, blockedEntry);
     this.state.claimed.add(params.issue_id);
+
+    if (params.apply_circuit_breaker) {
+      await this.upsertCircuitBreaker({
+        issue_id: params.issue_id,
+        issue_identifier: params.issue_identifier,
+        breaker_active: true,
+        breaker_hit_count: Math.max(1, params.attempt_count_window ?? 1),
+        breaker_window_minutes: Math.max(1, params.window_minutes ?? this.config.respawn_window_minutes ?? 30),
+        breaker_first_hit_at_ms: blockedEntry.blocked_at_ms,
+        breaker_last_hit_at_ms: blockedEntry.blocked_at_ms
+      });
+    }
+
+    void this.persistence?.upsertBlockedInput?.(params.issue_id, JSON.stringify(blockedEntry));
 
     this.logger?.log({
       level: 'warn',
@@ -1678,6 +1762,7 @@ export class OrchestratorCore {
 
     this.state.blocked_inputs.delete(issue_id);
     this.state.claimed.delete(issue_id);
+    void this.persistence?.deleteBlockedInput?.(issue_id);
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.blockedInputCleared,
@@ -1813,6 +1898,8 @@ export class OrchestratorCore {
     this.state.blocked_inputs.delete(blocked.issue_id);
     this.state.claimed.delete(blocked.issue_id);
     this.state.redispatch_progress?.delete(blocked.issue_id);
+    await this.clearCircuitBreaker(blocked.issue_id);
+    await this.persistence?.deleteBlockedInput?.(blocked.issue_id);
 
     const eligibility = shouldDispatchIssue(issue, this.state, this.config);
     if (eligibility.eligible) {
@@ -1936,8 +2023,9 @@ export class OrchestratorCore {
 
     this.clearBlockedInput(blocked.issue_id, 'operator_cancelled_to_backlog');
     this.state.redispatch_progress?.delete(blocked.issue_id);
+    await this.clearCircuitBreaker(blocked.issue_id);
     this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked,
+      event: CANONICAL_EVENT.orchestration.cancelToBacklogExecuted,
       severity: 'info',
       issue_identifier,
       detail: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog'
@@ -2321,6 +2409,7 @@ export class OrchestratorCore {
       return {
         detail: payload.detail ?? defaultDetail,
         conflict_files: payload.conflict_files,
+        classification_summary: payload.classification_summary,
         resolution_hints: payload.resolution_hints.length > 0 ? payload.resolution_hints : defaultHints
       };
     }
@@ -2350,7 +2439,16 @@ export class OrchestratorCore {
   private parseWorkspaceConflictPayload(error: string): {
     code: string | null;
     detail: string | null;
-    conflict_files: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>;
+    conflict_files: Array<{
+      path: string;
+      status: 'staged' | 'unstaged' | 'unknown';
+      classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
+    }>;
+    classification_summary?: {
+      ephemeral: number;
+      tracked_ephemeral: number;
+      unknown_non_ephemeral: number;
+    };
     resolution_hints: string[];
   } | null {
     const prefix = 'workspace_conflict:';
@@ -2362,7 +2460,8 @@ export class OrchestratorCore {
       const payload = JSON.parse(rawDetail) as {
         code?: string;
         detail?: string;
-        conflict_files?: Array<{ path?: string; status?: string }>;
+        conflict_files?: Array<{ path?: string; status?: string; classification?: string }>;
+        classification_summary?: { ephemeral?: number; tracked_ephemeral?: number; unknown_non_ephemeral?: number };
         resolution_hints?: string[];
       };
       return {
@@ -2372,8 +2471,21 @@ export class OrchestratorCore {
           .filter((file) => typeof file?.path === 'string' && file.path.trim().length > 0)
           .map((file) => ({
             path: String(file.path),
-            status: file?.status === 'staged' || file?.status === 'unstaged' ? file.status : 'unknown'
+            status: file?.status === 'staged' || file?.status === 'unstaged' ? file.status : 'unknown',
+            classification:
+              file.classification === 'ephemeral' ||
+              file.classification === 'tracked_ephemeral' ||
+              file.classification === 'unknown_non_ephemeral'
+                ? file.classification
+                : undefined
           })),
+        classification_summary: payload.classification_summary
+          ? {
+              ephemeral: Number(payload.classification_summary.ephemeral ?? 0),
+              tracked_ephemeral: Number(payload.classification_summary.tracked_ephemeral ?? 0),
+              unknown_non_ephemeral: Number(payload.classification_summary.unknown_non_ephemeral ?? 0)
+            }
+          : undefined,
         resolution_hints: (payload.resolution_hints ?? []).filter(
           (hint): hint is string => typeof hint === 'string' && hint.trim().length > 0
         )

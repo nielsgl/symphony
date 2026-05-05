@@ -78,6 +78,7 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
     claimed: new Set(),
     retry_attempts: new Map(),
     blocked_inputs: new Map(),
+    circuit_breakers: new Map(),
     completed: new Set(),
     codex_totals: {
       input_tokens: 10,
