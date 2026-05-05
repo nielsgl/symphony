@@ -254,9 +254,10 @@ async function linearGraphqlRequest(endpoint, apiKey, query, variables) {
   return payload?.data;
 }
 
-async function fetchBacklogIssues(endpoint, apiKey, projectSlug, teamKey) {
-  const query = `
-query BacklogHygieneIssues($projectSlug: String!, $teamKey: String, $after: String) {
+function buildBacklogHygieneQuery(hasTeamFilter) {
+  if (hasTeamFilter) {
+    return `
+query BacklogHygieneIssues($projectSlug: String!, $teamKey: String!, $after: String) {
   issues(
     filter: {
       project: { slugId: { eq: $projectSlug } }
@@ -280,9 +281,37 @@ query BacklogHygieneIssues($projectSlug: String!, $teamKey: String, $after: Stri
     pageInfo { hasNextPage endCursor }
   }
 }`;
+  }
 
-  const queryWithoutTeam = query.replace('      team: { key: { eq: $teamKey } }\n', '');
-  const selectedQuery = mustString(teamKey) ? query : queryWithoutTeam;
+  return `
+query BacklogHygieneIssues($projectSlug: String!, $after: String) {
+  issues(
+    filter: {
+      project: { slugId: { eq: $projectSlug } }
+      state: { name: { in: ["Backlog", "Todo"] } }
+    }
+    first: 100
+    after: $after
+  ) {
+    nodes {
+      id
+      identifier
+      title
+      priority
+      updatedAt
+      archivedAt
+      canceledAt
+      completedAt
+      state { name }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+}
+
+async function fetchBacklogIssues(endpoint, apiKey, projectSlug, teamKey) {
+  const hasTeamFilter = mustString(teamKey);
+  const selectedQuery = buildBacklogHygieneQuery(hasTeamFilter);
   const variables = mustString(teamKey) ? { projectSlug, teamKey, after: null } : { projectSlug, after: null };
   const issues = [];
   let after = null;
@@ -341,7 +370,9 @@ if (require.main === module) {
 module.exports = {
   ERROR_CODE,
   parseArgs,
+  buildBacklogHygieneQuery,
   buildStaleReport,
+  fetchBacklogIssues,
   formatTable,
   recommendedAction
 };

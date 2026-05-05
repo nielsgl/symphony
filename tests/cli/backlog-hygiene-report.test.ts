@@ -16,6 +16,7 @@ const backlogHygiene = require('../../scripts/backlog-hygiene-report.js') as {
     now?: string;
     input: string | null;
   };
+  buildBacklogHygieneQuery: (hasTeamFilter: boolean) => string;
   buildStaleReport: (
     issues: unknown[],
     options: { now: string; staleDays?: number }
@@ -27,6 +28,7 @@ const backlogHygiene = require('../../scripts/backlog-hygiene-report.js') as {
     days_since_update: number;
     recommended_action: 'close' | 're-scope' | 'prioritize' | 'defer';
   }>;
+  fetchBacklogIssues: (endpoint: string, apiKey: string, projectSlug: string, teamKey?: string) => Promise<unknown[]>;
   formatTable: (report: unknown[]) => string;
 };
 
@@ -179,5 +181,47 @@ describe('backlog hygiene report', () => {
     const result = runScript(['--format=xml'], process.cwd());
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(backlogHygiene.ERROR_CODE);
+  });
+
+  it('omits team variable and filter in no-team GraphQL mode while paginating', async () => {
+    const requests: Array<{ query: string; variables: Record<string, unknown> }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body));
+      requests.push(payload);
+      const after = payload.variables.after;
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            issues: {
+              nodes: after
+                ? [{ identifier: 'NIE-2', title: 'Second page', priority: 4, updatedAt: '2026-03-01T00:00:00.000Z', state: { name: 'Todo' } }]
+                : [{ identifier: 'NIE-1', title: 'First page', priority: 3, updatedAt: '2026-03-01T00:00:00.000Z', state: { name: 'Backlog' } }],
+              pageInfo: { hasNextPage: !after, endCursor: after ? null : 'cursor-1' }
+            }
+          }
+        })
+      };
+    }) as typeof fetch;
+
+    try {
+      const issues = await backlogHygiene.fetchBacklogIssues('https://linear.test/graphql', 'lin_api_key', 'symphony');
+
+      expect(issues).toHaveLength(2);
+      expect(requests).toHaveLength(2);
+      expect(requests[0].query).not.toContain('$teamKey');
+      expect(requests[0].query).not.toContain('team: { key: { eq: $teamKey } }');
+      expect(requests[0].variables).toEqual({ projectSlug: 'symphony', after: null });
+      expect(requests[1].variables).toEqual({ projectSlug: 'symphony', after: 'cursor-1' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('includes team variable and filter in team-scoped GraphQL mode', () => {
+    const query = backlogHygiene.buildBacklogHygieneQuery(true);
+    expect(query).toContain('$teamKey: String!');
+    expect(query).toContain('team: { key: { eq: $teamKey } }');
   });
 });

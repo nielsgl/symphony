@@ -128,7 +128,7 @@ function isTrackedUiEvidenceAllowed() {
 
 function isTrackedRepoHygieneAllowed() {
   const value = String(process.env[REPO_HYGIENE_ALLOW_TRACKED_ENV] || '').trim().toLowerCase();
-  return value === '1' || value === 'true' || value === 'yes' || isTrackedUiEvidenceAllowed();
+  return value === '1' || value === 'true' || value === 'yes';
 }
 
 function normalizeGitPath(file) {
@@ -138,6 +138,13 @@ function normalizeGitPath(file) {
 function forbiddenArtifactForPath(file) {
   const normalized = normalizeGitPath(file);
   return FORBIDDEN_REPO_ARTIFACTS.find((artifact) => artifact.matcher(normalized)) || null;
+}
+
+function isForbiddenRepoArtifactAllowed(entry) {
+  if (isTrackedRepoHygieneAllowed()) {
+    return true;
+  }
+  return normalizeGitPath(entry?.path).startsWith(UI_EVIDENCE_TRACKED_PATH_PREFIX) && isTrackedUiEvidenceAllowed();
 }
 
 function emitRepoHygieneDiagnostic(code, message, entries, remediation) {
@@ -460,7 +467,7 @@ function enforceUiEvidenceGate() {
   process.stdout.write(`UI evidence profile active: ${uiEvidenceProfile.profile} (${uiEvidenceProfile.source}).\n`);
 
   if (!isTrackedRepoHygieneAllowed()) {
-    const stagedEvidenceEntries = listStagedForbiddenRepoArtifactEntries();
+    const stagedEvidenceEntries = listStagedForbiddenRepoArtifactEntries().filter((entry) => !isForbiddenRepoArtifactAllowed(entry));
     if (stagedEvidenceEntries.length > 0) {
       emitRepoHygieneDiagnostic(
         HYGIENE_REPO_ARTIFACT_TRACKED_FORBIDDEN,
@@ -475,7 +482,7 @@ function enforceUiEvidenceGate() {
       process.exit(1);
     }
 
-    const trackedEvidenceFiles = listTrackedForbiddenRepoArtifacts();
+    const trackedEvidenceFiles = listTrackedForbiddenRepoArtifacts().filter((entry) => !isForbiddenRepoArtifactAllowed(entry));
     if (trackedEvidenceFiles.length > 0) {
       emitRepoHygieneDiagnostic(
         HYGIENE_REPO_ARTIFACT_TRACKED_FORBIDDEN,
