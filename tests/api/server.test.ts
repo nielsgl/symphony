@@ -1127,6 +1127,7 @@ describe('LocalApiServer', () => {
     expect(summary.token_burn_rate).toBeGreaterThan(0);
     expect(summary.burn_without_progress_rate).toBeGreaterThan(0);
     expect(summary.top_blocker_classes.some((entry) => entry.classification === 'blocked_input')).toBe(true);
+    expect(summary.top_blocker_classes.some((entry) => entry.classification === 'succeeded')).toBe(false);
     expect(summary.worst_tools[0]).toMatchObject({ tool_name: 'exec_command', p95_latency_ms: 2000 });
 
     const queryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?issue_identifier=ABC-1&tool_name=exec_command&model=gpt-5.4`);
@@ -1187,6 +1188,16 @@ describe('LocalApiServer', () => {
     const invalidFilter = (await invalidFilterResponse.json()) as { error: { code: string } };
     expect(invalidFilterResponse.status).toBe(400);
     expect(invalidFilter.error.code).toBe('invalid_query_filter');
+
+    const partialLimitResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?limit=10abc`);
+    const partialLimit = (await partialLimitResponse.json()) as { error: { code: string } };
+    expect(partialLimitResponse.status).toBe(400);
+    expect(partialLimit.error.code).toBe('invalid_query_filter');
+
+    const fractionalLimitResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?limit=1.5`);
+    const fractionalLimit = (await fractionalLimitResponse.json()) as { error: { code: string } };
+    expect(fractionalLimitResponse.status).toBe(400);
+    expect(fractionalLimit.error.code).toBe('invalid_query_filter');
   });
 
   it('aggregates high-volume telemetry samples deterministically', async () => {
@@ -1219,6 +1230,27 @@ describe('LocalApiServer', () => {
     });
     await server.listen();
     const address = server.address();
+
+    const defaultQueryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?worker_host=worker-even`);
+    const defaultQuery = (await defaultQueryResponse.json()) as { result_count: number; events: Array<{ worker_host: string }> };
+    expect(defaultQueryResponse.status).toBe(200);
+    expect(defaultQuery.result_count).toBe(500);
+    expect(defaultQuery.events.every((event) => event.worker_host === 'worker-even')).toBe(true);
+
+    const summaryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/summary?worker_host=worker-even`);
+    const summary = (await summaryResponse.json()) as {
+      sample_count: number;
+      stuck_turn_rate: number;
+      burn_without_progress_rate: number;
+      top_blocker_classes: Array<{ classification: string; count: number }>;
+    };
+    expect(summaryResponse.status).toBe(200);
+    expect(summary.sample_count).toBe(750);
+    expect(summary.stuck_turn_rate).toBe(0.2);
+    expect(summary.burn_without_progress_rate).toBeGreaterThan(0);
+    expect(summary.top_blocker_classes).toContainEqual(
+      expect.objectContaining({ classification: 'stalled_waiting', count: 150 })
+    );
 
     const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?worker_host=worker-even&limit=10000`);
     const payload = (await response.json()) as { result_count: number; events: Array<{ worker_host: string }> };

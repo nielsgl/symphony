@@ -103,9 +103,12 @@ function parseLimit(value: string | null): number {
   if (!value) {
     return 500;
   }
-  const parsed = Number.parseInt(value, 10);
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new TelemetryQueryError('invalid_query_filter', 'limit must be an integer between 1 and 10000');
+  }
+  const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 1 || parsed > 10_000) {
-    throw new TelemetryQueryError('invalid_query_filter', 'limit must be between 1 and 10000');
+    throw new TelemetryQueryError('invalid_query_filter', 'limit must be an integer between 1 and 10000');
   }
   return parsed;
 }
@@ -145,9 +148,7 @@ export function buildTelemetryQueryResponse(params: {
   generatedAt?: string;
 }): TelemetryQueryResponse {
   const generatedAt = params.generatedAt ?? new Date().toISOString();
-  const rows = collectTelemetryRows(params.state, params.diagnosticsSource)
-    .filter((row) => matchesFilters(row, params.filters))
-    .sort((left, right) => right.observed_at_ms - left.observed_at_ms)
+  const rows = collectFilteredTelemetryRows(params.state, params.diagnosticsSource, params.filters)
     .slice(0, params.filters.limit);
 
   return {
@@ -164,8 +165,8 @@ export function buildTelemetrySummaryResponse(params: {
   filters: TelemetryQueryFilters;
   generatedAt?: string;
 }): TelemetrySummaryResponse {
-  const query = buildTelemetryQueryResponse(params);
-  const rows = query.events;
+  const generatedAt = params.generatedAt ?? new Date().toISOString();
+  const rows = collectFilteredTelemetryRows(params.state, params.diagnosticsSource, params.filters);
   const count = rows.length;
   const divisor = count || 1;
   const timeToProgress = rows
@@ -184,8 +185,8 @@ export function buildTelemetrySummaryResponse(params: {
   const totalTokens = rows.reduce((sum, row) => sum + row.tokens_total, 0);
 
   return {
-    generated_at: query.generated_at,
-    filters: query.filters,
+    generated_at: generatedAt,
+    filters: params.filters,
     sample_count: count,
     stuck_turn_rate: ratio(
       rows.filter((row) => row.classification === 'stalled_waiting' || row.progress_signal_state === 'stalled_waiting').length,
@@ -210,6 +211,16 @@ export function buildTelemetrySummaryResponse(params: {
       .sort((left, right) => right.p95_latency_ms - left.p95_latency_ms || right.sample_count - left.sample_count)
       .slice(0, 10)
   };
+}
+
+function collectFilteredTelemetryRows(
+  state: ApiStateResponse,
+  diagnosticsSource: DiagnosticsSource | undefined,
+  filters: TelemetryQueryFilters
+): TelemetryEventRow[] {
+  return collectTelemetryRows(state, diagnosticsSource)
+    .filter((row) => matchesFilters(row, filters))
+    .sort((left, right) => right.observed_at_ms - left.observed_at_ms);
 }
 
 function normalizedParam(url: URL, key: string): string | null {
@@ -479,7 +490,7 @@ function resolveElapsedWindowMs(rows: TelemetryEventRow[], filters: TelemetryQue
 function topBlockerClasses(rows: TelemetryEventRow[], divisor: number): Array<{ classification: string; count: number; rate: number }> {
   const counts = new Map<string, number>();
   for (const row of rows) {
-    if (!row.classification || row.classification === 'healthy' || row.classification === 'running') {
+    if (!isBlockerRow(row)) {
       continue;
     }
     counts.set(row.classification, (counts.get(row.classification) ?? 0) + 1);
@@ -492,4 +503,31 @@ function topBlockerClasses(rows: TelemetryEventRow[], divisor: number): Array<{ 
     }))
     .sort((left, right) => right.count - left.count || left.classification.localeCompare(right.classification))
     .slice(0, 10);
+}
+
+function isBlockerRow(row: TelemetryEventRow): row is TelemetryEventRow & { classification: string } {
+  if (!row.classification) {
+    return false;
+  }
+  if (['healthy', 'running', 'succeeded', 'completed', 'advancing', 'info'].includes(row.classification)) {
+    return false;
+  }
+  if (['succeeded', 'completed'].includes(row.status ?? '')) {
+    return false;
+  }
+  return (
+    row.burn_without_progress ||
+    row.classification === 'retry_loop' ||
+    row.classification === 'stalled_waiting' ||
+    row.classification === 'input_required' ||
+    row.classification === 'blocked' ||
+    row.classification === 'blocked_input' ||
+    row.classification === 'failed' ||
+    row.classification === 'error' ||
+    row.classification === 'warn' ||
+    row.reason_code?.startsWith('operator_action_required_') === true ||
+    row.reason_code?.includes('blocked') === true ||
+    row.reason_code?.includes('stalled') === true ||
+    row.reason_code?.includes('retry') === true
+  );
 }
