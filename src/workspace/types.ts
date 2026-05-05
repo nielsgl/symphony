@@ -90,6 +90,14 @@ export interface WorkspaceManagerOptions {
   }) => Promise<{ timedOut: boolean; error?: string }>;
   probeTool?: (params: { command: string; args: string[]; cwd: string }) => Promise<boolean>;
   onHookResult?: (result: HookExecutionResult) => void;
+  onPreflightResult?: (result: {
+    identifier: string;
+    workspace_path: string;
+    status: 'cleaned' | 'conflict';
+    cleaned_files: Array<{ path: string; action: 'unstage' | 'untrack' | 'remove' | 'restore' }>;
+    conflict_files: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>;
+    resolution_hints: string[];
+  }) => void;
 }
 
 export interface CleanupWorkspacesResult {

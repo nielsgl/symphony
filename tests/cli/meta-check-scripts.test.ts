@@ -40,6 +40,28 @@ function expectStrictFailureOrParserUnavailable(stderr: string) {
   expect(strictFailure || parserFailure).toBe(true);
 }
 
+const UI_FIXTURE_PATH = 'tests/fixtures/ui-gate/dashboard-assets.fixture.ts';
+
+function appendUiFixtureMarker(root: string, marker: string) {
+  const fixturePath = path.join(root, UI_FIXTURE_PATH);
+  fs.mkdirSync(path.dirname(fixturePath), { recursive: true });
+  if (!fs.existsSync(fixturePath)) {
+    fs.writeFileSync(fixturePath, 'export const dashboardFixture = true;\n', 'utf8');
+  }
+  fs.appendFileSync(fixturePath, `${marker}\n`, 'utf8');
+}
+
+function initTempGitRepository(root: string) {
+  expect(runGit(['init'], root).status).toBe(0);
+  expect(runGit(['config', 'user.email', 'test@example.com'], root).status).toBe(0);
+  expect(runGit(['config', 'user.name', 'Meta Test'], root).status).toBe(0);
+  const fixturePath = path.join(root, UI_FIXTURE_PATH);
+  fs.mkdirSync(path.dirname(fixturePath), { recursive: true });
+  if (!fs.existsSync(fixturePath)) {
+    fs.writeFileSync(fixturePath, 'export const dashboardFixture = true;\n', 'utf8');
+  }
+}
+
 describe('meta check scripts', () => {
   it(
     '[SPEC-18-1][SPEC-18.1-1][SPEC-18.2-1] passes api contract and governance checks in repository root',
@@ -68,7 +90,7 @@ describe('meta check scripts', () => {
   it('fails aggregate meta check when upstream parity blocking is enabled with untriaged high-impact deltas', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-meta-parity-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'docs'), path.join(tempRoot, 'docs'), { recursive: true });
     fs.cpSync(path.join(root, 'tests/fixtures/upstream-parity'), path.join(tempRoot, 'tests/fixtures/upstream-parity'), {
@@ -140,13 +162,15 @@ describe('meta check scripts', () => {
   it('fails ui evidence gate when dashboard UI changes exist without evidence markers', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'docs'), path.join(tempRoot, 'docs'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'tests'), path.join(tempRoot, 'tests'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate test marker\n', 'utf8');
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
@@ -155,7 +179,7 @@ describe('meta check scripts', () => {
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('UI-affecting changes detected without e2e evidence');
-    expect(result.stderr).toContain('src/api/dashboard-assets.ts');
+    expect(result.stderr).toContain(UI_FIXTURE_PATH);
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -163,13 +187,15 @@ describe('meta check scripts', () => {
   it('passes ui evidence gate when marker file is present for UI changes', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'docs'), path.join(tempRoot, 'docs'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate test marker\n', 'utf8');
 
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
@@ -192,12 +218,14 @@ describe('meta check scripts', () => {
   it('passes baseline profile when UI evidence env marker is set without artifact file', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate baseline env marker\n', 'utf8');
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
@@ -215,12 +243,14 @@ describe('meta check scripts', () => {
   it('fails strict profile when only env marker exists without manifest artifacts', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict missing artifact marker\n', 'utf8');
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
@@ -238,12 +268,14 @@ describe('meta check scripts', () => {
   it('fails strict profile when manifest exists but artifact file is missing', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict pass marker\n', 'utf8');
 
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
@@ -252,7 +284,7 @@ describe('meta check scripts', () => {
       JSON.stringify(
         {
           artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
-          ui_paths: ['src/api/dashboard-assets.ts'],
+          ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
           publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
@@ -277,12 +309,14 @@ describe('meta check scripts', () => {
   it('fails strict profile when manifest publish reference is missing', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict missing publish reference\n', 'utf8');
 
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
@@ -292,7 +326,7 @@ describe('meta check scripts', () => {
       JSON.stringify(
         {
           artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
-          ui_paths: ['src/api/dashboard-assets.ts'],
+          ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture'
         },
@@ -315,12 +349,14 @@ describe('meta check scripts', () => {
   it('fails strict profile when artifact path escapes output/playwright directory', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict traversal check\n', 'utf8');
 
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
@@ -330,7 +366,7 @@ describe('meta check scripts', () => {
       JSON.stringify(
         {
           artifacts: [{ path: 'output/playwright/../escape.png', type: 'image' }],
-          ui_paths: ['src/api/dashboard-assets.ts'],
+          ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
           publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
@@ -354,12 +390,14 @@ describe('meta check scripts', () => {
   it('passes strict profile when manifest and artifact files are present', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict pass manifest\n', 'utf8');
 
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
@@ -369,7 +407,7 @@ describe('meta check scripts', () => {
       JSON.stringify(
         {
           artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
-          ui_paths: ['src/api/dashboard-assets.ts'],
+          ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
           publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
@@ -394,12 +432,14 @@ describe('meta check scripts', () => {
   it('fails when strict evidence artifacts are staged for commit', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict staged artifact block\n', 'utf8');
 
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
@@ -409,7 +449,7 @@ describe('meta check scripts', () => {
       JSON.stringify(
         {
           artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
-          ui_paths: ['src/api/dashboard-assets.ts'],
+          ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
           publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
@@ -420,7 +460,7 @@ describe('meta check scripts', () => {
       'utf8'
     );
 
-    expect(runGit(['add', 'src/api/dashboard-assets.ts'], tempRoot).status).toBe(0);
+    expect(runGit(['add', UI_FIXTURE_PATH], tempRoot).status).toBe(0);
     expect(runGit(['add', '-f', 'output/playwright/demo.webm', 'output/playwright/ui-evidence.json'], tempRoot).status).toBe(0);
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
@@ -443,13 +483,11 @@ describe('meta check scripts', () => {
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
 
-    expect(runGit(['init'], tempRoot).status).toBe(0);
-    expect(runGit(['config', 'user.email', 'test@example.com'], tempRoot).status).toBe(0);
-    expect(runGit(['config', 'user.name', 'Meta Test'], tempRoot).status).toBe(0);
+    initTempGitRepository(tempRoot);
     expect(runGit(['add', '.'], tempRoot).status).toBe(0);
     expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict committed artifact block\n', 'utf8');
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
     fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub-video', 'utf8');
@@ -458,7 +496,7 @@ describe('meta check scripts', () => {
       JSON.stringify(
         {
           artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
-          ui_paths: ['src/api/dashboard-assets.ts'],
+          ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
           publish_reference: 'https://github.com/nielsgl/symphony/pull/25#issuecomment-demo'
@@ -468,7 +506,7 @@ describe('meta check scripts', () => {
       ),
       'utf8'
     );
-    expect(runGit(['add', 'src/api/dashboard-assets.ts'], tempRoot).status).toBe(0);
+    expect(runGit(['add', UI_FIXTURE_PATH], tempRoot).status).toBe(0);
     expect(runGit(['add', '-f', 'output/playwright/demo.webm', 'output/playwright/ui-evidence.json'], tempRoot).status).toBe(0);
     expect(runGit(['commit', '-m', 'commit evidence files'], tempRoot).status).toBe(0);
 
@@ -488,12 +526,14 @@ describe('meta check scripts', () => {
   it('resolves strict profile from WORKFLOW.md validation config', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict workflow profile\n', 'utf8');
     fs.writeFileSync(path.join(tempRoot, 'WORKFLOW.md'), '---\nvalidation:\n  ui_evidence_profile: strict\n---\n', 'utf8');
 
@@ -511,11 +551,13 @@ describe('meta check scripts', () => {
   it('fails when workflow profile exists but shared parser is unavailable', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate parser unavailable\n', 'utf8');
     fs.writeFileSync(path.join(tempRoot, 'WORKFLOW.md'), '---\nvalidation:\n  ui_evidence_profile: strict\n---\n', 'utf8');
 
@@ -534,12 +576,14 @@ describe('meta check scripts', () => {
   it('resolves strict profile from quoted WORKFLOW.md value with comments and extra keys', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict workflow quoted value\n', 'utf8');
     fs.writeFileSync(
       path.join(tempRoot, 'WORKFLOW.md'),
@@ -571,12 +615,14 @@ describe('meta check scripts', () => {
   it('resolves strict profile from indented WORKFLOW.md frontmatter formatting', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
-    fs.cpSync(path.join(root, '.git'), path.join(tempRoot, '.git'), { recursive: true });
+    initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
     fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// ui evidence gate strict workflow indentation\n', 'utf8');
     fs.writeFileSync(
       path.join(tempRoot, 'WORKFLOW.md'),
@@ -609,15 +655,13 @@ describe('meta check scripts', () => {
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
 
-    expect(runGit(['init'], tempRoot).status).toBe(0);
-    expect(runGit(['config', 'user.email', 'test@example.com'], tempRoot).status).toBe(0);
-    expect(runGit(['config', 'user.name', 'Meta Test'], tempRoot).status).toBe(0);
+    initTempGitRepository(tempRoot);
     expect(runGit(['add', '.'], tempRoot).status).toBe(0);
     expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
 
-    const dashboardPath = path.join(tempRoot, 'src/api/dashboard-assets.ts');
+    const dashboardPath = path.join(tempRoot, UI_FIXTURE_PATH);
     fs.appendFileSync(dashboardPath, '\n// committed ui evidence gate test marker\n', 'utf8');
-    expect(runGit(['add', 'src/api/dashboard-assets.ts'], tempRoot).status).toBe(0);
+    expect(runGit(['add', UI_FIXTURE_PATH], tempRoot).status).toBe(0);
     expect(runGit(['commit', '-m', 'ui change'], tempRoot).status).toBe(0);
 
     const nonUiPath = path.join(tempRoot, 'scripts/check-meta.js');
@@ -631,7 +675,7 @@ describe('meta check scripts', () => {
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('UI-affecting changes detected without e2e evidence');
-    expect(result.stderr).toContain('src/api/dashboard-assets.ts');
+    expect(result.stderr).toContain(UI_FIXTURE_PATH);
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });

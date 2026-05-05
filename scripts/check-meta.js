@@ -14,6 +14,7 @@ const upstreamParityCheck = 'scripts/check-upstream-parity.js';
 
 const UI_PATH_PATTERNS = [
   /^src\/api\/dashboard-assets\.ts$/,
+  /^tests\/fixtures\/ui-gate\/dashboard-assets\.fixture\.ts$/,
   /^desktop-static\//,
   /^src-tauri\/src\//
 ];
