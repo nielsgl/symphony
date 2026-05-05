@@ -122,6 +122,20 @@ describe('meta check scripts', () => {
     fs.rmSync(tempCwd, { recursive: true, force: true });
   });
 
+  it('fails governance check when PR body contains escaped newline payload', () => {
+    const root = process.cwd();
+    const result = runNode([path.join(root, 'scripts/check-pr-governance.js')], root, {
+      SYMPHONY_PR_BODY: '## Summary\\n- item'
+    });
+    expect(result.status).toBe(0);
+
+    const malformed = runNode([path.join(root, 'scripts/check-pr-governance.js')], root, {
+      SYMPHONY_PR_BODY: '## Summary\\\\n- item'
+    });
+    expect(malformed.status).toBe(1);
+    expect(malformed.stderr).toContain('pr_body_escaped_newlines: body contains escaped newline sequences; normalize before submit');
+  });
+
   it('fails with actionable output when SPEC test manifest is missing', () => {
     const root = process.cwd();
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-spec-coverage-'));
@@ -283,7 +297,12 @@ describe('meta check scripts', () => {
       path.join(tempRoot, 'output/playwright/ui-evidence.json'),
       JSON.stringify(
         {
-          artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
+          artifacts: [
+            {
+              path: 'output/playwright/demo.webm',
+              type: 'video'
+            }
+          ],
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
@@ -325,7 +344,12 @@ describe('meta check scripts', () => {
       path.join(tempRoot, 'output/playwright/ui-evidence.json'),
       JSON.stringify(
         {
-          artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
+          artifacts: [
+            {
+              path: 'output/playwright/demo.webm',
+              type: 'video'
+            }
+          ],
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture'
@@ -342,6 +366,97 @@ describe('meta check scripts', () => {
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('manifest.publish_reference must be a non-empty string');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails strict profile when artifact is referenced but lacks artifact-level publication evidence', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    appendUiFixtureMarker(tempRoot, '// ui evidence strict artifact mapping required');
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub-video', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'output/playwright/ui-evidence.json'),
+      JSON.stringify(
+        {
+          artifacts: [
+            {
+              path: 'output/playwright/demo.webm',
+              type: 'video'
+            }
+          ],
+          ui_paths: [UI_FIXTURE_PATH],
+          captured_at: '2026-05-01T00:00:00.000Z',
+          summary: 'Demo capture',
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43'
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'strict',
+      SYMPHONY_PR_BODY: 'Evidence: output/playwright/demo.webm'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ui_evidence_unpublished: artifact referenced without Linear attachment/publish_reference');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('passes strict profile when each referenced artifact includes publication evidence', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    appendUiFixtureMarker(tempRoot, '// ui evidence strict artifact mapping pass');
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub-video', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'output/playwright/ui-evidence.json'),
+      JSON.stringify(
+        {
+          artifacts: [
+            {
+              path: 'output/playwright/demo.webm',
+              type: 'video',
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+            }
+          ],
+          ui_paths: [UI_FIXTURE_PATH],
+          captured_at: '2026-05-01T00:00:00.000Z',
+          summary: 'Demo capture',
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43'
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'strict',
+      SYMPHONY_PR_BODY: 'Evidence: output/playwright/demo.webm'
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Meta checks passed');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
@@ -406,7 +521,13 @@ describe('meta check scripts', () => {
       path.join(tempRoot, 'output/playwright/ui-evidence.json'),
       JSON.stringify(
         {
-          artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
+          artifacts: [
+            {
+              path: 'output/playwright/demo.webm',
+              type: 'video',
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+            }
+          ],
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',
@@ -448,7 +569,13 @@ describe('meta check scripts', () => {
       path.join(tempRoot, 'output/playwright/ui-evidence.json'),
       JSON.stringify(
         {
-          artifacts: [{ path: 'output/playwright/demo.webm', type: 'video' }],
+          artifacts: [
+            {
+              path: 'output/playwright/demo.webm',
+              type: 'video',
+              publish_reference: 'https://linear.app/nielsgl/issue/NIE-43#comment-demo'
+            }
+          ],
           ui_paths: [UI_FIXTURE_PATH],
           captured_at: '2026-05-01T00:00:00.000Z',
           summary: 'Demo capture',

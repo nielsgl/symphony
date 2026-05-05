@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
+const { assertHumanReadableMarkdownBody } = require('./lib/markdown-body');
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -31,6 +32,18 @@ if (!matrixContent.includes('Cross-Reference Matrix')) {
 const recommendationContent = fs.readFileSync(recommendationsPath, 'utf8');
 if (!recommendationContent.includes('Recommendations and Migration Plan')) {
   fail('Governance check failed: recommendations header missing.');
+}
+
+const prBodyPath = String(process.env.SYMPHONY_PR_BODY_FILE || '').trim();
+const prBodyRaw = prBodyPath
+  ? fs.readFileSync(path.resolve(root, prBodyPath), 'utf8')
+  : String(process.env.SYMPHONY_PR_BODY || '');
+if (prBodyRaw.trim().length > 0) {
+  try {
+    assertHumanReadableMarkdownBody(prBodyRaw);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : 'pr_body_escaped_newlines: body contains escaped newline sequences; normalize before submit');
+  }
 }
 
 process.stdout.write('PR governance check passed.\n');
