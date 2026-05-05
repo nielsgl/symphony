@@ -236,6 +236,9 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     progress_signal_state: ProgressSignalState;
     last_progress_transition_at_ms: number | null;
     last_heartbeat_at_ms: number | null;
+    current_blocker_class: string | null;
+    time_since_progress: number | null;
+    last_successful_step: string | null;
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
@@ -722,8 +725,10 @@ export interface ThreadDiagnosticsBlocker {
   classification: ThreadDiagnosticsBlockerClassification;
   reason_code: string | null;
   reason_detail: string | null;
+  time_since_progress: number | null;
   actionability: 'none' | 'recommended' | 'required';
   recommended_actions: string[];
+  expected_auto_transition: string | null;
 }
 
 export interface ThreadDiagnosticsResponse {
