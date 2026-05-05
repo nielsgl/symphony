@@ -26,6 +26,7 @@
     "check:pr-governance": "node scripts/check-pr-governance.js",
     "check:upstream-parity": "node scripts/check-upstream-parity.js",
     "check:meta": "node scripts/check-meta.js",
+    "ui:evidence:prepare": "node scripts/ui-evidence-helper.js",
     "normalize:pr-body": "node scripts/normalize-pr-body.js",
     "submit:pr-governed": "node scripts/submit-pr-with-governance.js",
     "start:dashboard": "npm run build && node scripts/start-dashboard.js",
