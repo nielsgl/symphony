@@ -190,8 +190,10 @@ describe('SnapshotService', () => {
             workspace_git_status: 'clean',
             workspace_provisioned: true,
             workspace_is_git_worktree: true,
-            stop_reason_code: 'turn_input_required',
-            stop_reason_detail: 'operator input required',
+            stop_reason_code: 'operator_action_required_workspace_conflict',
+            stop_reason_detail: 'workspace_unprovisioned_conflict: worktree_branch_conflict',
+            conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }],
+            resolution_hints: ['Resolve branch/worktree mismatch before manual resume.'],
             previous_thread_id: 'thread-prev',
             previous_session_id: 'thread-prev-turn-prev',
             blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
@@ -207,9 +209,10 @@ describe('SnapshotService', () => {
     expect(projected.status).toBe('blocked');
     expect(projected.retry).toBeNull();
     expect(projected.blocked).toMatchObject({
-      stop_reason_code: 'turn_input_required',
+      stop_reason_code: 'operator_action_required_workspace_conflict',
       previous_session_id: 'thread-prev-turn-prev',
-      requires_manual_resume: true
+      requires_manual_resume: true,
+      conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });
   });
 
@@ -290,6 +293,8 @@ describe('SnapshotService', () => {
             workspace_is_git_worktree: true,
             stop_reason_code: 'turn_input_required',
             stop_reason_detail: 'tool requestUserInput could not be auto-answered',
+            conflict_files: [],
+            resolution_hints: [],
             previous_thread_id: 'thread-prev',
             previous_session_id: 'thread-prev-turn-prev',
             timer_handle: {}
@@ -390,6 +395,8 @@ describe('SnapshotService', () => {
             workspace_is_git_worktree: true,
             stop_reason_code: 'turn_input_required',
             stop_reason_detail: 'tool requestUserInput could not be auto-answered',
+            conflict_files: [],
+            resolution_hints: [],
             previous_thread_id: 'thread-prev',
             previous_session_id: 'thread-prev-turn-prev',
             timer_handle: {}

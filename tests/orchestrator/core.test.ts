@@ -297,6 +297,27 @@ describe('OrchestratorCore', () => {
     expect(snapshot.retry_attempts.has('i-blocked-input')).toBe(false);
     expect(snapshot.blocked_inputs.get('i-blocked-input')?.stop_reason_code).toBe('turn_input_required');
     expect(snapshot.blocked_inputs.get('i-blocked-input')?.requires_manual_resume).toBe(true);
+    expect(snapshot.blocked_inputs.get('i-blocked-input')?.conflict_files).toEqual([]);
+    expect(snapshot.blocked_inputs.get('i-blocked-input')?.resolution_hints).toEqual([]);
+  });
+
+  it('moves workspace conflict exits into blocked input state without scheduling retries', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-workspace-conflict' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit(
+      'i-workspace-conflict',
+      'abnormal',
+      'workspace_unprovisioned_conflict: worktree_branch_conflict'
+    );
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-workspace-conflict')).toBe(false);
+    expect(snapshot.blocked_inputs.get('i-workspace-conflict')).toMatchObject({
+      stop_reason_code: 'operator_action_required_workspace_conflict',
+      requires_manual_resume: true
+    });
   });
 
   it('resumes blocked issue via manual resume API path and dispatches immediately when eligible', async () => {
