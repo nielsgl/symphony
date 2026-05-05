@@ -19,7 +19,7 @@ function redactPromptPreview(input: string | null | undefined): string | null {
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '***REDACTED***')
     .replace(/\b(?:bearer\s+)?(?:sk|api|token|key)[_-]?[a-z0-9]*[:=]\s*[^\s,;]+/gi, '***REDACTED***')
     .replace(/\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=***REDACTED***');
-  const truncated = Buffer.from(redacted, 'utf8').subarray(0, 160).toString('utf8').trim();
+  const truncated = Array.from(redacted).slice(0, 160).join('').trim();
   return truncated && truncated !== '***REDACTED***' ? truncated : null;
 }
 

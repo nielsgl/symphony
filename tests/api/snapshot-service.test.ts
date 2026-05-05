@@ -207,6 +207,37 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
   });
 
+  it('truncates pending input previews by UTF-8 characters after redaction', () => {
+    const service = new SnapshotService();
+    const prompt = `${'界'.repeat(170)} operator@example.com`;
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            awaiting_input_since_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            pending_input_preview: {
+              type: 'turn_input_required',
+              prompt_preview: prompt,
+              option_count: 1
+            }
+          })
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+    const preview = projected.running[0]?.pending_input_preview?.prompt_preview ?? '';
+    expect(Array.from(preview)).toHaveLength(160);
+    expect(preview).toBe('界'.repeat(160));
+    expect(preview).not.toContain('operator@example.com');
+
+    const issue = service.projectIssue(state, 'ABC-1');
+    const issuePreview = issue.running?.pending_input_preview?.prompt_preview ?? '';
+    expect(Array.from(issuePreview)).toHaveLength(160);
+    expect(issuePreview).toBe('界'.repeat(160));
+  });
+
   it('throws issue_not_found for unknown issue projection', () => {
     const service = new SnapshotService();
     const state = makeState();

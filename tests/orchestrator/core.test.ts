@@ -802,6 +802,74 @@ describe('OrchestratorCore', () => {
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait')).toBe(false);
   });
 
+  it('does not reset stalled-wait classification when waiting heartbeats continue', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-wait-heartbeat', identifier: 'ABC-WAIT-HB' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-wait-heartbeat', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat 1',
+      thread_id: 'thread-wait',
+      session_id: 'thread-wait-turn-1'
+    });
+    harness.now.value += 750;
+    harness.orchestrator.onWorkerEvent('i-wait-heartbeat', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat 2',
+      thread_id: 'thread-wait',
+      session_id: 'thread-wait-turn-1'
+    });
+    harness.now.value += 500;
+    await harness.orchestrator.tick('interval');
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-wait-heartbeat');
+    expect(running?.stalled_waiting_since_ms).toBe(1_001_000);
+    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait-heartbeat')).toBe(false);
+  });
+
+  it('emits stalled-wait threshold event once per waiting episode', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-wait-event', identifier: 'ABC-WAIT-EVENT' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-wait-event', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat',
+      thread_id: 'thread-event',
+      session_id: 'thread-event-turn-1'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-wait-event', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat after threshold',
+      thread_id: 'thread-event',
+      session_id: 'thread-event-turn-1'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+
+    const stallEvents = harness.orchestrator
+      .getStateSnapshot()
+      .recent_runtime_events.filter((entry) => entry.event === CANONICAL_EVENT.orchestration.runningWaitStallThresholdExceeded);
+    expect(stallEvents).toHaveLength(1);
+    expect(stallEvents[0]?.severity).toBe('warn');
+    expect(stallEvents[0]?.issue_identifier).toBe('ABC-WAIT-EVENT');
+    expect(stallEvents[0]?.session_id).toBe('thread-event-turn-1');
+    expect(stallEvents[0]?.detail).toContain('thread_id=thread-event');
+    expect(stallEvents[0]?.detail).toContain('elapsed_ms=2000');
+  });
+
   it('clears blocked issue state when tracker reports non-active or terminal state', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-clear', identifier: 'ABC-CLEAR' })]);

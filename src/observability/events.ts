@@ -60,7 +60,8 @@ export const CANONICAL_EVENT = {
     cancelToBacklogExecuted: 'orchestrator.cancel_to_backlog.executed',
     stateAwaitingHumanReviewScopeIncomplete: 'orchestrator.state.awaiting_human_review_scope_incomplete',
     phaseMarkerEmitted: 'orchestration.phase_marker.emitted',
-    phaseMarkerIgnored: 'orchestration.phase_marker.ignored'
+    phaseMarkerIgnored: 'orchestration.phase_marker.ignored',
+    runningWaitStallThresholdExceeded: 'running_wait_stall_threshold_exceeded'
   },
   agentRunner: {
     attemptStarted: 'agent_runner.attempt.started',

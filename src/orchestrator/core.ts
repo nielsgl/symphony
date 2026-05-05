@@ -105,6 +105,8 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     pending_input_preview: entry.pending_input_preview ? { ...entry.pending_input_preview } : null,
     stalled_waiting_since_ms: entry.stalled_waiting_since_ms ?? null,
     stalled_waiting_reason: entry.stalled_waiting_reason ?? null,
+    running_waiting_started_at_ms: entry.running_waiting_started_at_ms ?? null,
+    running_wait_stall_event_emitted: entry.running_wait_stall_event_emitted ?? false,
     current_phase: entry.current_phase,
     current_phase_at_ms: entry.current_phase_at_ms,
     phase_detail: entry.phase_detail
@@ -512,11 +514,21 @@ export class OrchestratorCore {
     }
     if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
       const thresholdMs = this.config.running_wait_stall_threshold_ms ?? 300_000;
-      if (!runningEntry.stalled_waiting_since_ms && thresholdMs > 0) {
-        runningEntry.stalled_waiting_since_ms = workerEvent.timestamp_ms + thresholdMs;
+      if (runningEntry.running_waiting_started_at_ms === undefined || runningEntry.running_waiting_started_at_ms === null) {
+        runningEntry.running_waiting_started_at_ms = workerEvent.timestamp_ms;
+        runningEntry.running_wait_stall_event_emitted = false;
+      }
+      if (
+        (runningEntry.stalled_waiting_since_ms === undefined || runningEntry.stalled_waiting_since_ms === null) &&
+        thresholdMs > 0
+      ) {
+        runningEntry.stalled_waiting_since_ms = runningEntry.running_waiting_started_at_ms + thresholdMs;
       }
       runningEntry.stalled_waiting_reason = null;
+      this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
     } else {
+      runningEntry.running_waiting_started_at_ms = null;
+      runningEntry.running_wait_stall_event_emitted = false;
       runningEntry.stalled_waiting_since_ms = null;
       runningEntry.stalled_waiting_reason = null;
     }
@@ -1371,13 +1383,13 @@ export class OrchestratorCore {
       const elapsedMs = now - (runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms);
       if (
         waitThresholdMs > 0 &&
-        runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting &&
-        elapsedMs > waitThresholdMs
+        runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting
       ) {
-        runningEntry.stalled_waiting_since_ms = (runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms) + waitThresholdMs;
-        runningEntry.stalled_waiting_reason = 'turn_waiting_threshold_exceeded';
+        this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
       }
       if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
+        runningEntry.running_waiting_started_at_ms = null;
+        runningEntry.running_wait_stall_event_emitted = false;
         runningEntry.stalled_waiting_since_ms = null;
         runningEntry.stalled_waiting_reason = null;
       }
@@ -1590,6 +1602,8 @@ export class OrchestratorCore {
       pending_input_preview: null,
       stalled_waiting_since_ms: null,
       stalled_waiting_reason: null,
+      running_waiting_started_at_ms: null,
+      running_wait_stall_event_emitted: false,
       tokens: {
         input_tokens: 0,
         output_tokens: 0,
@@ -2769,6 +2783,39 @@ export class OrchestratorCore {
       event === CANONICAL_EVENT.codex.turnFailed ||
       event === CANONICAL_EVENT.codex.turnCancelled
     );
+  }
+
+  private maybeClassifyRunningWaitStall(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
+    const waitThresholdMs = this.config.running_wait_stall_threshold_ms ?? 300_000;
+    if (waitThresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
+      return;
+    }
+
+    const waitingStartedAtMs =
+      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
+    runningEntry.running_waiting_started_at_ms = waitingStartedAtMs;
+    const thresholdCrossedAtMs = waitingStartedAtMs + waitThresholdMs;
+    runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
+
+    if (observedAtMs < thresholdCrossedAtMs) {
+      runningEntry.stalled_waiting_reason = null;
+      return;
+    }
+
+    runningEntry.stalled_waiting_reason = 'turn_waiting_threshold_exceeded';
+    if (runningEntry.running_wait_stall_event_emitted) {
+      return;
+    }
+
+    runningEntry.running_wait_stall_event_emitted = true;
+    const elapsedMs = Math.max(0, observedAtMs - waitingStartedAtMs);
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.runningWaitStallThresholdExceeded,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
+    });
   }
 
   private async completeRunRecord(
