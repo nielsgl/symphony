@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 
 import { WorkspaceError, WorkspaceManager } from '../../src/workspace';
 
@@ -16,6 +17,13 @@ async function exists(targetPath: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+function git(cwd: string, args: string[]): void {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
   }
 }
 
@@ -125,6 +133,87 @@ describe('WorkspaceManager', () => {
 
     expect(await exists(path.join(workspace.path, 'tmp'))).toBe(false);
     expect(await exists(path.join(workspace.path, '.elixir_ls'))).toBe(false);
+  });
+
+  it('preflight removes staged ignored artifacts and sentinel-only MM drift', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const preflightResults: Array<{ status: string; cleaned_files: Array<{ path: string; action: string }> }> = [];
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 },
+      onPreflightResult: (result) => {
+        preflightResults.push(result);
+      }
+    });
+
+    const workspace = await manager.ensureWorkspace('ABC-1');
+    git(workspace.path, ['init']);
+    git(workspace.path, ['config', 'user.email', 'test@example.com']);
+    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
+    await fs.mkdir(path.join(workspace.path, 'src/api'), { recursive: true });
+    await fs.writeFile(path.join(workspace.path, 'src/api/dashboard-assets.ts'), 'export const a = 1;\n', 'utf8');
+    git(workspace.path, ['add', '.']);
+    git(workspace.path, ['commit', '-m', 'initial']);
+
+    await fs.mkdir(path.join(workspace.path, 'output/playwright'), { recursive: true });
+    await fs.writeFile(path.join(workspace.path, 'output/playwright/demo.webm'), 'artifact', 'utf8');
+    git(workspace.path, ['add', '-f', 'output/playwright/demo.webm']);
+    await fs.appendFile(path.join(workspace.path, 'src/api/dashboard-assets.ts'), '// staged\n', 'utf8');
+    git(workspace.path, ['add', 'src/api/dashboard-assets.ts']);
+    await fs.appendFile(path.join(workspace.path, 'src/api/dashboard-assets.ts'), '// unstaged\n', 'utf8');
+
+    await manager.prepareAttempt(workspace.path);
+    const status = spawnSync('git', ['status', '--porcelain'], { cwd: workspace.path, encoding: 'utf8' }).stdout;
+
+    expect(status).not.toContain('output/playwright/demo.webm');
+    expect(preflightResults.some((entry) => entry.status === 'cleaned')).toBe(true);
+  });
+
+  it('preflight blocks when tracked output/playwright artifacts remain', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 }
+    });
+    const workspace = await manager.ensureWorkspace('ABC-2');
+    git(workspace.path, ['init']);
+    git(workspace.path, ['config', 'user.email', 'test@example.com']);
+    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
+    await fs.mkdir(path.join(workspace.path, 'output/playwright'), { recursive: true });
+    await fs.writeFile(path.join(workspace.path, 'output/playwright/ui-evidence.json'), '{}\n', 'utf8');
+    git(workspace.path, ['add', '-f', 'output/playwright/ui-evidence.json']);
+    git(workspace.path, ['commit', '-m', 'track artifact']);
+    await fs.appendFile(path.join(workspace.path, 'output/playwright/ui-evidence.json'), '{"x":1}\n', 'utf8');
+
+    await expect(manager.prepareAttempt(workspace.path)).rejects.toMatchObject({
+      code: 'workspace_unprovisioned_conflict',
+      message: expect.stringContaining('workspace_preflight_conflict:')
+    });
+  });
+
+  it('preflight no-ops on clean workspace', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const preflightResults: Array<{ status: string }> = [];
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 },
+      onPreflightResult: (result) => {
+        preflightResults.push(result);
+      }
+    });
+    const workspace = await manager.ensureWorkspace('ABC-3');
+    git(workspace.path, ['init']);
+    git(workspace.path, ['config', 'user.email', 'test@example.com']);
+    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
+    await fs.writeFile(path.join(workspace.path, 'README.md'), 'ok\n', 'utf8');
+    git(workspace.path, ['add', '.']);
+    git(workspace.path, ['commit', '-m', 'initial']);
+
+    await manager.prepareAttempt(workspace.path);
+    expect(preflightResults).toEqual([]);
   });
 
   it('enforces per-hook failure and timeout semantics', async () => {

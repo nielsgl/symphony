@@ -589,6 +589,30 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           warning: result.warning ?? null
         }
       });
+    },
+    onPreflightResult: (result) => {
+      const context = {
+        issue_identifier: result.identifier,
+        workspace_path: result.workspace_path,
+        cleaned_files: JSON.stringify(result.cleaned_files),
+        conflict_files: JSON.stringify(result.conflict_files),
+        resolution_hints: JSON.stringify(result.resolution_hints)
+      };
+      if (result.status === 'cleaned') {
+        logger.log({
+          level: 'info',
+          event: CANONICAL_EVENT.workspace.preflightCleanupApplied,
+          message: 'workspace preflight cleanup applied',
+          context
+        });
+        return;
+      }
+      logger.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.workspace.preflightConflictDetected,
+        message: 'workspace preflight detected unresolved conflict',
+        context
+      });
     }
   });
 

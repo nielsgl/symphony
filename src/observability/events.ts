@@ -80,6 +80,9 @@ export const CANONICAL_EVENT = {
     integrityReconcileSuccess: 'workspace.integrity.reconcile.success',
     integrityReconcileFailed: 'workspace.integrity.reconcile.failed',
     staleMetadataPrunedWarning: 'workspace.integrity.stale_metadata_pruned.warning'
+    ,
+    preflightCleanupApplied: 'workspace.preflight.cleanup.applied',
+    preflightConflictDetected: 'workspace.preflight.conflict.detected'
   },
   tracker: {
     candidateFetchFailed: 'tracker.candidates.fetch_failed',

@@ -433,12 +433,14 @@ describe('LocalRunnerBridge integration', () => {
     expect(failed?.context.error).toBe('response timeout');
   });
 
-  it('emits typed workspace conflict envelope when workspace prepare fails with managed conflict error', async () => {
+  it('emits typed workspace conflict envelope when workspace preflight reports unresolved tracked artifacts', async () => {
     const workspaceManager = {
       ensureWorkspace: vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true })),
       prepareAttempt: vi.fn(async () => {
-        const err = new Error('destination conflict: src/api/server.ts') as Error & { code?: string };
-        err.code = 'workspace_copy_ignored_invalid_config';
+        const err = new Error(
+          'workspace_preflight_conflict:{"detail":"tracked output/playwright artifacts remain after preflight cleanup","conflict_files":[{"path":"output/playwright/ui-evidence.json","status":"staged"}],"resolution_hints":["Remove tracked entries under output/playwright/ from git index/history."]}'
+        ) as Error & { code?: string };
+        err.code = 'workspace_unprovisioned_conflict';
         throw err;
       }),
       finalizeAttempt: vi.fn(async () => {}),
@@ -497,7 +499,8 @@ describe('LocalRunnerBridge integration', () => {
     const snapshot = orchestrator.getStateSnapshot();
     const blocked = snapshot.blocked_inputs.get('i-1');
     expect(blocked?.stop_reason_code).toBe('operator_action_required_workspace_conflict');
-    expect(blocked?.conflict_files).toEqual([{ path: 'src/api/server.ts', status: 'unknown' }]);
+    expect(blocked?.conflict_files).toEqual([{ path: 'output/playwright/ui-evidence.json', status: 'staged' }]);
+    expect(blocked?.resolution_hints).toContain('Remove tracked entries under output/playwright/ from git index/history.');
     expect(snapshot.retry_attempts.has('i-1')).toBe(false);
   });
 

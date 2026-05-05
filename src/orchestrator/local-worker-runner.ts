@@ -166,21 +166,60 @@ async function renderWorkspaceConflictError(error: unknown, workspacePath: strin
     return null;
   }
 
-  const parsedMessageConflictFiles = inferConflictFilesFromMessage(typed.message);
+  const structuredPreflight = parsePreflightConflictMessage(typed.message);
+  const parsedMessageConflictFiles = structuredPreflight?.conflict_files ?? inferConflictFilesFromMessage(typed.message);
   const gitConflictFiles = workspacePath ? await readConflictFilesFromGitStatus(workspacePath) : [];
   const mergedConflictFiles = dedupeConflictFiles([...parsedMessageConflictFiles, ...gitConflictFiles]);
 
   const payload = {
     code: 'operator_action_required_workspace_conflict',
-    detail: typed.message,
+    detail: structuredPreflight?.detail ?? typed.message,
     conflict_files: mergedConflictFiles,
-    resolution_hints: [
-      'Resolve workspace git conflicts in the issue worktree.',
-      'Ensure the workspace branch/worktree mapping matches repository state.',
-      'Resume the blocked issue explicitly after conflicts are resolved.'
-    ]
+    resolution_hints:
+      structuredPreflight?.resolution_hints ?? [
+        'Resolve workspace git conflicts in the issue worktree.',
+        'Ensure the workspace branch/worktree mapping matches repository state.',
+        'Resume the blocked issue explicitly after conflicts are resolved.'
+      ]
   };
   return `workspace_conflict:${JSON.stringify(payload)}`;
+}
+
+function parsePreflightConflictMessage(message: string): {
+  detail: string;
+  conflict_files: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>;
+  resolution_hints: string[];
+} | null {
+  const prefix = 'workspace_preflight_conflict:';
+  if (!message.startsWith(prefix)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(message.slice(prefix.length)) as {
+      detail?: unknown;
+      conflict_files?: Array<{ path?: unknown; status?: unknown }>;
+      resolution_hints?: unknown;
+    };
+    const conflict_files = Array.isArray(parsed.conflict_files)
+      ? parsed.conflict_files
+          .map((entry) => {
+            const path = typeof entry.path === 'string' ? entry.path.trim() : '';
+            const status = entry.status === 'staged' || entry.status === 'unstaged' ? entry.status : 'unknown';
+            return path ? { path, status } : null;
+          })
+          .filter((entry): entry is { path: string; status: 'staged' | 'unstaged' | 'unknown' } => Boolean(entry))
+      : [];
+    const resolution_hints = Array.isArray(parsed.resolution_hints)
+      ? parsed.resolution_hints.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+    return {
+      detail: typeof parsed.detail === 'string' && parsed.detail.trim().length > 0 ? parsed.detail : 'workspace preflight conflict',
+      conflict_files,
+      resolution_hints
+    };
+  } catch {
+    return null;
+  }
 }
 
 function parseWorkspaceConflictError(error: unknown): { message: string } | null {

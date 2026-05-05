@@ -15,6 +15,9 @@ import type {
 
 const SANITIZE_PATTERN = /[^A-Za-z0-9._-]/g;
 const TEMP_ARTIFACTS = ['tmp', '.elixir_ls'];
+const EPHEMERAL_FILE_EXACT = new Set(['.symphony-provision.json']);
+const EPHEMERAL_PREFIXES = ['output/playwright/'];
+const SENTINEL_UI_PATH = 'src/api/dashboard-assets.ts';
 
 async function defaultRunShell(params: {
   cwd: string;
@@ -126,6 +129,7 @@ export class WorkspaceManager {
   private readonly onProvisionerResult?: WorkspaceManagerOptions['onProvisionerResult'];
   private copyIgnored: WorkspaceManagerOptions['copyIgnored'];
   private readonly onCopyIgnoredResult?: WorkspaceManagerOptions['onCopyIgnoredResult'];
+  private readonly onPreflightResult?: WorkspaceManagerOptions['onPreflightResult'];
 
   constructor(options: WorkspaceManagerOptions) {
     this.root = path.resolve(options.root);
@@ -138,6 +142,7 @@ export class WorkspaceManager {
     this.onProvisionerResult = options.onProvisionerResult;
     this.copyIgnored = options.copyIgnored;
     this.onCopyIgnoredResult = options.onCopyIgnoredResult;
+    this.onPreflightResult = options.onPreflightResult;
   }
 
   setCopyIgnoredConfig(config: WorkspaceManagerOptions['copyIgnored']): void {
@@ -357,8 +362,115 @@ export class WorkspaceManager {
     for (const artifact of TEMP_ARTIFACTS) {
       await fs.rm(path.join(resolved, artifact), { recursive: true, force: true });
     }
+    await this.normalizeKnownWorkspaceDrift(resolved);
 
     await this.runHookOrThrow('before_run', resolved);
+  }
+
+  private async normalizeKnownWorkspaceDrift(workspacePath: string): Promise<void> {
+    const statusOutput = await this.runGit(workspacePath, ['status', '--porcelain']);
+    if (!statusOutput) {
+      return;
+    }
+    const entries = this.parseStatusPorcelain(statusOutput);
+    if (entries.length === 0) {
+      return;
+    }
+
+    const cleanupActions: Array<{ path: string; action: 'unstage' | 'untrack' | 'remove' | 'restore' }> = [];
+    const conflictFiles: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }> = [];
+
+    for (const entry of entries) {
+      const normalizedPath = entry.path.replace(/\\/g, '/');
+      const isEphemeral =
+        EPHEMERAL_FILE_EXACT.has(normalizedPath) || EPHEMERAL_PREFIXES.some((prefix) => normalizedPath.startsWith(prefix));
+      if (!isEphemeral) {
+        continue;
+      }
+      if (entry.staged !== ' ') {
+        await this.runGit(workspacePath, ['restore', '--staged', '--', normalizedPath]);
+        cleanupActions.push({ path: normalizedPath, action: 'unstage' });
+      }
+      if (normalizedPath.startsWith('output/playwright/') && entry.staged !== '?') {
+        await this.runGit(workspacePath, ['rm', '--cached', '-f', '--ignore-unmatch', '--', normalizedPath]);
+        cleanupActions.push({ path: normalizedPath, action: 'untrack' });
+      }
+      await fs.rm(path.join(workspacePath, normalizedPath), { recursive: true, force: true });
+      cleanupActions.push({ path: normalizedPath, action: 'remove' });
+    }
+
+    const sentinel = entries.find((entry) => entry.path.replace(/\\/g, '/') === SENTINEL_UI_PATH);
+    if (sentinel && sentinel.staged !== ' ' && sentinel.unstaged !== ' ') {
+      await this.runGit(workspacePath, ['restore', '--staged', '--', SENTINEL_UI_PATH]);
+      cleanupActions.push({ path: SENTINEL_UI_PATH, action: 'unstage' });
+    }
+
+    const remaining = this.parseStatusPorcelain((await this.runGit(workspacePath, ['status', '--porcelain'])) ?? '');
+    for (const entry of remaining) {
+      const normalizedPath = entry.path.replace(/\\/g, '/');
+      if (normalizedPath.startsWith('output/playwright/') && entry.staged !== '?') {
+        conflictFiles.push({ path: normalizedPath, status: entry.staged !== ' ' ? 'staged' : 'unstaged' });
+      }
+    }
+
+    if (cleanupActions.length > 0) {
+      this.onPreflightResult?.({
+        identifier: path.basename(workspacePath),
+        workspace_path: workspacePath,
+        status: 'cleaned',
+        cleaned_files: cleanupActions,
+        conflict_files: [],
+        resolution_hints: []
+      });
+    }
+
+    if (conflictFiles.length > 0) {
+      this.onPreflightResult?.({
+        identifier: path.basename(workspacePath),
+        workspace_path: workspacePath,
+        status: 'conflict',
+        cleaned_files: cleanupActions,
+        conflict_files: conflictFiles,
+        resolution_hints: [
+          'Remove tracked entries under output/playwright/ from git index/history.',
+          'Run `git rm --cached output/playwright/<file>` for each tracked artifact.',
+          'Resume only after workspace git status is free of tracked output/playwright entries.'
+        ]
+      });
+      throw new WorkspaceError(
+        'workspace_unprovisioned_conflict',
+        `workspace_preflight_conflict:${JSON.stringify({
+          detail: 'tracked output/playwright artifacts remain after preflight cleanup',
+          conflict_files: conflictFiles,
+          resolution_hints: [
+            'Remove tracked entries under output/playwright/ from git index/history.',
+            'Run `git rm --cached output/playwright/<file>` for each tracked artifact.',
+            'Resume only after workspace git status is free of tracked output/playwright entries.'
+          ]
+        })}`
+      );
+    }
+  }
+
+  private async runGit(cwd: string, args: string[]): Promise<string | null> {
+    return new Promise((resolve) => {
+      const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
+      let stdout = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString('utf8');
+      });
+      child.on('error', () => resolve(null));
+      child.on('close', (code) => resolve(code === 0 ? stdout : null));
+    });
+  }
+
+  private parseStatusPorcelain(output: string): Array<{ staged: string; unstaged: string; path: string }> {
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length >= 4)
+      .map((line) => ({ staged: line[0] ?? ' ', unstaged: line[1] ?? ' ', path: line.slice(3).trim() }))
+      .filter((entry) => entry.path.length > 0);
   }
 
   async finalizeAttempt(workspacePath: string): Promise<void> {
