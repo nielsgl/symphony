@@ -2022,7 +2022,26 @@ export class OrchestratorCore {
       };
     }
 
-    return { detail: defaultDetail, conflict_files: [], resolution_hints: defaultHints };
+    const inferredConflictFiles = this.inferWorkspaceConflictFiles(defaultDetail);
+    return { detail: defaultDetail, conflict_files: inferredConflictFiles, resolution_hints: defaultHints };
+  }
+
+  private inferWorkspaceConflictFiles(detail: string): Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }> {
+    const normalized = detail.toLowerCase();
+    if (normalized.includes('worktree_branch_conflict')) {
+      return [{ path: '.git/HEAD', status: 'unknown' }];
+    }
+    if (normalized.includes('workspace path is not a managed git worktree')) {
+      return [{ path: '.git', status: 'unknown' }];
+    }
+    if (normalized.includes('workspace path exists but branch cannot be inspected')) {
+      return [{ path: '.git/HEAD', status: 'unknown' }];
+    }
+    if (normalized.includes('workspace path exists but is not a managed git worktree')) {
+      return [{ path: '.git', status: 'unknown' }];
+    }
+
+    return [];
   }
 
   private parseWorkspaceConflictPayload(error: string): {

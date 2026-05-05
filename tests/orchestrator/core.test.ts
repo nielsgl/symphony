@@ -322,6 +322,26 @@ describe('OrchestratorCore', () => {
     });
   });
 
+  it('infers conflict_files for non-prefixed workspace conflict details', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-workspace-conflict-inferred' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit(
+      'i-workspace-conflict-inferred',
+      'abnormal',
+      'workspace_unprovisioned_conflict: worktree_branch_conflict'
+    );
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-workspace-conflict-inferred')).toBe(false);
+    expect(snapshot.blocked_inputs.get('i-workspace-conflict-inferred')).toMatchObject({
+      stop_reason_code: 'operator_action_required_workspace_conflict',
+      requires_manual_resume: true,
+      conflict_files: [{ path: '.git/HEAD', status: 'unknown' }]
+    });
+  });
+
   it('does not map unrelated destination-conflict text to workspace conflict stop reason', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-non-workspace-conflict' })]);
