@@ -977,6 +977,256 @@ describe('LocalApiServer', () => {
     expect(missingRoutePayload.api_degraded_routes).toContain('/api/v1/issues/:issue_identifier');
   });
 
+  it('serves telemetry summary and query API contract fields', async () => {
+    const runningEntry = makeRunningEntry({
+      issue: makeIssue({ identifier: 'ABC-1' }),
+      identifier: 'ABC-1',
+      worker_host: 'worker-a',
+      started_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+      last_codex_timestamp_ms: Date.parse('2026-04-10T10:05:00.000Z'),
+      last_progress_transition_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+      tokens: { input_tokens: 100, output_tokens: 50, total_tokens: 150 }
+    });
+    const state = makeState({
+      running: new Map([['issue-1', runningEntry]]),
+      blocked_inputs: new Map([
+        [
+          'issue-2',
+          {
+            issue_id: 'issue-2',
+            issue_identifier: 'ABC-2',
+            attempt: 3,
+            worker_host: 'worker-b',
+            workspace_path: '/tmp/symphony/ABC-2',
+            provisioner_type: 'worktree',
+            branch_name: 'feature/ABC-2',
+            repo_root: '/tmp/source',
+            workspace_exists: true,
+            workspace_git_status: 'dirty',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: 'operator_action_required_workspace_conflict',
+            stop_reason_detail: 'workspace conflict',
+            conflict_files: [{ path: 'tmp.log', status: 'unstaged', classification: 'unknown_non_ephemeral' }],
+            resolution_hints: ['resolve conflict'],
+            previous_thread_id: 'thread-blocked',
+            previous_session_id: 'session-blocked',
+            blocked_at_ms: Date.parse('2026-04-10T10:06:00.000Z'),
+            requires_manual_resume: true,
+            pending_input: null,
+            session_console: [],
+            budget: {
+              budget_usage_tokens: 300,
+              budget_limit_tokens: 1000,
+              budget_window_minutes: 60,
+              budget_status: 'warning',
+              budget_policy: 'block_requires_resume'
+            }
+          }
+        ]
+      ]),
+      retry_attempts: new Map([
+        [
+          'issue-3',
+          {
+            issue_id: 'issue-3',
+            identifier: 'ABC-3',
+            attempt: 4,
+            due_at_ms: Date.parse('2026-04-10T10:07:00.000Z'),
+            error: 'retry loop',
+            worker_host: 'worker-c',
+            workspace_path: '/tmp/symphony/ABC-3',
+            provisioner_type: 'worktree',
+            branch_name: 'feature/ABC-3',
+            repo_root: '/tmp/source',
+            workspace_exists: true,
+            workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: 'retry_backoff',
+            stop_reason_detail: 'retry loop',
+            previous_thread_id: 'thread-retry',
+            previous_session_id: 'session-retry',
+            timer_handle: {},
+            budget: {
+              budget_usage_tokens: 200,
+              budget_limit_tokens: 1000,
+              budget_window_minutes: 60,
+              budget_status: 'warning',
+              budget_policy: 'block_requires_resume'
+            }
+          }
+        ]
+      ])
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: { getStateSnapshot: () => state },
+      refreshSource: { tick: vi.fn(async () => undefined) },
+      diagnosticsSource: {
+        listRunHistory: () => [
+          {
+            run_id: 'run-1',
+            issue_id: 'issue-1',
+            issue_identifier: 'ABC-1',
+            started_at: '2026-04-10T10:00:00.000Z',
+            ended_at: '2026-04-10T10:05:00.000Z',
+            terminal_status: 'succeeded',
+            error_code: null,
+            session_ids: ['thread-complete']
+          }
+        ],
+        reconstructThreadLineage: (threadId: string) => (threadId === 'thread-complete' ? makeThreadLineage({ thread_id: threadId }) : null),
+        getRuntimeResolution: () => ({
+          workflow_path: '/tmp/WORKFLOW.md',
+          workflow_dir: '/tmp',
+          workspace_root: '/tmp/workspaces',
+          workspace_root_source: 'workflow',
+          server: { host: '127.0.0.1', port: 3000 },
+          provisioner_type: 'worktree',
+          repo_root: '/tmp/source',
+          base_ref: 'origin/main',
+          branch_name_template: 'feature/{identifier}',
+          effective_codex_model: 'gpt-5.4',
+          effective_reasoning_effort: 'medium',
+          effective_extra_flags_count: 0,
+          codex_resolution_mode: 'typed'
+        })
+      } as unknown as NonNullable<ConstructorParameters<typeof LocalApiServer>[0]['diagnosticsSource']>
+    });
+    await server.listen();
+    const address = server.address();
+
+    const summaryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/summary?from=2026-04-10T09:59:00.000Z&to=2026-04-10T10:08:00.000Z`);
+    const summary = (await summaryResponse.json()) as {
+      sample_count: number;
+      stuck_turn_rate: number;
+      retry_loop_rate: number;
+      time_to_first_progress_p50: number;
+      time_to_first_progress_p95: number;
+      time_to_first_progress_p99: number;
+      tool_latency_p50: Record<string, number>;
+      tool_latency_p95: Record<string, number>;
+      tool_latency_p99: Record<string, number>;
+      token_burn_rate: number;
+      burn_without_progress_rate: number;
+      top_blocker_classes: Array<{ classification: string; count: number }>;
+      worst_tools: Array<{ tool_name: string; p95_latency_ms: number }>;
+    };
+    expect(summaryResponse.status).toBe(200);
+    expect(summary.sample_count).toBeGreaterThanOrEqual(5);
+    expect(summary).toHaveProperty('stuck_turn_rate');
+    expect(summary).toHaveProperty('retry_loop_rate');
+    expect(summary).toHaveProperty('time_to_first_progress_p50');
+    expect(summary).toHaveProperty('time_to_first_progress_p95');
+    expect(summary).toHaveProperty('time_to_first_progress_p99');
+    expect(summary).toHaveProperty('tool_latency_p50');
+    expect(summary).toHaveProperty('tool_latency_p95');
+    expect(summary).toHaveProperty('tool_latency_p99');
+    expect(summary.tool_latency_p95.exec_command).toBe(2000);
+    expect(summary.token_burn_rate).toBeGreaterThan(0);
+    expect(summary.burn_without_progress_rate).toBeGreaterThan(0);
+    expect(summary.top_blocker_classes.some((entry) => entry.classification === 'blocked_input')).toBe(true);
+    expect(summary.worst_tools[0]).toMatchObject({ tool_name: 'exec_command', p95_latency_ms: 2000 });
+
+    const queryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?issue_identifier=ABC-1&tool_name=exec_command&model=gpt-5.4`);
+    const query = (await queryResponse.json()) as {
+      result_count: number;
+      events: Array<{ issue_identifier: string; tool_name: string; model: string; workflow_hash: string }>;
+    };
+    expect(queryResponse.status).toBe(200);
+    expect(query.result_count).toBe(1);
+    expect(query.events[0]).toMatchObject({
+      issue_identifier: 'ABC-1',
+      tool_name: 'exec_command',
+      model: 'gpt-5.4'
+    });
+    expect(query.events[0]?.workflow_hash).toMatch(/^[a-f0-9]{12}$/);
+  });
+
+  it('returns deterministic empty-window telemetry responses and typed validation errors', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () =>
+          makeState({
+            running: new Map([['issue-1', makeRunningEntry()]])
+          })
+      },
+      refreshSource: { tick: vi.fn(async () => undefined) }
+    });
+    await server.listen();
+    const address = server.address();
+
+    const emptyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/summary?from=2026-04-11T00:00:00.000Z&to=2026-04-11T01:00:00.000Z`);
+    const empty = (await emptyResponse.json()) as {
+      sample_count: number;
+      stuck_turn_rate: number;
+      retry_loop_rate: number;
+      token_burn_rate: number;
+      burn_without_progress_rate: number;
+      tool_latency_p50: Record<string, number>;
+      top_blocker_classes: unknown[];
+    };
+    expect(emptyResponse.status).toBe(200);
+    expect(empty).toMatchObject({
+      sample_count: 0,
+      stuck_turn_rate: 0,
+      retry_loop_rate: 0,
+      token_burn_rate: 0,
+      burn_without_progress_rate: 0,
+      tool_latency_p50: {},
+      top_blocker_classes: []
+    });
+
+    const invalidWindowResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?from=2026-04-11T01:00:00.000Z&to=2026-04-11T00:00:00.000Z`);
+    const invalidWindow = (await invalidWindowResponse.json()) as { error: { code: string } };
+    expect(invalidWindowResponse.status).toBe(400);
+    expect(invalidWindow.error.code).toBe('invalid_time_window');
+
+    const invalidFilterResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?classification=`);
+    const invalidFilter = (await invalidFilterResponse.json()) as { error: { code: string } };
+    expect(invalidFilterResponse.status).toBe(400);
+    expect(invalidFilter.error.code).toBe('invalid_query_filter');
+  });
+
+  it('aggregates high-volume telemetry samples deterministically', async () => {
+    const running = new Map<string, ReturnType<typeof makeRunningEntry>>();
+    for (let index = 0; index < 1500; index += 1) {
+      running.set(
+        `issue-${index}`,
+        makeRunningEntry({
+          issue: makeIssue({ id: `issue-${index}`, identifier: `ABC-${index}` }),
+          identifier: `ABC-${index}`,
+          worker_host: index % 2 === 0 ? 'worker-even' : 'worker-odd',
+          thread_id: `thread-${index}`,
+          turn_id: `turn-${index}`,
+          started_at_ms: Date.parse('2026-04-10T10:00:00.000Z') + index,
+          last_codex_timestamp_ms: Date.parse('2026-04-10T10:01:00.000Z') + index,
+          stalled_waiting_since_ms: index % 10 === 0 ? Date.parse('2026-04-10T10:00:30.000Z') + index : null,
+          stalled_waiting_reason: index % 10 === 0 ? 'turn_waiting_threshold_exceeded' : null,
+          tokens: {
+            input_tokens: index,
+            output_tokens: 1,
+            total_tokens: index + 1
+          }
+        })
+      );
+    }
+
+    server = new LocalApiServer({
+      snapshotSource: { getStateSnapshot: () => makeState({ running }) },
+      refreshSource: { tick: vi.fn(async () => undefined) }
+    });
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?worker_host=worker-even&limit=10000`);
+    const payload = (await response.json()) as { result_count: number; events: Array<{ worker_host: string }> };
+    expect(response.status).toBe(200);
+    expect(payload.result_count).toBe(750);
+    expect(payload.events.every((event) => event.worker_host === 'worker-even')).toBe(true);
+  });
+
   it('maps typed expired input submission to 409 conflict envelope', async () => {
     server = new LocalApiServer({
       snapshotSource: {
