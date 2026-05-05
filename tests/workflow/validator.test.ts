@@ -197,6 +197,30 @@ describe('ConfigValidator', () => {
     }
   });
 
+  it('rejects invalid resolved codex reasoning effort', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.codex.effective_reasoning_effort = 'maximum' as 'medium';
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_codex_reasoning_effort');
+    }
+  });
+
+  it('rejects oversized codex extra flags', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.codex.effective_extra_flags = Array.from({ length: 33 }, (_, index) => `--flag-${index}`);
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_codex_extra_flags');
+    }
+  });
+
   it('blocks dispatch but allows reconciliation on failed preflight', () => {
     const validator = new ConfigValidator();
     const config = baseConfig();

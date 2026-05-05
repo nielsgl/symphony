@@ -24,6 +24,7 @@ async function makeWorkflowFile(options?: {
   loggingRoot?: string;
   pollingIntervalMs?: number;
   hooksTimeoutMs?: number;
+  codexBlock?: string;
 }): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-'));
   const workflowPath = path.join(dir, 'WORKFLOW.md');
@@ -33,6 +34,14 @@ async function makeWorkflowFile(options?: {
   const loggingRoot = options?.loggingRoot;
   const pollingIntervalMs = options?.pollingIntervalMs ?? 1000;
   const hooksTimeoutMs = options?.hooksTimeoutMs ?? 1000;
+  const codexBlock =
+    options?.codexBlock ??
+    `codex:
+  command: codex app-server
+  turn_timeout_ms: 1000
+  read_timeout_ms: 1000
+  stall_timeout_ms: 1000
+`;
   const trackerCredentialBlock = includeTrackerCredentials
     ? `  api_key: test-token
   project_slug: TEST
@@ -67,11 +76,7 @@ agent:
   max_concurrent_agents: 1
   max_retry_backoff_ms: 10000
   max_turns: 1
-codex:
-  command: codex app-server
-  turn_timeout_ms: 1000
-  read_timeout_ms: 1000
-  stall_timeout_ms: 1000
+${codexBlock}\
 persistence:
   enabled: true
   db_path: ${JSON.stringify(path.join(dir, 'runtime.sqlite'))}
@@ -405,6 +410,61 @@ describe('createRuntimeEnvironment', () => {
       enabled: false,
       conflict_policy: 'skip',
       from: 'primary_worktree'
+    });
+  });
+
+  it('exposes redaction-safe effective typed codex config in diagnostics', async () => {
+    const workflowPath = await makeWorkflowFile({
+      codexBlock: `codex:
+  home: "$HOME/runtime-codex"
+  model: gpt-test
+  reasoning_effort: high
+  extra_flags:
+    - --config
+    - shell_environment_policy.inherit=all
+  turn_timeout_ms: 1000
+  read_timeout_ms: 1000
+  stall_timeout_ms: 1000
+`
+    });
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      runtime_resolution: {
+        effective_codex_home: string | null;
+        effective_codex_model: string | null;
+        effective_reasoning_effort: string | null;
+        effective_extra_flags_count: number;
+        codex_resolution_mode: 'typed' | 'legacy' | 'mixed';
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.runtime_resolution).toMatchObject({
+      effective_codex_home: path.normalize(`${os.homedir()}/runtime-codex`),
+      effective_codex_model: 'gpt-test',
+      effective_reasoning_effort: 'high',
+      effective_extra_flags_count: 2,
+      codex_resolution_mode: 'typed'
     });
   });
 

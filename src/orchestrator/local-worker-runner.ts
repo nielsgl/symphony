@@ -5,6 +5,7 @@ import type { CodexRunnerEvent } from '../codex';
 import type { CodexInputRequestPayload } from '../codex/types';
 import type { EffectiveConfig } from '../workflow';
 import { CANONICAL_EVENT } from '../observability/events';
+import { buildCodexSpawnCommand } from '../codex/command-builder';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -56,6 +57,16 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
     let currentIssue = input.issue;
     let lastSessionId: string | null = null;
     const maxTurns = Math.max(1, input.config.agent.max_turns);
+    const codexSpawnCommand = buildCodexSpawnCommand(input.config.codex);
+
+    if (input.config.codex.codex_resolution_mode === 'legacy') {
+      input.onCodexEvent?.({
+        event: CANONICAL_EVENT.codex.commandLegacyPathUsed,
+        timestamp: new Date().toISOString(),
+        codex_app_server_pid: null,
+        detail: 'codex_command_legacy_path_used'
+      });
+    }
 
     for (let turnNumber = 1; turnNumber <= maxTurns; turnNumber += 1) {
       const basePrompt =
@@ -68,7 +79,9 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       const prompt = turnNumber === 1 && input.resumeContext ? `${input.resumeContext}\n\n${basePrompt}` : basePrompt;
 
       const turnResult = await input.codexRunner.startSessionAndRunTurn({
-        command: input.config.codex.command,
+        command: codexSpawnCommand.command,
+        commandArgs: codexSpawnCommand.args,
+        commandEnv: codexSpawnCommand.env,
         workspaceCwd: workspace.path,
         workerHost: input.worker_host,
         prompt,

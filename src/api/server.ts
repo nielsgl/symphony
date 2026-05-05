@@ -97,7 +97,7 @@ export class LocalApiServer {
     };
     this.logger = options.logger;
     const codexHome = (process.env.SYMPHONY_CODEX_HOME || `${process.env.HOME || ''}/.codex`).trim();
-    this.codexStateDbPath = `${codexHome.replace(/\/+$/, '')}/state_5.sqlite`;
+    this.codexStateDbPath = options.codexStateDbPath ?? `${codexHome.replace(/\/+$/, '')}/state_5.sqlite`;
     this.refreshCoalescer = new RefreshCoalescer({
       refreshSource: options.refreshSource,
       nowMs: options.nowMs

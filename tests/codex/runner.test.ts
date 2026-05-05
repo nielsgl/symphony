@@ -117,6 +117,41 @@ describe('CodexRunner', () => {
     );
   });
 
+  it('launches typed commands with native args and env instead of bash interpolation', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const spawnCalls: Array<{ command: string; args?: string[]; env?: Record<string, string>; cwd: string }> = [];
+    const runner = new CodexRunner({
+      spawnProcess: ({ command, args, env, cwd }) => {
+        spawnCalls.push({ command, args, env, cwd });
+        return fake;
+      }
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        command: 'codex',
+        commandArgs: ['--config', 'model="gpt-test"', '--config', 'model_reasoning_effort=medium', 'app-server'],
+        commandEnv: { CODEX_HOME: '/tmp/codex-home' }
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"method":"turn/completed","params":{}}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+    expect(spawnCalls).toEqual([
+      {
+        command: 'codex',
+        args: ['--config', 'model="gpt-test"', '--config', 'model_reasoning_effort=medium', 'app-server'],
+        env: { CODEX_HOME: '/tmp/codex-home' },
+        cwd: workspaceCwd
+      }
+    ]);
+  });
+
   it('retries thread/start without dynamicTools when app-server requires experimentalApi capability', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

@@ -7,7 +7,7 @@ import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 import type { EffectiveConfig } from '../../src/workflow/types';
-import type { CodexRunner } from '../../src/codex';
+import type { CodexRunner, CodexRunnerEvent } from '../../src/codex';
 import type { WorkspaceManager } from '../../src/workspace';
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -204,6 +204,110 @@ describe('LocalRunnerBridge integration', () => {
         prompt: expect.stringContaining('Operator provided input.\nAnswer: Yes\n\nIssue ABC-1 attempt')
       })
     );
+  });
+
+  it('builds typed codex command args in mixed mode and emits legacy-only warning only for legacy mode', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+    const startSessionAndRunTurn = vi.fn(async () => ({
+      status: 'completed' as const,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      last_event: CANONICAL_EVENT.codex.turnCompleted
+    }));
+    const events: CodexRunnerEvent[] = [];
+    const config = makeConfig();
+    config.codex = {
+      ...config.codex,
+      command: 'CODEX_HOME="$HOME/.codex" codex --config model="legacy" app-server',
+      effective_codex_home: '/tmp/codex-home',
+      effective_codex_model: 'typed-model',
+      effective_reasoning_effort: 'high',
+      effective_extra_flags: ['--config', 'shell_environment_policy.inherit=all'],
+      effective_extra_flags_count: 2,
+      codex_resolution_mode: 'mixed'
+    };
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+      config,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      onWorkerEvent: ({ event }) => events.push(event)
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'codex',
+        commandArgs: [
+          '--config',
+          'shell_environment_policy.inherit=all',
+          '--config',
+          'model="typed-model"',
+          '--config',
+          'model_reasoning_effort=high',
+          'app-server'
+        ],
+        commandEnv: { CODEX_HOME: '/tmp/codex-home' }
+      })
+    );
+    expect(events.some((event) => event.detail === 'codex_command_legacy_path_used')).toBe(false);
+  });
+
+  it('emits warning code when legacy-only codex command path is used', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+    const startSessionAndRunTurn = vi.fn(async () => ({
+      status: 'completed' as const,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      last_event: CANONICAL_EVENT.codex.turnCompleted
+    }));
+    const events: CodexRunnerEvent[] = [];
+    const config = makeConfig();
+    config.codex.codex_resolution_mode = 'legacy';
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+      config,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      onWorkerEvent: ({ event }) => events.push(event)
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'codex app-server',
+        commandArgs: undefined,
+        commandEnv: undefined
+      })
+    );
+    expect(events).toEqual([
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.commandLegacyPathUsed,
+        detail: 'codex_command_legacy_path_used'
+      })
+    ]);
   });
 
   it('runs workspace ensure/prepare/codex/finalize via orchestrator spawn path', async () => {

@@ -41,6 +41,11 @@ export interface DiagnosticsSource {
     repo_root: string | null;
     base_ref: string | null;
     branch_name_template: string | null;
+    effective_codex_home?: string | null;
+    effective_codex_model?: string | null;
+    effective_reasoning_effort?: string | null;
+    effective_extra_flags_count?: number;
+    codex_resolution_mode?: 'typed' | 'legacy' | 'mixed';
   };
   getWorkspaceProvisioner(): {
     provisioner_type: string;
@@ -575,6 +580,7 @@ export interface LocalApiServerOptions {
   };
   nowMs?: () => number;
   logger?: StructuredLogger;
+  codexStateDbPath?: string;
 }
 
 export interface ApiDiagnosticsResponse {
@@ -626,6 +632,11 @@ export interface ApiDiagnosticsResponse {
     repo_root: string | null;
     base_ref: string | null;
     branch_name_template: string | null;
+    effective_codex_home: string | null;
+    effective_codex_model: string | null;
+    effective_reasoning_effort: string | null;
+    effective_extra_flags_count: number;
+    codex_resolution_mode: 'typed' | 'legacy' | 'mixed';
   };
   workspace_provisioner: {
     provisioner_type: string;
