@@ -1203,6 +1203,43 @@ describe('OrchestratorCore', () => {
     ).toBe(true);
   });
 
+  it('marks terminal no-usage turns unavailable instead of pending', async () => {
+    const terminalEvents = [
+      CANONICAL_EVENT.codex.turnCompleted,
+      CANONICAL_EVENT.codex.turnFailed,
+      CANONICAL_EVENT.codex.turnCancelled
+    ];
+
+    for (const terminalEvent of terminalEvents) {
+      const harness = createHarness();
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-no-usage-terminal' })]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-no-usage-terminal', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1'
+      });
+      harness.orchestrator.onWorkerEvent('i-no-usage-terminal', {
+        timestamp_ms: harness.now.value + 100,
+        event: terminalEvent,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        detail: 'terminal event without usage payload'
+      });
+
+      const snapshot = harness.orchestrator.getStateSnapshot();
+      const running = snapshot.running.get('i-no-usage-terminal');
+      expect(running?.token_telemetry_status).toBe('unavailable');
+      expect(running?.token_telemetry_last_source).toBeNull();
+      expect(running?.token_telemetry_last_at_ms).toBeNull();
+      expect(typeof running?.tokens.input_tokens).toBe('number');
+      expect(typeof running?.tokens.output_tokens).toBe('number');
+      expect(typeof running?.tokens.total_tokens).toBe('number');
+    }
+  });
+
   it('ignores usage aggregation when worker event thread_id mismatches active running thread', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-thread-mismatch' })]);

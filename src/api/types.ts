@@ -626,6 +626,9 @@ export interface ApiDiagnosticsResponse {
       model_context_window: boolean;
     };
   };
+  token_telemetry_status: 'unavailable' | 'pending' | 'available';
+  token_telemetry_last_source: string | null;
+  token_telemetry_last_at_ms: number | null;
   workflow: {
     prompt_fallback_active: boolean;
   };

@@ -589,6 +589,10 @@ export class OrchestratorCore {
         workerEvent.token_telemetry_last_at_ms ?? runningEntry.token_telemetry_last_at_ms;
     }
 
+    if (this.isTerminalTurnEvent(workerEvent.event) && !workerEvent.usage && runningEntry.token_telemetry_status === 'pending') {
+      runningEntry.token_telemetry_status = 'unavailable';
+    }
+
     this.maybeEmitTokenTelemetryWarning(runningEntry, workerEvent.timestamp_ms);
 
     if (workerEvent.rate_limits) {
@@ -2678,6 +2682,14 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: `token_telemetry_status=${runningEntry.token_telemetry_status} elapsed_ms=${eventAtMs - turnStartedAtMs}`
     });
+  }
+
+  private isTerminalTurnEvent(event: string): boolean {
+    return (
+      event === CANONICAL_EVENT.codex.turnCompleted ||
+      event === CANONICAL_EVENT.codex.turnFailed ||
+      event === CANONICAL_EVENT.codex.turnCancelled
+    );
   }
 
   private async completeRunRecord(

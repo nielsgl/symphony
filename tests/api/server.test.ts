@@ -367,6 +367,105 @@ describe('LocalApiServer', () => {
     expect(payload.running[0]?.token_telemetry_last_source).toBe('codex_home_state_sqlite');
     expect(typeof payload.running[0]?.token_telemetry_last_at_ms).toBe('number');
 
+    const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-1`);
+    const issuePayload = (await issueResponse.json()) as {
+      running: {
+        token_telemetry_status: string;
+        token_telemetry_last_source: string | null;
+        token_telemetry_last_at_ms: number | null;
+        tokens: { total_tokens: number };
+      };
+    };
+    expect(issueResponse.status).toBe(200);
+    expect(issuePayload.running.tokens.total_tokens).toBe(321);
+    expect(issuePayload.running.token_telemetry_status).toBe('available');
+    expect(issuePayload.running.token_telemetry_last_source).toBe('codex_home_state_sqlite');
+    expect(typeof issuePayload.running.token_telemetry_last_at_ms).toBe('number');
+
+    if (previousCodexHome === undefined) {
+      delete process.env.SYMPHONY_CODEX_HOME;
+    } else {
+      process.env.SYMPHONY_CODEX_HOME = previousCodexHome;
+    }
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
+  });
+
+  it('keeps alternate CODEX_HOME no-telemetry projections pending with threshold warning evidence', async () => {
+    const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-empty-codex-home-'));
+    const previousCodexHome = process.env.SYMPHONY_CODEX_HOME;
+    process.env.SYMPHONY_CODEX_HOME = codexHomeDir;
+
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            thread_id: 'thread-no-telemetry',
+            tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            last_reported_tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            token_telemetry_status: 'pending',
+            token_telemetry_last_source: null,
+            token_telemetry_last_at_ms: null
+          })
+        ]
+      ]),
+      recent_runtime_events: [
+        {
+          at_ms: Date.parse('2026-04-10T10:02:30.000Z'),
+          event: CANONICAL_EVENT.codex.tokenTelemetryMissingThresholdExceeded,
+          severity: 'warn',
+          issue_identifier: 'ABC-1',
+          detail: 'token_telemetry_status=pending elapsed_ms=120001'
+        }
+      ]
+    });
+
+    server = new LocalApiServer({
+      host: '127.0.0.1',
+      port: 0,
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: { tick: async () => {} }
+    });
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as {
+      running: Array<{
+        token_telemetry_status: string;
+        token_telemetry_last_source: string | null;
+        token_telemetry_last_at_ms: number | null;
+        tokens: { total_tokens: number };
+      }>;
+      recent_runtime_events: Array<{ event: string; severity: string; detail?: string }>;
+    };
+    const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-1`);
+    const issuePayload = (await issueResponse.json()) as {
+      running: {
+        token_telemetry_status: string;
+        token_telemetry_last_source: string | null;
+        token_telemetry_last_at_ms: number | null;
+        tokens: { total_tokens: number };
+      };
+    };
+
+    expect(stateResponse.status).toBe(200);
+    expect(issueResponse.status).toBe(200);
+    expect(statePayload.running[0]?.tokens.total_tokens).toBe(0);
+    expect(statePayload.running[0]?.token_telemetry_status).toBe('pending');
+    expect(statePayload.running[0]?.token_telemetry_last_source).toBeNull();
+    expect(statePayload.running[0]?.token_telemetry_last_at_ms).toBeNull();
+    expect(issuePayload.running.tokens.total_tokens).toBe(0);
+    expect(issuePayload.running.token_telemetry_status).toBe('pending');
+    expect(
+      statePayload.recent_runtime_events.some(
+        (event) =>
+          event.event === CANONICAL_EVENT.codex.tokenTelemetryMissingThresholdExceeded && event.severity === 'warn'
+      )
+    ).toBe(true);
+
     if (previousCodexHome === undefined) {
       delete process.env.SYMPHONY_CODEX_HOME;
     } else {
@@ -1322,6 +1421,9 @@ describe('LocalApiServer', () => {
           model_context_window: boolean;
         };
       };
+      token_telemetry_status: 'unavailable' | 'pending' | 'available';
+      token_telemetry_last_source: string | null;
+      token_telemetry_last_at_ms: number | null;
     };
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.active_profile.name).toBe('balanced');
@@ -1357,6 +1459,9 @@ describe('LocalApiServer', () => {
     ]);
     expect(diagnosticsPayload.token_accounting.excludes_last_usage_for_totals).toBe(false);
     expect(diagnosticsPayload.token_accounting.no_telemetry_warning_threshold_ms).toBe(120_000);
+    expect(diagnosticsPayload.token_telemetry_status).toBe('unavailable');
+    expect(diagnosticsPayload.token_telemetry_last_source).toBeNull();
+    expect(diagnosticsPayload.token_telemetry_last_at_ms).toBeNull();
     expect(diagnosticsPayload.token_accounting.observed_dimensions.cached_input_tokens).toBe(false);
     expect((diagnosticsPayload as Record<string, unknown>).runtime_resolution).toMatchObject({
       workflow_path: '/tmp/WORKFLOW.md',
@@ -1407,6 +1512,16 @@ describe('LocalApiServer', () => {
 
   it('reports observed token accounting dimensions in diagnostics from state snapshot', async () => {
     const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            token_telemetry_status: 'available',
+            token_telemetry_last_source: 'terminal_turn_summary',
+            token_telemetry_last_at_ms: Date.parse('2026-04-10T10:01:00.000Z')
+          })
+        ]
+      ]),
       codex_totals: {
         input_tokens: 100,
         output_tokens: 50,
@@ -1513,6 +1628,9 @@ describe('LocalApiServer', () => {
           model_context_window: boolean;
         };
       };
+      token_telemetry_status: 'unavailable' | 'pending' | 'available';
+      token_telemetry_last_source: string | null;
+      token_telemetry_last_at_ms: number | null;
     };
 
     expect(diagnosticsResponse.status).toBe(200);
@@ -1521,6 +1639,9 @@ describe('LocalApiServer', () => {
       reasoning_output_tokens: true,
       model_context_window: true
     });
+    expect(diagnosticsPayload.token_telemetry_status).toBe('available');
+    expect(diagnosticsPayload.token_telemetry_last_source).toBe('terminal_turn_summary');
+    expect(diagnosticsPayload.token_telemetry_last_at_ms).toBe(Date.parse('2026-04-10T10:01:00.000Z'));
     expect((diagnosticsPayload as Record<string, unknown>).runtime_resolution).toMatchObject({
       workflow_path: '/tmp/WORKFLOW.md',
       workspace_root: '/tmp/workspaces',
