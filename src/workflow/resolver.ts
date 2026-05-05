@@ -313,6 +313,7 @@ export class ConfigResolver {
     const copyIgnored = asRecord(workspace.copy_ignored);
     const hooks = asRecord(config.hooks);
     const agent = asRecord(config.agent);
+    const budget = asRecord(config.budget);
     const codex = asRecord(config.codex);
     const persistence = asRecord(config.persistence);
     const observability = asRecord(config.observability);
@@ -536,6 +537,23 @@ export class ConfigResolver {
         respawn_max_attempts_without_progress: readIntStrict(agent.respawn_max_attempts_without_progress, 3),
         max_turns: readIntStrict(agent.max_turns, 20),
         max_concurrent_agents_by_state: normalizePerStateMap(agent.max_concurrent_agents_by_state)
+      },
+      budget: {
+        ...(budget.per_run_total_tokens !== undefined
+          ? { per_run_total_tokens: readIntStrict(budget.per_run_total_tokens, Number.NaN) }
+          : {}),
+        ...(budget.per_issue_rolling_tokens !== undefined
+          ? { per_issue_rolling_tokens: readIntStrict(budget.per_issue_rolling_tokens, Number.NaN) }
+          : {}),
+        rolling_window_minutes: readIntStrict(budget.rolling_window_minutes, 1440),
+        warning_threshold_ratio:
+          typeof budget.warning_threshold_ratio === 'number'
+            ? budget.warning_threshold_ratio
+            : typeof budget.warning_threshold_ratio === 'string' && budget.warning_threshold_ratio.trim().length > 0
+              ? Number(budget.warning_threshold_ratio)
+              : 0.8,
+        hard_limit_policy:
+          budget.hard_limit_policy === 'terminate_attempt' ? 'terminate_attempt' : 'block_requires_resume'
       },
       codex: {
         command: codexCommand,

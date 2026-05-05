@@ -111,6 +111,15 @@ export interface LocalApiErrorEnvelope {
   };
 }
 
+export interface ApiBudgetProjection {
+  budget_usage_tokens: number | null;
+  budget_limit_tokens: number | null;
+  budget_window_minutes: number;
+  budget_status: 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable';
+  budget_policy: 'block_requires_resume' | 'terminate_attempt' | null;
+  budget_message?: string | null;
+}
+
 export interface ApiStateResponse {
   generated_at: string;
   counts: {
@@ -118,7 +127,7 @@ export interface ApiStateResponse {
     retrying: number;
     blocked: number;
   };
-  running: Array<{
+  running: Array<ApiBudgetProjection & {
     issue_id: string;
     issue_identifier: string;
     state: string;
@@ -176,7 +185,7 @@ export interface ApiStateResponse {
       model_context_window?: number;
     };
   }>;
-  retrying: Array<{
+  retrying: Array<ApiBudgetProjection & {
     issue_id: string;
     issue_identifier: string;
     attempt: number;
@@ -208,7 +217,7 @@ export interface ApiStateResponse {
     last_phase_at: string | null;
     last_phase_detail: string | null;
   }>;
-  blocked: Array<{
+  blocked: Array<ApiBudgetProjection & {
     issue_id: string;
     issue_identifier: string;
     attempt: number;
@@ -359,7 +368,7 @@ export interface ApiIssueResponse {
     restart_count: number;
     current_retry_attempt: number;
   };
-  running: {
+  running: (ApiBudgetProjection & {
     session_id: string | null;
     worker_host: string | null;
     workspace_path: string | null;
@@ -414,8 +423,8 @@ export interface ApiIssueResponse {
       reasoning_output_tokens?: number;
       model_context_window?: number;
     };
-  } | null;
-  retry: {
+  }) | null;
+  retry: (ApiBudgetProjection & {
     attempt: number;
     due_at: string;
     error: string | null;
@@ -444,8 +453,8 @@ export interface ApiIssueResponse {
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
-  } | null;
-  blocked: {
+  }) | null;
+  blocked: (ApiBudgetProjection & {
     attempt: number;
     blocked_at: string;
     worker_host: string | null;
@@ -538,7 +547,7 @@ export interface ApiIssueResponse {
     };
     required_actions?: string[];
     resume_override_reason?: string | null;
-  } | null;
+  }) | null;
   phase_timeline: Array<{
     at: string;
     phase: PhaseMarkerName;

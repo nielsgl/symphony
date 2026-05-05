@@ -14,6 +14,7 @@ import {
 } from './decisions';
 import type {
   BlockedEntry,
+  BudgetRuntimeProjection,
   CircuitBreakerEntry,
   OrchestratorOptions,
   OrchestratorState,
@@ -62,6 +63,7 @@ interface ScheduleRetryParams {
     checklist_checkpoint: string | null;
     state_marker: string | null;
   };
+  budget?: BudgetRuntimeProjection;
 }
 
 interface WorkspaceConflictContext {
@@ -109,7 +111,8 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     running_wait_stall_event_emitted: entry.running_wait_stall_event_emitted ?? false,
     current_phase: entry.current_phase,
     current_phase_at_ms: entry.current_phase_at_ms,
-    phase_detail: entry.phase_detail
+    phase_detail: entry.phase_detail,
+    budget: entry.budget ? { ...entry.budget } : undefined
   };
 }
 
@@ -140,7 +143,8 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     last_phase_at_ms: entry.last_phase_at_ms,
     last_phase_detail: entry.last_phase_detail,
     timer_handle: entry.timer_handle,
-    progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined
+    progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
+    budget: entry.budget ? { ...entry.budget } : undefined
   };
 }
 
@@ -184,6 +188,7 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
     required_actions: [...(entry.required_actions ?? [])],
     resume_override_reason: entry.resume_override_reason ?? null,
+    budget: entry.budget ? { ...entry.budget } : undefined,
     pending_input: entry.pending_input
       ? {
           ...entry.pending_input,
@@ -223,6 +228,17 @@ function severityForRuntimeEvent(eventName: string): 'info' | 'warn' | 'error' {
   return 'info';
 }
 
+function defaultBudgetProjection(windowMinutes = 1440): BudgetRuntimeProjection {
+  return {
+    budget_usage_tokens: null,
+    budget_limit_tokens: null,
+    budget_window_minutes: windowMinutes,
+    budget_status: 'ok',
+    budget_policy: null,
+    budget_message: null
+  };
+}
+
 export class OrchestratorCore {
   private readonly config: OrchestratorOptions['config'];
   private readonly ports: OrchestratorOptions['ports'];
@@ -259,6 +275,7 @@ export class OrchestratorCore {
       circuit_breakers: new Map(),
       redispatch_progress: new Map(),
       phase_timeline: new Map(),
+      budget_usage_samples: new Map(),
       completed: new Set(),
       codex_totals: {
         input_tokens: 0,
@@ -312,6 +329,12 @@ export class OrchestratorCore {
           markers.map((marker: PhaseMarker) => ({ ...marker }))
         ])
       ),
+      budget_usage_samples: new Map(
+        Array.from((this.state.budget_usage_samples ?? new Map<string, Array<{ at_ms: number; total_tokens: number }>>()).entries()).map(([issueId, samples]) => [
+          issueId,
+          samples.map((sample) => ({ ...sample }))
+        ])
+      ),
       completed: new Set(this.state.completed.values()),
       codex_totals: { ...this.state.codex_totals },
       codex_rate_limits: this.state.codex_rate_limits ? { ...this.state.codex_rate_limits } : null,
@@ -338,6 +361,7 @@ export class OrchestratorCore {
     max_concurrent_agents_per_host?: number | null;
     phase_markers_enabled?: boolean;
     phase_timeline_limit?: number;
+    budget?: OrchestratorOptions['config']['budget'];
   }): void {
     this.config.poll_interval_ms = config.poll_interval_ms;
     this.config.max_concurrent_agents = config.max_concurrent_agents;
@@ -355,6 +379,7 @@ export class OrchestratorCore {
     this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
     this.config.phase_markers_enabled = config.phase_markers_enabled ?? true;
     this.config.phase_timeline_limit = config.phase_timeline_limit ?? 30;
+    this.config.budget = config.budget;
     this.phaseSettings.enabled = this.config.phase_markers_enabled !== false;
     this.phaseSettings.timeline_limit = Math.max(1, this.config.phase_timeline_limit ?? 30);
 
@@ -627,6 +652,7 @@ export class OrchestratorCore {
           tokens: totalDelta
         });
       }
+      runningEntry.budget = this.computeBudgetProjection(issue_id, usage.total_tokens, 'available');
     }
 
     if (workerEvent.token_telemetry_status && !workerEvent.usage) {
@@ -642,6 +668,8 @@ export class OrchestratorCore {
     }
 
     this.maybeEmitTokenTelemetryWarning(runningEntry, workerEvent.timestamp_ms);
+    this.maybeEmitBudgetTelemetryUnavailable(runningEntry, workerEvent);
+    this.maybeEnforceBudget(issue_id, runningEntry, workerEvent.timestamp_ms);
 
     if (workerEvent.rate_limits) {
       this.state.codex_rate_limits = { ...workerEvent.rate_limits };
@@ -706,6 +734,244 @@ export class OrchestratorCore {
     }
   }
 
+  private budgetConfigured(): boolean {
+    return Boolean(
+      this.config.budget &&
+        (typeof this.config.budget.per_run_total_tokens === 'number' ||
+          typeof this.config.budget.per_issue_rolling_tokens === 'number')
+    );
+  }
+
+  private pruneBudgetSamples(issueId: string, nowMs: number): Array<{ at_ms: number; total_tokens: number }> {
+    const windowMinutes = this.config.budget?.rolling_window_minutes ?? 1440;
+    const windowMs = Math.max(1, windowMinutes) * 60_000;
+    const budgetSamples = this.state.budget_usage_samples ?? new Map<string, Array<{ at_ms: number; total_tokens: number }>>();
+    this.state.budget_usage_samples = budgetSamples;
+    const samples = (budgetSamples.get(issueId) ?? []).filter((sample) => nowMs - sample.at_ms <= windowMs);
+    budgetSamples.set(issueId, samples);
+    return samples;
+  }
+
+  private computeBudgetProjection(
+    issueId: string,
+    currentAttemptTokens: number,
+    telemetryStatus: 'available' | 'pending' | 'unavailable',
+    forcedStatus?: BudgetRuntimeProjection['budget_status'],
+    forcedMessage?: string | null
+  ): BudgetRuntimeProjection {
+    const budget = this.config.budget;
+    if (!budget) {
+      return defaultBudgetProjection();
+    }
+
+    const samples = this.pruneBudgetSamples(issueId, this.nowMs());
+    const rollingUsage = samples.reduce((sum, sample) => sum + sample.total_tokens, 0) + Math.max(0, currentAttemptTokens);
+    const perRunLimit = budget.per_run_total_tokens;
+    const rollingLimit = budget.per_issue_rolling_tokens;
+    const applicableLimits = [perRunLimit, rollingLimit].filter((value): value is number => typeof value === 'number');
+    const limit = applicableLimits.length > 0 ? Math.min(...applicableLimits) : null;
+    const usage = rollingLimit !== undefined ? rollingUsage : Math.max(0, currentAttemptTokens);
+    let status: BudgetRuntimeProjection['budget_status'] = 'ok';
+    if (forcedStatus) {
+      status = forcedStatus;
+    } else if (this.budgetConfigured() && telemetryStatus === 'unavailable') {
+      status = 'telemetry_unavailable';
+    } else if (limit !== null && usage >= limit) {
+      status = 'hard_limited';
+    } else if (limit !== null && usage >= Math.ceil(limit * budget.warning_threshold_ratio)) {
+      status = 'warning';
+    }
+
+    return {
+      budget_usage_tokens: this.budgetConfigured() && telemetryStatus !== 'unavailable' ? usage : null,
+      budget_limit_tokens: limit,
+      budget_window_minutes: budget.rolling_window_minutes,
+      budget_status: status,
+      budget_policy: this.budgetConfigured() ? budget.hard_limit_policy : null,
+      budget_message: forcedMessage ?? null
+    };
+  }
+
+  private maybeEmitBudgetTelemetryUnavailable(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
+    if (!this.budgetConfigured()) {
+      return;
+    }
+    if (!this.isTerminalTurnEvent(workerEvent.event) || runningEntry.token_telemetry_status !== 'unavailable') {
+      return;
+    }
+    runningEntry.budget = this.computeBudgetProjection(
+      runningEntry.issue.id,
+      runningEntry.tokens.total_tokens,
+      'unavailable',
+      'telemetry_unavailable',
+      'Budget accounting unavailable because runtime token telemetry was not reported.'
+    );
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.budget.telemetryUnavailable,
+      message: 'budget telemetry unavailable',
+      context: {
+        issue_id: runningEntry.issue.id,
+        issue_identifier: runningEntry.identifier
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.budget.telemetryUnavailable,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: 'runtime token telemetry unavailable for budget accounting'
+    });
+  }
+
+  private maybeEnforceBudget(issueId: string, runningEntry: RunningEntry, timestampMs: number): void {
+    if (!this.budgetConfigured()) {
+      return;
+    }
+    if (runningEntry.token_telemetry_status !== 'available') {
+      return;
+    }
+    const budget = this.config.budget;
+    if (!budget || runningEntry.budget_hard_limit_enforced) {
+      return;
+    }
+
+    const projection = this.computeBudgetProjection(issueId, runningEntry.tokens.total_tokens, 'available');
+    runningEntry.budget = projection;
+    if (projection.budget_status === 'warning' && !runningEntry.budget_warning_emitted) {
+      runningEntry.budget_warning_emitted = true;
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.budget.warningThresholdCrossed,
+        message: 'budget warning threshold crossed',
+        context: {
+          issue_id: issueId,
+          issue_identifier: runningEntry.identifier,
+          budget_usage_tokens: projection.budget_usage_tokens,
+          budget_limit_tokens: projection.budget_limit_tokens,
+          budget_policy: projection.budget_policy
+        }
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.budget.warningThresholdCrossed,
+        severity: 'warn',
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id ?? undefined,
+        detail: `usage=${projection.budget_usage_tokens} limit=${projection.budget_limit_tokens}`
+      });
+    }
+
+    if (projection.budget_status !== 'hard_limited') {
+      return;
+    }
+
+      runningEntry.budget_hard_limit_enforced = true;
+    const detail = `Budget hard limit exceeded: usage ${projection.budget_usage_tokens} tokens, limit ${projection.budget_limit_tokens} tokens.`;
+    runningEntry.budget = {
+      ...projection,
+      budget_message:
+        budget.hard_limit_policy === 'block_requires_resume'
+          ? `${detail} Continuation blocked until manual resume.`
+          : `${detail} Attempt terminated by budget policy.`
+    };
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.budget.hardLimitExceeded,
+      message: 'budget hard limit exceeded',
+      context: {
+        issue_id: issueId,
+        issue_identifier: runningEntry.identifier,
+        budget_usage_tokens: projection.budget_usage_tokens,
+        budget_limit_tokens: projection.budget_limit_tokens,
+        budget_policy: projection.budget_policy
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.budget.hardLimitExceeded,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: runningEntry.budget?.budget_message ?? detail
+    });
+    void this.enforceBudgetHardLimit(issueId, timestampMs);
+  }
+
+  private async enforceBudgetHardLimit(issueId: string, timestampMs: number): Promise<void> {
+    const running = this.state.running.get(issueId);
+    const budget = this.config.budget;
+    if (!running || !budget) {
+      return;
+    }
+
+    const stopReasonCode =
+      budget.hard_limit_policy === 'terminate_attempt'
+        ? 'attempt_terminated_budget_limit_exceeded'
+        : 'operator_action_required_budget_limit_exceeded';
+    const stopReasonDetail =
+      running.budget?.budget_message ??
+      `Budget hard limit exceeded: usage ${running.budget?.budget_usage_tokens} tokens, limit ${running.budget?.budget_limit_tokens} tokens.`;
+
+    this.emitPhaseMarker(issueId, {
+      phase: budget.hard_limit_policy === 'terminate_attempt' ? 'failed' : 'blocked_input',
+      detail: stopReasonDetail,
+      attempt: running.retry_attempt,
+      thread_id: running.thread_id,
+      session_id: running.session_id
+    });
+
+    await this.ports.terminateWorker({
+      issue_id: issueId,
+      worker_handle: running.worker_handle,
+      cleanup_workspace: false,
+      reason: stopReasonCode
+    });
+    this.addRuntimeSecondsFromEntry(running);
+    this.recordBudgetUsageSample(issueId, running.tokens.total_tokens, timestampMs);
+    this.state.running.delete(issueId);
+    this.state.health.last_error = stopReasonDetail;
+    await this.completeRunRecord(running, 'failed', stopReasonCode);
+
+    if (budget.hard_limit_policy === 'block_requires_resume') {
+      await this.scheduleBlockedInput({
+        issue_id: issueId,
+        issue_identifier: running.identifier,
+        attempt: running.retry_attempt + 1,
+        worker_host: running.worker_host ?? null,
+        workspace_path: running.workspace_path ?? null,
+        provisioner_type: running.provisioner_type ?? null,
+        branch_name: running.branch_name ?? null,
+        repo_root: running.repo_root ?? null,
+        workspace_exists: running.workspace_exists,
+        workspace_git_status: running.workspace_git_status,
+        workspace_provisioned: running.workspace_provisioned,
+        workspace_is_git_worktree: running.workspace_is_git_worktree,
+        copy_ignored_applied: running.copy_ignored_applied,
+        copy_ignored_status: running.copy_ignored_status,
+        copy_ignored_summary: running.copy_ignored_summary,
+        stop_reason_code: stopReasonCode,
+        stop_reason_detail: stopReasonDetail,
+        session_console: running.recent_events,
+        previous_thread_id: running.thread_id,
+        previous_session_id: running.session_id,
+        required_actions: ['Increase budget and resume', 'Cancel and return to backlog'],
+        budget: running.budget
+      });
+    } else {
+      this.state.claimed.delete(issueId);
+    }
+
+    this.ports.notifyObservers?.();
+  }
+
+  private recordBudgetUsageSample(issueId: string, totalTokens: number, timestampMs: number): void {
+    if (!this.budgetConfigured() || totalTokens <= 0) {
+      return;
+    }
+    const samples = this.pruneBudgetSamples(issueId, timestampMs);
+    samples.push({ at_ms: timestampMs, total_tokens: Math.max(0, totalTokens) });
+    this.state.budget_usage_samples?.set(issueId, samples);
+  }
+
   private quarantineBlockedWorkerEvent(
     blockedEntry: BlockedEntry,
     workerEvent: WorkerObservabilityEvent,
@@ -756,6 +1022,7 @@ export class OrchestratorCore {
 
     this.state.running.delete(issue_id);
     this.addRuntimeSecondsFromEntry(running);
+    this.recordBudgetUsageSample(issue_id, running.tokens.total_tokens, this.nowMs());
 
     if (reason === 'normal') {
       this.emitPhaseMarker(issue_id, {
@@ -789,7 +1056,8 @@ export class OrchestratorCore {
         stop_reason_detail: 'normal worker completion, continuing while issue is active',
         previous_thread_id: running.thread_id,
         previous_session_id: running.session_id,
-        issue_snapshot: running.issue
+        issue_snapshot: running.issue,
+        budget: running.budget
       });
       this.logger?.log({
         level: 'info',
@@ -932,7 +1200,8 @@ export class OrchestratorCore {
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
         previous_session_id: running.session_id,
-        issue_snapshot: running.issue
+        issue_snapshot: running.issue,
+        budget: running.budget
       });
       this.emitPhaseMarker(issue_id, {
         phase: 'failed',
@@ -1619,6 +1888,9 @@ export class OrchestratorCore {
       token_telemetry_last_at_ms: null,
       token_telemetry_turn_started_at_ms: null,
       token_telemetry_warning_emitted: false,
+      budget_warning_emitted: false,
+      budget_hard_limit_enforced: false,
+      budget: this.computeBudgetProjection(issue.id, 0, 'unavailable'),
       recent_events: [],
       started_at_ms: this.nowMs(),
       last_codex_timestamp_ms: null,
@@ -1758,6 +2030,7 @@ export class OrchestratorCore {
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
       last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
       progress_signals: resolvedProgressSignals,
+      budget: params.budget ? { ...params.budget } : undefined,
       timer_handle: timerHandle
     });
 
@@ -1836,6 +2109,7 @@ export class OrchestratorCore {
     };
     required_actions?: string[];
     apply_circuit_breaker?: boolean;
+    budget?: BudgetRuntimeProjection;
   }): Promise<{ created: boolean }> {
     const existingRetry = this.state.retry_attempts.get(params.issue_id);
     if (existingRetry) {
@@ -1893,6 +2167,7 @@ export class OrchestratorCore {
         : undefined,
       required_actions: [...(params.required_actions ?? [])],
       resume_override_reason: null,
+      budget: params.budget ? { ...params.budget } : undefined,
       pending_input: params.pending_input
         ? {
             request_id: params.pending_input.request_id,

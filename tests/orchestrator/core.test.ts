@@ -1386,6 +1386,154 @@ describe('OrchestratorCore', () => {
     }
   });
 
+  it('emits budget warning threshold crossed from canonical telemetry', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        budget: {
+          per_run_total_tokens: 100,
+          rolling_window_minutes: 1440,
+          warning_threshold_ratio: 0.8,
+          hard_limit_policy: 'block_requires_resume'
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-budget-warning' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-budget-warning', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      usage: {
+        input_tokens: 40,
+        output_tokens: 40,
+        total_tokens: 80
+      },
+      token_telemetry_status: 'available'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.get('i-budget-warning')?.budget?.budget_status).toBe('warning');
+    expect(
+      snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.budget.warningThresholdCrossed)
+    ).toBe(true);
+  });
+
+  it('blocks for manual resume when budget hard limit policy requires resume', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        budget: {
+          per_run_total_tokens: 100,
+          rolling_window_minutes: 1440,
+          warning_threshold_ratio: 0.8,
+          hard_limit_policy: 'block_requires_resume'
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-budget-block', identifier: 'ABC-BUDGET' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-budget-block', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      usage: {
+        input_tokens: 60,
+        output_tokens: 45,
+        total_tokens: 105
+      },
+      token_telemetry_status: 'available'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-budget-block')).toBe(false);
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-budget-block', cleanup_workspace: false, reason: 'operator_action_required_budget_limit_exceeded' }
+    ]);
+    expect(snapshot.blocked_inputs.get('i-budget-block')).toMatchObject({
+      stop_reason_code: 'operator_action_required_budget_limit_exceeded',
+      requires_manual_resume: true,
+      budget: {
+        budget_status: 'hard_limited',
+        budget_policy: 'block_requires_resume',
+        budget_usage_tokens: 105,
+        budget_limit_tokens: 100
+      }
+    });
+  });
+
+  it('terminates attempt without retry when budget hard limit policy terminates attempts', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        budget: {
+          per_run_total_tokens: 50,
+          rolling_window_minutes: 1440,
+          warning_threshold_ratio: 0.8,
+          hard_limit_policy: 'terminate_attempt'
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-budget-terminate' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-budget-terminate', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      usage: {
+        input_tokens: 30,
+        output_tokens: 25,
+        total_tokens: 55
+      },
+      token_telemetry_status: 'available'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-budget-terminate')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-budget-terminate')).toBe(false);
+    expect(snapshot.blocked_inputs.has('i-budget-terminate')).toBe(false);
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-budget-terminate', cleanup_workspace: false, reason: 'attempt_terminated_budget_limit_exceeded' }
+    ]);
+    expect(snapshot.health.last_error).toContain('Attempt terminated by budget policy');
+  });
+
+  it('emits budget telemetry unavailable warning without zero accounting', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        budget: {
+          per_run_total_tokens: 100,
+          rolling_window_minutes: 1440,
+          warning_threshold_ratio: 0.8,
+          hard_limit_policy: 'block_requires_resume'
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-budget-no-telemetry' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-budget-no-telemetry', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-budget-no-telemetry', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.get('i-budget-no-telemetry')?.budget).toMatchObject({
+      budget_usage_tokens: null,
+      budget_status: 'telemetry_unavailable'
+    });
+    expect(
+      snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.budget.telemetryUnavailable)
+    ).toBe(true);
+  });
+
   it('ignores usage aggregation when worker event thread_id mismatches active running thread', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-thread-mismatch' })]);

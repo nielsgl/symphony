@@ -1,7 +1,7 @@
 import type { OrchestratorState, RunningEntry } from '../orchestrator';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
-import type { ApiIssueResponse, ApiStateResponse } from './types';
+import type { ApiBudgetProjection, ApiIssueResponse, ApiStateResponse } from './types';
 
 function asIsoDate(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
@@ -23,12 +23,28 @@ function redactPromptPreview(input: string | null | undefined): string | null {
   return truncated && truncated !== '***REDACTED***' ? truncated : null;
 }
 
+function defaultBudgetProjection(windowMinutes = 1440): ApiBudgetProjection {
+  return {
+    budget_usage_tokens: null,
+    budget_limit_tokens: null,
+    budget_window_minutes: windowMinutes,
+    budget_status: 'ok' as const,
+    budget_policy: null,
+    budget_message: null
+  };
+}
+
+function projectBudget(entry: { budget?: ApiBudgetProjection | null }): ApiBudgetProjection {
+  return entry.budget ? { ...entry.budget } : defaultBudgetProjection();
+}
+
 function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number): ApiStateResponse['running'][number] {
   const awaitingInput = Boolean(entry.awaiting_input_since_ms);
   const stalledWaiting = Boolean(entry.stalled_waiting_since_ms && entry.stalled_waiting_reason);
   return {
     issue_id: issueId,
     issue_identifier: entry.identifier,
+    ...projectBudget(entry),
     state: entry.issue.state,
     session_id: entry.session_id,
     worker_host: entry.worker_host ?? null,
@@ -103,6 +119,7 @@ export class SnapshotService {
     const nowMs = this.nowMs();
     const running = Array.from(state.running.entries()).map(([issueId, entry]) => toStateRunningRow(issueId, entry, nowMs));
     const retrying = Array.from(state.retry_attempts.values()).map((entry) => ({
+      ...projectBudget(entry),
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       attempt: entry.attempt,
@@ -129,6 +146,7 @@ export class SnapshotService {
       last_phase_detail: entry.last_phase_detail ?? null
     }));
     const blocked = Array.from(state.blocked_inputs.values()).map((entry) => ({
+      ...projectBudget(entry),
       ...(state.circuit_breakers.get(entry.issue_id)
         ? {
             breaker_active: state.circuit_breakers.get(entry.issue_id)?.breaker_active ?? false,
@@ -300,6 +318,7 @@ export class SnapshotService {
           current_retry_attempt: currentRetryAttempt
         },
         running: {
+          ...projectBudget(entry),
           session_id: entry.session_id,
           worker_host: entry.worker_host ?? null,
           workspace_path: entry.workspace_path ?? null,
@@ -361,6 +380,7 @@ export class SnapshotService {
         },
         retry: retryEntry
           ? {
+              ...projectBudget(retryEntry),
               attempt: retryEntry.attempt,
               due_at: asIsoDate(retryEntry.due_at_ms),
               error: retryEntry.error,
@@ -387,6 +407,7 @@ export class SnapshotService {
           : null,
         blocked: blockedEntry
           ? {
+              ...projectBudget(blockedEntry),
               attempt: blockedEntry.attempt,
               blocked_at: asIsoDate(blockedEntry.blocked_at_ms),
               worker_host: blockedEntry.worker_host ?? null,
@@ -497,6 +518,7 @@ export class SnapshotService {
         },
         running: null,
         retry: {
+          ...projectBudget(retryOnlyEntry),
           attempt: retryOnlyEntry.attempt,
           due_at: asIsoDate(retryOnlyEntry.due_at_ms),
           error: retryOnlyEntry.error,
@@ -522,6 +544,7 @@ export class SnapshotService {
         },
         blocked: blockedEntry
           ? {
+              ...projectBudget(blockedEntry),
               attempt: blockedEntry.attempt,
               blocked_at: asIsoDate(blockedEntry.blocked_at_ms),
               worker_host: blockedEntry.worker_host ?? null,
@@ -629,6 +652,7 @@ export class SnapshotService {
       running: null,
       retry: null,
       blocked: {
+        ...projectBudget(blockedEntry),
         attempt: blockedEntry.attempt,
         blocked_at: asIsoDate(blockedEntry.blocked_at_ms),
         worker_host: blockedEntry.worker_host ?? null,

@@ -29,6 +29,11 @@ export type ValidationErrorCode =
   | 'invalid_agent_max_retry_backoff_ms'
   | 'invalid_agent_respawn_window_minutes'
   | 'invalid_agent_respawn_max_attempts_without_progress'
+  | 'invalid_budget_per_run_total_tokens'
+  | 'invalid_budget_per_issue_rolling_tokens'
+  | 'invalid_budget_rolling_window_minutes'
+  | 'invalid_budget_warning_threshold_ratio'
+  | 'invalid_budget_hard_limit_policy'
   | 'invalid_agent_max_concurrent_agents_by_state'
   | 'invalid_codex_turn_timeout_ms'
   | 'invalid_codex_read_timeout_ms'
@@ -85,6 +90,16 @@ export interface AgentConfig {
   respawn_max_attempts_without_progress?: number;
   max_turns: number;
   max_concurrent_agents_by_state: Record<string, number>;
+}
+
+export type BudgetHardLimitPolicy = 'block_requires_resume' | 'terminate_attempt';
+
+export interface BudgetConfig {
+  per_run_total_tokens?: number;
+  per_issue_rolling_tokens?: number;
+  rolling_window_minutes: number;
+  warning_threshold_ratio: number;
+  hard_limit_policy: BudgetHardLimitPolicy;
 }
 
 export interface CodexConfig {
@@ -166,6 +181,7 @@ export interface EffectiveConfig {
   };
   hooks: HooksConfig;
   agent: AgentConfig;
+  budget?: BudgetConfig;
   codex: CodexConfig;
   persistence: PersistenceConfig;
   observability?: {

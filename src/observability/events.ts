@@ -34,6 +34,11 @@ export const CANONICAL_EVENT = {
     commandMixedTypedOverridesApplied: 'codex.command.mixed_typed_overrides_applied',
     tokenTelemetryMissingThresholdExceeded: 'token_telemetry_missing_threshold_exceeded'
   },
+  budget: {
+    warningThresholdCrossed: 'budget.warning_threshold_crossed',
+    hardLimitExceeded: 'budget.hard_limit_exceeded',
+    telemetryUnavailable: 'budget.telemetry_unavailable'
+  },
   orchestration: {
     dispatchValidationFailed: 'orchestration.dispatch.validation.failed',
     dispatchValidationRecovered: 'orchestration.dispatch.validation.recovered',

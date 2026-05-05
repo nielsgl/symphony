@@ -767,6 +767,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       github_linking_mode: nextConfig.tracker.github_linking?.mode ?? 'off',
       stall_timeout_ms: nextConfig.codex.stall_timeout_ms,
       running_wait_stall_threshold_ms: nextConfig.codex.running_wait_stall_threshold_ms,
+      budget: nextConfig.budget,
       worker_hosts: nextConfig.worker?.ssh_hosts ?? [],
       max_concurrent_agents_per_host: nextConfig.worker?.max_concurrent_agents_per_host ?? null
     });
@@ -830,6 +831,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       running_wait_stall_threshold_ms: effectiveConfig.codex.running_wait_stall_threshold_ms,
       phase_markers_enabled: effectiveConfig.observability?.phase_markers_enabled ?? true,
       phase_timeline_limit: effectiveConfig.observability?.phase_timeline_limit ?? 30,
+      budget: effectiveConfig.budget,
       worker_hosts: effectiveConfig.worker?.ssh_hosts ?? [],
       max_concurrent_agents_per_host: effectiveConfig.worker?.max_concurrent_agents_per_host ?? null
     },

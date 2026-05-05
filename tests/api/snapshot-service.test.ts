@@ -88,6 +88,7 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
     retry_attempts: new Map(),
     blocked_inputs: new Map(),
     circuit_breakers: new Map(),
+    budget_usage_samples: new Map(),
     completed: new Set(),
     codex_totals: {
       input_tokens: 10,
@@ -173,9 +174,90 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.token_telemetry_status).toBe('available');
     expect(projected.running[0]?.token_telemetry_last_source).toBe('terminal_turn_summary');
     expect(projected.running[0]?.token_telemetry_last_at_ms).toBe(Date.parse('2026-04-10T10:01:00.000Z'));
+    expect(projected.running[0]?.budget_status).toBe('ok');
+    expect(projected.running[0]?.budget_usage_tokens).toBeNull();
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');
+  });
+
+  it('projects additive budget fields for running and blocked rows', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            budget: {
+              budget_usage_tokens: 80,
+              budget_limit_tokens: 100,
+              budget_window_minutes: 1440,
+              budget_status: 'warning',
+              budget_policy: 'block_requires_resume',
+              budget_message: null
+            }
+          })
+        ]
+      ]),
+      blocked_inputs: new Map([
+        [
+          'issue-2',
+          {
+            issue_id: 'issue-2',
+            issue_identifier: 'ABC-2',
+            attempt: 1,
+            worker_host: null,
+            workspace_path: null,
+            provisioner_type: null,
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: false,
+            workspace_git_status: null,
+            workspace_provisioned: false,
+            workspace_is_git_worktree: false,
+            stop_reason_code: 'operator_action_required_budget_limit_exceeded',
+            stop_reason_detail: 'Budget hard limit exceeded. Continuation blocked until manual resume.',
+            conflict_files: [],
+            resolution_hints: [],
+            previous_thread_id: null,
+            previous_session_id: null,
+            blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            requires_manual_resume: true,
+            budget: {
+              budget_usage_tokens: 105,
+              budget_limit_tokens: 100,
+              budget_window_minutes: 1440,
+              budget_status: 'hard_limited',
+              budget_policy: 'block_requires_resume',
+              budget_message: 'Budget hard limit exceeded. Continuation blocked until manual resume.'
+            }
+          }
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+    expect(projected.running[0]).toMatchObject({
+      budget_usage_tokens: 80,
+      budget_limit_tokens: 100,
+      budget_window_minutes: 1440,
+      budget_status: 'warning',
+      budget_policy: 'block_requires_resume'
+    });
+    expect(projected.blocked[0]).toMatchObject({
+      budget_usage_tokens: 105,
+      budget_status: 'hard_limited',
+      budget_message: 'Budget hard limit exceeded. Continuation blocked until manual resume.'
+    });
+
+    const issue = service.projectIssue(state, 'ABC-2');
+    expect(issue.blocked).toMatchObject({
+      budget_usage_tokens: 105,
+      budget_status: 'hard_limited',
+      budget_policy: 'block_requires_resume'
+    });
   });
 
   it('projects running awaiting-input and stalled-waiting fields with redacted preview', () => {
@@ -445,7 +527,7 @@ describe('SnapshotService', () => {
     });
 
     const issue = service.projectIssue(state, 'ABC-1');
-    expect(issue.retry).toEqual({
+    expect(issue.retry).toMatchObject({
       attempt: 1,
       due_at: '2026-04-10T10:03:00.000Z',
       error: 'retrying',
@@ -552,7 +634,7 @@ describe('SnapshotService', () => {
       host: 'build-1',
       path: '/tmp/symphony/ABC-2'
     });
-    expect(projected.retry).toEqual({
+    expect(projected.retry).toMatchObject({
       attempt: 2,
       due_at: '2026-04-10T10:02:30.000Z',
       error: 'retrying',

@@ -3,6 +3,8 @@ import { CANONICAL_EVENT } from '../observability/events';
 export const ACTION_REQUIRED_REASON_LABELS: Record<string, string> = {
   operator_action_required_workspace_conflict: 'Workspace Conflict',
   operator_action_required_no_progress_redispatch_blocked: 'No Progress Redispatch Blocked',
+  operator_action_required_budget_limit_exceeded: 'Budget Limit Exceeded',
+  attempt_terminated_budget_limit_exceeded: 'Budget Limit Terminated Attempt',
   awaiting_human_review_scope_incomplete: 'Awaiting Human Review (Scope Incomplete)'
 };
 
