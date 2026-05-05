@@ -91,6 +91,19 @@ export interface RetryEntry {
   last_phase_at_ms?: number | null;
   last_phase_detail?: string | null;
   timer_handle: unknown;
+  progress_signals?: {
+    commit_sha: string | null;
+    checklist_checkpoint: string | null;
+    state_marker: string | null;
+  };
+}
+
+export interface RedispatchProgressSample {
+  at_ms: number;
+  commit_sha: string | null;
+  checklist_checkpoint: string | null;
+  state_marker: string | null;
+  pr_open: boolean;
 }
 
 export interface BlockedEntry {
@@ -131,6 +144,17 @@ export interface BlockedEntry {
   last_phase_detail?: string | null;
   blocked_at_ms: number;
   requires_manual_resume: true;
+  attempt_count_window?: number;
+  window_minutes?: number;
+  last_known_commit_sha?: string | null;
+  last_progress_checkpoint_at?: number | null;
+  progress_signals?: {
+    commit_sha: string | null;
+    checklist_checkpoint: string | null;
+    state_marker: string | null;
+  };
+  required_actions?: string[];
+  resume_override_reason?: string | null;
   pending_input?: {
     request_id: string | null;
     request_method: string | null;
@@ -171,6 +195,7 @@ export interface OrchestratorState {
   claimed: Set<string>;
   retry_attempts: Map<string, RetryEntry>;
   blocked_inputs: Map<string, BlockedEntry>;
+  redispatch_progress?: Map<string, RedispatchProgressSample[]>;
   phase_timeline?: Map<string, PhaseMarker[]>;
   completed: Set<string>;
   codex_totals: {
@@ -282,6 +307,17 @@ export interface OrchestratorPorts {
     message?: string;
     resume_context?: string;
   }>;
+  resolveProgressSignals?: (params: {
+    issue: Issue | null;
+    issue_id: string;
+    branch_name: string | null;
+    repo_root: string | null;
+    fallback_state_marker: string | null;
+  }) => Promise<{
+    commit_sha: string | null;
+    checklist_checkpoint: string | null;
+    state_marker: string | null;
+  }>;
   notifyObservers?: () => void;
 }
 
@@ -320,6 +356,8 @@ export interface OrchestratorConfig {
   max_concurrent_agents: number;
   max_concurrent_agents_by_state: Record<string, number>;
   max_retry_backoff_ms: number;
+  respawn_window_minutes?: number;
+  respawn_max_attempts_without_progress?: number;
   active_states: string[];
   terminal_states: string[];
   github_linking_mode?: 'off' | 'warn' | 'required' | string;

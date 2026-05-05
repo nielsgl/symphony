@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import dns from 'node:dns/promises';
 import path from 'node:path';
 import net from 'node:net';
+import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 import { LocalApiServer } from '../api';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
@@ -104,6 +106,42 @@ async function assertResolvableServerHost(host: string): Promise<void> {
   } catch {
     throw new WorkflowConfigError('invalid_server_host', `server.host '${host}' is not resolvable`);
   }
+}
+
+function resolveBranchHeadSha(repoRoot: string | null, branchName: string | null): string | null {
+  if (!repoRoot || !branchName) {
+    return null;
+  }
+  const refs = [branchName, `refs/heads/${branchName}`, `refs/remotes/origin/${branchName}`];
+  for (const ref of refs) {
+    const result = spawnSync('git', ['rev-parse', ref], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8'
+    });
+    if (result.status === 0) {
+      const value = result.stdout.trim();
+      if (value.length > 0) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+function extractChecklistCheckpoint(issueDescription: string | null): string | null {
+  if (!issueDescription || issueDescription.trim().length === 0) {
+    return null;
+  }
+  const checklistLines = issueDescription
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^[-*]\s+\[[ xX]\]\s+/.test(line));
+  if (checklistLines.length === 0) {
+    return null;
+  }
+  const normalized = checklistLines.join('\n');
+  return crypto.createHash('sha1').update(normalized).digest('hex');
 }
 
 class StructuredLoggerObserverSink implements LogSink {
@@ -708,6 +746,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       max_concurrent_agents: nextConfig.agent.max_concurrent_agents,
       max_concurrent_agents_by_state: nextConfig.agent.max_concurrent_agents_by_state,
       max_retry_backoff_ms: nextConfig.agent.max_retry_backoff_ms,
+      respawn_window_minutes: nextConfig.agent.respawn_window_minutes ?? 30,
+      respawn_max_attempts_without_progress: nextConfig.agent.respawn_max_attempts_without_progress ?? 3,
       active_states: nextConfig.tracker.active_states,
       terminal_states: nextConfig.tracker.terminal_states,
       github_linking_mode: nextConfig.tracker.github_linking?.mode ?? 'off',
@@ -766,6 +806,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       max_concurrent_agents: effectiveConfig.agent.max_concurrent_agents,
       max_concurrent_agents_by_state: effectiveConfig.agent.max_concurrent_agents_by_state,
       max_retry_backoff_ms: effectiveConfig.agent.max_retry_backoff_ms,
+      respawn_window_minutes: effectiveConfig.agent.respawn_window_minutes ?? 30,
+      respawn_max_attempts_without_progress: effectiveConfig.agent.respawn_max_attempts_without_progress ?? 3,
       active_states: effectiveConfig.tracker.active_states,
       terminal_states: effectiveConfig.tracker.terminal_states,
       github_linking_mode: effectiveConfig.tracker.github_linking?.mode ?? 'off',
@@ -817,6 +859,11 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           ...(nativeResult.message ? { message: nativeResult.message } : {})
         };
       },
+      resolveProgressSignals: async (params) => ({
+        commit_sha: resolveBranchHeadSha(params.repo_root, params.branch_name),
+        checklist_checkpoint: extractChecklistCheckpoint(params.issue?.description ?? null),
+        state_marker: params.fallback_state_marker
+      }),
       notifyObservers: () => {
         apiServer?.notifyStateChanged('orchestrator_observer');
       }
@@ -993,7 +1040,10 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             }
           },
           issueControlSource: {
-            resumeBlockedIssue: async (issueIdentifier) => orchestrator.resumeBlockedIssue(issueIdentifier),
+            resumeBlockedIssue: async (issueIdentifier, params) =>
+              orchestrator.resumeBlockedIssue(issueIdentifier, null, params?.resume_override_reason ?? null),
+            cancelBlockedIssue: async (issueIdentifier, params) =>
+              orchestrator.cancelBlockedIssue(issueIdentifier, params?.cancel_reason ?? null),
             submitBlockedIssueInput: async (params) =>
               orchestrator.submitBlockedIssueInput({
                 issue_identifier: params.issueIdentifier,

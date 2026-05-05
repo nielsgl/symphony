@@ -959,8 +959,14 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       previousSessionCell.append(previousSessionValue, previousThreadValue);
 
       const actionsCell = document.createElement('td');
-      const resumeButton = createActionButton('Resume', 'ghost-button', function () {
+      const resumeButton = createActionButton('Mark Acceptance Complete + Resume', 'ghost-button', function () {
         void resumeBlockedIssue(entry.issue_identifier);
+      });
+      const pushCommitResumeButton = createActionButton('Push Commit + Resume', 'ghost-button', function () {
+        void resumeBlockedIssue(entry.issue_identifier, 'operator_override_push_additional_commit');
+      });
+      const cancelToBacklogButton = createActionButton('Cancel to Backlog', 'ghost-button', function () {
+        void cancelBlockedIssue(entry.issue_identifier, 'operator_cancel_return_to_backlog');
       });
       const replyButton = createActionButton('Reply', 'ghost-button', function () {
         void submitBlockedInput(entry);
@@ -974,7 +980,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const openJson = createActionButton('JSON', 'ghost-button', function () {
         window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
       });
-      actionsCell.append(replyButton, resumeButton, copyPreviousSession, copyWorkspace, openJson);
+      actionsCell.append(replyButton, resumeButton, pushCommitResumeButton, cancelToBacklogButton, copyPreviousSession, copyWorkspace, openJson);
 
       row.append(
         issueCell,
@@ -1215,10 +1221,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     }
   }
 
-  async function resumeBlockedIssue(issueIdentifier) {
+  async function resumeBlockedIssue(issueIdentifier, resumeOverrideReason) {
     try {
       const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/resume', {
-        method: 'POST'
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(resumeOverrideReason ? { resume_override_reason: resumeOverrideReason } : {})
       });
       setRefreshStatus('Resume requested for ' + payload.issue_identifier, false);
       await loadStateViaPoll();
@@ -1227,6 +1235,23 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
     } catch (error) {
       setRefreshStatus('Resume failed: ' + String(error), true);
+    }
+  }
+
+  async function cancelBlockedIssue(issueIdentifier, cancelReason) {
+    try {
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/cancel', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(cancelReason ? { cancel_reason: cancelReason } : {})
+      });
+      setRefreshStatus('Cancel requested for ' + payload.issue_identifier + ' -> ' + payload.moved_to_state, false);
+      await loadStateViaPoll();
+      if (state.selectedIssue === issueIdentifier) {
+        await loadIssue(issueIdentifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Cancel failed: ' + String(error), true);
     }
   }
 

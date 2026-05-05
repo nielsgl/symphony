@@ -203,6 +203,28 @@ export class ConfigValidator {
       };
     }
 
+    const respawnWindowMinutes = effectiveConfig.agent.respawn_window_minutes ?? 30;
+    if (!Number.isFinite(respawnWindowMinutes) || respawnWindowMinutes <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_respawn_window_minutes',
+        message: 'agent.respawn_window_minutes must be a positive integer',
+        at
+      };
+    }
+
+    if (
+      !Number.isFinite(effectiveConfig.agent.respawn_max_attempts_without_progress ?? 3) ||
+      (effectiveConfig.agent.respawn_max_attempts_without_progress ?? 3) <= 0
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_respawn_max_attempts_without_progress',
+        message: 'agent.respawn_max_attempts_without_progress must be a positive integer',
+        at
+      };
+    }
+
     for (const [stateName, limit] of Object.entries(effectiveConfig.agent.max_concurrent_agents_by_state)) {
       if (!Number.isFinite(limit) || limit <= 0) {
         return {

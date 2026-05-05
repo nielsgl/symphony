@@ -421,6 +421,8 @@ export class ConfigResolver {
       agent: {
         max_concurrent_agents: readIntStrict(agent.max_concurrent_agents, 10),
         max_retry_backoff_ms: readIntStrict(agent.max_retry_backoff_ms, 300000),
+        respawn_window_minutes: readIntStrict(agent.respawn_window_minutes, 30),
+        respawn_max_attempts_without_progress: readIntStrict(agent.respawn_max_attempts_without_progress, 3),
         max_turns: readIntStrict(agent.max_turns, 20),
         max_concurrent_agents_by_state: normalizePerStateMap(agent.max_concurrent_agents_by_state)
       },
