@@ -148,6 +148,16 @@ export interface ApiStateResponse {
     last_event: string | null;
     last_event_summary: string | null;
     last_message: string | null;
+    awaiting_input: boolean;
+    awaiting_input_since_ms: number | null;
+    pending_input_preview: {
+      type: string;
+      prompt_preview: string | null;
+      option_count: number | null;
+    } | null;
+    stalled_waiting: boolean;
+    stalled_waiting_since_ms: number | null;
+    stalled_waiting_reason: 'turn_waiting_threshold_exceeded' | null;
     current_phase: PhaseMarkerName | null;
     current_phase_at: string | null;
     phase_elapsed_ms: number | null;
@@ -378,6 +388,16 @@ export interface ApiIssueResponse {
     last_event: string | null;
     last_event_summary: string | null;
     last_message: string | null;
+    awaiting_input: boolean;
+    awaiting_input_since_ms: number | null;
+    pending_input_preview: {
+      type: string;
+      prompt_preview: string | null;
+      option_count: number | null;
+    } | null;
+    stalled_waiting: boolean;
+    stalled_waiting_since_ms: number | null;
+    stalled_waiting_reason: 'turn_waiting_threshold_exceeded' | null;
     current_phase: PhaseMarkerName | null;
     current_phase_at: string | null;
     phase_elapsed_ms: number | null;

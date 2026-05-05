@@ -696,7 +696,7 @@ describe('OrchestratorCore', () => {
     expect(cancelLog?.context?.next_operator_action).toBe('issue.state.todo');
   });
 
-  it('submits blocked operator input and injects answer into resumed dispatch context', async () => {
+  it('returns typed not-answerable error when native blocked input transport is unavailable', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-submit', identifier: 'ABC-SUBMIT' })]);
     await harness.orchestrator.tick('interval');
@@ -717,16 +717,9 @@ describe('OrchestratorCore', () => {
     });
 
     expect(result).toMatchObject({
-      ok: true,
-      issue_id: 'i-submit',
-      request_id: 'req-123',
-      resume_mode: 'fallback',
-      resume_reason_code: 'transport_unsupported'
+      ok: false,
+      code: 'input_submission_transport_unavailable'
     });
-    const resumedSpawn = harness.spawned.find((entry) => entry.issue_id === 'i-submit' && entry.resume_context);
-    expect(resumedSpawn?.resume_context).toContain('Request ID: req-123');
-    expect(resumedSpawn?.resume_context).toContain('Question: Deploy now?');
-    expect(resumedSpawn?.resume_context).toContain('Answer: Yes');
   });
 
   it('submits blocked operator input through native transport when available', async () => {
@@ -789,6 +782,24 @@ describe('OrchestratorCore', () => {
         .getStateSnapshot()
         .recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.orchestration.blockedWorkerEventQuarantined)
     ).toBe(true);
+  });
+
+  it('classifies prolonged codex.turn.waiting as stalled waiting without moving issue to blocked', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-wait', identifier: 'ABC-WAIT' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-wait', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for next turn state'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-wait');
+    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait')).toBe(false);
   });
 
   it('clears blocked issue state when tracker reports non-active or terminal state', async () => {

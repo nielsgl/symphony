@@ -793,7 +793,7 @@ describe('LocalApiServer', () => {
     expect(refreshGetPayload.error.code).toBe('method_not_allowed');
   });
 
-  it('maps blocked input request mismatch to 409 conflict envelope', async () => {
+  it('maps typed expired input submission to 409 conflict envelope', async () => {
     server = new LocalApiServer({
       snapshotSource: {
         getStateSnapshot: () => makeState()
@@ -806,7 +806,7 @@ describe('LocalApiServer', () => {
         cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
         submitBlockedIssueInput: vi.fn(async () => ({
           ok: false as const,
-          code: 'request_mismatch',
+          code: 'input_submission_expired',
           message: 'Input request_id does not match current blocked request'
         }))
       }
@@ -825,7 +825,7 @@ describe('LocalApiServer', () => {
     const payload = (await response.json()) as { error: { code: string; message: string } };
 
     expect(response.status).toBe(409);
-    expect(payload.error.code).toBe('request_mismatch');
+    expect(payload.error.code).toBe('input_submission_expired');
   });
 
   it('accepts cancel blocked issue requests and returns destination state', async () => {

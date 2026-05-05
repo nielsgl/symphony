@@ -7,7 +7,25 @@ function asIsoDate(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
 }
 
+function redactPromptPreview(input: string | null | undefined): string | null {
+  if (!input) {
+    return null;
+  }
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const redacted = trimmed
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '***REDACTED***')
+    .replace(/\b(?:bearer\s+)?(?:sk|api|token|key)[_-]?[a-z0-9]*[:=]\s*[^\s,;]+/gi, '***REDACTED***')
+    .replace(/\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=***REDACTED***');
+  const truncated = Buffer.from(redacted, 'utf8').subarray(0, 160).toString('utf8').trim();
+  return truncated && truncated !== '***REDACTED***' ? truncated : null;
+}
+
 function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number): ApiStateResponse['running'][number] {
+  const awaitingInput = Boolean(entry.awaiting_input_since_ms);
+  const stalledWaiting = Boolean(entry.stalled_waiting_since_ms && entry.stalled_waiting_reason);
   return {
     issue_id: issueId,
     issue_identifier: entry.identifier,
@@ -32,6 +50,18 @@ function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number):
     last_event: entry.last_event,
     last_event_summary: entry.last_event_summary,
     last_message: entry.last_message,
+    awaiting_input: awaitingInput,
+    awaiting_input_since_ms: entry.awaiting_input_since_ms ?? null,
+    pending_input_preview: entry.pending_input_preview
+      ? {
+          type: entry.pending_input_preview.type,
+          prompt_preview: redactPromptPreview(entry.pending_input_preview.prompt_preview),
+          option_count: typeof entry.pending_input_preview.option_count === 'number' ? entry.pending_input_preview.option_count : null
+        }
+      : null,
+    stalled_waiting: stalledWaiting,
+    stalled_waiting_since_ms: stalledWaiting ? entry.stalled_waiting_since_ms ?? null : null,
+    stalled_waiting_reason: stalledWaiting ? 'turn_waiting_threshold_exceeded' : null,
     current_phase: entry.current_phase ?? null,
     current_phase_at: entry.current_phase_at_ms ? asIsoDate(entry.current_phase_at_ms) : null,
     phase_elapsed_ms: entry.current_phase_at_ms ? Math.max(0, nowMs - entry.current_phase_at_ms) : null,
@@ -292,6 +322,20 @@ export class SnapshotService {
           last_event: entry.last_event,
           last_event_summary: entry.last_event_summary,
           last_message: entry.last_message,
+          awaiting_input: Boolean(entry.awaiting_input_since_ms),
+          awaiting_input_since_ms: entry.awaiting_input_since_ms ?? null,
+          pending_input_preview: entry.pending_input_preview
+            ? {
+                type: entry.pending_input_preview.type,
+                prompt_preview: redactPromptPreview(entry.pending_input_preview.prompt_preview),
+                option_count: typeof entry.pending_input_preview.option_count === 'number' ? entry.pending_input_preview.option_count : null
+              }
+            : null,
+          stalled_waiting: Boolean(entry.stalled_waiting_since_ms && entry.stalled_waiting_reason),
+          stalled_waiting_since_ms:
+            entry.stalled_waiting_since_ms && entry.stalled_waiting_reason ? entry.stalled_waiting_since_ms : null,
+          stalled_waiting_reason:
+            entry.stalled_waiting_since_ms && entry.stalled_waiting_reason ? 'turn_waiting_threshold_exceeded' : null,
           current_phase: entry.current_phase ?? null,
           current_phase_at: entry.current_phase_at_ms ? asIsoDate(entry.current_phase_at_ms) : null,
           phase_elapsed_ms: entry.current_phase_at_ms ? Math.max(0, this.nowMs() - entry.current_phase_at_ms) : null,

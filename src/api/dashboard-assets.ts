@@ -347,6 +347,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     const remain = seconds % 60;
     return minutes + 'm ' + remain + 's';
   }
+  function formatDurationFromMs(timestampMs) {
+    if (!Number.isFinite(timestampMs)) {
+      return 'n/a';
+    }
+    const seconds = Math.max(0, Math.floor((Date.now() - Number(timestampMs)) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const remain = seconds % 60;
+    return minutes + 'm ' + remain + 's';
+  }
 
   function setConnectionStatus(mode, detail) {
     state.connection = mode;
@@ -788,6 +797,23 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
       const stateCell = document.createElement('td');
       stateCell.appendChild(createStateBadge(entry.state));
+      const stateFlags = document.createElement('div');
+      stateFlags.className = 'inline-badges';
+      if (entry.awaiting_input) {
+        const awaitingBadge = document.createElement('span');
+        awaitingBadge.className = 'status-pill pending';
+        awaitingBadge.textContent = 'Awaiting Input';
+        stateFlags.append(awaitingBadge);
+      }
+      if (entry.stalled_waiting) {
+        const stalledBadge = document.createElement('span');
+        stalledBadge.className = 'status-pill failed';
+        stalledBadge.textContent = 'Stalled Waiting';
+        stateFlags.append(stalledBadge);
+      }
+      if (stateFlags.childNodes.length > 0) {
+        stateCell.append(stateFlags);
+      }
 
       const sessionCell = document.createElement('td');
       const sessionValue = document.createElement('div');
@@ -831,6 +857,18 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       runtimeCell.className = 'runtime-cell';
       runtimeCell.setAttribute('data-started-at', entry.started_at);
       runtimeCell.textContent = formatDurationFromIso(entry.started_at);
+      if (entry.awaiting_input_since_ms) {
+        const awaitingTimer = document.createElement('div');
+        awaitingTimer.className = 'muted';
+        awaitingTimer.textContent = 'Awaiting input: ' + formatDurationFromMs(entry.awaiting_input_since_ms);
+        runtimeCell.append(awaitingTimer);
+      }
+      if (entry.stalled_waiting_since_ms) {
+        const stalledTimer = document.createElement('div');
+        stalledTimer.className = 'muted';
+        stalledTimer.textContent = 'Stalled waiting: ' + formatDurationFromMs(entry.stalled_waiting_since_ms);
+        runtimeCell.append(stalledTimer);
+      }
 
       const turnsCell = document.createElement('td');
       turnsCell.textContent = formatNumber(entry.turn_count);
@@ -883,7 +921,17 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const openJson = createActionButton('JSON', 'ghost-button', function () {
         window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
       });
-      actionsCell.append(copySession, copyThreadTurn, openJson);
+      const respondNow = createActionButton('Respond Now', 'ghost-button', function () {
+        elements.issueInput.value = entry.issue_identifier;
+        void loadIssue(entry.issue_identifier);
+      });
+      respondNow.disabled = !entry.awaiting_input;
+      const investigate = createActionButton('Investigate', 'ghost-button', function () {
+        elements.issueInput.value = entry.issue_identifier;
+        void loadIssue(entry.issue_identifier);
+      });
+      investigate.disabled = !entry.stalled_waiting;
+      actionsCell.append(copySession, copyThreadTurn, respondNow, investigate, openJson);
 
       row.append(
         issueCell,

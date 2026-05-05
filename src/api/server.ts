@@ -790,7 +790,14 @@ export class LocalApiServer {
                 answer: parsed.answer
               });
               if (!result.ok) {
-                const status = result.code === 'issue_not_blocked' ? 404 : result.code === 'request_mismatch' ? 409 : 422;
+                const status =
+                  result.code === 'issue_not_blocked'
+                    ? 404
+                    : result.code === 'input_submission_expired'
+                      ? 409
+                      : result.code === 'input_submission_transport_unavailable'
+                        ? 503
+                        : 422;
                 throw new LocalApiError(result.code, result.message, status);
               }
 
