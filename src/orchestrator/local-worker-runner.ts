@@ -6,6 +6,7 @@ import type { CodexInputRequestPayload } from '../codex/types';
 import type { EffectiveConfig } from '../workflow';
 import { CANONICAL_EVENT } from '../observability/events';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 const DEFAULT_CONTINUATION_PROMPT =
   'Continue on the same thread for this issue. Focus on incremental progress and report outcomes clearly.';
@@ -146,16 +147,135 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       session_id: lastSessionId
     };
   } catch (error) {
+    const workspaceConflictError = await renderWorkspaceConflictError(error, workspacePath);
     return {
       reason: 'abnormal',
       session_id: null,
-      error: error instanceof Error ? error.message : 'unknown worker error'
+      error: workspaceConflictError ?? (error instanceof Error ? error.message : 'unknown worker error')
     };
   } finally {
     if (workspacePath) {
       await input.workspaceManager.finalizeAttempt(workspacePath);
     }
   }
+}
+
+async function renderWorkspaceConflictError(error: unknown, workspacePath: string | null): Promise<string | null> {
+  const typed = parseWorkspaceConflictError(error);
+  if (!typed) {
+    return null;
+  }
+
+  const parsedMessageConflictFiles = inferConflictFilesFromMessage(typed.message);
+  const gitConflictFiles = workspacePath ? await readConflictFilesFromGitStatus(workspacePath) : [];
+  const mergedConflictFiles = dedupeConflictFiles([...parsedMessageConflictFiles, ...gitConflictFiles]);
+
+  const payload = {
+    code: 'operator_action_required_workspace_conflict',
+    detail: typed.message,
+    conflict_files: mergedConflictFiles,
+    resolution_hints: [
+      'Resolve workspace git conflicts in the issue worktree.',
+      'Ensure the workspace branch/worktree mapping matches repository state.',
+      'Resume the blocked issue explicitly after conflicts are resolved.'
+    ]
+  };
+  return `workspace_conflict:${JSON.stringify(payload)}`;
+}
+
+function parseWorkspaceConflictError(error: unknown): { message: string } | null {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+  const maybe = error as { code?: unknown; message?: unknown };
+  const code = typeof maybe.code === 'string' ? maybe.code : null;
+  const message = typeof maybe.message === 'string' ? maybe.message : null;
+  if (!code || !message) {
+    return null;
+  }
+
+  if (code === 'workspace_unprovisioned_conflict' || code === 'workspace_copy_ignored_invalid_config') {
+    return { message };
+  }
+
+  return null;
+}
+
+function inferConflictFilesFromMessage(message: string): Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }> {
+  const destinationConflictMatch = message.match(/destination conflict:\s*([^\s].*)$/i);
+  if (!destinationConflictMatch) {
+    return [];
+  }
+  return [{ path: destinationConflictMatch[1].trim(), status: 'unknown' }];
+}
+
+async function readConflictFilesFromGitStatus(
+  workspacePath: string
+): Promise<Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>> {
+  const output = await runGitStatusPorcelain(workspacePath);
+  if (!output) {
+    return [];
+  }
+
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length >= 4)
+    .map((line) => {
+      const stagedCode = line[0] ?? ' ';
+      const unstagedCode = line[1] ?? ' ';
+      const filePath = line.slice(3).trim();
+      let status: 'staged' | 'unstaged' | 'unknown' = 'unknown';
+      if (stagedCode !== ' ') {
+        status = 'staged';
+      } else if (unstagedCode !== ' ') {
+        status = 'unstaged';
+      }
+      return filePath ? { path: filePath, status } : null;
+    })
+    .filter((entry): entry is { path: string; status: 'staged' | 'unstaged' | 'unknown' } => Boolean(entry));
+}
+
+async function runGitStatusPorcelain(workspacePath: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn('git', ['status', '--porcelain'], {
+      cwd: workspacePath,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    let stdout = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+function dedupeConflictFiles(
+  files: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>
+): Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }> {
+  const byPath = new Map<string, { path: string; status: 'staged' | 'unstaged' | 'unknown' }>();
+  for (const file of files) {
+    const normalizedPath = file.path.trim();
+    if (!normalizedPath) {
+      continue;
+    }
+    const existing = byPath.get(normalizedPath);
+    if (!existing) {
+      byPath.set(normalizedPath, { path: normalizedPath, status: file.status });
+      continue;
+    }
+    if (existing.status === 'unknown' && file.status !== 'unknown') {
+      byPath.set(normalizedPath, { path: normalizedPath, status: file.status });
+    }
+  }
+  return Array.from(byPath.values());
 }
 
 function isActiveState(state: string | null | undefined, activeStates: string[]): boolean {

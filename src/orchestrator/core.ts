@@ -1974,6 +1974,11 @@ export class OrchestratorCore {
       return fallback;
     }
 
+    const workspaceConflictPayload = this.parseWorkspaceConflictPayload(error);
+    if (workspaceConflictPayload?.code === 'operator_action_required_workspace_conflict') {
+      return 'operator_action_required_workspace_conflict';
+    }
+
     const normalized = error.toLowerCase();
     if (normalized.includes('turn_input_required')) {
       return 'turn_input_required';
@@ -1989,8 +1994,7 @@ export class OrchestratorCore {
     }
     if (
       normalized.includes('workspace_unprovisioned_conflict') ||
-      normalized.includes('worktree_branch_conflict') ||
-      normalized.includes('destination conflict')
+      normalized.includes('worktree_branch_conflict')
     ) {
       return 'operator_action_required_workspace_conflict';
     }
@@ -2009,32 +2013,52 @@ export class OrchestratorCore {
       return { detail: defaultDetail, conflict_files: [], resolution_hints: defaultHints };
     }
 
-    const prefix = 'workspace_conflict:';
-    if (error.toLowerCase().startsWith(prefix)) {
-      const rawDetail = error.slice(prefix.length).trim();
-      try {
-        const payload = JSON.parse(rawDetail) as {
-          detail?: string;
-          conflict_files?: Array<{ path?: string; status?: string }>;
-          resolution_hints?: string[];
-        };
-        return {
-          detail: payload.detail ?? defaultDetail,
-          conflict_files: (payload.conflict_files ?? [])
-            .filter((file) => typeof file?.path === 'string' && file.path.trim().length > 0)
-            .map((file) => ({
-              path: String(file.path),
-              status: file?.status === 'staged' || file?.status === 'unstaged' ? file.status : 'unknown'
-            })),
-          resolution_hints:
-            payload.resolution_hints?.filter((hint) => typeof hint === 'string' && hint.trim().length > 0) ?? defaultHints
-        };
-      } catch {
-        return { detail: defaultDetail, conflict_files: [], resolution_hints: defaultHints };
-      }
+    const payload = this.parseWorkspaceConflictPayload(error);
+    if (payload) {
+      return {
+        detail: payload.detail ?? defaultDetail,
+        conflict_files: payload.conflict_files,
+        resolution_hints: payload.resolution_hints.length > 0 ? payload.resolution_hints : defaultHints
+      };
     }
 
     return { detail: defaultDetail, conflict_files: [], resolution_hints: defaultHints };
+  }
+
+  private parseWorkspaceConflictPayload(error: string): {
+    code: string | null;
+    detail: string | null;
+    conflict_files: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }>;
+    resolution_hints: string[];
+  } | null {
+    const prefix = 'workspace_conflict:';
+    if (!error.toLowerCase().startsWith(prefix)) {
+      return null;
+    }
+    const rawDetail = error.slice(prefix.length).trim();
+    try {
+      const payload = JSON.parse(rawDetail) as {
+        code?: string;
+        detail?: string;
+        conflict_files?: Array<{ path?: string; status?: string }>;
+        resolution_hints?: string[];
+      };
+      return {
+        code: typeof payload.code === 'string' ? payload.code : null,
+        detail: typeof payload.detail === 'string' ? payload.detail : null,
+        conflict_files: (payload.conflict_files ?? [])
+          .filter((file) => typeof file?.path === 'string' && file.path.trim().length > 0)
+          .map((file) => ({
+            path: String(file.path),
+            status: file?.status === 'staged' || file?.status === 'unstaged' ? file.status : 'unknown'
+          })),
+        resolution_hints: (payload.resolution_hints ?? []).filter(
+          (hint): hint is string => typeof hint === 'string' && hint.trim().length > 0
+        )
+      };
+    } catch {
+      return null;
+    }
   }
 
   private inferInputRequiredDetail(

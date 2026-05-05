@@ -433,6 +433,74 @@ describe('LocalRunnerBridge integration', () => {
     expect(failed?.context.error).toBe('response timeout');
   });
 
+  it('emits typed workspace conflict envelope when workspace prepare fails with managed conflict error', async () => {
+    const workspaceManager = {
+      ensureWorkspace: vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true })),
+      prepareAttempt: vi.fn(async () => {
+        const err = new Error('destination conflict: src/api/server.ts') as Error & { code?: string };
+        err.code = 'workspace_copy_ignored_invalid_config';
+        throw err;
+      }),
+      finalizeAttempt: vi.fn(async () => {}),
+      cleanupWorkspace: vi.fn(async () => true)
+    } as unknown as WorkspaceManager;
+    const codexRunner = {
+      startSessionAndRunTurn: vi.fn(async () => {
+        throw new Error('should not be reached');
+      })
+    } as unknown as CodexRunner;
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => [makeIssue()]),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    let orchestrator!: OrchestratorCore;
+    const bridge = new LocalRunnerBridge({
+      workspaceManager,
+      codexRunner,
+      config: makeConfig(),
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      onWorkerExit: async ({ issue_id, reason, error }) => {
+        await orchestrator.onWorkerExit(issue_id, reason, error);
+      }
+    });
+
+    const ports: OrchestratorPorts = {
+      tracker,
+      dispatchPreflight: () => ({ dispatch_allowed: true }),
+      spawnWorker: (params) => bridge.spawnWorker(params),
+      terminateWorker: async () => {},
+      scheduleRetryTimer: ({ issue_id, callback, due_at_ms }) => {
+        void callback;
+        return { issue_id, due_at_ms };
+      },
+      cancelRetryTimer: () => {}
+    };
+
+    const config: OrchestratorConfig = {
+      poll_interval_ms: 30000,
+      max_concurrent_agents: 2,
+      max_concurrent_agents_by_state: {},
+      max_retry_backoff_ms: 300000,
+      active_states: ['Todo', 'In Progress'],
+      terminal_states: ['Done'],
+      stall_timeout_ms: 300000
+    };
+
+    orchestrator = new OrchestratorCore({ config, ports });
+    await orchestrator.tick('interval');
+    await flush();
+
+    const snapshot = orchestrator.getStateSnapshot();
+    const blocked = snapshot.blocked_inputs.get('i-1');
+    expect(blocked?.stop_reason_code).toBe('operator_action_required_workspace_conflict');
+    expect(blocked?.conflict_files).toEqual([{ path: 'src/api/server.ts', status: 'unknown' }]);
+    expect(snapshot.retry_attempts.has('i-1')).toBe(false);
+  });
+
   it('fails fast with codex.startup.failed event when workspace resolves to unsafe root', async () => {
     const workspaceManager = {
       ensureWorkspace: vi.fn(async () => ({

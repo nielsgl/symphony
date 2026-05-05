@@ -1,0 +1,14 @@
+{
+  "artifacts": [
+    {
+      "path": "output/playwright/demo.webm",
+      "type": "video"
+    }
+  ],
+  "ui_paths": [
+    "src/api/dashboard-assets.ts"
+  ],
+  "captured_at": "2026-05-01T00:00:00.000Z",
+  "summary": "Demo capture",
+  "publish_reference": "https://github.com/nielsgl/symphony/pull/25#issuecomment-demo"
+}
