@@ -15,6 +15,8 @@ export type ValidationErrorCode =
   | 'invalid_tracker_active_states_for_github'
   | 'invalid_tracker_github_linking_mode'
   | 'missing_codex_command'
+  | 'invalid_codex_reasoning_effort'
+  | 'invalid_codex_extra_flags'
   | 'invalid_codex_approval_policy'
   | 'invalid_codex_approval_policy_shape'
   | 'invalid_codex_thread_sandbox'
@@ -86,6 +88,17 @@ export interface AgentConfig {
 
 export interface CodexConfig {
   command: string;
+  command_source?: 'workflow' | 'default';
+  home?: string;
+  model?: string;
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  extra_flags?: string[];
+  effective_codex_home?: string;
+  effective_codex_model?: string | null;
+  effective_reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh' | null;
+  effective_extra_flags?: string[];
+  effective_extra_flags_count?: number;
+  codex_resolution_mode?: 'typed' | 'legacy' | 'mixed';
   security_profile?: string;
   approval_policy?:
     | string

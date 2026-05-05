@@ -1,5 +1,7 @@
 export interface CodexRunnerStartInput {
   command: string;
+  commandArgs?: string[];
+  commandEnv?: Record<string, string>;
   workspaceCwd: string;
   workerHost?: string;
   prompt: string;
