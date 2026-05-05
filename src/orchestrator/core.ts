@@ -1057,6 +1057,88 @@ export class OrchestratorCore {
     }
   }
 
+  private async persistPreSpawnExecutionGraphAttempt(params: {
+    issue: Issue;
+    attempt: number | null;
+    graphContext: DispatchGraphContext;
+    status: 'failed' | 'blocked';
+    reasonCode: string;
+    reasonDetail: string | null;
+  }): Promise<DispatchGraphContext> {
+    if (!this.persistence) {
+      return params.graphContext;
+    }
+
+    try {
+      const startedAt = asIso(this.nowMs());
+      const issueRunId =
+        params.graphContext.issue_run_id ??
+        (await this.persistence.appendIssueRun?.({
+          issue_id: params.issue.id,
+          issue_identifier: params.issue.identifier,
+          started_at: startedAt,
+          status: 'running',
+          reason_code: REASON_CODES.dispatchStarted,
+          reason_detail: 'dispatch attempt started'
+        })) ??
+        null;
+      if (!issueRunId) {
+        return params.graphContext;
+      }
+
+      const attemptId =
+        (await this.persistence.appendAttempt?.({
+          issue_run_id: issueRunId,
+          attempt_number: params.attempt ?? 0,
+          started_at: startedAt,
+          ended_at: startedAt,
+          status: params.status,
+          reason_code: params.reasonCode,
+          reason_detail: params.reasonDetail
+        })) ?? null;
+
+      if (attemptId) {
+        await this.persistence.appendStateTransition?.({
+          issue_run_id: issueRunId,
+          attempt_id: attemptId,
+          from_status: null,
+          to_status: params.status,
+          transitioned_at: startedAt,
+          status: params.status,
+          reason_code: params.reasonCode,
+          reason_detail: params.reasonDetail
+        });
+        await this.persistence.appendStateTransition?.({
+          issue_run_id: issueRunId,
+          attempt_id: attemptId,
+          from_status: params.status,
+          to_status: 'retrying',
+          transitioned_at: startedAt,
+          status: 'retrying',
+          reason_code: params.reasonCode,
+          reason_detail: params.reasonDetail
+        });
+      }
+
+      return {
+        issue_run_id: issueRunId,
+        previous_attempt_id: attemptId ?? params.graphContext.previous_attempt_id ?? null
+      };
+    } catch {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist pre-spawn execution graph attempt for ${params.issue.identifier}`,
+        context: {
+          issue_id: params.issue.id,
+          issue_identifier: params.issue.identifier,
+          reason_code: params.reasonCode
+        }
+      });
+      return params.graphContext;
+    }
+  }
+
   private budgetConfigured(): boolean {
     return Boolean(
       this.config.budget &&
@@ -2216,12 +2298,20 @@ export class OrchestratorCore {
         issue_identifier: issue.identifier,
         detail: 'no available worker host slots'
       });
+      const retryGraphContext = await this.persistPreSpawnExecutionGraphAttempt({
+        issue,
+        attempt,
+        graphContext,
+        status: 'blocked',
+        reasonCode: REASON_CODES.slotsExhausted,
+        reasonDetail: 'no available worker host slots'
+      });
       await this.scheduleRetry({
         issue_id: issue.id,
         identifier: issue.identifier,
         attempt: nextAttempt(attempt),
-        issue_run_id: graphContext.issue_run_id ?? null,
-        previous_attempt_id: graphContext.previous_attempt_id ?? null,
+        issue_run_id: retryGraphContext.issue_run_id ?? null,
+        previous_attempt_id: retryGraphContext.previous_attempt_id ?? null,
         delay_type: 'failure',
         error: 'no available worker host slots',
         worker_host: workerHost,
@@ -2263,12 +2353,20 @@ export class OrchestratorCore {
           error: spawned.error
         }
       });
+      const retryGraphContext = await this.persistPreSpawnExecutionGraphAttempt({
+        issue,
+        attempt,
+        graphContext,
+        status: 'failed',
+        reasonCode: REASON_CODES.spawnFailed,
+        reasonDetail: spawned.error
+      });
       await this.scheduleRetry({
         issue_id: issue.id,
         identifier: issue.identifier,
         attempt: nextAttempt(attempt),
-        issue_run_id: graphContext.issue_run_id ?? null,
-        previous_attempt_id: graphContext.previous_attempt_id ?? null,
+        issue_run_id: retryGraphContext.issue_run_id ?? null,
+        previous_attempt_id: retryGraphContext.previous_attempt_id ?? null,
         delay_type: 'failure',
         error: 'failed to spawn agent',
         worker_host: workerHost,
