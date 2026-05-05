@@ -43,6 +43,16 @@ export interface RunningEntry {
   last_event: string | null;
   last_event_summary: string | null;
   last_message: string | null;
+  awaiting_input_since_ms?: number | null;
+  pending_input_preview?: {
+    type: string;
+    prompt_preview: string | null;
+    option_count: number | null;
+  } | null;
+  stalled_waiting_since_ms?: number | null;
+  stalled_waiting_reason?: 'turn_waiting_threshold_exceeded' | null;
+  running_waiting_started_at_ms?: number | null;
+  running_wait_stall_event_emitted?: boolean;
   tokens: CodexUsageTotals;
   last_reported_tokens: CodexUsageTotals;
   token_telemetry_status: TokenTelemetryStatus;
@@ -415,6 +425,7 @@ export interface OrchestratorConfig {
   github_linking_mode?: 'off' | 'warn' | 'required' | string;
   stall_timeout_ms: number;
   no_telemetry_warning_threshold_ms?: number;
+  running_wait_stall_threshold_ms?: number;
   phase_markers_enabled?: boolean;
   phase_timeline_limit?: number;
   worker_hosts?: string[];

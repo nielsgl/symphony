@@ -29,6 +29,10 @@ function makeRunningEntry(overrides: Record<string, unknown> = {}) {
     last_event: CANONICAL_EVENT.codex.turnCompleted,
     last_event_summary: 'codex turn completed: done',
     last_message: 'done',
+    awaiting_input_since_ms: null,
+    pending_input_preview: null,
+    stalled_waiting_since_ms: null,
+    stalled_waiting_reason: null,
     tokens: {
       input_tokens: 11,
       output_tokens: 5,
@@ -162,6 +166,9 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.codex_app_server_pid).toBe('12345');
     expect(projected.running[0]?.last_event_summary).toBe('codex turn completed: done');
     expect(projected.running[0]?.turn_count).toBe(3);
+    expect(projected.running[0]?.awaiting_input).toBe(false);
+    expect(projected.running[0]?.pending_input_preview).toBeNull();
+    expect(projected.running[0]?.stalled_waiting).toBe(false);
     expect(projected.running[0]?.workspace_path).toBe('/tmp/symphony/ABC-1');
     expect(projected.running[0]?.token_telemetry_status).toBe('available');
     expect(projected.running[0]?.token_telemetry_last_source).toBe('terminal_turn_summary');
@@ -169,6 +176,66 @@ describe('SnapshotService', () => {
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');
+  });
+
+  it('projects running awaiting-input and stalled-waiting fields with redacted preview', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            awaiting_input_since_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            pending_input_preview: {
+              type: 'turn_input_required',
+              prompt_preview: 'email admin@example.com api_key=abc123',
+              option_count: 2
+            },
+            stalled_waiting_since_ms: Date.parse('2026-04-10T10:03:00.000Z'),
+            stalled_waiting_reason: 'turn_waiting_threshold_exceeded'
+          })
+        ]
+      ])
+    });
+    const projected = service.projectState(state);
+    expect(projected.running[0]?.awaiting_input).toBe(true);
+    expect(projected.running[0]?.awaiting_input_since_ms).toBe(Date.parse('2026-04-10T10:04:00.000Z'));
+    expect(projected.running[0]?.pending_input_preview?.prompt_preview).toContain('***REDACTED***');
+    expect(projected.running[0]?.stalled_waiting).toBe(true);
+    expect(projected.running[0]?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+  });
+
+  it('truncates pending input previews by UTF-8 characters after redaction', () => {
+    const service = new SnapshotService();
+    const prompt = `${'界'.repeat(170)} operator@example.com`;
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            awaiting_input_since_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            pending_input_preview: {
+              type: 'turn_input_required',
+              prompt_preview: prompt,
+              option_count: 1
+            }
+          })
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+    const preview = projected.running[0]?.pending_input_preview?.prompt_preview ?? '';
+    expect(Array.from(preview)).toHaveLength(160);
+    expect(preview).toBe('界'.repeat(160));
+    expect(preview).not.toContain('operator@example.com');
+
+    const issue = service.projectIssue(state, 'ABC-1');
+    const issuePreview = issue.running?.pending_input_preview?.prompt_preview ?? '';
+    expect(Array.from(issuePreview)).toHaveLength(160);
+    expect(issuePreview).toBe('界'.repeat(160));
   });
 
   it('throws issue_not_found for unknown issue projection', () => {

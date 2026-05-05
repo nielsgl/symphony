@@ -101,6 +101,12 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     last_reported_tokens: { ...entry.last_reported_tokens },
     recent_events: entry.recent_events.map((event) => ({ ...event })),
     copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null,
+    awaiting_input_since_ms: entry.awaiting_input_since_ms ?? null,
+    pending_input_preview: entry.pending_input_preview ? { ...entry.pending_input_preview } : null,
+    stalled_waiting_since_ms: entry.stalled_waiting_since_ms ?? null,
+    stalled_waiting_reason: entry.stalled_waiting_reason ?? null,
+    running_waiting_started_at_ms: entry.running_waiting_started_at_ms ?? null,
+    running_wait_stall_event_emitted: entry.running_wait_stall_event_emitted ?? false,
     current_phase: entry.current_phase,
     current_phase_at_ms: entry.current_phase_at_ms,
     phase_detail: entry.phase_detail
@@ -232,6 +238,7 @@ export class OrchestratorCore {
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
     this.config.no_telemetry_warning_threshold_ms = this.config.no_telemetry_warning_threshold_ms ?? 120_000;
+    this.config.running_wait_stall_threshold_ms = this.config.running_wait_stall_threshold_ms ?? 300_000;
     this.ports = options.ports;
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.logger = options.logger;
@@ -326,6 +333,7 @@ export class OrchestratorCore {
     github_linking_mode?: 'off' | 'warn' | 'required' | string;
     stall_timeout_ms: number;
     no_telemetry_warning_threshold_ms?: number;
+    running_wait_stall_threshold_ms?: number;
     worker_hosts?: string[];
     max_concurrent_agents_per_host?: number | null;
     phase_markers_enabled?: boolean;
@@ -342,6 +350,7 @@ export class OrchestratorCore {
     this.config.github_linking_mode = config.github_linking_mode ?? 'off';
     this.config.stall_timeout_ms = config.stall_timeout_ms;
     this.config.no_telemetry_warning_threshold_ms = config.no_telemetry_warning_threshold_ms ?? 120_000;
+    this.config.running_wait_stall_threshold_ms = config.running_wait_stall_threshold_ms ?? 300_000;
     this.config.worker_hosts = config.worker_hosts ? [...config.worker_hosts] : [];
     this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
     this.config.phase_markers_enabled = config.phase_markers_enabled ?? true;
@@ -495,6 +504,34 @@ export class OrchestratorCore {
     runningEntry.last_event = workerEvent.event;
     runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
     runningEntry.last_message = workerEvent.detail ?? null;
+    if (workerEvent.event === CANONICAL_EVENT.codex.turnInputRequired) {
+      runningEntry.awaiting_input_since_ms = workerEvent.timestamp_ms;
+      runningEntry.pending_input_preview = {
+        type: 'turn_input_required',
+        prompt_preview: workerEvent.detail ?? null,
+        option_count: null
+      };
+    }
+    if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
+      const thresholdMs = this.config.running_wait_stall_threshold_ms ?? 300_000;
+      if (runningEntry.running_waiting_started_at_ms === undefined || runningEntry.running_waiting_started_at_ms === null) {
+        runningEntry.running_waiting_started_at_ms = workerEvent.timestamp_ms;
+        runningEntry.running_wait_stall_event_emitted = false;
+      }
+      if (
+        (runningEntry.stalled_waiting_since_ms === undefined || runningEntry.stalled_waiting_since_ms === null) &&
+        thresholdMs > 0
+      ) {
+        runningEntry.stalled_waiting_since_ms = runningEntry.running_waiting_started_at_ms + thresholdMs;
+      }
+      runningEntry.stalled_waiting_reason = null;
+      this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
+    } else if (this.shouldResetRunningWaitEpisode(workerEvent.event)) {
+      runningEntry.running_waiting_started_at_ms = null;
+      runningEntry.running_wait_stall_event_emitted = false;
+      runningEntry.stalled_waiting_since_ms = null;
+      runningEntry.stalled_waiting_reason = null;
+    }
 
     if (workerEvent.thread_id && !runningEntry.thread_id) {
       runningEntry.thread_id = workerEvent.thread_id;
@@ -1339,14 +1376,26 @@ export class OrchestratorCore {
   }
 
   private async reconcileStalledRuns(): Promise<void> {
-    if (this.config.stall_timeout_ms <= 0) {
-      return;
-    }
-
     const now = this.nowMs();
+    const waitThresholdMs = this.config.running_wait_stall_threshold_ms ?? 300_000;
 
     for (const [issueId, runningEntry] of Array.from(this.state.running.entries())) {
       const elapsedMs = now - (runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms);
+      if (
+        waitThresholdMs > 0 &&
+        runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting
+      ) {
+        this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
+      }
+      if (runningEntry.last_event && this.shouldResetRunningWaitEpisode(runningEntry.last_event)) {
+        runningEntry.running_waiting_started_at_ms = null;
+        runningEntry.running_wait_stall_event_emitted = false;
+        runningEntry.stalled_waiting_since_ms = null;
+        runningEntry.stalled_waiting_reason = null;
+      }
+      if (this.config.stall_timeout_ms <= 0) {
+        continue;
+      }
       if (elapsedMs <= this.config.stall_timeout_ms) {
         continue;
       }
@@ -1549,6 +1598,12 @@ export class OrchestratorCore {
       last_event: null,
       last_event_summary: null,
       last_message: null,
+      awaiting_input_since_ms: null,
+      pending_input_preview: null,
+      stalled_waiting_since_ms: null,
+      stalled_waiting_reason: null,
+      running_waiting_started_at_ms: null,
+      running_wait_stall_event_emitted: false,
       tokens: {
         input_tokens: 0,
         output_tokens: 0,
@@ -2208,21 +2263,21 @@ export class OrchestratorCore {
       return { ok: false, code: 'issue_not_blocked', message: `Issue ${params.issue_identifier} is not blocked` };
     }
     if (!blocked.pending_input) {
-      return { ok: false, code: 'input_request_missing', message: 'Blocked issue has no pending input request payload' };
+      return { ok: false, code: 'input_submission_not_answerable', message: 'Blocked issue has no pending input request payload' };
     }
     if (!blocked.pending_input.request_id || blocked.pending_input.request_id !== params.request_id) {
-      return { ok: false, code: 'request_mismatch', message: 'Input request_id does not match current blocked request' };
+      return { ok: false, code: 'input_submission_expired', message: 'Input request_id does not match current blocked request' };
     }
 
     if (blocked.pending_input.input_schema_type === 'options') {
       const q = blocked.pending_input.questions.find((question) => question.id === params.answer.question_id) ?? blocked.pending_input.questions[0];
       const options = q?.options ?? [];
       if (!params.answer.option_label || !options.some((option) => option.label === params.answer.option_label)) {
-        return { ok: false, code: 'input_validation_failed', message: 'Answer must select a valid option label for the pending question' };
+      return { ok: false, code: 'input_submission_invalid', message: 'Answer must select a valid option label for the pending question' };
       }
     } else if (blocked.pending_input.input_schema_type === 'text') {
       if (!params.answer.text || !params.answer.text.trim()) {
-        return { ok: false, code: 'input_validation_failed', message: 'Answer text is required for this input request' };
+        return { ok: false, code: 'input_submission_invalid', message: 'Answer text is required for this input request' };
       }
     }
 
@@ -2272,53 +2327,13 @@ export class OrchestratorCore {
       }
     });
 
-    const resumeContext = this.buildOperatorInputResumeContext(blocked, params.answer);
-    const fallbackReasonCode = nativeAttempt.code;
-    this.logger?.log({
-      level: 'info',
-      event: CANONICAL_EVENT.orchestration.blockedInputSubmitRequested,
-      message: 'blocked input submit accepted',
-      context: {
-        issue_id: blocked.issue_id,
-        issue_identifier: blocked.issue_identifier,
-        request_id: params.request_id,
-        input_schema_type: blocked.pending_input.input_schema_type,
-        answer_applied: true,
-        resume_mode: 'fallback',
-        resume_reason_code: fallbackReasonCode
-      }
-    });
-    this.logger?.log({
-      level: 'info',
-      event: CANONICAL_EVENT.orchestration.blockedInputSubmitFallbackUsed,
-      message: 'blocked input resumed with fallback context',
-      context: {
-        issue_id: blocked.issue_id,
-        issue_identifier: blocked.issue_identifier,
-        request_id: params.request_id,
-        resume_reason_code: fallbackReasonCode
-      }
-    });
-    const resumed = await this.resumeBlockedIssue(params.issue_identifier, resumeContext, null, {
-      request_id: params.request_id,
-      resume_mode: 'fallback',
-      resume_reason_code: fallbackReasonCode
-    });
-    if (!resumed.ok) {
-      return resumed;
-    }
-    return {
-      ok: true,
-      issue_id: resumed.issue_id,
-      request_id: params.request_id,
-      resume_mode: 'fallback',
-      resume_reason_code: fallbackReasonCode,
-      requested_at: new Date().toISOString(),
-      request_lineage: {
-        previous_thread_id: blocked.previous_thread_id ?? null,
-        previous_session_id: blocked.previous_session_id ?? null
-      }
-    };
+    const mappedCode =
+      nativeAttempt.code === 'session_expired' || nativeAttempt.code === 'request_not_found'
+        ? 'input_submission_expired'
+        : nativeAttempt.code === 'transport_unsupported'
+          ? 'input_submission_transport_unavailable'
+          : 'input_submission_not_answerable';
+    return { ok: false, code: mappedCode, message: nativeAttempt.message ?? 'Input submission unavailable for this request' };
   }
 
   private async submitBlockedIssueInputNative(
@@ -2768,6 +2783,49 @@ export class OrchestratorCore {
       event === CANONICAL_EVENT.codex.turnFailed ||
       event === CANONICAL_EVENT.codex.turnCancelled
     );
+  }
+
+  private shouldResetRunningWaitEpisode(event: string): boolean {
+    return (
+      this.isTerminalTurnEvent(event) ||
+      event === CANONICAL_EVENT.codex.turnStarted ||
+      event === CANONICAL_EVENT.codex.promptSent ||
+      event === CANONICAL_EVENT.codex.turnInputRequired ||
+      event === CANONICAL_EVENT.codex.startupFailed
+    );
+  }
+
+  private maybeClassifyRunningWaitStall(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
+    const waitThresholdMs = this.config.running_wait_stall_threshold_ms ?? 300_000;
+    if (waitThresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
+      return;
+    }
+
+    const waitingStartedAtMs =
+      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
+    runningEntry.running_waiting_started_at_ms = waitingStartedAtMs;
+    const thresholdCrossedAtMs = waitingStartedAtMs + waitThresholdMs;
+    runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
+
+    if (observedAtMs < thresholdCrossedAtMs) {
+      runningEntry.stalled_waiting_reason = null;
+      return;
+    }
+
+    runningEntry.stalled_waiting_reason = 'turn_waiting_threshold_exceeded';
+    if (runningEntry.running_wait_stall_event_emitted) {
+      return;
+    }
+
+    runningEntry.running_wait_stall_event_emitted = true;
+    const elapsedMs = Math.max(0, observedAtMs - waitingStartedAtMs);
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.runningWaitStallThresholdExceeded,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
+    });
   }
 
   private async completeRunRecord(
