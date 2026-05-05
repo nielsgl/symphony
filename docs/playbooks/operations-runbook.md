@@ -156,3 +156,77 @@ SYMPHONY_UPSTREAM_PARITY_ENABLED=1 SYMPHONY_UPSTREAM_PARITY_BLOCKING=1 SYMPHONY_
 # - reviewed_by
 npm run check:upstream-parity -- --mode advisory
 ```
+
+## Backlog And Repository Hygiene
+
+Run backlog hygiene weekly before planning and before release-gate handoff.
+
+1. Human-readable stale ticket report:
+
+```bash
+npm run hygiene:backlog -- --project-slug symphony --team-key NIE --format table
+```
+
+Expected output is a compact table with these columns:
+
+```text
+ID      Status   Priority  Days  Action      Title
+------  -------  --------  ----  ----------  ----------------
+NIE-42  Todo     2         45    prioritize  Example stale item
+```
+
+2. Machine-readable stale ticket report:
+
+```bash
+npm run hygiene:backlog -- --project-slug symphony --team-key NIE --format json
+```
+
+Expected output is a JSON array with one object per stale issue:
+
+```json
+[
+  {
+    "id": "NIE-42",
+    "title": "Example stale item",
+    "status": "Todo",
+    "priority": 2,
+    "days_since_update": 45,
+    "recommended_action": "prioritize"
+  }
+]
+```
+
+Stale policy: status is `Backlog` or `Todo`, issue has not been updated for at least 30 days, and issue is not archived, canceled, or completed.
+
+Use `recommended_action` during triage:
+
+- `prioritize`: high-priority stale item that should be moved forward or explicitly de-prioritized.
+- `re-scope`: stale `Todo` item that needs a clearer current execution shape.
+- `defer`: stale `Backlog` item that can remain parked with an updated rationale.
+- `close`: item no longer worth retaining when policy is expanded to include closure candidates.
+
+Repository hygiene is enforced by the pre-merge meta gate:
+
+```bash
+npm run check:meta
+```
+
+Expected pass cue:
+
+```text
+Meta checks passed.
+```
+
+Expected blocked artifact diagnostic includes a typed code and remediation:
+
+```text
+hygiene_repo_artifact_tracked_forbidden: tracked UI evidence artifacts are not allowed under output/playwright/ and provision artifacts are not allowed at repository root.
+Remediation: Publish review artifacts externally, unstage/remove forbidden files, or intentionally bypass with SYMPHONY_REPO_HYGIENE_ALLOW_TRACKED=1.
+```
+
+Blocked artifact classes:
+
+- `output/playwright/*`
+- `.symphony-provision.json`
+
+Only use `SYMPHONY_REPO_HYGIENE_ALLOW_TRACKED=1` for intentional local diagnostics. Do not use it for release sign-off or pre-merge validation.

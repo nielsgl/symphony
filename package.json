@@ -15,6 +15,7 @@
     "test:desktop:native-smoke": "node scripts/test-desktop-native-smoke.js",
     "seed:linear": "node scripts/seed-linear-issues.js --input=tests/fixtures/tracker-seeds/linear-todo-issues.json",
     "seed:linear:apply": "node scripts/seed-linear-issues.js --input=tests/fixtures/tracker-seeds/linear-todo-issues.json --apply",
+    "hygiene:backlog": "node scripts/backlog-hygiene-report.js",
     "bootstrap:tracker-seeds": "node scripts/bootstrap-tracker-seeds.js",
     "bootstrap:tracker-seeds:linear": "node scripts/bootstrap-tracker-seeds.js --tracker=linear --input=tests/fixtures/tracker-seeds/linear-todo-issues.json",
     "bootstrap:tracker-seeds:github": "node scripts/bootstrap-tracker-seeds.js --tracker=github --input=tests/fixtures/tracker-seeds/github-todo-issues.json",
