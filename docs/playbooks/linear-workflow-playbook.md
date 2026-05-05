@@ -298,18 +298,29 @@ mkdir -p output/playwright
 cat > output/playwright/ui-evidence.json <<'JSON'
 {
   "artifacts": [
-    { "path": "output/playwright/dashboard-home.png", "type": "image" }
+    {
+      "path": "output/playwright/dashboard-home.png",
+      "type": "image",
+      "linear_attachment_id": "<linear-attachment-id>",
+      "publish_reference": "https://linear.app/<workspace>/issue/<id>#comment-<id>"
+    }
   ],
   "ui_paths": [
     "src/api/dashboard-assets.ts"
   ],
   "captured_at": "2026-05-01T00:00:00.000Z",
   "summary": "Dashboard render and interaction flow validated.",
-  "publish_reference": "https://github.com/<owner>/<repo>/pull/<number>#issuecomment-<id>"
+  "publish_reference": "https://linear.app/<workspace>/issue/<id>#comment-<id>"
 }
 JSON
 npm run check:meta
 ```
+
+Linear attachment publish path (required when artifacts are referenced):
+
+- Use Linear MCP attachment endpoint: `mcp__linear__.create_attachment`
+- Required fields: `issue`, `filename`, `contentType`, `base64Content`
+- Alternate raw path: `linear_graphql` attachment mutation flow in `.codex/skills/linear-graphql/SKILL.md`
 
 Before committing:
 
@@ -327,6 +338,7 @@ Workpad checklist snippet for UI tickets:
 
 - [ ] UI evidence captured under `output/playwright/` (`.png` and/or `.mp4`/`.webm`)
 - [ ] `output/playwright/ui-evidence.json` updated with `artifacts`, `ui_paths`, `captured_at`, `summary`, `publish_reference`
+- [ ] Every `output/playwright/*` artifact reference has one-to-one publish evidence (`artifact.publish_reference`, `artifact.linear_attachment_id`, or `artifact.published_url`)
 - [ ] `npm run check:meta` passes in the configured profile
 - [ ] `output/playwright/*` is not staged/committed before push
 ## 13. References

@@ -53,6 +53,11 @@ description:
      just newest commits).
 7. If a PR template exists in the target repo, follow it exactly. Otherwise use
    the structured body above and ensure governance checks pass.
+8. Before submit/update, normalize and validate the body:
+   - `SYMPHONY_PR_BODY_FILE=.git/.symphony-pr-body.md npm run check:pr-governance`
+   - This enforces newline normalization and fails on malformed escaped payloads (`pr_body_escaped_newlines`).
+9. If body/review text references `output/playwright/*`, ensure each referenced artifact has Linear publication evidence in `output/playwright/ui-evidence.json` (`artifact.publish_reference`, `artifact.linear_attachment_id`, or `artifact.published_url`) and verify with:
+   - `SYMPHONY_PR_BODY_FILE=.git/.symphony-pr-body.md npm run check:meta`
 8. Reply with the PR URL from `gh pr view`.
 
 ## Commands
@@ -98,6 +103,11 @@ fi
 # Write/edit PR body to include Summary, Spec Alignment, and Verification.
 # If this repo has a PR template, follow it; otherwise keep the above sections.
 # Ensure governance checks are green before finalizing push/PR.
+cat > .git/.symphony-pr-body.md <<'MD'
+<full markdown PR body>
+MD
+SYMPHONY_PR_BODY_FILE=.git/.symphony-pr-body.md npm run check:pr-governance
+SYMPHONY_PR_BODY_FILE=.git/.symphony-pr-body.md npm run check:meta
 
 # Show PR URL for the reply
 gh pr view --json url -q .url
