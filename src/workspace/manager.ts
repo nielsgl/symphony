@@ -378,7 +378,16 @@ export class WorkspaceManager {
     }
 
     const cleanupActions: Array<{ path: string; action: 'unstage' | 'untrack' | 'remove' | 'restore' }> = [];
-    const conflictFiles: Array<{ path: string; status: 'staged' | 'unstaged' | 'unknown' }> = [];
+    const conflictFiles: Array<{
+      path: string;
+      status: 'staged' | 'unstaged' | 'unknown';
+      classification: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
+    }> = [];
+    const classificationSummary = {
+      ephemeral: 0,
+      tracked_ephemeral: 0,
+      unknown_non_ephemeral: 0
+    };
 
     for (const entry of entries) {
       const normalizedPath = entry.path.replace(/\\/g, '/');
@@ -408,8 +417,24 @@ export class WorkspaceManager {
     const remaining = this.parseStatusPorcelain((await this.runGit(workspacePath, ['status', '--porcelain'])) ?? '');
     for (const entry of remaining) {
       const normalizedPath = entry.path.replace(/\\/g, '/');
+      if (normalizedPath === SENTINEL_UI_PATH) {
+        continue;
+      }
       if (normalizedPath.startsWith('output/playwright/') && entry.staged !== '?') {
-        conflictFiles.push({ path: normalizedPath, status: entry.staged !== ' ' ? 'staged' : 'unstaged' });
+        const classification = 'tracked_ephemeral' as const;
+        conflictFiles.push({ path: normalizedPath, status: entry.staged !== ' ' ? 'staged' : 'unstaged', classification });
+        classificationSummary[classification] += 1;
+        continue;
+      }
+      if (EPHEMERAL_FILE_EXACT.has(normalizedPath) || EPHEMERAL_PREFIXES.some((prefix) => normalizedPath.startsWith(prefix))) {
+        const classification = 'ephemeral' as const;
+        classificationSummary[classification] += 1;
+        continue;
+      }
+      if (entry.staged !== ' ' || entry.unstaged !== ' ') {
+        const classification = 'unknown_non_ephemeral' as const;
+        conflictFiles.push({ path: normalizedPath, status: entry.staged !== ' ' ? 'staged' : 'unstaged', classification });
+        classificationSummary[classification] += 1;
       }
     }
 
@@ -420,6 +445,7 @@ export class WorkspaceManager {
         status: 'cleaned',
         cleaned_files: cleanupActions,
         conflict_files: [],
+        classification_summary: classificationSummary,
         resolution_hints: []
       });
     }
@@ -431,6 +457,7 @@ export class WorkspaceManager {
         status: 'conflict',
         cleaned_files: cleanupActions,
         conflict_files: conflictFiles,
+        classification_summary: classificationSummary,
         resolution_hints: [
           'Remove tracked entries under output/playwright/ from git index/history.',
           'Run `git rm --cached output/playwright/<file>` for each tracked artifact.',
@@ -442,6 +469,7 @@ export class WorkspaceManager {
         `workspace_preflight_conflict:${JSON.stringify({
           detail: 'tracked output/playwright artifacts remain after preflight cleanup',
           conflict_files: conflictFiles,
+          classification_summary: classificationSummary,
           resolution_hints: [
             'Remove tracked entries under output/playwright/ from git index/history.',
             'Run `git rm --cached output/playwright/<file>` for each tracked artifact.',

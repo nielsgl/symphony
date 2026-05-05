@@ -580,6 +580,9 @@ export class LocalApiServer {
                       timeline_limit: 30,
                       last_emit_error_code: null
                     },
+                breaker_statuses: this.diagnosticsSource.getBreakerStatuses
+                  ? this.diagnosticsSource.getBreakerStatuses()
+                  : [],
                 runtime_resolution: this.diagnosticsSource.getRuntimeResolution(),
                 workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner(),
                 workspace_copy_ignored: this.diagnosticsSource.getWorkspaceCopyIgnored()

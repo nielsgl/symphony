@@ -629,12 +629,26 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       });
     },
     onPreflightResult: (result) => {
+      const parsedConflictFiles = result.conflict_files.map((file) => ({
+        path: file.path,
+        status: file.status,
+        classification: file.classification ?? 'unknown_non_ephemeral'
+      }));
+      const classificationSummary = result.classification_summary ?? {
+        ephemeral: 0,
+        tracked_ephemeral: 0,
+        unknown_non_ephemeral: 0
+      };
       const context = {
         issue_identifier: result.identifier,
         workspace_path: result.workspace_path,
         cleaned_files: JSON.stringify(result.cleaned_files),
-        conflict_files: JSON.stringify(result.conflict_files),
-        resolution_hints: JSON.stringify(result.resolution_hints)
+        conflict_files: JSON.stringify(parsedConflictFiles),
+        resolution_hints: JSON.stringify(result.resolution_hints),
+        stop_reason_code: 'operator_action_required_workspace_conflict',
+        classification_summary: JSON.stringify(classificationSummary),
+        next_operator_action: 'issue.resume',
+        next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'
       };
       if (result.status === 'cleaned') {
         logger.log({
@@ -880,6 +894,18 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           },
           completeRun: async (params) => {
             persistenceStore.completeRun(params);
+          },
+          upsertBreaker: async (params) => {
+            persistenceStore.upsertBreaker(params);
+          },
+          deleteBreaker: async (issue_id) => {
+            persistenceStore.deleteBreaker(issue_id);
+          },
+          upsertBlockedInput: async (issue_id, payload) => {
+            persistenceStore.upsertBlockedInput(issue_id, payload);
+          },
+          deleteBlockedInput: async (issue_id) => {
+            persistenceStore.deleteBlockedInput(issue_id);
           }
         }
       : undefined,
@@ -929,6 +955,16 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             },
             getPromptFallbackActive: () => promptFallbackActive,
             getPhaseMarkers: () => orchestrator.getPhaseMarkerSettings(),
+            getBreakerStatuses: () =>
+              orchestrator.getCircuitBreakerSnapshot().map((entry) => ({
+                issue_id: entry.issue_id,
+                issue_identifier: entry.issue_identifier,
+                breaker_active: entry.breaker_active,
+                breaker_hit_count: entry.breaker_hit_count,
+                breaker_window_minutes: entry.breaker_window_minutes,
+                breaker_first_hit_at: entry.breaker_first_hit_at_ms ? new Date(entry.breaker_first_hit_at_ms).toISOString() : null,
+                breaker_last_hit_at: entry.breaker_last_hit_at_ms ? new Date(entry.breaker_last_hit_at_ms).toISOString() : null
+              })),
             getRuntimeResolution: () => ({
               workflow_path: currentWorkflowPath,
               workflow_dir: workflowDir,
@@ -1062,6 +1098,32 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         });
 
   const start = async (): Promise<void> => {
+    if (persistenceStore) {
+      const blockedEntries = persistenceStore
+        .listBlockedInputs()
+        .map((record) => {
+          try {
+            return JSON.parse(record.payload);
+          } catch {
+            return null;
+          }
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      const breakerEntries = persistenceStore.listBreakers().map((entry) => ({
+        issue_id: entry.issue_id,
+        issue_identifier: entry.issue_identifier,
+        breaker_active: entry.breaker_active,
+        breaker_hit_count: entry.breaker_hit_count,
+        breaker_window_minutes: entry.breaker_window_minutes,
+        breaker_first_hit_at_ms: entry.breaker_first_hit_at ? Date.parse(entry.breaker_first_hit_at) : null,
+        breaker_last_hit_at_ms: entry.breaker_last_hit_at ? Date.parse(entry.breaker_last_hit_at) : null
+      }));
+      orchestrator.restoreSuppressionState({
+        blocked_entries: blockedEntries,
+        breaker_entries: breakerEntries
+      });
+    }
+
     const startupSnapshot = orchestrator.getStateSnapshot();
     logger.log({
       level: 'info',

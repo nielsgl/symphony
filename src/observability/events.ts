@@ -53,6 +53,7 @@ export const CANONICAL_EVENT = {
     blockedInputCleared: 'orchestration.blocked_input.cleared',
     redispatchCircuitBreakerOpened: 'orchestrator.redispatch.circuit_breaker_opened',
     redispatchCompletionGateBlocked: 'orchestrator.redispatch.completion_gate_blocked',
+    cancelToBacklogExecuted: 'orchestrator.cancel_to_backlog.executed',
     stateAwaitingHumanReviewScopeIncomplete: 'orchestrator.state.awaiting_human_review_scope_incomplete',
     phaseMarkerEmitted: 'orchestration.phase_marker.emitted',
     phaseMarkerIgnored: 'orchestration.phase_marker.ignored'
