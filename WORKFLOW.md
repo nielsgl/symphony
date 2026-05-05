@@ -42,7 +42,7 @@ agent:
   max_turns: 20
 codex:
   home: $HOME/.codex
-  # model: gpt-5.3-codex
+  model: gpt-5.3-codex
   reasoning_effort: medium
   extra_flags:
     - --config
