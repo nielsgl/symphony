@@ -15,6 +15,7 @@ import {
 import type {
   BlockedEntry,
   CircuitBreakerEntry,
+  OperatorActionRecord,
   OrchestratorOptions,
   OrchestratorState,
   PhaseMarkerSettings,
@@ -106,11 +107,18 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     stalled_waiting_since_ms: entry.stalled_waiting_since_ms ?? null,
     stalled_waiting_reason: entry.stalled_waiting_reason ?? null,
     running_waiting_started_at_ms: entry.running_waiting_started_at_ms ?? null,
+    last_progress_transition_at_ms: entry.last_progress_transition_at_ms ?? null,
+    last_heartbeat_at_ms: entry.last_heartbeat_at_ms ?? null,
+    heartbeat_only_event_emitted: entry.heartbeat_only_event_emitted ?? false,
     running_wait_stall_event_emitted: entry.running_wait_stall_event_emitted ?? false,
     current_phase: entry.current_phase,
     current_phase_at_ms: entry.current_phase_at_ms,
     phase_detail: entry.phase_detail
   };
+}
+
+function cloneOperatorAction(entry: OperatorActionRecord): OperatorActionRecord {
+  return { ...entry };
 }
 
 function cloneRetryEntry(entry: RetryEntry): RetryEntry {
@@ -238,7 +246,9 @@ export class OrchestratorCore {
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
     this.config.no_telemetry_warning_threshold_ms = this.config.no_telemetry_warning_threshold_ms ?? 120_000;
-    this.config.running_wait_stall_threshold_ms = this.config.running_wait_stall_threshold_ms ?? 300_000;
+    this.config.progress_heartbeat_only_warn_ms = this.config.progress_heartbeat_only_warn_ms ?? 120_000;
+    this.config.progress_stalled_waiting_ms = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
+    this.config.running_wait_stall_threshold_ms = this.config.progress_stalled_waiting_ms;
     this.ports = options.ports;
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.logger = options.logger;
@@ -256,6 +266,7 @@ export class OrchestratorCore {
       claimed: new Set(),
       retry_attempts: new Map(),
       blocked_inputs: new Map(),
+      operator_actions: new Map(),
       circuit_breakers: new Map(),
       redispatch_progress: new Map(),
       phase_timeline: new Map(),
@@ -297,6 +308,12 @@ export class OrchestratorCore {
       blocked_inputs: new Map(
         Array.from(this.state.blocked_inputs.entries()).map(([issueId, entry]) => [issueId, cloneBlockedEntry(entry)])
       ),
+      operator_actions: new Map(
+        Array.from((this.state.operator_actions ?? new Map<string, OperatorActionRecord[]>()).entries()).map(([issueId, entries]) => [
+          issueId,
+          entries.map((entry) => cloneOperatorAction(entry))
+        ])
+      ),
       circuit_breakers: new Map(
         Array.from(this.state.circuit_breakers.entries()).map(([issueId, entry]) => [issueId, cloneCircuitBreakerEntry(entry)])
       ),
@@ -334,6 +351,8 @@ export class OrchestratorCore {
     stall_timeout_ms: number;
     no_telemetry_warning_threshold_ms?: number;
     running_wait_stall_threshold_ms?: number;
+    progress_heartbeat_only_warn_ms?: number;
+    progress_stalled_waiting_ms?: number;
     worker_hosts?: string[];
     max_concurrent_agents_per_host?: number | null;
     phase_markers_enabled?: boolean;
@@ -350,7 +369,9 @@ export class OrchestratorCore {
     this.config.github_linking_mode = config.github_linking_mode ?? 'off';
     this.config.stall_timeout_ms = config.stall_timeout_ms;
     this.config.no_telemetry_warning_threshold_ms = config.no_telemetry_warning_threshold_ms ?? 120_000;
-    this.config.running_wait_stall_threshold_ms = config.running_wait_stall_threshold_ms ?? 300_000;
+    this.config.progress_heartbeat_only_warn_ms = config.progress_heartbeat_only_warn_ms ?? 120_000;
+    this.config.progress_stalled_waiting_ms = config.progress_stalled_waiting_ms ?? config.running_wait_stall_threshold_ms ?? 300_000;
+    this.config.running_wait_stall_threshold_ms = this.config.progress_stalled_waiting_ms;
     this.config.worker_hosts = config.worker_hosts ? [...config.worker_hosts] : [];
     this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
     this.config.phase_markers_enabled = config.phase_markers_enabled ?? true;
@@ -513,10 +534,12 @@ export class OrchestratorCore {
       };
     }
     if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
-      const thresholdMs = this.config.running_wait_stall_threshold_ms ?? 300_000;
+      const thresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
+      runningEntry.last_heartbeat_at_ms = workerEvent.timestamp_ms;
       if (runningEntry.running_waiting_started_at_ms === undefined || runningEntry.running_waiting_started_at_ms === null) {
         runningEntry.running_waiting_started_at_ms = workerEvent.timestamp_ms;
         runningEntry.running_wait_stall_event_emitted = false;
+        runningEntry.heartbeat_only_event_emitted = false;
       }
       if (
         (runningEntry.stalled_waiting_since_ms === undefined || runningEntry.stalled_waiting_since_ms === null) &&
@@ -525,12 +548,15 @@ export class OrchestratorCore {
         runningEntry.stalled_waiting_since_ms = runningEntry.running_waiting_started_at_ms + thresholdMs;
       }
       runningEntry.stalled_waiting_reason = null;
+      this.maybeEmitHeartbeatOnly(issue_id, runningEntry, workerEvent.timestamp_ms);
       this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
     } else if (this.shouldResetRunningWaitEpisode(workerEvent.event)) {
       runningEntry.running_waiting_started_at_ms = null;
       runningEntry.running_wait_stall_event_emitted = false;
+      runningEntry.heartbeat_only_event_emitted = false;
       runningEntry.stalled_waiting_since_ms = null;
       runningEntry.stalled_waiting_reason = null;
+      runningEntry.last_progress_transition_at_ms = workerEvent.timestamp_ms;
     }
 
     if (workerEvent.thread_id && !runningEntry.thread_id) {
@@ -1385,11 +1411,13 @@ export class OrchestratorCore {
         waitThresholdMs > 0 &&
         runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting
       ) {
+        this.maybeEmitHeartbeatOnly(issueId, runningEntry, now);
         this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
       }
       if (runningEntry.last_event && this.shouldResetRunningWaitEpisode(runningEntry.last_event)) {
         runningEntry.running_waiting_started_at_ms = null;
         runningEntry.running_wait_stall_event_emitted = false;
+        runningEntry.heartbeat_only_event_emitted = false;
         runningEntry.stalled_waiting_since_ms = null;
         runningEntry.stalled_waiting_reason = null;
       }
@@ -1603,6 +1631,9 @@ export class OrchestratorCore {
       stalled_waiting_since_ms: null,
       stalled_waiting_reason: null,
       running_waiting_started_at_ms: null,
+      last_progress_transition_at_ms: this.nowMs(),
+      last_heartbeat_at_ms: null,
+      heartbeat_only_event_emitted: false,
       running_wait_stall_event_emitted: false,
       tokens: {
         input_tokens: 0,
@@ -2036,6 +2067,13 @@ export class OrchestratorCore {
     try {
       refreshedIssues = await this.ports.tracker.fetch_issue_states_by_ids([blocked.issue_id]);
     } catch (error) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'resume',
+        requested_at_ms: this.nowMs(),
+        result: 'failed',
+        result_code: 'resume_failed',
+        message: error instanceof Error ? error.message : 'failed to refresh issue state'
+      });
       return {
         ok: false,
         code: 'resume_failed',
@@ -2045,6 +2083,13 @@ export class OrchestratorCore {
 
     const issue = refreshedIssues.find((entry) => entry.id === blocked.issue_id);
     if (!issue) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'resume',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'issue_not_found',
+        message: `Issue ${issue_identifier} no longer exists in tracker`
+      });
       this.clearBlockedInput(blocked.issue_id, 'issue_not_found');
       return {
         ok: false,
@@ -2054,6 +2099,13 @@ export class OrchestratorCore {
     }
 
     if (!isActiveState(issue.state, this.config)) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'resume',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'issue_not_active',
+        message: `Issue ${issue_identifier} is no longer in an active state`
+      });
       this.clearBlockedInput(blocked.issue_id, 'issue_not_active');
       return {
         ok: false,
@@ -2076,6 +2128,13 @@ export class OrchestratorCore {
       blocked.stop_reason_code === 'operator_action_required_no_progress_redispatch_blocked' ||
       blocked.stop_reason_code === 'awaiting_human_review_scope_incomplete';
     if (requiresProgressResume && !hasProgressSignal && (!resume_override_reason || resume_override_reason.trim().length === 0)) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'resume',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'resume_failed',
+        message: `Issue ${issue_identifier} requires progress or an explicit resume override reason`
+      });
       return {
         ok: false,
         code: 'resume_failed',
@@ -2179,6 +2238,13 @@ export class OrchestratorCore {
       }
     });
 
+    this.recordOperatorAction(blocked.issue_id, {
+      action: resume_metadata ? 'submit_input' : 'resume',
+      requested_at_ms: this.nowMs(),
+      result: 'accepted',
+      result_code: resume_metadata?.resume_reason_code ?? 'resume_accepted',
+      message: 'blocked issue resumed'
+    });
     this.ports.notifyObservers?.();
     return {
       ok: true,
@@ -2203,6 +2269,13 @@ export class OrchestratorCore {
     try {
       await this.ports.tracker.update_issue_state(blocked.issue_id, targetState);
     } catch (error) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'cancel',
+        requested_at_ms: this.nowMs(),
+        result: 'failed',
+        result_code: 'cancel_failed',
+        message: error instanceof Error ? error.message : 'failed to move issue to backlog state'
+      });
       return {
         ok: false,
         code: 'cancel_failed',
@@ -2213,6 +2286,13 @@ export class OrchestratorCore {
     this.clearBlockedInput(blocked.issue_id, 'operator_cancelled_to_backlog');
     this.state.redispatch_progress?.delete(blocked.issue_id);
     await this.clearCircuitBreaker(blocked.issue_id);
+    this.recordOperatorAction(blocked.issue_id, {
+      action: 'cancel',
+      requested_at_ms: this.nowMs(),
+      result: 'accepted',
+      result_code: targetState,
+      message: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog'
+    });
     this.recordRuntimeEvent({
       event: CANONICAL_EVENT.orchestration.cancelToBacklogExecuted,
       severity: 'info',
@@ -2263,9 +2343,23 @@ export class OrchestratorCore {
       return { ok: false, code: 'issue_not_blocked', message: `Issue ${params.issue_identifier} is not blocked` };
     }
     if (!blocked.pending_input) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'submit_input',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'input_submission_not_answerable',
+        message: 'Blocked issue has no pending input request payload'
+      });
       return { ok: false, code: 'input_submission_not_answerable', message: 'Blocked issue has no pending input request payload' };
     }
     if (!blocked.pending_input.request_id || blocked.pending_input.request_id !== params.request_id) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'submit_input',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'input_submission_expired',
+        message: 'Input request_id does not match current blocked request'
+      });
       return { ok: false, code: 'input_submission_expired', message: 'Input request_id does not match current blocked request' };
     }
 
@@ -2273,10 +2367,24 @@ export class OrchestratorCore {
       const q = blocked.pending_input.questions.find((question) => question.id === params.answer.question_id) ?? blocked.pending_input.questions[0];
       const options = q?.options ?? [];
       if (!params.answer.option_label || !options.some((option) => option.label === params.answer.option_label)) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'submit_input',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'input_submission_invalid',
+        message: 'Answer must select a valid option label for the pending question'
+      });
       return { ok: false, code: 'input_submission_invalid', message: 'Answer must select a valid option label for the pending question' };
       }
     } else if (blocked.pending_input.input_schema_type === 'text') {
       if (!params.answer.text || !params.answer.text.trim()) {
+        this.recordOperatorAction(blocked.issue_id, {
+          action: 'submit_input',
+          requested_at_ms: this.nowMs(),
+          result: 'rejected',
+          result_code: 'input_submission_invalid',
+          message: 'Answer text is required for this input request'
+        });
         return { ok: false, code: 'input_submission_invalid', message: 'Answer text is required for this input request' };
       }
     }
@@ -2333,6 +2441,13 @@ export class OrchestratorCore {
         : nativeAttempt.code === 'transport_unsupported'
           ? 'input_submission_transport_unavailable'
           : 'input_submission_not_answerable';
+    this.recordOperatorAction(blocked.issue_id, {
+      action: 'submit_input',
+      requested_at_ms: this.nowMs(),
+      result: mappedCode === 'input_submission_transport_unavailable' ? 'failed' : 'rejected',
+      result_code: mappedCode,
+      message: nativeAttempt.message ?? 'Input submission unavailable for this request'
+    });
     return { ok: false, code: mappedCode, message: nativeAttempt.message ?? 'Input submission unavailable for this request' };
   }
 
@@ -2752,6 +2867,13 @@ export class OrchestratorCore {
     this.state.codex_totals.seconds_running += Math.max(0, Math.floor((this.nowMs() - runningEntry.started_at_ms) / 1000));
   }
 
+  private recordOperatorAction(issueId: string, action: OperatorActionRecord): void {
+    const operatorActions = this.state.operator_actions ?? new Map<string, OperatorActionRecord[]>();
+    this.state.operator_actions = operatorActions;
+    const existing = operatorActions.get(issueId) ?? [];
+    operatorActions.set(issueId, [...existing, { ...action }].slice(-20));
+  }
+
   private maybeEmitTokenTelemetryWarning(runningEntry: RunningEntry, eventAtMs: number): void {
     if (runningEntry.token_telemetry_status === 'available' || runningEntry.token_telemetry_warning_emitted) {
       return;
@@ -2795,8 +2917,29 @@ export class OrchestratorCore {
     );
   }
 
+  private maybeEmitHeartbeatOnly(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
+    const thresholdMs = this.config.progress_heartbeat_only_warn_ms ?? 120_000;
+    if (thresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
+      return;
+    }
+    const waitingStartedAtMs =
+      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
+    runningEntry.running_waiting_started_at_ms = waitingStartedAtMs;
+    if (observedAtMs - waitingStartedAtMs < thresholdMs || runningEntry.heartbeat_only_event_emitted) {
+      return;
+    }
+    runningEntry.heartbeat_only_event_emitted = true;
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.progress.heartbeatOnlyDetected,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${Math.max(0, observedAtMs - waitingStartedAtMs)}`
+    });
+  }
+
   private maybeClassifyRunningWaitStall(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
-    const waitThresholdMs = this.config.running_wait_stall_threshold_ms ?? 300_000;
+    const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
     if (waitThresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
       return;
     }
@@ -2819,6 +2962,13 @@ export class OrchestratorCore {
 
     runningEntry.running_wait_stall_event_emitted = true;
     const elapsedMs = Math.max(0, observedAtMs - waitingStartedAtMs);
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.progress.stalledWaitingDetected,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
+    });
     this.recordRuntimeEvent({
       event: CANONICAL_EVENT.orchestration.runningWaitStallThresholdExceeded,
       severity: 'warn',

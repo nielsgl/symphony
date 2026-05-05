@@ -1,6 +1,15 @@
 import type { OrchestratorState, RunningEntry } from '../orchestrator';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
+import {
+  createApiDegradedDiagnostics,
+  resolveBlockedTurnControl,
+  resolveNotBlockedExplainer,
+  resolveProgressSignal,
+  resolveRunningTurnControl,
+  resolveSnapshotFreshness,
+  resolveTokenTelemetryQuality
+} from './runtime-visibility';
 import type { ApiIssueResponse, ApiStateResponse } from './types';
 
 function asIsoDate(timestampMs: number): string {
@@ -23,9 +32,28 @@ function redactPromptPreview(input: string | null | undefined): string | null {
   return truncated && truncated !== '***REDACTED***' ? truncated : null;
 }
 
-function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number): ApiStateResponse['running'][number] {
+function projectOperatorActions(state: OrchestratorState, issueId: string) {
+  return (state.operator_actions?.get(issueId) ?? []).map((action) => ({ ...action }));
+}
+
+function toStateRunningRow(
+  issueId: string,
+  entry: RunningEntry,
+  nowMs: number,
+  operatorActions: OrchestratorState['operator_actions']
+): ApiStateResponse['running'][number] {
   const awaitingInput = Boolean(entry.awaiting_input_since_ms);
   const stalledWaiting = Boolean(entry.stalled_waiting_since_ms && entry.stalled_waiting_reason);
+  const progressSignal = resolveProgressSignal(entry);
+  const turnControl = resolveRunningTurnControl(entry);
+  const notBlockedExplainer = resolveNotBlockedExplainer({
+    blocked: false,
+    progress_signal_state: progressSignal.progress_signal_state,
+    awaiting_input: awaitingInput,
+    waiting_started_at_ms: entry.running_waiting_started_at_ms ?? null,
+    now_ms: nowMs,
+    stalled_waiting_ms: 300_000
+  });
   return {
     issue_id: issueId,
     issue_identifier: entry.identifier,
@@ -71,6 +99,11 @@ function toStateRunningRow(issueId: string, entry: RunningEntry, nowMs: number):
     token_telemetry_status: entry.token_telemetry_status,
     token_telemetry_last_source: entry.token_telemetry_last_source,
     token_telemetry_last_at_ms: entry.token_telemetry_last_at_ms,
+    ...turnControl,
+    ...progressSignal,
+    ...resolveTokenTelemetryQuality(entry),
+    ...notBlockedExplainer,
+    operator_actions: (operatorActions?.get(issueId) ?? []).map((action) => ({ ...action })),
     tokens: {
       input_tokens: entry.tokens.input_tokens,
       output_tokens: entry.tokens.output_tokens,
@@ -101,7 +134,10 @@ export class SnapshotService {
 
   projectState(state: OrchestratorState): ApiStateResponse {
     const nowMs = this.nowMs();
-    const running = Array.from(state.running.entries()).map(([issueId, entry]) => toStateRunningRow(issueId, entry, nowMs));
+    const freshness = resolveSnapshotFreshness(nowMs, nowMs);
+    const running = Array.from(state.running.entries()).map(([issueId, entry]) =>
+      toStateRunningRow(issueId, entry, nowMs, state.operator_actions)
+    );
     const retrying = Array.from(state.retry_attempts.values()).map((entry) => ({
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -188,6 +224,11 @@ export class SnapshotService {
       progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
       required_actions: [...(entry.required_actions ?? [])],
       resume_override_reason: entry.resume_override_reason ?? null,
+      ...resolveBlockedTurnControl(entry),
+      progress_signal_state: 'stalled_waiting' as const,
+      last_progress_transition_at_ms: entry.last_progress_checkpoint_at ?? null,
+      last_heartbeat_at_ms: entry.last_quarantined_event_at_ms ?? null,
+      operator_actions: projectOperatorActions(state, entry.issue_id),
       pending_input: entry.pending_input
         ? {
             ...entry.pending_input,
@@ -224,6 +265,8 @@ export class SnapshotService {
 
     return redactUnknown({
       generated_at: asIsoDate(nowMs),
+      ...freshness,
+      ...createApiDegradedDiagnostics(null, []),
       counts: {
         running: running.length,
         retrying: retrying.length,
@@ -271,6 +314,8 @@ export class SnapshotService {
   }
 
   projectIssue(state: OrchestratorState, issueIdentifier: string): ApiIssueResponse {
+    const nowMs = this.nowMs();
+    const freshness = resolveSnapshotFreshness(nowMs, nowMs);
     const runningEntry = Array.from(state.running.entries()).find(([, entry]) => entry.identifier === issueIdentifier);
     const retryEntry = Array.from(state.retry_attempts.values()).find((entry) => entry.identifier === issueIdentifier);
     const blockedEntry = Array.from(state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issueIdentifier);
@@ -287,10 +332,15 @@ export class SnapshotService {
     if (runningEntry) {
       const [issueId, entry] = runningEntry;
       const currentRetryAttempt = retryEntry?.attempt ?? 0;
+      const progressSignal = resolveProgressSignal(entry);
+      const turnControl = resolveRunningTurnControl(entry);
       return redactUnknown({
         issue_identifier: issueIdentifier,
         issue_id: issueId,
         status: 'running',
+        ...freshness,
+        ...createApiDegradedDiagnostics(null, []),
+        operator_actions: projectOperatorActions(state, issueId),
         workspace: {
           path: entry.workspace_path,
           host: entry.worker_host ?? null
@@ -344,6 +394,18 @@ export class SnapshotService {
           token_telemetry_status: entry.token_telemetry_status,
           token_telemetry_last_source: entry.token_telemetry_last_source,
           token_telemetry_last_at_ms: entry.token_telemetry_last_at_ms,
+          ...turnControl,
+          ...progressSignal,
+          ...resolveTokenTelemetryQuality(entry),
+          ...resolveNotBlockedExplainer({
+            blocked: false,
+            progress_signal_state: progressSignal.progress_signal_state,
+            awaiting_input: Boolean(entry.awaiting_input_since_ms),
+            waiting_started_at_ms: entry.running_waiting_started_at_ms ?? null,
+            now_ms: nowMs,
+            stalled_waiting_ms: 300_000
+          }),
+          operator_actions: projectOperatorActions(state, issueId),
           tokens: {
             input_tokens: entry.tokens.input_tokens,
             output_tokens: entry.tokens.output_tokens,
@@ -418,6 +480,11 @@ export class SnapshotService {
       awaiting_operator_resume_nonce: blockedEntry.awaiting_operator_resume_nonce ?? 0,
       quarantined_event_count: blockedEntry.quarantined_event_count ?? 0,
       last_quarantined_event_at: blockedEntry.last_quarantined_event_at_ms ? asIsoDate(blockedEntry.last_quarantined_event_at_ms) : null,
+          ...resolveBlockedTurnControl(blockedEntry),
+          progress_signal_state: 'stalled_waiting' as const,
+          last_progress_transition_at_ms: blockedEntry.last_progress_checkpoint_at ?? null,
+          last_heartbeat_at_ms: blockedEntry.last_quarantined_event_at_ms ?? null,
+          operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
           breaker_active: breakerEntry?.breaker_active ?? false,
           breaker_hit_count: breakerEntry?.breaker_hit_count ?? 0,
           breaker_window_minutes: breakerEntry?.breaker_window_minutes ?? 0,
@@ -487,6 +554,9 @@ export class SnapshotService {
         issue_identifier: issueIdentifier,
         issue_id: issueId,
         status: 'retrying',
+        ...freshness,
+        ...createApiDegradedDiagnostics(null, []),
+        operator_actions: projectOperatorActions(state, issueId),
         workspace: {
           path: retryOnlyEntry.workspace_path ?? null,
           host: retryOnlyEntry.worker_host ?? null
@@ -618,6 +688,9 @@ export class SnapshotService {
       issue_identifier: issueIdentifier,
       issue_id: issueId,
       status: 'blocked',
+      ...freshness,
+      ...createApiDegradedDiagnostics(null, []),
+      operator_actions: projectOperatorActions(state, issueId),
       workspace: {
         path: blockedEntry.workspace_path ?? null,
         host: blockedEntry.worker_host ?? null
@@ -666,6 +739,11 @@ export class SnapshotService {
       progress_signals: blockedEntry.progress_signals ? { ...blockedEntry.progress_signals } : undefined,
       required_actions: [...(blockedEntry.required_actions ?? [])],
       resume_override_reason: blockedEntry.resume_override_reason ?? null,
+      ...resolveBlockedTurnControl(blockedEntry),
+      progress_signal_state: 'stalled_waiting' as const,
+      last_progress_transition_at_ms: blockedEntry.last_progress_checkpoint_at ?? null,
+      last_heartbeat_at_ms: blockedEntry.last_quarantined_event_at_ms ?? null,
+      operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
         pending_input: blockedEntry.pending_input
           ? {
               ...blockedEntry.pending_input,

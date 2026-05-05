@@ -868,6 +868,38 @@ describe('OrchestratorCore', () => {
     expect(stallEvents[0]?.session_id).toBe('thread-event-turn-1');
     expect(stallEvents[0]?.detail).toContain('thread_id=thread-event');
     expect(stallEvents[0]?.detail).toContain('elapsed_ms=2000');
+    const progressEvents = harness.orchestrator
+      .getStateSnapshot()
+      .recent_runtime_events.filter((entry) => entry.event === CANONICAL_EVENT.progress.stalledWaitingDetected);
+    expect(progressEvents).toHaveLength(1);
+  });
+
+  it('emits heartbeat-only detection before stalled waiting threshold', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        progress_heartbeat_only_warn_ms: 500,
+        progress_stalled_waiting_ms: 5_000,
+        running_wait_stall_threshold_ms: 5_000,
+        stall_timeout_ms: 60_000
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-heartbeat-only', identifier: 'ABC-HB' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-heartbeat-only', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat',
+      thread_id: 'thread-hb',
+      session_id: 'thread-hb-turn-1'
+    });
+    harness.now.value += 750;
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.get('i-heartbeat-only')?.stalled_waiting_reason).toBeNull();
+    expect(snapshot.recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.progress.heartbeatOnlyDetected)).toBe(true);
+    expect(snapshot.recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.progress.stalledWaitingDetected)).toBe(false);
   });
 
   it('preserves stalled-wait anchor across interleaved phase and waiting heartbeats', async () => {

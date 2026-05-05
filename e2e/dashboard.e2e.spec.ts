@@ -2,6 +2,12 @@ import { expect, test } from '@playwright/test';
 
 type DashboardStatePayload = {
   generated_at: string;
+  snapshot_generated_at_ms?: number;
+  snapshot_age_ms?: number;
+  snapshot_freshness_state?: string;
+  api_degraded_mode?: boolean;
+  api_degraded_reason_code?: string | null;
+  api_degraded_routes?: string[];
   counts: {
     running: number;
     retrying: number;
@@ -33,6 +39,12 @@ const ISO_OLD = '2026-04-30T09:58:00.000Z';
 function baseState(overrides: Partial<DashboardStatePayload> = {}): DashboardStatePayload {
   return {
     generated_at: ISO_NOW,
+    snapshot_generated_at_ms: Date.parse(ISO_NOW),
+    snapshot_age_ms: 0,
+    snapshot_freshness_state: 'fresh',
+    api_degraded_mode: false,
+    api_degraded_reason_code: null,
+    api_degraded_routes: [],
     counts: {
       running: 0,
       retrying: 0,
@@ -370,5 +382,106 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#issue-output')).toContainText('Execution Timeline');
     await expect(page.locator('#issue-output')).toContainText('planning');
     await expect(page.locator('#issue-output')).toContainText('implementation');
+  });
+
+  test('visibility badges render turn control, progress quality, token confidence, degraded banner, freshness, and action trail', async ({ page }) => {
+    await installDashboardApiMocks(page, {
+      state: baseState({
+        api_degraded_mode: true,
+        api_degraded_reason_code: 'route_not_found',
+        api_degraded_routes: ['/api/v1/issues/:issue_identifier'],
+        running: [
+          {
+            issue_identifier: 'NIE-53',
+            state: 'running',
+            session_id: 'session-visibility-1',
+            worker_host: 'hessian',
+            workspace_path: '/tmp/workspaces/NIE-53',
+            started_at: ISO_OLD,
+            turn_count: 2,
+            tokens: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+            token_telemetry_status: 'unavailable',
+            token_telemetry_confidence: 'missing',
+            token_telemetry_source: null,
+            last_event_summary: 'codex turn waiting',
+            last_event: 'codex.turn.waiting',
+            last_message: 'waiting',
+            last_event_at: ISO_NOW,
+            thread_id: 'thread-visibility',
+            turn_id: 'turn-visibility',
+            current_phase: 'planning',
+            current_phase_at: ISO_OLD,
+            phase_elapsed_ms: 120000,
+            turn_control_state: 'operator_turn',
+            turn_control_reason_code: 'turn_input_required',
+            turn_control_since_ms: Date.parse(ISO_OLD),
+            progress_signal_state: 'heartbeat_only',
+            last_progress_transition_at_ms: Date.parse(ISO_OLD),
+            last_heartbeat_at_ms: Date.parse(ISO_NOW),
+            not_blocked_explainer_code: 'within_wait_threshold',
+            not_blocked_explainer_text: 'The run is emitting waiting heartbeats and remains within the configured blocked-transition threshold.',
+            operator_actions: [
+              {
+                action: 'submit_input',
+                requested_at_ms: Date.parse(ISO_NOW),
+                result: 'rejected',
+                result_code: 'input_submission_invalid',
+                message: 'invalid answer'
+              }
+            ]
+          }
+        ]
+      }),
+      issues: {
+        'NIE-53': {
+          issue_identifier: 'NIE-53',
+          status: 'running',
+          snapshot_generated_at_ms: Date.parse(ISO_NOW),
+          snapshot_age_ms: 0,
+          snapshot_freshness_state: 'fresh',
+          api_degraded_mode: true,
+          api_degraded_reason_code: 'route_not_found',
+          workspace: { path: '/tmp/workspaces/NIE-53' },
+          running: {
+            current_phase: 'planning',
+            turn_control_state: 'operator_turn',
+            progress_signal_state: 'heartbeat_only',
+            token_telemetry_confidence: 'missing',
+            not_blocked_explainer_text: 'The run is emitting waiting heartbeats and remains within the configured blocked-transition threshold.'
+          },
+          retry: null,
+          blocked: null,
+          operator_actions: [
+            {
+              action: 'submit_input',
+              requested_at_ms: Date.parse(ISO_NOW),
+              result: 'rejected',
+              result_code: 'input_submission_invalid',
+              message: 'invalid answer'
+            }
+          ],
+          phase_timeline: [],
+          recent_events: []
+        }
+      }
+    });
+
+    await page.goto('/');
+
+    await expect(page.locator('#last-updated')).toContainText('fresh');
+    await expect(page.locator('#api-degraded-banner')).toContainText('route_not_found');
+    await expect(page.locator('#running-rows')).toContainText('Operator Turn');
+    await expect(page.locator('#running-rows')).toContainText('Heartbeat Only');
+    await expect(page.locator('#running-rows')).toContainText('Missing telemetry');
+    await expect(page.locator('#running-rows')).toContainText('Why not blocked:');
+    await expect(page.locator('#running-rows')).toContainText('Last action: submit_input rejected');
+
+    await page.locator('#issue-input').fill('NIE-53');
+    await page.getByRole('button', { name: 'Load' }).click();
+
+    await expect(page.locator('#issue-summary')).toContainText('API degraded: route_not_found');
+    await expect(page.locator('#issue-summary')).toContainText('Turn control: Operator Turn');
+    await expect(page.locator('#issue-output')).toContainText('Operator Action Outcomes');
+    await expect(page.locator('#issue-output')).toContainText('submit_input');
   });
 });

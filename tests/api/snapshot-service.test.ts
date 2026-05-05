@@ -173,6 +173,13 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.token_telemetry_status).toBe('available');
     expect(projected.running[0]?.token_telemetry_last_source).toBe('terminal_turn_summary');
     expect(projected.running[0]?.token_telemetry_last_at_ms).toBe(Date.parse('2026-04-10T10:01:00.000Z'));
+    expect(projected.snapshot_generated_at_ms).toBe(Date.parse('2026-04-10T10:02:00.000Z'));
+    expect(projected.snapshot_age_ms).toBe(0);
+    expect(projected.snapshot_freshness_state).toBe('fresh');
+    expect(projected.api_degraded_mode).toBe(false);
+    expect(projected.running[0]?.turn_control_state).toBe('agent_turn');
+    expect(projected.running[0]?.progress_signal_state).toBe('advancing');
+    expect(projected.running[0]?.token_telemetry_confidence).toBe('observed_live');
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');
@@ -205,6 +212,9 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.pending_input_preview?.prompt_preview).toContain('***REDACTED***');
     expect(projected.running[0]?.stalled_waiting).toBe(true);
     expect(projected.running[0]?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+    expect(projected.running[0]?.turn_control_state).toBe('operator_turn');
+    expect(projected.running[0]?.progress_signal_state).toBe('stalled_waiting');
+    expect(projected.running[0]?.not_blocked_explainer_code).toBe('awaiting_classifier_transition');
   });
 
   it('truncates pending input previews by UTF-8 characters after redaction', () => {
