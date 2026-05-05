@@ -67,7 +67,7 @@ function discoverArtifacts(repoRoot) {
     }
     const type = inferArtifactType(relative);
     if (!type) {
-      return toTypedError('ui_evidence_invalid_artifact_type', `Unsupported artifact extension: ${relative}`, { path: relative });
+      continue;
     }
     artifacts.push({ path: relative, type });
   }

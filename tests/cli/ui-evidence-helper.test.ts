@@ -52,7 +52,7 @@ describe('ui evidence helper', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
-  it('fails with typed error for invalid artifact extension', () => {
+  it('fails with typed error when no supported artifacts are discovered', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-evidence-helper-'));
     fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
     fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.jpg'), 'stub', 'utf8');
@@ -65,7 +65,26 @@ describe('ui evidence helper', () => {
       'src/api/dashboard-assets.ts'
     ]);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('ui_evidence_invalid_artifact_type');
+    expect(result.stderr).toContain('ui_evidence_missing_artifacts');
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('succeeds when supported artifacts exist alongside unrelated files', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-evidence-helper-'));
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub', 'utf8');
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/ui-e2e-evidence.txt'), 'note', 'utf8');
+    const result = runHelper(tempRoot, [
+      '--summary',
+      'UI evidence capture',
+      '--publish-reference',
+      'https://linear.app/nielsgl/issue/NIE-48/comment/demo-1',
+      '--ui-path',
+      'src/api/dashboard-assets.ts'
+    ]);
+    expect(result.status).toBe(0);
+    const manifest = JSON.parse(fs.readFileSync(path.join(tempRoot, 'output/playwright/ui-evidence.json'), 'utf8'));
+    expect(manifest.artifacts).toEqual([{ path: 'output/playwright/demo.webm', type: 'video' }]);
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
