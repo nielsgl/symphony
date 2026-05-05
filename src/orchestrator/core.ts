@@ -526,7 +526,7 @@ export class OrchestratorCore {
       }
       runningEntry.stalled_waiting_reason = null;
       this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
-    } else {
+    } else if (this.shouldResetRunningWaitEpisode(workerEvent.event)) {
       runningEntry.running_waiting_started_at_ms = null;
       runningEntry.running_wait_stall_event_emitted = false;
       runningEntry.stalled_waiting_since_ms = null;
@@ -1387,7 +1387,7 @@ export class OrchestratorCore {
       ) {
         this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
       }
-      if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
+      if (runningEntry.last_event && this.shouldResetRunningWaitEpisode(runningEntry.last_event)) {
         runningEntry.running_waiting_started_at_ms = null;
         runningEntry.running_wait_stall_event_emitted = false;
         runningEntry.stalled_waiting_since_ms = null;
@@ -2782,6 +2782,16 @@ export class OrchestratorCore {
       event === CANONICAL_EVENT.codex.turnCompleted ||
       event === CANONICAL_EVENT.codex.turnFailed ||
       event === CANONICAL_EVENT.codex.turnCancelled
+    );
+  }
+
+  private shouldResetRunningWaitEpisode(event: string): boolean {
+    return (
+      this.isTerminalTurnEvent(event) ||
+      event === CANONICAL_EVENT.codex.turnStarted ||
+      event === CANONICAL_EVENT.codex.promptSent ||
+      event === CANONICAL_EVENT.codex.turnInputRequired ||
+      event === CANONICAL_EVENT.codex.startupFailed
     );
   }
 

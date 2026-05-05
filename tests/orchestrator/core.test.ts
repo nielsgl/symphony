@@ -870,6 +870,44 @@ describe('OrchestratorCore', () => {
     expect(stallEvents[0]?.detail).toContain('elapsed_ms=2000');
   });
 
+  it('preserves stalled-wait anchor across interleaved phase and waiting heartbeats', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-wait-phase', identifier: 'ABC-WAIT-PHASE' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-wait-phase', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat 1',
+      thread_id: 'thread-phase',
+      session_id: 'thread-phase-turn-1'
+    });
+    harness.now.value += 400;
+    harness.orchestrator.onWorkerEvent('i-wait-phase', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'planning heartbeat',
+      thread_id: 'thread-phase',
+      session_id: 'thread-phase-turn-1'
+    });
+    harness.now.value += 700;
+    harness.orchestrator.onWorkerEvent('i-wait-phase', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat 2',
+      thread_id: 'thread-phase',
+      session_id: 'thread-phase-turn-1'
+    });
+    await harness.orchestrator.tick('interval');
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-wait-phase');
+    expect(running?.stalled_waiting_since_ms).toBe(1_001_000);
+    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait-phase')).toBe(false);
+  });
+
   it('clears blocked issue state when tracker reports non-active or terminal state', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-clear', identifier: 'ABC-CLEAR' })]);
