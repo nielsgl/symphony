@@ -5,6 +5,7 @@ import type { CodexRunnerEvent } from '../codex';
 import type { CodexInputRequestPayload } from '../codex/types';
 import type { EffectiveConfig } from '../workflow';
 import { CANONICAL_EVENT } from '../observability/events';
+import { REASON_CODES } from '../observability/reason-codes';
 import { buildCodexSpawnCommand } from '../codex/command-builder';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -45,12 +46,12 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
         event: CANONICAL_EVENT.codex.startupFailed,
         timestamp: new Date().toISOString(),
         codex_app_server_pid: null,
-        detail: 'unsafe_workspace_root'
+        detail: REASON_CODES.unsafeWorkspaceRoot
       });
       return {
         reason: 'abnormal',
         session_id: null,
-        error: 'unsafe_workspace_root'
+        error: REASON_CODES.unsafeWorkspaceRoot
       };
     }
     await input.workspaceManager.prepareAttempt(workspace.path);
@@ -107,7 +108,7 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
 
       if (turnResult.status !== 'completed') {
         const error =
-          turnResult.error_code === 'turn_input_required'
+          turnResult.error_code === REASON_CODES.turnInputRequired
             ? `${turnResult.error_code}: ${
                 turnResult.input_required_payload
                   ? JSON.stringify({
@@ -192,7 +193,7 @@ async function renderWorkspaceConflictError(error: unknown, workspacePath: strin
   const mergedConflictFiles = dedupeConflictFiles([...parsedMessageConflictFiles, ...gitConflictFiles]);
 
   const payload = {
-    code: 'operator_action_required_workspace_conflict',
+    code: REASON_CODES.operatorWorkspaceConflict,
     detail: structuredPreflight?.detail ?? typed.message,
     conflict_files: mergedConflictFiles,
     classification_summary: structuredPreflight?.classification_summary,

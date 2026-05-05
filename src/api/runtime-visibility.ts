@@ -1,4 +1,5 @@
 import { CANONICAL_EVENT } from '../observability/events';
+import { REASON_CODES } from '../observability/reason-codes';
 import type { BlockedEntry, OperatorActionRecord, RunningEntry } from '../orchestrator/types';
 
 export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume';
@@ -23,7 +24,7 @@ export function resolveRunningTurnControl(entry: RunningEntry): {
   if (entry.awaiting_input_since_ms) {
     return {
       turn_control_state: 'operator_turn',
-      turn_control_reason_code: 'turn_input_required',
+      turn_control_reason_code: REASON_CODES.turnInputRequired,
       turn_control_since_ms: entry.awaiting_input_since_ms
     };
   }
@@ -78,8 +79,8 @@ export function resolveBlockedProgressSignal(entry: BlockedEntry): {
   last_heartbeat_at_ms: number | null;
 } {
   if (
-    entry.stop_reason_code === 'operator_action_required_no_progress_redispatch_blocked' ||
-    entry.stop_reason_code === 'awaiting_human_review_scope_incomplete'
+    entry.stop_reason_code === REASON_CODES.operatorNoProgressRedispatchBlocked ||
+    entry.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete
   ) {
     return {
       progress_signal_state: 'stalled_waiting',

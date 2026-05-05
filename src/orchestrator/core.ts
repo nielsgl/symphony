@@ -1,6 +1,7 @@
 import type { Issue } from '../tracker';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
+import { REASON_CODES } from '../observability/reason-codes';
 import { isKnownPhaseMarker, isTerminalPhaseMarker, phaseMarkerOrder, type PhaseMarker, type PhaseMarkerName } from '../observability';
 import { ThroughputTracker } from '../observability/throughput';
 import {
@@ -595,7 +596,7 @@ export class OrchestratorCore {
     if (workerEvent.event === CANONICAL_EVENT.codex.turnInputRequired) {
       runningEntry.awaiting_input_since_ms = workerEvent.timestamp_ms;
       runningEntry.pending_input_preview = {
-        type: 'turn_input_required',
+        type: REASON_CODES.turnInputRequired,
         prompt_preview: workerEvent.detail ?? null,
         option_count: null
       };
@@ -825,7 +826,7 @@ export class OrchestratorCore {
           thread_id: threadId,
           started_at: at,
           status: 'running',
-          reason_code: 'codex_session_started',
+          reason_code: REASON_CODES.codexSessionStarted,
           reason_detail: workerEvent.session_id ?? runningEntry.session_id
         });
       }
@@ -1282,8 +1283,8 @@ export class OrchestratorCore {
 
     const stopReasonCode =
       budget.hard_limit_policy === 'terminate_attempt'
-        ? 'attempt_terminated_budget_limit_exceeded'
-        : 'operator_action_required_budget_limit_exceeded';
+        ? REASON_CODES.attemptTerminatedBudgetLimitExceeded
+        : REASON_CODES.operatorBudgetLimitExceeded;
     const stopReasonDetail =
       running.budget?.budget_message ??
       `Budget hard limit exceeded: usage ${running.budget?.budget_usage_tokens} tokens, limit ${running.budget?.budget_limit_tokens} tokens.`;
@@ -1426,7 +1427,13 @@ export class OrchestratorCore {
         session_id: running.session_id
       });
       await this.completeRunRecord(running, 'succeeded', null);
-      await this.persistExecutionGraphStateTransition(running, 'retrying', 'retrying', 'normal_completion', 'normal worker completion, continuing while issue is active');
+      await this.persistExecutionGraphStateTransition(
+        running,
+        'retrying',
+        'retrying',
+        REASON_CODES.normalCompletion,
+        'normal worker completion, continuing while issue is active'
+      );
       this.state.completed.add(issue_id);
       await this.scheduleRetry({
         issue_id,
@@ -1448,7 +1455,7 @@ export class OrchestratorCore {
       copy_ignored_applied: running.copy_ignored_applied,
       copy_ignored_status: running.copy_ignored_status,
       copy_ignored_summary: running.copy_ignored_summary,
-        stop_reason_code: 'normal_completion',
+        stop_reason_code: REASON_CODES.normalCompletion,
         stop_reason_detail: 'normal worker completion, continuing while issue is active',
         previous_thread_id: running.thread_id,
         previous_session_id: running.session_id,
@@ -1471,8 +1478,8 @@ export class OrchestratorCore {
     } else {
       await this.completeRunRecord(running, 'failed', error ?? `worker exited: ${reason}`);
       this.state.health.last_error = `worker exited for ${running.identifier}`;
-      const stopReasonCode = this.inferStopReasonCode(error, 'worker_exit_abnormal');
-      if (stopReasonCode === 'turn_input_required') {
+      const stopReasonCode = this.inferStopReasonCode(error, REASON_CODES.workerExitAbnormal);
+      if (stopReasonCode === REASON_CODES.turnInputRequired) {
         const inputDetail = this.inferInputRequiredDetail(error, reason);
         const stopReasonDetail = inputDetail.detail;
         this.emitPhaseMarker(issue_id, {
@@ -1500,7 +1507,7 @@ export class OrchestratorCore {
           copy_ignored_applied: running.copy_ignored_applied,
           copy_ignored_status: running.copy_ignored_status,
           copy_ignored_summary: running.copy_ignored_summary,
-          stop_reason_code: 'turn_input_required',
+          stop_reason_code: REASON_CODES.turnInputRequired,
           stop_reason_detail: stopReasonDetail,
           pending_input: inputDetail,
           session_console: running.recent_events,
@@ -1517,15 +1524,15 @@ export class OrchestratorCore {
             session_id: running.session_id,
             reason,
             outcome: 'blocked',
-            stop_reason_code: 'turn_input_required',
+            stop_reason_code: REASON_CODES.turnInputRequired,
             error: stopReasonDetail
           }
         });
-        await this.persistExecutionGraphStateTransition(running, 'blocked', 'blocked', 'turn_input_required', stopReasonDetail);
+        await this.persistExecutionGraphStateTransition(running, 'blocked', 'blocked', REASON_CODES.turnInputRequired, stopReasonDetail);
         this.ports.notifyObservers?.();
         return;
       }
-      if (stopReasonCode === 'operator_action_required_workspace_conflict') {
+      if (stopReasonCode === REASON_CODES.operatorWorkspaceConflict) {
         const workspaceConflict = this.inferWorkspaceConflictContext(error, reason);
         this.emitPhaseMarker(issue_id, {
           phase: 'blocked_input',
@@ -1552,7 +1559,7 @@ export class OrchestratorCore {
           copy_ignored_applied: running.copy_ignored_applied,
           copy_ignored_status: running.copy_ignored_status,
           copy_ignored_summary: running.copy_ignored_summary,
-          stop_reason_code: 'operator_action_required_workspace_conflict',
+          stop_reason_code: REASON_CODES.operatorWorkspaceConflict,
           stop_reason_detail: workspaceConflict.detail,
           conflict_files: workspaceConflict.conflict_files,
           classification_summary: workspaceConflict.classification_summary,
@@ -1571,7 +1578,7 @@ export class OrchestratorCore {
             session_id: running.session_id,
             reason,
             outcome: 'blocked',
-            stop_reason_code: 'operator_action_required_workspace_conflict',
+            stop_reason_code: REASON_CODES.operatorWorkspaceConflict,
             error: workspaceConflict.detail
           }
         });
@@ -1579,7 +1586,7 @@ export class OrchestratorCore {
           running,
           'blocked',
           'blocked',
-          'operator_action_required_workspace_conflict',
+          REASON_CODES.operatorWorkspaceConflict,
           workspaceConflict.detail
         );
         this.ports.notifyObservers?.();
@@ -1699,7 +1706,7 @@ export class OrchestratorCore {
         copy_ignored_applied: retryEntry.copy_ignored_applied,
         copy_ignored_status: retryEntry.copy_ignored_status,
         copy_ignored_summary: retryEntry.copy_ignored_summary,
-        stop_reason_code: 'retry_fetch_failed',
+        stop_reason_code: REASON_CODES.retryFetchFailed,
         stop_reason_detail: error instanceof Error ? error.message : 'unknown',
         previous_thread_id: retryEntry.previous_thread_id ?? null,
         previous_session_id: retryEntry.previous_session_id ?? null,
@@ -1745,7 +1752,7 @@ export class OrchestratorCore {
           copy_ignored_applied: retryEntry.copy_ignored_applied,
           copy_ignored_status: retryEntry.copy_ignored_status,
           copy_ignored_summary: retryEntry.copy_ignored_summary,
-          stop_reason_code: 'slots_exhausted',
+          stop_reason_code: REASON_CODES.slotsExhausted,
           stop_reason_detail: 'no available orchestrator slots',
           previous_thread_id: retryEntry.previous_thread_id ?? null,
           previous_session_id: retryEntry.previous_session_id ?? null,
@@ -1761,8 +1768,8 @@ export class OrchestratorCore {
     const gateEvaluation = this.evaluateRedispatchGate(issue_id, retryEntry, issue);
     if (!gateEvaluation.allow_redispatch) {
       const stopReasonCode = gateEvaluation.awaiting_human_review_scope_incomplete
-        ? 'awaiting_human_review_scope_incomplete'
-        : 'operator_action_required_no_progress_redispatch_blocked';
+        ? REASON_CODES.awaitingHumanReviewScopeIncomplete
+        : REASON_CODES.operatorNoProgressRedispatchBlocked;
       const stopReasonDetail = gateEvaluation.awaiting_human_review_scope_incomplete
         ? 'PR is open but scope is incomplete and no progress signal was detected'
         : 'completion gate blocked redispatch because no progress signal was detected';
@@ -2143,7 +2150,7 @@ export class OrchestratorCore {
         copy_ignored_applied: runningEntry.copy_ignored_applied,
         copy_ignored_status: runningEntry.copy_ignored_status,
         copy_ignored_summary: runningEntry.copy_ignored_summary,
-        stop_reason_code: 'worker_stalled',
+        stop_reason_code: REASON_CODES.workerStalled,
         stop_reason_detail: 'worker stalled',
         previous_thread_id: runningEntry.thread_id,
         previous_session_id: runningEntry.session_id,
@@ -2178,7 +2185,7 @@ export class OrchestratorCore {
     graphContext: DispatchGraphContext = {}
   ): Promise<void> {
     this.emitPhaseMarker(issue.id, {
-      phase: 'dispatch_started',
+      phase: REASON_CODES.dispatchStarted,
       detail: 'dispatch attempt started',
       attempt: attempt ?? 0
     });
@@ -2229,7 +2236,7 @@ export class OrchestratorCore {
         copy_ignored_applied: false,
         copy_ignored_status: null,
         copy_ignored_summary: null,
-        stop_reason_code: 'slots_exhausted',
+        stop_reason_code: REASON_CODES.slotsExhausted,
         stop_reason_detail: 'no available worker host slots',
         issue_snapshot: issue
       });
@@ -2276,7 +2283,7 @@ export class OrchestratorCore {
         copy_ignored_applied: false,
         copy_ignored_status: null,
         copy_ignored_summary: null,
-        stop_reason_code: 'spawn_failed',
+        stop_reason_code: REASON_CODES.spawnFailed,
         stop_reason_detail: spawned.error,
         issue_snapshot: issue
       });
@@ -2380,7 +2387,7 @@ export class OrchestratorCore {
             issue_identifier: issue.identifier,
             started_at: startedAt,
             status: 'running',
-            reason_code: 'dispatch_started',
+            reason_code: REASON_CODES.dispatchStarted,
             reason_detail: 'dispatch attempt started'
           })) ??
           null;
@@ -2391,7 +2398,7 @@ export class OrchestratorCore {
               attempt_number: runningEntry.retry_attempt,
               started_at: startedAt,
               status: 'running',
-              reason_code: 'attempt_started',
+              reason_code: REASON_CODES.attemptStarted,
               reason_detail: 'worker spawned'
             })) ?? null;
           await this.persistence.appendStateTransition?.({
@@ -2401,7 +2408,7 @@ export class OrchestratorCore {
             to_status: 'running',
             transitioned_at: startedAt,
             status: 'running',
-            reason_code: 'dispatch_started',
+            reason_code: REASON_CODES.dispatchStarted,
             reason_detail: 'dispatch attempt started'
           });
         }
@@ -2869,8 +2876,8 @@ export class OrchestratorCore {
       currentSignals.checklist_checkpoint !== (blocked.progress_signals?.checklist_checkpoint ?? null) ||
       currentSignals.state_marker !== (blocked.progress_signals?.state_marker ?? null);
     const requiresProgressResume =
-      blocked.stop_reason_code === 'operator_action_required_no_progress_redispatch_blocked' ||
-      blocked.stop_reason_code === 'awaiting_human_review_scope_incomplete';
+      blocked.stop_reason_code === REASON_CODES.operatorNoProgressRedispatchBlocked ||
+      blocked.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete;
     if (requiresProgressResume && !hasProgressSignal && (!resume_override_reason || resume_override_reason.trim().length === 0)) {
       this.recordOperatorAction(blocked.issue_id, {
         action: 'resume',
@@ -2920,7 +2927,7 @@ export class OrchestratorCore {
         copy_ignored_applied: blocked.copy_ignored_applied,
         copy_ignored_status: blocked.copy_ignored_status,
         copy_ignored_summary: blocked.copy_ignored_summary,
-        stop_reason_code: 'slots_exhausted',
+        stop_reason_code: REASON_CODES.slotsExhausted,
         stop_reason_detail: 'resume blocked by no available orchestrator slots',
         previous_thread_id: blocked.previous_thread_id,
         previous_session_id: blocked.previous_session_id,
@@ -2947,7 +2954,7 @@ export class OrchestratorCore {
         copy_ignored_applied: blocked.copy_ignored_applied,
         copy_ignored_status: blocked.copy_ignored_status,
         copy_ignored_summary: blocked.copy_ignored_summary,
-        stop_reason_code: 'manual_resume',
+        stop_reason_code: REASON_CODES.manualResume,
         stop_reason_detail: 'manual resume requested',
         previous_thread_id: blocked.previous_thread_id,
         previous_session_id: blocked.previous_session_id,
@@ -3296,7 +3303,7 @@ export class OrchestratorCore {
   private mapPhaseForWorkerEvent(eventName: string): PhaseMarkerName | null {
     switch (eventName) {
       case CANONICAL_EVENT.codex.sessionStarted:
-        return 'codex_session_started';
+        return REASON_CODES.codexSessionStarted;
       case CANONICAL_EVENT.codex.turnStarted:
         return 'codex_turn_started';
       case CANONICAL_EVENT.codex.turnWaiting:
@@ -3400,28 +3407,28 @@ export class OrchestratorCore {
     }
 
     const workspaceConflictPayload = this.parseWorkspaceConflictPayload(error);
-    if (workspaceConflictPayload?.code === 'operator_action_required_workspace_conflict') {
-      return 'operator_action_required_workspace_conflict';
+    if (workspaceConflictPayload?.code === REASON_CODES.operatorWorkspaceConflict) {
+      return REASON_CODES.operatorWorkspaceConflict;
     }
 
     const normalized = error.toLowerCase();
-    if (normalized.includes('turn_input_required')) {
-      return 'turn_input_required';
+    if (normalized.includes(REASON_CODES.turnInputRequired)) {
+      return REASON_CODES.turnInputRequired;
     }
-    if (normalized.includes('issue_state_refresh_failed')) {
-      return 'issue_state_refresh_failed';
+    if (normalized.includes(REASON_CODES.issueStateRefreshFailed)) {
+      return REASON_CODES.issueStateRefreshFailed;
     }
-    if (normalized.includes('unsafe_workspace_root')) {
-      return 'unsafe_workspace_root';
+    if (normalized.includes(REASON_CODES.unsafeWorkspaceRoot)) {
+      return REASON_CODES.unsafeWorkspaceRoot;
     }
-    if (normalized.includes('workspace_empty')) {
-      return 'workspace_empty';
+    if (normalized.includes(REASON_CODES.workspaceEmpty)) {
+      return REASON_CODES.workspaceEmpty;
     }
     if (
       normalized.includes('workspace_unprovisioned_conflict') ||
       normalized.includes('worktree_branch_conflict')
     ) {
-      return 'operator_action_required_workspace_conflict';
+      return REASON_CODES.operatorWorkspaceConflict;
     }
 
     return fallback;
@@ -3548,7 +3555,7 @@ export class OrchestratorCore {
         questions: []
       };
     }
-    const prefix = 'turn_input_required:';
+    const prefix = `${REASON_CODES.turnInputRequired}:`;
     if (error.toLowerCase().startsWith(prefix)) {
       const rawDetail = error.slice(prefix.length).trim() || 'input_required_unanswerable';
       try {
@@ -3708,7 +3715,7 @@ export class OrchestratorCore {
       return;
     }
 
-    runningEntry.stalled_waiting_reason = 'turn_waiting_threshold_exceeded';
+    runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
     if (runningEntry.running_wait_stall_event_emitted) {
       return;
     }

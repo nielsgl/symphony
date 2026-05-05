@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { CANONICAL_EVENT } from '../observability/events';
+import { REASON_CODES } from '../observability/reason-codes';
 import { CodexRunnerError } from './errors';
 import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
 import { buildSshSpawnArgs } from './ssh-target';
@@ -949,7 +950,7 @@ export class CodexRunner {
           turn_id,
           session_id,
           last_event: CANONICAL_EVENT.codex.turnInputRequired,
-          error_code: 'turn_input_required',
+          error_code: REASON_CODES.turnInputRequired,
           error_detail: waitResult.input_required_detail ?? 'input_required_unanswerable',
           input_required_payload: waitResult.input_required_payload,
           turns_completed: turnsCompleted,

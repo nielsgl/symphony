@@ -1,12 +1,9 @@
 import { CANONICAL_EVENT } from '../observability/events';
+import { listActionRequiredReasonCodes, requireReasonCodeDefinition, REASON_CODES } from '../observability/reason-codes';
 
-export const ACTION_REQUIRED_REASON_LABELS: Record<string, string> = {
-  operator_action_required_workspace_conflict: 'Workspace Conflict',
-  operator_action_required_no_progress_redispatch_blocked: 'No Progress Redispatch Blocked',
-  operator_action_required_budget_limit_exceeded: 'Budget Limit Exceeded',
-  attempt_terminated_budget_limit_exceeded: 'Budget Limit Terminated Attempt',
-  awaiting_human_review_scope_incomplete: 'Awaiting Human Review (Scope Incomplete)'
-};
+export const ACTION_REQUIRED_REASON_LABELS: Record<string, string> = Object.fromEntries(
+  listActionRequiredReasonCodes().map((code) => [code, requireReasonCodeDefinition(code).label])
+);
 
 export interface ActionRequiredSummary {
   total: number;
@@ -206,8 +203,8 @@ export function deriveOperatorTransitions(params: {
 
   const blockedCode = params.blockedStopReasonCode ?? null;
   if (
-    blockedCode === 'operator_action_required_no_progress_redispatch_blocked' ||
-    blockedCode === 'awaiting_human_review_scope_incomplete'
+    blockedCode === REASON_CODES.operatorNoProgressRedispatchBlocked ||
+    blockedCode === REASON_CODES.awaitingHumanReviewScopeIncomplete
   ) {
     addTransition('n/a', 'completion_gate_blocked', params.blockedStopReasonDetail ?? null);
   }

@@ -1,5 +1,6 @@
 import type { OrchestratorState, TickReason } from '../orchestrator';
 import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
+import { REASON_CODES } from '../observability/reason-codes';
 import type { StructuredLogger } from '../observability';
 import type { DurableRunHistoryRecord, ExecutionGraphThreadLineage, PersistenceHealth, UiContinuityState } from '../persistence';
 import type { SecurityProfile } from '../security';
@@ -215,7 +216,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     } | null;
     stalled_waiting: boolean;
     stalled_waiting_since_ms: number | null;
-    stalled_waiting_reason: 'turn_waiting_threshold_exceeded' | null;
+    stalled_waiting_reason: typeof REASON_CODES.turnWaitingThresholdExceeded | null;
     current_phase: PhaseMarkerName | null;
     current_phase_at: string | null;
     phase_elapsed_ms: number | null;
@@ -479,7 +480,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     } | null;
     stalled_waiting: boolean;
     stalled_waiting_since_ms: number | null;
-    stalled_waiting_reason: 'turn_waiting_threshold_exceeded' | null;
+    stalled_waiting_reason: typeof REASON_CODES.turnWaitingThresholdExceeded | null;
     current_phase: PhaseMarkerName | null;
     current_phase_at: string | null;
     phase_elapsed_ms: number | null;
