@@ -301,7 +301,6 @@ cat > output/playwright/ui-evidence.json <<'JSON'
     {
       "path": "output/playwright/dashboard-home.png",
       "type": "image",
-      "linear_attachment_id": "<linear-attachment-id>",
       "publish_reference": "https://linear.app/<workspace>/issue/<id>#comment-<id>"
     }
   ],
@@ -316,11 +315,12 @@ JSON
 npm run check:meta
 ```
 
-Linear attachment publish path (required when artifacts are referenced):
+Linear/GitHub markdown publish path (required when artifacts are referenced):
 
-- Use Linear MCP attachment endpoint: `mcp__linear__.create_attachment`
-- Required fields: `issue`, `filename`, `contentType`, `base64Content`
-- Alternate raw path: `linear_graphql` attachment mutation flow in `.codex/skills/linear-graphql/SKILL.md`
+- Add the evidence as markdown in a Linear issue comment or GitHub PR comment.
+- Prefer a concise summary plus markdown links to any externally reachable evidence.
+- Do not upload screenshot/video bytes as Linear base64 attachments for this workflow.
+- Record the resulting comment URL in `artifact.publish_reference` or `artifact.published_url`.
 
 Before committing:
 
@@ -338,7 +338,7 @@ Workpad checklist snippet for UI tickets:
 
 - [ ] UI evidence captured under `output/playwright/` (`.png` and/or `.mp4`/`.webm`)
 - [ ] `output/playwright/ui-evidence.json` updated with `artifacts`, `ui_paths`, `captured_at`, `summary`, `publish_reference`
-- [ ] Every `output/playwright/*` artifact reference has one-to-one publish evidence (`artifact.publish_reference`, `artifact.linear_attachment_id`, or `artifact.published_url`)
+- [ ] Every `output/playwright/*` artifact reference has one-to-one markdown publish evidence (`artifact.publish_reference` or `artifact.published_url`)
 - [ ] `npm run check:meta` passes in the configured profile
 - [ ] `output/playwright/*` is not staged/committed before push
 ## 13. References

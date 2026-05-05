@@ -410,7 +410,53 @@ describe('meta check scripts', () => {
       SYMPHONY_PR_BODY: 'Evidence: output/playwright/demo.webm'
     });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('ui_evidence_unpublished: artifact referenced without Linear attachment/publish_reference');
+    expect(result.stderr).toContain('ui_evidence_unpublished: artifact referenced without markdown publish_reference or published_url');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails strict profile when referenced artifact only has a Linear attachment id', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-ui-meta-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist/src/workflow'), path.join(tempRoot, 'dist/src/workflow'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    appendUiFixtureMarker(tempRoot, '// ui evidence strict attachment id rejected');
+    fs.mkdirSync(path.join(tempRoot, 'output/playwright'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'output/playwright/demo.webm'), 'stub-video', 'utf8');
+    fs.writeFileSync(
+      path.join(tempRoot, 'output/playwright/ui-evidence.json'),
+      JSON.stringify(
+        {
+          artifacts: [
+            {
+              path: 'output/playwright/demo.webm',
+              type: 'video',
+              linear_attachment_id: '6cffa5e5-8521-46c4-b452-e5f1c0c5e38f'
+            }
+          ],
+          ui_paths: [UI_FIXTURE_PATH],
+          captured_at: '2026-05-01T00:00:00.000Z',
+          summary: 'Demo capture',
+          publish_reference: 'https://linear.app/nielsgl/issue/NIE-43/comment/demo-root'
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'strict',
+      SYMPHONY_PR_BODY: 'Evidence: output/playwright/demo.webm'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ui_evidence_unpublished: artifact referenced without markdown publish_reference or published_url');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });

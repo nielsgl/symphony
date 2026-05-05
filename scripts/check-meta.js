@@ -222,9 +222,8 @@ function collectPublishedArtifactReferences(parsedManifest) {
       continue;
     }
     const hasPublishRef = typeof artifact.publish_reference === 'string' && artifact.publish_reference.trim().length > 0;
-    const hasAttachmentId = typeof artifact.linear_attachment_id === 'string' && artifact.linear_attachment_id.trim().length > 0;
     const hasPublishedUrl = typeof artifact.published_url === 'string' && artifact.published_url.trim().length > 0;
-    if (hasPublishRef || hasAttachmentId || hasPublishedUrl) {
+    if (hasPublishRef || hasPublishedUrl) {
       published.add(artifactPath);
     }
   }
@@ -298,18 +297,18 @@ function enforceEvidencePublicationReferences() {
       for (const artifactPath of references) {
         if (!published.has(artifactPath)) {
           process.stderr.write(
-            'ui_evidence_unpublished: artifact referenced without Linear attachment/publish_reference\n'
+            'ui_evidence_unpublished: artifact referenced without markdown publish_reference or published_url\n'
           );
           process.stderr.write(`Artifact: ${artifactPath}\n`);
           process.stderr.write(
-            'Add one of artifact.publish_reference, artifact.linear_attachment_id, artifact.published_url, or published_artifacts[path].\n'
+            'Add artifact.publish_reference, artifact.published_url, or published_artifacts[path] pointing to a Linear issue comment or GitHub PR comment.\n'
           );
           process.exit(1);
         }
       }
     }
   } else if (references.size > 0) {
-    process.stderr.write('ui_evidence_unpublished: artifact referenced without Linear attachment/publish_reference\n');
+    process.stderr.write('ui_evidence_unpublished: artifact referenced without markdown publish_reference or published_url\n');
     process.stderr.write(`Expected manifest: ${UI_EVIDENCE_MANIFEST_FILE}\n`);
     process.exit(1);
   }
