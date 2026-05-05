@@ -130,4 +130,41 @@ describe('SqlitePersistenceStore', () => {
     expect(storeB.listBreakers()).toEqual([]);
     expect(storeB.listBlockedInputs()).toEqual([]);
   });
+
+  it('persists operator action trails across reopen', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-store-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    storeA.upsertOperatorActions(
+      'issue-1',
+      JSON.stringify([
+        {
+          action: 'resume',
+          requested_at_ms: Date.parse('2026-04-11T10:00:00.000Z'),
+          result: 'accepted',
+          result_code: null,
+          message: null
+        },
+        {
+          action: 'cancel',
+          requested_at_ms: Date.parse('2026-04-11T10:01:00.000Z'),
+          result: 'rejected',
+          result_code: 'cancel_failed',
+          message: 'not blocked'
+        }
+      ])
+    );
+    storeA.close();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    expect(storeB.listOperatorActions()).toEqual([
+      {
+        issue_id: 'issue-1',
+        payload: expect.stringContaining('cancel_failed'),
+        updated_at: expect.any(String)
+      }
+    ]);
+  });
 });

@@ -561,12 +561,39 @@ describe('createRuntimeEnvironment', () => {
         session_console: []
       })
     );
+    seedStore.upsertOperatorActions(
+      'issue-1',
+      JSON.stringify([
+        {
+          action: 'resume',
+          requested_at_ms: Date.parse('2026-04-11T10:03:00.000Z'),
+          result: 'rejected',
+          result_code: 'resume_failed',
+          message: 'requires progress'
+        }
+      ])
+    );
     seedStore.close();
 
     const tracker: TrackerAdapter = {
       fetch_candidate_issues: vi.fn(async () => []),
       fetch_issues_by_states: vi.fn(async () => []),
-      fetch_issue_states_by_ids: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [
+        {
+          id: 'issue-1',
+          identifier: 'ABC-1',
+          title: 'Issue ABC-1',
+          description: null,
+          priority: 1,
+          state: 'Todo',
+          branch_name: null,
+          url: null,
+          labels: [],
+          blocked_by: [],
+          created_at: new Date('2026-04-11T10:00:00.000Z'),
+          updated_at: new Date('2026-04-11T10:00:00.000Z')
+        }
+      ]),
       create_comment: vi.fn(async () => undefined),
       update_issue_state: vi.fn(async () => undefined)
     };
@@ -600,6 +627,22 @@ describe('createRuntimeEnvironment', () => {
         breaker_window_minutes: 30,
         breaker_first_hit_at: '2026-04-11T10:00:00.000Z',
         breaker_last_hit_at: '2026-04-11T10:02:00.000Z'
+      }
+    ]);
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as {
+      blocked: Array<{
+        operator_actions: Array<{ action: string; result: string; result_code: string | null }>;
+      }>;
+    };
+    expect(statePayload.blocked[0]?.operator_actions).toEqual([
+      {
+        action: 'resume',
+        requested_at_ms: Date.parse('2026-04-11T10:03:00.000Z'),
+        result: 'rejected',
+        result_code: 'resume_failed',
+        message: 'requires progress'
       }
     ]);
   });

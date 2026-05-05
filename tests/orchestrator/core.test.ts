@@ -437,6 +437,84 @@ describe('OrchestratorCore', () => {
     expect(harness.spawned.find((entry) => entry.issue_id === 'i-restored')).toBeDefined();
   });
 
+  it('persists and restores operator action outcomes around manual resume', async () => {
+    const persistedActions = new Map<string, string>();
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-operator-action',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined,
+      upsertOperatorActions: async (issueId, payload) => {
+        persistedActions.set(issueId, payload);
+      }
+    };
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1 },
+      persistence
+    });
+    harness.orchestrator.restoreSuppressionState({
+      blocked_entries: [
+        {
+          issue_id: 'i-action-trail',
+          issue_identifier: 'ABC-ACTION',
+          attempt: 1,
+          worker_host: null,
+          workspace_path: null,
+          provisioner_type: null,
+          branch_name: null,
+          repo_root: null,
+          workspace_exists: true,
+          workspace_git_status: 'clean',
+          workspace_provisioned: true,
+          workspace_is_git_worktree: true,
+          stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+          stop_reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+          conflict_files: [],
+          resolution_hints: [],
+          previous_thread_id: null,
+          previous_session_id: null,
+          blocked_at_ms: harness.now.value,
+          requires_manual_resume: true,
+          progress_signals: { commit_sha: null, checklist_checkpoint: null, state_marker: null },
+          pending_input: null,
+          session_console: []
+        }
+      ],
+      breaker_entries: []
+    });
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-action-trail', identifier: 'ABC-ACTION', state: 'In Progress' })
+    ]);
+
+    const rejected = await harness.orchestrator.resumeBlockedIssue('ABC-ACTION');
+    expect(rejected.ok).toBe(false);
+    expect(persistedActions.get('i-action-trail')).toContain('resume_failed');
+
+    const restored = createHarness();
+    restored.orchestrator.restoreSuppressionState({
+      blocked_entries: Array.from(harness.orchestrator.getStateSnapshot().blocked_inputs.values()),
+      breaker_entries: [],
+      operator_actions: new Map([['i-action-trail', JSON.parse(persistedActions.get('i-action-trail') ?? '[]')]])
+    });
+    expect(restored.orchestrator.getStateSnapshot().operator_actions?.get('i-action-trail')).toEqual([
+      expect.objectContaining({
+        action: 'resume',
+        result: 'rejected',
+        result_code: 'resume_failed'
+      })
+    ]);
+
+    restored.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-action-trail', identifier: 'ABC-ACTION', state: 'In Progress' })
+    ]);
+    const accepted = await restored.orchestrator.resumeBlockedIssue('ABC-ACTION', null, 'operator reviewed trail');
+    expect(accepted).toEqual({ ok: true, issue_id: 'i-action-trail' });
+    expect(restored.orchestrator.getStateSnapshot().operator_actions?.get('i-action-trail')).toEqual([
+      expect.objectContaining({ result: 'rejected' }),
+      expect.objectContaining({ result: 'accepted' })
+    ]);
+  });
+
   it('resumes blocked issue via manual resume API path and dispatches immediately when eligible', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-resume', identifier: 'ABC-RESUME' })]);

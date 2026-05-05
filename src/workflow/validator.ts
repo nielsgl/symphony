@@ -303,6 +303,26 @@ export class ConfigValidator {
       };
     }
 
+    const heartbeatOnlyWarnMs = effectiveConfig.codex.progress_heartbeat_only_warn_ms ?? 120000;
+    if (!Number.isFinite(heartbeatOnlyWarnMs) || heartbeatOnlyWarnMs <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_progress_heartbeat_only_warn_ms',
+        message: 'codex.progress_heartbeat_only_warn_ms must be a positive integer',
+        at
+      };
+    }
+
+    const stalledWaitingMs = effectiveConfig.codex.progress_stalled_waiting_ms ?? 300000;
+    if (!Number.isFinite(stalledWaitingMs) || stalledWaitingMs <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_progress_stalled_waiting_ms',
+        message: 'codex.progress_stalled_waiting_ms must be a positive integer',
+        at
+      };
+    }
+
     const provisionerType = effectiveConfig.workspace.provisioner.type;
     if (provisionerType !== 'none' && provisionerType !== 'worktree' && provisionerType !== 'clone') {
       return {

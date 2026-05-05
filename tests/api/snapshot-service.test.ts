@@ -185,6 +185,22 @@ describe('SnapshotService', () => {
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');
   });
 
+  it('computes snapshot freshness from the source snapshot timestamp', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:02:40.000Z')
+    });
+
+    const projected = service.projectState(
+      makeState({
+        snapshot_generated_at_ms: Date.parse('2026-04-10T10:02:00.000Z')
+      })
+    );
+
+    expect(projected.snapshot_generated_at_ms).toBe(Date.parse('2026-04-10T10:02:00.000Z'));
+    expect(projected.snapshot_age_ms).toBe(40_000);
+    expect(projected.snapshot_freshness_state).toBe('stale');
+  });
+
   it('projects running awaiting-input and stalled-waiting fields with redacted preview', () => {
     const service = new SnapshotService({
       nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
@@ -296,10 +312,53 @@ describe('SnapshotService', () => {
     expect(projected.retry).toBeNull();
     expect(projected.blocked).toMatchObject({
       stop_reason_code: 'operator_action_required_workspace_conflict',
+      progress_signal_state: 'advancing',
       previous_session_id: 'thread-prev-turn-prev',
       requires_manual_resume: true,
       conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });
+  });
+
+  it('only projects no-progress blocked issues as stalled waiting', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      blocked_inputs: new Map([
+        [
+          'issue-stalled',
+          {
+            issue_id: 'issue-stalled',
+            issue_identifier: 'ABC-STALLED',
+            attempt: 2,
+            worker_host: null,
+            workspace_path: null,
+            provisioner_type: null,
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+            stop_reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+            conflict_files: [],
+            resolution_hints: [],
+            previous_thread_id: null,
+            previous_session_id: null,
+            blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            requires_manual_resume: true,
+            last_progress_checkpoint_at: null,
+            pending_input: null,
+            session_console: []
+          }
+        ]
+      ])
+    });
+
+    const projected = service.projectIssue(state, 'ABC-STALLED');
+    expect(projected.blocked?.progress_signal_state).toBe('stalled_waiting');
+    expect(projected.blocked?.last_progress_transition_at_ms).toBeNull();
   });
 
   it('projects breaker metadata on state and issue blocked payloads', () => {

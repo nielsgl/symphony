@@ -558,7 +558,9 @@ export class ConfigResolver {
         turn_timeout_ms: readIntStrict(codex.turn_timeout_ms, 3600000),
         read_timeout_ms: readIntStrict(codex.read_timeout_ms, 5000),
         stall_timeout_ms: readIntStrict(codex.stall_timeout_ms, 300000),
-        running_wait_stall_threshold_ms: readInt(codex.running_wait_stall_threshold_ms, 300000)
+        running_wait_stall_threshold_ms: readInt(codex.running_wait_stall_threshold_ms, 300000),
+        progress_heartbeat_only_warn_ms: readInt(codex.progress_heartbeat_only_warn_ms, 120000),
+        progress_stalled_waiting_ms: readInt(codex.progress_stalled_waiting_ms, 300000)
       },
       persistence: {
         enabled: readBoolean(persistence.enabled, true),

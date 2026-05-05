@@ -72,6 +72,29 @@ export function resolveProgressSignal(entry: RunningEntry): {
   };
 }
 
+export function resolveBlockedProgressSignal(entry: BlockedEntry): {
+  progress_signal_state: ProgressSignalState;
+  last_progress_transition_at_ms: number | null;
+  last_heartbeat_at_ms: number | null;
+} {
+  if (
+    entry.stop_reason_code === 'operator_action_required_no_progress_redispatch_blocked' ||
+    entry.stop_reason_code === 'awaiting_human_review_scope_incomplete'
+  ) {
+    return {
+      progress_signal_state: 'stalled_waiting',
+      last_progress_transition_at_ms: entry.last_progress_checkpoint_at ?? null,
+      last_heartbeat_at_ms: entry.last_quarantined_event_at_ms ?? null
+    };
+  }
+
+  return {
+    progress_signal_state: 'advancing',
+    last_progress_transition_at_ms: entry.last_progress_checkpoint_at ?? entry.blocked_at_ms,
+    last_heartbeat_at_ms: entry.last_quarantined_event_at_ms ?? null
+  };
+}
+
 export function resolveNotBlockedExplainer(params: {
   blocked: boolean;
   progress_signal_state: ProgressSignalState;

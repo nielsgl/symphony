@@ -719,7 +719,7 @@ describe('LocalApiServer', () => {
       issue_identifier: 'ABC-3',
       requires_manual_resume: true,
       turn_control_state: 'blocked_manual_resume',
-      progress_signal_state: 'stalled_waiting',
+      progress_signal_state: 'advancing',
       operator_actions: [{ action: 'resume', result: 'rejected' }],
       conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });

@@ -545,6 +545,25 @@ describe('ConfigResolver', () => {
     expect(config.codex.turn_timeout_ms).toBe(3600000);
     expect(config.codex.read_timeout_ms).toBe(5000);
     expect(config.codex.stall_timeout_ms).toBe(300000);
+    expect(config.codex.progress_heartbeat_only_warn_ms).toBe(120000);
+    expect(config.codex.progress_stalled_waiting_ms).toBe(300000);
+  });
+
+  it('resolves progress visibility threshold overrides', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        codex: {
+          progress_heartbeat_only_warn_ms: 1500,
+          progress_stalled_waiting_ms: 4500
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.codex.progress_heartbeat_only_warn_ms).toBe(1500);
+    expect(config.codex.progress_stalled_waiting_ms).toBe(4500);
   });
 
   it('preserves invalid configured numeric values for fail-fast validation', () => {

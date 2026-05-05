@@ -7,6 +7,7 @@ import type {
   BreakerMetadataRecord,
   DurableRunHistoryRecord,
   PersistedBlockedInputRecord,
+  PersistedOperatorActionsRecord,
   PersistenceHealth,
   RunTerminalStatus,
   UiContinuityState
@@ -102,6 +103,11 @@ export class SqlitePersistenceStore {
         updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS blocked_inputs (
+        issue_id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS operator_actions (
         issue_id TEXT PRIMARY KEY,
         payload TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -271,6 +277,24 @@ export class SqlitePersistenceStore {
     return this.db
       .prepare('SELECT issue_id, payload, updated_at FROM blocked_inputs ORDER BY updated_at DESC')
       .all() as PersistedBlockedInputRecord[];
+  }
+
+  upsertOperatorActions(issueId: string, payload: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO operator_actions (issue_id, payload, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(issue_id) DO UPDATE SET
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`
+      )
+      .run(issueId, payload, asIso(this.nowMs()));
+  }
+
+  listOperatorActions(): PersistedOperatorActionsRecord[] {
+    return this.db
+      .prepare('SELECT issue_id, payload, updated_at FROM operator_actions ORDER BY updated_at DESC')
+      .all() as PersistedOperatorActionsRecord[];
   }
 
   pruneExpiredRuns(): number {

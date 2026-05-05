@@ -248,6 +248,7 @@ export interface CircuitBreakerEntry {
 export interface OrchestratorState {
   poll_interval_ms: number;
   max_concurrent_agents: number;
+  snapshot_generated_at_ms?: number;
   running: Map<string, RunningEntry>;
   claimed: Set<string>;
   retry_attempts: Map<string, RetryEntry>;
@@ -408,6 +409,7 @@ export interface OrchestratorPersistencePort {
   deleteBreaker?: (issue_id: string) => Promise<void>;
   upsertBlockedInput?: (issue_id: string, payload: string) => Promise<void>;
   deleteBlockedInput?: (issue_id: string) => Promise<void>;
+  upsertOperatorActions?: (issue_id: string, payload: string) => Promise<void>;
 }
 
 export interface WorkerObservabilityEvent {

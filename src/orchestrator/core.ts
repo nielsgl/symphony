@@ -298,6 +298,7 @@ export class OrchestratorCore {
   getStateSnapshot(): OrchestratorState {
     return {
       ...this.state,
+      snapshot_generated_at_ms: this.nowMs(),
       running: new Map(
         Array.from(this.state.running.entries()).map(([issueId, entry]) => [issueId, cloneRunningEntry(entry)])
       ),
@@ -1295,13 +1296,20 @@ export class OrchestratorCore {
     };
   }
 
-  restoreSuppressionState(params: { blocked_entries: BlockedEntry[]; breaker_entries: CircuitBreakerEntry[] }): void {
+  restoreSuppressionState(params: {
+    blocked_entries: BlockedEntry[];
+    breaker_entries: CircuitBreakerEntry[];
+    operator_actions?: Map<string, OperatorActionRecord[]>;
+  }): void {
     for (const entry of params.breaker_entries) {
       this.state.circuit_breakers.set(entry.issue_id, cloneCircuitBreakerEntry(entry));
     }
     for (const entry of params.blocked_entries) {
       this.state.blocked_inputs.set(entry.issue_id, cloneBlockedEntry(entry));
       this.state.claimed.add(entry.issue_id);
+    }
+    for (const [issueId, actions] of params.operator_actions ?? new Map<string, OperatorActionRecord[]>()) {
+      this.state.operator_actions?.set(issueId, actions.map((action) => cloneOperatorAction(action)).slice(-20));
     }
   }
 
@@ -2871,7 +2879,9 @@ export class OrchestratorCore {
     const operatorActions = this.state.operator_actions ?? new Map<string, OperatorActionRecord[]>();
     this.state.operator_actions = operatorActions;
     const existing = operatorActions.get(issueId) ?? [];
-    operatorActions.set(issueId, [...existing, { ...action }].slice(-20));
+    const updated = [...existing, { ...action }].slice(-20);
+    operatorActions.set(issueId, updated);
+    void this.persistence?.upsertOperatorActions?.(issueId, JSON.stringify(updated));
   }
 
   private maybeEmitTokenTelemetryWarning(runningEntry: RunningEntry, eventAtMs: number): void {
