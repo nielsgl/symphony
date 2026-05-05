@@ -7,6 +7,7 @@ import { LocalApiServer } from '../../src/api';
 import { LocalApiError } from '../../src/api/errors';
 import type { OrchestratorState } from '../../src/orchestrator';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../../src/observability/events';
+import type { ExecutionGraphThreadLineage } from '../../src/persistence';
 import type { Issue } from '../../src/tracker';
 
 function makeRunningEntry(overrides: Record<string, unknown> = {}) {
@@ -114,6 +115,100 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
     },
     recent_runtime_events: [],
     ...overrides
+  };
+}
+
+function makeThreadLineage(overrides: {
+  thread_id?: string;
+  issue_identifier?: string;
+  thread_status?: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying';
+  thread_ended_at?: string | null;
+} = {}): ExecutionGraphThreadLineage {
+  const threadId = overrides.thread_id ?? 'thread-complete';
+  const issueIdentifier = overrides.issue_identifier ?? 'ABC-1';
+  const threadStatus = overrides.thread_status ?? 'succeeded';
+  return {
+    issue_run: {
+      issue_run_id: 'issue_run_1',
+      issue_id: 'issue-1',
+      issue_identifier: issueIdentifier,
+      started_at: '2026-04-10T10:00:00.000Z',
+      ended_at: overrides.thread_ended_at ?? '2026-04-10T10:02:00.000Z',
+      status: threadStatus,
+      reason_code: null,
+      reason_detail: null
+    },
+    attempt: {
+      attempt_id: 'attempt_1',
+      issue_run_id: 'issue_run_1',
+      attempt_number: 2,
+      started_at: '2026-04-10T10:00:01.000Z',
+      ended_at: overrides.thread_ended_at ?? '2026-04-10T10:02:00.000Z',
+      status: threadStatus,
+      reason_code: null,
+      reason_detail: null
+    },
+    thread: {
+      thread_id: threadId,
+      attempt_id: 'attempt_1',
+      started_at: '2026-04-10T10:00:02.000Z',
+      ended_at: overrides.thread_ended_at ?? '2026-04-10T10:02:00.000Z',
+      status: threadStatus,
+      reason_code: null,
+      reason_detail: null
+    },
+    turns: [
+      {
+        turn_id: 'turn-1',
+        thread_id: threadId,
+        turn_index: 0,
+        started_at: '2026-04-10T10:00:04.000Z',
+        ended_at: '2026-04-10T10:01:00.000Z',
+        status: 'succeeded',
+        reason_code: 'turn_completed',
+        reason_detail: null,
+        phase_spans: [
+          {
+            phase_span_id: 'phase-1',
+            turn_id: 'turn-1',
+            phase: 'implementation',
+            started_at: '2026-04-10T10:00:05.000Z',
+            ended_at: '2026-04-10T10:00:15.000Z',
+            status: 'succeeded',
+            reason_code: null,
+            reason_detail: null
+          }
+        ],
+        tool_spans: [
+          {
+            tool_span_id: 'tool-1',
+            turn_id: 'turn-1',
+            tool_name: 'exec_command',
+            started_at: '2026-04-10T10:00:10.000Z',
+            ended_at: '2026-04-10T10:00:12.000Z',
+            status: 'succeeded',
+            reason_code: null,
+            reason_detail: null
+          }
+        ],
+        state_transitions: []
+      }
+    ],
+    state_transitions: [
+      {
+        state_transition_id: 'state-1',
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        thread_id: threadId,
+        turn_id: null,
+        from_status: 'running',
+        to_status: threadStatus,
+        transitioned_at: '2026-04-10T10:02:00.000Z',
+        status: threadStatus,
+        reason_code: threadStatus === 'succeeded' ? 'completed' : null,
+        reason_detail: null
+      }
+    ]
   };
 }
 
@@ -1927,6 +2022,106 @@ describe('LocalApiServer', () => {
       Date.parse('2026-04-10T10:01:00.000Z'),
       Date.parse('2026-04-10T10:02:00.000Z')
     ]);
+  });
+
+  it('serves completed persisted diagnostics by issue identifier without active runtime state', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        reconstructLatestThreadLineageByIssueIdentifier: (issueIdentifier: string) =>
+          issueIdentifier === 'ABC-1' ? makeThreadLineage({ thread_id: 'thread-complete', issue_identifier: 'ABC-1' }) : null
+      } as never
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/diagnostics`);
+    const payload = (await response.json()) as {
+      thread_id: string;
+      issue_identifier: string;
+      status: string;
+      phase_spans: Array<{ phase: string }>;
+      tool_spans: Array<{ tool_name: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      thread_id: 'thread-complete',
+      issue_identifier: 'ABC-1',
+      status: 'completed'
+    });
+    expect(payload.phase_spans[0]).toMatchObject({ phase: 'implementation' });
+    expect(payload.tool_spans[0]).toMatchObject({ tool_name: 'exec_command' });
+  });
+
+  it('keeps persisted phase and tool spans when active runtime diagnostics also exist', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            thread_id: 'thread-active',
+            persisted_thread_id: 'thread-active',
+            recent_events: [
+              {
+                at_ms: Date.parse('2026-04-10T10:03:00.000Z'),
+                event: CANONICAL_EVENT.codex.turnWaiting,
+                message: 'waiting heartbeat'
+              }
+            ],
+            running_waiting_started_at_ms: Date.parse('2026-04-10T10:03:00.000Z'),
+            stalled_waiting_since_ms: Date.parse('2026-04-10T10:08:00.000Z'),
+            stalled_waiting_reason: 'turn_waiting_threshold_exceeded'
+          })
+        ]
+      ])
+    });
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        reconstructThreadLineage: (threadId: string) =>
+          threadId === 'thread-active'
+            ? makeThreadLineage({
+                thread_id: 'thread-active',
+                issue_identifier: 'ABC-1',
+                thread_status: 'running',
+                thread_ended_at: null
+              })
+            : null
+      } as never
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/threads/thread-active`);
+    const payload = (await response.json()) as {
+      status: string;
+      phase_spans: Array<{ phase: string; duration_ms: number }>;
+      tool_spans: Array<{ tool_name: string; duration_ms: number }>;
+      wait_spans: Array<{ started_at_ms: number }>;
+      current_blocker: { classification: string } | null;
+      timeline: Array<{ event: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.status).toBe('stalled');
+    expect(payload.phase_spans[0]).toMatchObject({ phase: 'implementation', duration_ms: 10_000 });
+    expect(payload.tool_spans[0]).toMatchObject({ tool_name: 'exec_command', duration_ms: 2_000 });
+    expect(payload.wait_spans[0]).toMatchObject({ started_at_ms: Date.parse('2026-04-10T10:03:00.000Z') });
+    expect(payload.current_blocker?.classification).toBe('tool_waiting_long');
+    expect(payload.timeline.map((event) => event.event)).toContain(CANONICAL_EVENT.codex.turnWaiting);
   });
 
   it('returns typed not-found errors for missing thread diagnostics', async () => {

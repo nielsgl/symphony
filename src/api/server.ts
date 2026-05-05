@@ -744,7 +744,9 @@ export class LocalApiServer {
               const payload = buildThreadDiagnosticsByIssueIdentifier({
                 state: this.snapshotSource.getStateSnapshot(),
                 issue_identifier: issueIdentifier,
-                reconstructThreadLineage: this.diagnosticsSource?.reconstructThreadLineage
+                reconstructThreadLineage: this.diagnosticsSource?.reconstructThreadLineage,
+                reconstructLatestThreadLineageByIssueIdentifier:
+                  this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier
               });
               if (!payload) {
                 throw new LocalApiError('thread_diagnostics_not_found', `Issue ${issueIdentifier} has no thread diagnostics`, 404);

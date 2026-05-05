@@ -960,6 +960,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
                   },
             listRunHistory: (limit) => (persistenceStore ? persistenceStore.listRunHistory(limit) : []),
             reconstructThreadLineage: (threadId) => (persistenceStore ? persistenceStore.reconstructThreadLineage(threadId) : null),
+            reconstructLatestThreadLineageByIssueIdentifier: (issueIdentifier) =>
+              persistenceStore ? persistenceStore.reconstructLatestThreadLineageByIssueIdentifier(issueIdentifier) : null,
             getLoggingHealth: () => ({
               root: loggingResolution.logsRoot,
               active_file: activeLogFile,

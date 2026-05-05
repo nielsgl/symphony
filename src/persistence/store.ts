@@ -556,6 +556,21 @@ export class SqlitePersistenceStore {
     };
   }
 
+  reconstructLatestThreadLineageByIssueIdentifier(issueIdentifier: string): ExecutionGraphThreadLineage | null {
+    const row = this.db
+      .prepare(
+        `SELECT thread.thread_id
+        FROM issue_run
+        JOIN attempt ON attempt.issue_run_id = issue_run.issue_run_id
+        JOIN thread ON thread.attempt_id = attempt.attempt_id
+        WHERE issue_run.issue_identifier = ?
+        ORDER BY issue_run.started_at DESC, attempt.attempt_number DESC, thread.started_at DESC, thread.thread_id DESC
+        LIMIT 1`
+      )
+      .get(issueIdentifier) as { thread_id: string } | undefined;
+    return row ? this.reconstructThreadLineage(row.thread_id) : null;
+  }
+
   completeRun(params: { run_id: string; terminal_status: RunTerminalStatus; error_code?: string | null }): void {
     const redactedError = redactUnknown(params.error_code ?? null) as string | null;
     this.db

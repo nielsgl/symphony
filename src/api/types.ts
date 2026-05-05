@@ -64,6 +64,7 @@ export interface DiagnosticsSource {
   getPersistenceHealth(): PersistenceHealth;
   listRunHistory(limit?: number): DurableRunHistoryRecord[];
   reconstructThreadLineage?: (threadId: string) => ExecutionGraphThreadLineage | null;
+  reconstructLatestThreadLineageByIssueIdentifier?: (issueIdentifier: string) => ExecutionGraphThreadLineage | null;
   getLoggingHealth(): {
     root: string;
     active_file: string;
@@ -721,7 +722,7 @@ export interface ThreadDiagnosticsBlocker {
   classification: ThreadDiagnosticsBlockerClassification;
   reason_code: string | null;
   reason_detail: string | null;
-  actionability: 'operator' | 'system' | 'tracker' | 'workspace';
+  actionability: 'none' | 'recommended' | 'required';
   recommended_actions: string[];
 }
 

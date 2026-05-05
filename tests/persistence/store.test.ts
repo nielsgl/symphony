@@ -125,6 +125,7 @@ describe('SqlitePersistenceStore', () => {
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
     stores.push(storeB);
     const lineage = storeB.reconstructThreadLineage(threadId);
+    const lineageByIssue = storeB.reconstructLatestThreadLineageByIssueIdentifier('ABC-1');
 
     expect(lineage?.issue_run.issue_run_id).toBe(issueRunId);
     expect(lineage?.attempt.attempt_id).toBe(attemptId);
@@ -143,6 +144,8 @@ describe('SqlitePersistenceStore', () => {
         reason_code: 'normal_completion'
       })
     ]);
+    expect(lineageByIssue?.thread.thread_id).toBe(threadId);
+    expect(storeB.reconstructLatestThreadLineageByIssueIdentifier('ABC-404')).toBeNull();
   });
 
   it('enforces execution graph references and monotonic timestamps', async () => {

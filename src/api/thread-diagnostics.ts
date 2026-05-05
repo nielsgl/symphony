@@ -86,32 +86,32 @@ function blockerDetails(classification: ThreadDiagnosticsBlockerClassification):
   switch (classification) {
     case 'tool_waiting_long':
       return {
-        actionability: 'operator',
+        actionability: 'recommended',
         recommended_actions: ['Inspect the active Codex turn and resume, cancel, or retry the run if the wait is not expected.']
       };
     case 'tracker_transition_pending':
       return {
-        actionability: 'tracker',
+        actionability: 'recommended',
         recommended_actions: ['Inspect tracker state transition logs and retry tracker reconciliation after confirming remote state.']
       };
     case 'input_required_pending':
       return {
-        actionability: 'operator',
+        actionability: 'required',
         recommended_actions: ['Submit the pending input response or cancel the blocked run.']
       };
     case 'workspace_integrity_conflict':
       return {
-        actionability: 'workspace',
+        actionability: 'required',
         recommended_actions: ['Inspect workspace conflicts, preserve user changes, and resume after resolving integrity findings.']
       };
     case 'retry_backoff_wait':
       return {
-        actionability: 'system',
+        actionability: 'none',
         recommended_actions: ['Wait for the scheduled retry or manually resume if the backoff should be bypassed.']
       };
     case 'codex_no_progress':
       return {
-        actionability: 'operator',
+        actionability: 'recommended',
         recommended_actions: ['Review the last Codex output and either provide guidance, retry, or cancel the stalled run.']
       };
   }
@@ -435,6 +435,53 @@ function diagnosticsFromLineage(lineage: ExecutionGraphThreadLineage): ThreadDia
   };
 }
 
+function mergeTimelineEvents(events: ThreadDiagnosticsEvent[]): ThreadDiagnosticsEvent[] {
+  const eventsByKey = new Map<string, ThreadDiagnosticsEvent>();
+  for (const event of sortTimeline(events)) {
+    eventsByKey.set(
+      [
+        event.at_ms,
+        event.event,
+        event.reason_code ?? '',
+        event.reason_detail ?? '',
+        event.thread_id,
+        event.turn_id ?? '',
+        event.session_id ?? ''
+      ].join('\u0000'),
+      event
+    );
+  }
+  return sortTimeline([...eventsByKey.values()]);
+}
+
+function mergeRuntimeWithLineage(
+  threadId: string,
+  match: RuntimeMatch,
+  lineage: ExecutionGraphThreadLineage
+): ThreadDiagnosticsResponse {
+  const persisted = diagnosticsFromLineage(lineage);
+  const runtime = diagnosticsFromRuntime(threadId, match);
+  const timeline = mergeTimelineEvents([...persisted.timeline, ...runtime.timeline]);
+  const wait_spans = [...persisted.wait_spans, ...runtime.wait_spans].sort((left, right) => {
+    if (left.started_at_ms !== right.started_at_ms) {
+      return left.started_at_ms - right.started_at_ms;
+    }
+    return (left.reason_code ?? '').localeCompare(right.reason_code ?? '');
+  });
+
+  return {
+    ...persisted,
+    thread_id: threadId,
+    issue_identifier: runtime.issue_identifier || persisted.issue_identifier,
+    attempt: runtime.attempt,
+    status: runtime.status,
+    timeline,
+    wait_spans,
+    current_blocker: runtime.current_blocker ?? persisted.current_blocker,
+    last_meaningful_progress_at_ms: lastMeaningfulProgressAtMs(timeline)
+  };
+}
+
 export function buildThreadDiagnosticsByThreadId(params: {
   state: OrchestratorState;
   thread_id: string;
@@ -442,6 +489,9 @@ export function buildThreadDiagnosticsByThreadId(params: {
 }): ThreadDiagnosticsResponse | null {
   const runtimeMatch = findRuntimeByThreadId(params.state, params.thread_id);
   if (runtimeMatch) {
+    if (params.lineage) {
+      return mergeRuntimeWithLineage(params.thread_id, runtimeMatch, params.lineage);
+    }
     return diagnosticsFromRuntime(params.thread_id, runtimeMatch);
   }
   if (params.lineage) {
@@ -454,18 +504,21 @@ export function buildThreadDiagnosticsByIssueIdentifier(params: {
   state: OrchestratorState;
   issue_identifier: string;
   reconstructThreadLineage?: (threadId: string) => ExecutionGraphThreadLineage | null;
+  reconstructLatestThreadLineageByIssueIdentifier?: (issueIdentifier: string) => ExecutionGraphThreadLineage | null;
 }): ThreadDiagnosticsResponse | null {
   const runtimeMatch = findRuntimeByIssueIdentifier(params.state, params.issue_identifier);
   if (!runtimeMatch) {
-    return null;
+    const lineage = params.reconstructLatestThreadLineageByIssueIdentifier?.(params.issue_identifier) ?? null;
+    return lineage ? diagnosticsFromLineage(lineage) : null;
   }
   const threadId = runtimeMatch.running?.thread_id ?? runtimeMatch.running?.persisted_thread_id ?? runtimeMatch.blocked?.previous_thread_id ?? runtimeMatch.retry?.previous_thread_id;
   if (!threadId) {
-    return null;
+    const lineage = params.reconstructLatestThreadLineageByIssueIdentifier?.(params.issue_identifier) ?? null;
+    return lineage ? diagnosticsFromLineage(lineage) : null;
   }
   const lineage = params.reconstructThreadLineage?.(threadId) ?? null;
-  if (lineage && !runtimeMatch.running) {
-    return diagnosticsFromLineage(lineage);
+  if (lineage) {
+    return mergeRuntimeWithLineage(threadId, runtimeMatch, lineage);
   }
   return diagnosticsFromRuntime(threadId, runtimeMatch);
 }
