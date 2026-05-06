@@ -32,6 +32,8 @@ export const REASON_CODES = {
   retryFetchFailed: 'retry_fetch_failed',
   spawnFailed: 'spawn_failed',
   manualResume: 'manual_resume',
+  operatorRequeueRequested: 'operator_requeue_requested',
+  operatorRetryStepRequested: 'operator_retry_step_requested',
   turnInputRequired: 'turn_input_required',
   turnWaitingThresholdExceeded: 'turn_waiting_threshold_exceeded',
   operatorWorkspaceConflict: 'operator_action_required_workspace_conflict',
@@ -146,6 +148,26 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     label: 'Manual Resume',
     headline: 'Run is waiting to retry',
     detail: 'The run was manually resumed and queued for dispatch.',
+    expected_transition: 'Automatic retry at the scheduled due time'
+  },
+  [REASON_CODES.operatorRequeueRequested]: {
+    reason_code: REASON_CODES.operatorRequeueRequested,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Monitor the requeued run'],
+    label: 'Operator Requeue Requested',
+    headline: 'Run was requeued by an operator',
+    detail: 'An operator explicitly requeued the issue from the action console.',
+    expected_transition: 'Automatic retry at the scheduled due time'
+  },
+  [REASON_CODES.operatorRetryStepRequested]: {
+    reason_code: REASON_CODES.operatorRetryStepRequested,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Monitor the retried step'],
+    label: 'Operator Retry Step Requested',
+    headline: 'Failed step retry was requested',
+    detail: 'An operator explicitly retried the last failed or stalled step.',
     expected_transition: 'Automatic retry at the scheduled due time'
   },
   [REASON_CODES.turnInputRequired]: {

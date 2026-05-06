@@ -861,7 +861,9 @@ describe('LocalApiServer', () => {
     expect(issuePayload.operator_actions).toEqual([{ action: 'resume', requested_at_ms: Date.parse('2026-04-10T10:04:00.000Z'), result: 'rejected', result_code: 'resume_failed', message: 'requires progress' }]);
 
     const resumeResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/resume`, {
-      method: 'POST'
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason_note: 'operator resolved conflict' })
     });
     const resumePayload = (await resumeResponse.json()) as { resumed: boolean; issue_identifier: string };
     expect(resumeResponse.status).toBe(202);
@@ -869,7 +871,7 @@ describe('LocalApiServer', () => {
       resumed: true,
       issue_identifier: 'ABC-3'
     });
-    expect(resumeBlockedIssue).toHaveBeenCalledWith('ABC-3');
+    expect(resumeBlockedIssue).toHaveBeenCalledWith('ABC-3', { actor: undefined, reason_note: 'operator resolved conflict' });
   });
 
   it('passes resume override payload through POST /api/v1/issues/:issue_identifier/resume', async () => {
@@ -901,11 +903,16 @@ describe('LocalApiServer', () => {
     const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/resume`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ resume_override_reason: 'operator_override_push_additional_commit' })
+      body: JSON.stringify({
+        resume_override_reason: 'operator_override_push_additional_commit',
+        reason_note: 'operator pushed additional commit'
+      })
     });
     expect(response.status).toBe(202);
     expect(resumeBlockedIssue).toHaveBeenCalledWith('ABC-3', {
-      resume_override_reason: 'operator_override_push_additional_commit'
+      resume_override_reason: 'operator_override_push_additional_commit',
+      actor: undefined,
+      reason_note: 'operator pushed additional commit'
     });
   });
 
@@ -1285,6 +1292,7 @@ describe('LocalApiServer', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         request_id: 'req-1',
+        reason_note: 'answer request',
         answer: { text: 'continue' }
       })
     });
@@ -1294,7 +1302,7 @@ describe('LocalApiServer', () => {
     expect(payload.error.code).toBe('input_submission_expired');
   });
 
-  it('accepts cancel blocked issue requests and returns destination state', async () => {
+  it('requires confirmation before dispatching cancel blocked issue requests', async () => {
     const cancelBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' }));
     server = new LocalApiServer({
       snapshotSource: {
@@ -1325,13 +1333,249 @@ describe('LocalApiServer', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ cancel_reason: 'operator_cancel_return_to_backlog' })
     });
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(409);
+    expect(payload.error.code).toBe('confirmation_required');
+    expect(cancelBlockedIssue).not.toHaveBeenCalled();
+  });
+
+  it('accepts confirmed cancel blocked issue requests and returns destination state', async () => {
+    const cancelBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue,
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cancel_reason: 'operator_cancel_return_to_backlog', confirmed: true })
+    });
     const payload = (await response.json()) as { cancelled: boolean; issue_identifier: string; moved_to_state: string };
 
     expect(response.status).toBe(202);
     expect(payload.cancelled).toBe(true);
     expect(payload.issue_identifier).toBe('ABC-3');
     expect(payload.moved_to_state).toBe('Todo');
-    expect(cancelBlockedIssue).toHaveBeenCalledWith('ABC-3', { cancel_reason: 'operator_cancel_return_to_backlog' });
+    expect(cancelBlockedIssue).toHaveBeenCalledWith('ABC-3', {
+      actor: undefined,
+      cancel_reason: 'operator_cancel_return_to_backlog',
+      confirmed: true,
+      reason_note: 'operator_cancel_return_to_backlog'
+    });
+  });
+
+  it('accepts operator action console requests for cancel-turn, requeue, and retry-step', async () => {
+    const cancelCurrentTurn = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
+    const requeueIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 2 }));
+    const retryLastFailedStep = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 3 }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        cancelCurrentTurn,
+        requeueIssue,
+        retryLastFailedStep,
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const cancelResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/cancel-turn`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'stalled', confirmed: true })
+    });
+    const requeueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/requeue`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'rerun', confirmed: true })
+    });
+    const retryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/retry-step`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'retry failed step' })
+    });
+
+    expect(cancelResponse.status).toBe(202);
+    expect(requeueResponse.status).toBe(202);
+    expect(retryResponse.status).toBe(202);
+    expect(cancelCurrentTurn).toHaveBeenCalledWith('ABC-3', {
+      actor: 'ops@example.test',
+      confirmed: true,
+      reason_note: 'stalled'
+    });
+    expect(requeueIssue).toHaveBeenCalledWith('ABC-3', {
+      actor: 'ops@example.test',
+      confirmed: true,
+      reason_note: 'rerun'
+    });
+    expect(retryLastFailedStep).toHaveBeenCalledWith('ABC-3', {
+      actor: 'ops@example.test',
+      reason_note: 'retry failed step'
+    });
+  });
+
+  it('rejects missing or blank reason notes before dispatching operator actions', async () => {
+    const cancelCurrentTurn = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
+    const requeueIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 2 }));
+    const retryLastFailedStep = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 3 }));
+    const resumeBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
+    const cancelBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' }));
+    const submitBlockedIssueInput = vi.fn(async () => ({
+      ok: true as const,
+      issue_id: 'issue-3',
+      request_id: 'req-1',
+      resume_mode: 'fallback' as const,
+      resume_reason_code: 'transport_unsupported',
+      requested_at: '2026-05-04T00:00:00.000Z',
+      request_lineage: { previous_thread_id: null, previous_session_id: null }
+    }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        cancelCurrentTurn,
+        requeueIssue,
+        retryLastFailedStep,
+        resumeBlockedIssue,
+        cancelBlockedIssue,
+        submitBlockedIssueInput
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const requests = [
+      fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/cancel-turn`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirmed: true })
+      }),
+      fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/requeue`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason_note: '   ', confirmed: true })
+      }),
+      fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/retry-step`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({})
+      }),
+      fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/resume`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ resume_override_reason: 'operator_override_push_additional_commit' })
+      }),
+      fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirmed: true })
+      }),
+      fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/input`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ request_id: 'req-1', answer: { text: 'continue' } })
+      })
+    ];
+    const responses = await Promise.all(requests);
+    const payloads = await Promise.all(responses.map(async (response) => response.json() as Promise<{ error: { code: string } }>));
+
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400, 400, 400]);
+    expect(payloads.map((payload) => payload.error.code)).toEqual([
+      'reason_note_required',
+      'reason_note_required',
+      'reason_note_required',
+      'reason_note_required',
+      'reason_note_required',
+      'reason_note_required'
+    ]);
+    expect(cancelCurrentTurn).not.toHaveBeenCalled();
+    expect(requeueIssue).not.toHaveBeenCalled();
+    expect(retryLastFailedStep).not.toHaveBeenCalled();
+    expect(resumeBlockedIssue).not.toHaveBeenCalled();
+    expect(cancelBlockedIssue).not.toHaveBeenCalled();
+    expect(submitBlockedIssueInput).not.toHaveBeenCalled();
+  });
+
+  it('maps unsupported operator transitions to typed conflict envelopes', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        retryLastFailedStep: vi.fn(async () => ({
+          ok: false as const,
+          code: 'unsupported_transition',
+          message: 'Issue ABC-3 has no failed or stalled retry step'
+        })),
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/retry-step`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason_note: 'try anyway' })
+    });
+    const payload = (await response.json()) as { error: { code: string } };
+
+    expect(response.status).toBe(409);
+    expect(payload.error.code).toBe('unsupported_transition');
   });
 
   it('accepts blocked input submit requests and resumes issue', async () => {
@@ -1365,6 +1609,8 @@ describe('LocalApiServer', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         request_id: 'req-42',
+        actor: 'ops@example.test',
+        reason_note: 'continue with answer',
         answer: { question_id: 'q-1', option_label: 'Continue' }
       })
     });
@@ -1388,6 +1634,8 @@ describe('LocalApiServer', () => {
     expect(submitBlockedIssueInput).toHaveBeenCalledWith({
       issueIdentifier: 'ABC-3',
       request_id: 'req-42',
+      actor: 'ops@example.test',
+      reason_note: 'continue with answer',
       answer: { question_id: 'q-1', option_label: 'Continue' }
     });
   });
@@ -1463,6 +1711,7 @@ describe('LocalApiServer', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         request_id: 'req-42',
+        reason_note: 'answer request',
         answer: { text: '' }
       })
     });

@@ -94,12 +94,27 @@ export interface RunningEntry {
   phase_detail?: string | null;
 }
 
+export type OperatorActionType = 'cancel' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
+
 export interface OperatorActionRecord {
-  action: 'resume' | 'cancel' | 'retry' | 'submit_input';
+  action: OperatorActionType;
   requested_at_ms: number;
   result: 'accepted' | 'rejected' | 'failed';
   result_code: string | null;
   message: string | null;
+  actor?: string | null;
+  reason_note?: string | null;
+  target_identifiers?: {
+    issue_id: string;
+    issue_identifier: string | null;
+    run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    session_id?: string | null;
+  };
+  pre_state?: Record<string, unknown>;
+  post_state?: Record<string, unknown>;
 }
 
 export interface RetryEntry {

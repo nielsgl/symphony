@@ -17,11 +17,24 @@ export type NotBlockedExplainerCode =
   | null;
 
 export interface OperatorActionProjection {
-  action: 'resume' | 'cancel' | 'retry' | 'submit_input';
+  action: 'cancel' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
   requested_at_ms: number;
   result: 'accepted' | 'rejected' | 'failed';
   result_code: string | null;
   message: string | null;
+  actor?: string | null;
+  reason_note?: string | null;
+  target_identifiers?: {
+    issue_id: string;
+    issue_identifier: string | null;
+    run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    session_id?: string | null;
+  };
+  pre_state?: Record<string, unknown>;
+  post_state?: Record<string, unknown>;
 }
 
 export interface VisibilityProjectionFields {
@@ -772,15 +785,29 @@ export interface LocalApiServerOptions {
     }>;
   };
   issueControlSource?: {
-    resumeBlockedIssue: (issueIdentifier: string, params?: { resume_override_reason?: string }) => Promise<
+    cancelCurrentTurn?: (
+      issueIdentifier: string,
+      params: { actor?: string; reason_note?: string; confirmed?: boolean }
+    ) => Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }>;
+    requeueIssue?: (
+      issueIdentifier: string,
+      params: { actor?: string; reason_note?: string; confirmed?: boolean }
+    ) => Promise<{ ok: true; issue_id: string; retry_attempt: number } | { ok: false; code: string; message: string }>;
+    retryLastFailedStep?: (
+      issueIdentifier: string,
+      params: { actor?: string; reason_note?: string }
+    ) => Promise<{ ok: true; issue_id: string; retry_attempt: number } | { ok: false; code: string; message: string }>;
+    resumeBlockedIssue: (issueIdentifier: string, params?: { resume_override_reason?: string; actor?: string; reason_note?: string }) => Promise<
       { ok: true; issue_id: string } | { ok: false; code: string; message: string }
     >;
-    cancelBlockedIssue: (issueIdentifier: string, params?: { cancel_reason?: string }) => Promise<
+    cancelBlockedIssue: (issueIdentifier: string, params?: { cancel_reason?: string; actor?: string; reason_note?: string; confirmed?: boolean }) => Promise<
       { ok: true; issue_id: string; moved_to_state: string } | { ok: false; code: string; message: string }
     >;
     submitBlockedIssueInput: (params: {
       issueIdentifier: string;
       request_id: string;
+      actor?: string;
+      reason_note: string;
       answer: { question_id?: string; option_label?: string; text?: string };
     }) => Promise<
       | {

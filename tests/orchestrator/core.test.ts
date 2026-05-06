@@ -379,7 +379,10 @@ describe('OrchestratorCore', () => {
     expect(snapshot.retry_attempts.has('i-workspace-conflict-blocked')).toBe(false);
     expect(harness.spawned.length).toBe(spawnedBeforeTicks);
 
-    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-BLOCK');
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-BLOCK', null, null, {
+      actor: 'operator@example.test',
+      reason_note: 'workspace conflict resolved'
+    });
     expect(resumed).toEqual({ ok: true, issue_id: 'i-workspace-conflict-blocked' });
     expect(harness.spawned.length).toBe(spawnedBeforeTicks + 1);
   });
@@ -435,7 +438,10 @@ describe('OrchestratorCore', () => {
     await harness.orchestrator.tick('interval');
     expect(harness.spawned.find((entry) => entry.issue_id === 'i-restored')).toBeUndefined();
 
-    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-RESTORE', null, 'manual override');
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-RESTORE', null, 'manual override', {
+      actor: 'operator@example.test',
+      reason_note: 'manual override accepted'
+    });
     expect(resumed).toEqual({ ok: true, issue_id: 'i-restored' });
     expect(harness.spawned.find((entry) => entry.issue_id === 'i-restored')).toBeDefined();
   });
@@ -489,7 +495,10 @@ describe('OrchestratorCore', () => {
       makeIssue({ id: 'i-action-trail', identifier: 'ABC-ACTION', state: 'In Progress' })
     ]);
 
-    const rejected = await harness.orchestrator.resumeBlockedIssue('ABC-ACTION');
+    const rejected = await harness.orchestrator.resumeBlockedIssue('ABC-ACTION', null, null, {
+      actor: 'operator@example.test',
+      reason_note: 'progress evidence missing'
+    });
     expect(rejected.ok).toBe(false);
     expect(persistedActions.get('i-action-trail')).toContain('resume_failed');
 
@@ -510,7 +519,10 @@ describe('OrchestratorCore', () => {
     restored.tracker.fetch_issue_states_by_ids.mockResolvedValue([
       makeIssue({ id: 'i-action-trail', identifier: 'ABC-ACTION', state: 'In Progress' })
     ]);
-    const accepted = await restored.orchestrator.resumeBlockedIssue('ABC-ACTION', null, 'operator reviewed trail');
+    const accepted = await restored.orchestrator.resumeBlockedIssue('ABC-ACTION', null, 'operator reviewed trail', {
+      actor: 'operator@example.test',
+      reason_note: 'operator reviewed trail'
+    });
     expect(accepted).toEqual({ ok: true, issue_id: 'i-action-trail' });
     expect(restored.orchestrator.getStateSnapshot().operator_actions?.get('i-action-trail')).toEqual([
       expect.objectContaining({ result: 'rejected' }),
@@ -532,7 +544,10 @@ describe('OrchestratorCore', () => {
       makeIssue({ id: 'i-resume', identifier: 'ABC-RESUME', state: 'In Progress' })
     ]);
 
-    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-RESUME');
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-RESUME', null, null, {
+      actor: 'operator@example.test',
+      reason_note: 'input request answered'
+    });
     expect(resumed).toEqual({ ok: true, issue_id: 'i-resume' });
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-resume')).toBe(false);
     expect(harness.spawned.map((entry) => entry.issue_id)).toContain('i-resume');
@@ -566,7 +581,10 @@ describe('OrchestratorCore', () => {
 
     commit = 'sha-new';
     harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
-    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-PROGRESS');
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-PROGRESS', null, null, {
+      actor: 'operator@example.test',
+      reason_note: 'progress signal changed'
+    });
     expect(resumed).toEqual({ ok: true, issue_id: 'i-progress' });
   });
 
@@ -737,7 +755,10 @@ describe('OrchestratorCore', () => {
     await harness.scheduled.get('i-resume-override')?.callback();
 
     harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
-    const withoutOverride = await harness.orchestrator.resumeBlockedIssue('ABC-OVERRIDE');
+    const withoutOverride = await harness.orchestrator.resumeBlockedIssue('ABC-OVERRIDE', null, null, {
+      actor: 'operator@example.test',
+      reason_note: 'resume requested'
+    });
     expect(withoutOverride).toEqual({
       ok: false,
       code: 'resume_failed',
@@ -747,7 +768,11 @@ describe('OrchestratorCore', () => {
     const withOverride = await harness.orchestrator.resumeBlockedIssue(
       'ABC-OVERRIDE',
       null,
-      'operator approved redispatch without new progress'
+      'operator approved redispatch without new progress',
+      {
+        actor: 'operator@example.test',
+        reason_note: 'operator approved redispatch without new progress'
+      }
     );
     expect(withOverride).toEqual({ ok: true, issue_id: 'i-resume-override' });
   });
@@ -768,13 +793,259 @@ describe('OrchestratorCore', () => {
       'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
     );
 
-    const cancelled = await harness.orchestrator.cancelBlockedIssue('ABC-CANCEL', 'operator_cancel_return_to_backlog');
+    const rejected = await harness.orchestrator.cancelBlockedIssue('ABC-CANCEL', 'operator_cancel_return_to_backlog');
+    expect(rejected).toEqual({
+      ok: false,
+      code: 'confirmation_required',
+      message: 'Cancel requires explicit confirmation'
+    });
+    expect(harness.tracker.update_issue_state).not.toHaveBeenCalled();
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-cancel')).toBe(true);
+
+    const cancelled = await harness.orchestrator.cancelBlockedIssue('ABC-CANCEL', 'operator_cancel_return_to_backlog', {
+      actor: 'operator@example.test',
+      reason_note: 'operator_cancel_return_to_backlog',
+      confirmed: true
+    });
     expect(cancelled).toEqual({ ok: true, issue_id: 'i-cancel', moved_to_state: 'Todo' });
     expect(harness.tracker.update_issue_state).toHaveBeenCalledWith('i-cancel', 'Todo');
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-cancel')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get('i-cancel')).toEqual([
+      expect.objectContaining({
+        action: 'cancel',
+        actor: 'operator',
+        reason_note: 'operator_cancel_return_to_backlog',
+        result: 'rejected',
+        result_code: 'confirmation_required',
+        target_identifiers: expect.objectContaining({
+          issue_id: 'i-cancel',
+          issue_identifier: 'ABC-CANCEL'
+        }),
+        pre_state: expect.objectContaining({ runtime_state: 'blocked' }),
+        post_state: expect.objectContaining({ runtime_state: 'blocked' })
+      }),
+      expect.objectContaining({
+        action: 'cancel',
+        actor: 'operator@example.test',
+        reason_note: 'operator_cancel_return_to_backlog',
+        result: 'accepted',
+        result_code: 'Todo',
+        target_identifiers: expect.objectContaining({
+          issue_id: 'i-cancel',
+          issue_identifier: 'ABC-CANCEL'
+        }),
+        pre_state: expect.objectContaining({ runtime_state: 'blocked', issue_identifier: 'ABC-CANCEL' }),
+        post_state: expect.objectContaining({ runtime_state: 'untracked' })
+      })
+    ]);
     const cancelLog = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.cancelToBacklogExecuted);
     expect(cancelLog?.context?.issue_id).toBe('i-cancel');
     expect(cancelLog?.context?.next_operator_action).toBe('issue.state.todo');
+  });
+
+  it('requires confirmation before cancelling a running turn and records audit context', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-cancel-turn', identifier: 'ABC-CANCEL-TURN' })]);
+    await harness.orchestrator.tick('interval');
+
+    const rejected = await harness.orchestrator.cancelCurrentTurn('ABC-CANCEL-TURN', {
+      actor: 'operator@example.test',
+      reason_note: 'wrong branch'
+    });
+    expect(rejected).toEqual({
+      ok: false,
+      code: 'confirmation_required',
+      message: 'Cancel current turn requires explicit confirmation'
+    });
+    expect(harness.terminated).toEqual([]);
+
+    const accepted = await harness.orchestrator.cancelCurrentTurn('ABC-CANCEL-TURN', {
+      actor: 'operator@example.test',
+      reason_note: 'wrong branch',
+      confirmed: true
+    });
+    expect(accepted).toEqual({ ok: true, issue_id: 'i-cancel-turn' });
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-cancel-turn', cleanup_workspace: false, reason: 'wrong branch' }
+    ]);
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get('i-cancel-turn')).toEqual([
+      expect.objectContaining({
+        action: 'cancel',
+        actor: 'operator@example.test',
+        reason_note: 'wrong branch',
+        result: 'rejected',
+        result_code: 'confirmation_required',
+        pre_state: expect.objectContaining({ runtime_state: 'running' }),
+        post_state: expect.objectContaining({ runtime_state: 'running' })
+      }),
+      expect.objectContaining({
+        action: 'cancel',
+        actor: 'operator@example.test',
+        reason_note: 'wrong branch',
+        result: 'accepted',
+        result_code: 'current_turn_cancelled',
+        pre_state: expect.objectContaining({ runtime_state: 'running' }),
+        post_state: expect.objectContaining({ runtime_state: 'untracked' })
+      })
+    ]);
+  });
+
+  it('requeues blocked issues and persists immutable audit state transition details', async () => {
+    const persistedActions = new Map<string, string>();
+    const harness = createHarness({
+      persistence: {
+        startRun: async () => 'run-requeue',
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async () => undefined,
+        deleteBlockedInput: async () => undefined,
+        upsertOperatorActions: async (issueId, payload) => {
+          persistedActions.set(issueId, payload);
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-requeue', identifier: 'ABC-REQUEUE' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-requeue',
+      'abnormal',
+      'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
+    );
+
+    const result = await harness.orchestrator.requeueIssue('ABC-REQUEUE', {
+      actor: 'operator@example.test',
+      reason_note: 'workspace repaired'
+    });
+
+    expect(result).toEqual({ ok: true, issue_id: 'i-requeue', retry_attempt: 1 });
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-requeue')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().retry_attempts.get('i-requeue')).toMatchObject({
+      identifier: 'ABC-REQUEUE',
+      stop_reason_code: 'operator_requeue_requested'
+    });
+    const persisted = JSON.parse(persistedActions.get('i-requeue') ?? '[]') as Array<Record<string, unknown>>;
+    expect(persisted).toEqual([
+      expect.objectContaining({
+        action: 'requeue',
+        actor: 'operator@example.test',
+        reason_note: 'workspace repaired',
+        result: 'accepted',
+        pre_state: expect.objectContaining({ runtime_state: 'blocked' }),
+        post_state: expect.objectContaining({ runtime_state: 'retrying' }),
+        target_identifiers: expect.objectContaining({
+          issue_id: 'i-requeue',
+          issue_identifier: 'ABC-REQUEUE'
+        })
+      })
+    ]);
+  });
+
+  it('retries the last failed or stalled retry step where supported', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-retry-step', identifier: 'ABC-RETRY' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-retry-step', 'abnormal', 'worker exited');
+
+    const result = await harness.orchestrator.retryLastFailedStep('ABC-RETRY', {
+      actor: 'operator@example.test',
+      reason_note: 'transient failure cleared'
+    });
+    const unsupported = await harness.orchestrator.retryLastFailedStep('ABC-MISSING', {
+      actor: 'operator@example.test',
+      reason_note: 'try missing'
+    });
+
+    expect(result).toEqual({ ok: true, issue_id: 'i-retry-step', retry_attempt: 1 });
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get('i-retry-step')).toEqual([
+      expect.objectContaining({
+        action: 'retry_step',
+        actor: 'operator@example.test',
+        reason_note: 'transient failure cleared',
+        result: 'accepted',
+        result_code: 'retry_step_scheduled',
+        pre_state: expect.objectContaining({ runtime_state: 'retrying' }),
+        post_state: expect.objectContaining({ runtime_state: 'retrying' })
+      })
+    ]);
+    expect(unsupported).toEqual({
+      ok: false,
+      code: 'unsupported_transition',
+      message: 'Issue ABC-MISSING has no failed or stalled retry step'
+    });
+  });
+
+  it('rejects missing reason notes before mutating operator action paths', async () => {
+    const runningHarness = createHarness();
+    runningHarness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-running-reason', identifier: 'ABC-RUNNING-REASON' })
+    ]);
+    await runningHarness.orchestrator.tick('interval');
+    const cancelMissingReason = await runningHarness.orchestrator.cancelCurrentTurn('ABC-RUNNING-REASON', {
+      confirmed: true
+    });
+    expect(cancelMissingReason).toEqual({ ok: false, code: 'reason_note_required', message: 'reason_note is required' });
+    expect(runningHarness.terminated).toEqual([]);
+    expect(runningHarness.orchestrator.getStateSnapshot().operator_actions?.get('i-running-reason')).toBeUndefined();
+
+    const blockedHarness = createHarness();
+    blockedHarness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-blocked-reason', identifier: 'ABC-BLOCKED-REASON' })
+    ]);
+    await blockedHarness.orchestrator.tick('interval');
+    await blockedHarness.orchestrator.onWorkerExit(
+      'i-blocked-reason',
+      'abnormal',
+      'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
+    );
+    blockedHarness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-blocked-reason', identifier: 'ABC-BLOCKED-REASON', state: 'In Progress' })
+    ]);
+    await expect(blockedHarness.orchestrator.requeueIssue('ABC-BLOCKED-REASON', { reason_note: '   ' })).resolves.toEqual({
+      ok: false,
+      code: 'reason_note_required',
+      message: 'reason_note is required'
+    });
+    await expect(blockedHarness.orchestrator.resumeBlockedIssue('ABC-BLOCKED-REASON')).resolves.toEqual({
+      ok: false,
+      code: 'reason_note_required',
+      message: 'reason_note is required'
+    });
+    await expect(blockedHarness.orchestrator.cancelBlockedIssue('ABC-BLOCKED-REASON', null, { confirmed: true })).resolves.toEqual({
+      ok: false,
+      code: 'reason_note_required',
+      message: 'reason_note is required'
+    });
+    expect(blockedHarness.orchestrator.getStateSnapshot().blocked_inputs.has('i-blocked-reason')).toBe(true);
+    expect(blockedHarness.orchestrator.getStateSnapshot().retry_attempts.has('i-blocked-reason')).toBe(false);
+    expect(blockedHarness.orchestrator.getStateSnapshot().operator_actions?.get('i-blocked-reason')).toBeUndefined();
+
+    const retryHarness = createHarness();
+    retryHarness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-retry-reason', identifier: 'ABC-RETRY-REASON' })
+    ]);
+    await retryHarness.orchestrator.tick('interval');
+    await retryHarness.orchestrator.onWorkerExit('i-retry-reason', 'abnormal', 'worker exited');
+    const retryMissingReason = await retryHarness.orchestrator.retryLastFailedStep('ABC-RETRY-REASON');
+    expect(retryMissingReason).toEqual({ ok: false, code: 'reason_note_required', message: 'reason_note is required' });
+    expect(retryHarness.orchestrator.getStateSnapshot().operator_actions?.get('i-retry-reason')).toBeUndefined();
+
+    const submitHarness = createHarness();
+    submitHarness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-submit-reason', identifier: 'ABC-SUBMIT-REASON' })
+    ]);
+    await submitHarness.orchestrator.tick('interval');
+    await submitHarness.orchestrator.onWorkerExit(
+      'i-submit-reason',
+      'abnormal',
+      'turn_input_required:{"detail":"operator input required","request_id":"req-reason","prompt_text":"Continue?","questions":[{"id":"q1","prompt":"Continue?","options":[{"label":"Yes"},{"label":"No"}]}]}'
+    );
+    const submitMissingReason = await submitHarness.orchestrator.submitBlockedIssueInput({
+      issue_identifier: 'ABC-SUBMIT-REASON',
+      request_id: 'req-reason',
+      answer: { question_id: 'q1', option_label: 'Yes' }
+    });
+    expect(submitMissingReason).toEqual({ ok: false, code: 'reason_note_required', message: 'reason_note is required' });
+    expect(submitHarness.orchestrator.getStateSnapshot().operator_actions?.get('i-submit-reason')).toBeUndefined();
   });
 
   it('returns typed not-answerable error when native blocked input transport is unavailable', async () => {
@@ -794,6 +1065,8 @@ describe('OrchestratorCore', () => {
     const result = await harness.orchestrator.submitBlockedIssueInput({
       issue_identifier: 'ABC-SUBMIT',
       request_id: 'req-123',
+      actor: 'operator@example.test',
+      reason_note: 'answer selected',
       answer: { question_id: 'q1', option_label: 'Yes' }
     });
 
@@ -822,6 +1095,8 @@ describe('OrchestratorCore', () => {
     const result = await harness.orchestrator.submitBlockedIssueInput({
       issue_identifier: 'ABC-NATIVE',
       request_id: 'req-native',
+      actor: 'operator@example.test',
+      reason_note: 'continue with selected answer',
       answer: { question_id: 'q1', option_label: 'Yes' }
     });
 
@@ -2446,7 +2721,10 @@ describe('OrchestratorCore', () => {
     harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
       makeIssue({ id: 'i-redispatch', identifier: 'ABC-1', state: 'In Progress' })
     ]);
-    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-1');
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-1', null, null, {
+      actor: 'operator@example.test',
+      reason_note: 'progress signal changed'
+    });
     expect(resumed).toEqual({ ok: true, issue_id: 'i-redispatch' });
 
     const timeline = harness.orchestrator.getStateSnapshot().phase_timeline?.get('i-redispatch') ?? [];
