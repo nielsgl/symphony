@@ -82,6 +82,7 @@ async function installDashboardApiMocks(
   options: {
     state: DashboardStatePayload | (() => DashboardStatePayload);
     issues?: Record<string, IssuePayload | ((id: string) => IssuePayload)>;
+    diagnostics?: Record<string, IssuePayload | ((id: string) => IssuePayload)>;
     onRefresh?: () => void;
   }
 ): Promise<void> {
@@ -144,6 +145,22 @@ async function installDashboardApiMocks(
       contentType: 'application/json',
       body: JSON.stringify({ issue_identifier: issueIdentifier })
     });
+  });
+
+  await page.route('**/api/v1/issues/*/diagnostics', async (route) => {
+    const segments = route.request().url().split('/');
+    const issueIdentifier = decodeURIComponent(segments[segments.length - 2] || '');
+    const diagnosticsResolver = options.diagnostics?.[issueIdentifier];
+    if (!diagnosticsResolver) {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'thread_diagnostics_not_found', message: 'No diagnostics' } })
+      });
+      return;
+    }
+    const payload = typeof diagnosticsResolver === 'function' ? diagnosticsResolver(issueIdentifier) : diagnosticsResolver;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(payload) });
   });
 
   await page.route('**/api/v1/*', async (route) => {
@@ -291,7 +308,7 @@ test.describe('phase-marker dashboard e2e', () => {
             actionability: 'required',
             headline: 'Run is alive but waiting too long',
             detail: 'The run is still alive through codex.turn.waiting heartbeats after the configured wait threshold.',
-            recommended_action: 'Inspect recent events and decide whether to resume/cancel/restart',
+            recommended_actions: ['Inspect recent events and decide whether to resume/cancel/restart'],
             expected_transition: null,
             reason_code: 'turn_waiting_threshold_exceeded',
             reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
@@ -333,6 +350,144 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#issue-explainer-card')).toContainText('required');
     await expect(page.locator('#issue-explainer-card')).toContainText('Inspect recent events and decide whether to resume/cancel/restart');
     await expect(page.locator('#issue-summary')).toContainText('Actionability: required');
+  });
+
+  test('running row links open diagnostics drilldown with timeline lanes and blocker intelligence', async ({ page }) => {
+    await installDashboardApiMocks(page, {
+      state: baseState({
+        running: [
+          {
+            issue_identifier: 'NIE-57',
+            state: 'running',
+            session_id: 'session-drilldown',
+            worker_host: 'hessian',
+            workspace_path: '/tmp/workspaces/NIE-57',
+            provisioner_type: 'git_worktree',
+            branch_name: 'feature/NIE-57',
+            workspace_git_status: 'clean',
+            started_at: ISO_OLD,
+            turn_count: 5,
+            tokens: { total_tokens: 3000, input_tokens: 2200, output_tokens: 800 },
+            last_event_summary: 'codex.turn.waiting heartbeat',
+            last_event: 'codex.turn.waiting',
+            last_message: 'waiting',
+            last_event_at: ISO_NOW,
+            thread_id: 'thread-drilldown',
+            turn_id: 'turn-drilldown',
+            current_phase: 'implementation',
+            current_phase_at: ISO_OLD,
+            phase_elapsed_ms: 120000,
+            phase_detail: 'tool wait',
+            current_blocker_class: 'stalled_waiting',
+            time_since_progress: 90000,
+            last_successful_step: 'codex.turn.started: implementation turn started'
+          }
+        ]
+      }),
+      issues: {
+        'NIE-57': {
+          issue_identifier: 'NIE-57',
+          issue_id: 'issue-nie-57',
+          status: 'running',
+          workspace: { path: '/tmp/workspaces/NIE-57' },
+          running: { current_phase: 'implementation' },
+          retry: null,
+          blocked: null,
+          phase_timeline: [],
+          recent_events: []
+        }
+      },
+      diagnostics: {
+        'NIE-57': {
+          thread_id: 'thread-drilldown',
+          issue_identifier: 'NIE-57',
+          attempt: 0,
+          status: 'stalled',
+          timeline: [
+            {
+              at_ms: Date.parse('2026-04-30T09:58:30.000Z'),
+              event: 'codex.turn.started',
+              reason_code: null,
+              reason_detail: 'implementation turn started',
+              thread_id: 'thread-drilldown',
+              turn_id: 'turn-drilldown',
+              session_id: 'session-drilldown'
+            },
+            {
+              at_ms: Date.parse('2026-04-30T09:59:30.000Z'),
+              event: 'codex.turn.waiting',
+              reason_code: 'turn_waiting_threshold_exceeded',
+              reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold',
+              thread_id: 'thread-drilldown',
+              turn_id: 'turn-drilldown',
+              session_id: 'session-drilldown'
+            }
+          ],
+          phase_spans: [
+            {
+              phase: 'implementation',
+              started_at_ms: Date.parse('2026-04-30T09:58:00.000Z'),
+              ended_at_ms: null,
+              duration_ms: null,
+              status: 'running',
+              reason_code: null,
+              reason_detail: 'tool wait'
+            }
+          ],
+          tool_spans: [
+            {
+              tool_name: 'exec_command',
+              started_at_ms: Date.parse('2026-04-30T09:59:00.000Z'),
+              ended_at_ms: null,
+              duration_ms: null,
+              status: 'running',
+              reason_code: 'turn_waiting_threshold_exceeded',
+              reason_detail: 'shell command still running'
+            }
+          ],
+          wait_spans: [
+            {
+              started_at_ms: Date.parse('2026-04-30T09:59:30.000Z'),
+              ended_at_ms: null,
+              duration_ms: null,
+              status: 'blocked',
+              reason_code: 'turn_waiting_threshold_exceeded',
+              reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
+            }
+          ],
+          current_blocker: {
+            classification: 'tool_waiting_long',
+            reason_code: 'turn_waiting_threshold_exceeded',
+            reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold',
+            time_since_progress: 90000,
+            actionability: 'recommended',
+            recommended_actions: ['Inspect the active Codex turn and resume, cancel, or retry the run if the wait is not expected.'],
+            expected_auto_transition: null
+          },
+          last_meaningful_progress_at_ms: Date.parse('2026-04-30T09:58:30.000Z')
+        }
+      }
+    });
+
+    await page.goto('/');
+
+    await expect(page.locator('#running-rows')).toContainText('stalled_waiting');
+    await expect(page.locator('#running-rows')).toContainText('90000 ms');
+    await expect(page.locator('#running-rows')).toContainText('codex.turn.started: implementation turn started');
+
+    await page.locator('#running-rows a', { hasText: 'NIE-57' }).click();
+
+    await expect(page.locator('#thread-detail')).toBeVisible();
+    await expect(page.locator('#thread-timeline-lanes')).toContainText('Phase');
+    await expect(page.locator('#thread-timeline-lanes')).toContainText('implementation');
+    await expect(page.locator('#thread-timeline-lanes')).toContainText('Tool');
+    await expect(page.locator('#thread-timeline-lanes')).toContainText('exec_command');
+    await expect(page.locator('#thread-timeline-lanes')).toContainText('Wait');
+    await expect(page.locator('#thread-blocker-card')).toContainText('tool_waiting_long');
+    await expect(page.locator('#thread-blocker-card')).toContainText('turn_waiting_threshold_exceeded');
+    await expect(page.locator('#thread-blocker-card')).toContainText('90000');
+    await expect(page.locator('#thread-blocker-card')).toContainText('Inspect the active Codex turn');
+    await expect(page.locator('#thread-raw-events')).toContainText('codex.turn.waiting');
   });
 
   test('retrying and blocked views show last_phase context', async ({ page }) => {

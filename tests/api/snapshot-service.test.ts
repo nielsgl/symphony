@@ -306,7 +306,8 @@ describe('SnapshotService', () => {
               option_count: 2
             },
             stalled_waiting_since_ms: Date.parse('2026-04-10T10:03:00.000Z'),
-            stalled_waiting_reason: 'turn_waiting_threshold_exceeded'
+            stalled_waiting_reason: 'turn_waiting_threshold_exceeded',
+            last_progress_transition_at_ms: Date.parse('2026-04-10T10:04:00.000Z')
           })
         ]
       ])
@@ -327,6 +328,9 @@ describe('SnapshotService', () => {
       actionability: 'required',
       headline: 'Run is alive but waiting too long'
     });
+    expect(projected.running[0]?.current_blocker_class).toBe('stalled_waiting');
+    expect(projected.running[0]?.time_since_progress).toBe(60000);
+    expect(projected.running[0]?.last_successful_step).toBe('codex.turn.completed: done');
 
     const issue = service.projectIssue(state, 'ABC-1');
     expect(issue.operator_explainer).toMatchObject({
