@@ -111,6 +111,7 @@ export interface OperatorActionRecord {
     attempt_id?: string | null;
     thread_id?: string | null;
     turn_id?: string | null;
+    session_id?: string | null;
   };
   pre_state?: Record<string, unknown>;
   post_state?: Record<string, unknown>;

@@ -832,7 +832,7 @@ describe('OrchestratorCore', () => {
         result_code: 'Todo',
         target_identifiers: expect.objectContaining({
           issue_id: 'i-cancel',
-          issue_identifier: null
+          issue_identifier: 'ABC-CANCEL'
         }),
         pre_state: expect.objectContaining({ runtime_state: 'blocked', issue_identifier: 'ABC-CANCEL' }),
         post_state: expect.objectContaining({ runtime_state: 'untracked' })

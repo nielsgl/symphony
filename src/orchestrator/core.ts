@@ -3488,6 +3488,7 @@ export class OrchestratorCore {
       message: `cancelled to backlog: ${reasonNote}`,
       actor: operator_context?.actor ?? null,
       reason_note: reasonNote,
+      target_identifiers: this.targetIdentifiersFromRuntimeState(blocked.issue_id, preState),
       pre_state: preState,
       post_state: this.describeIssueRuntimeState(blocked.issue_id)
     });
@@ -4151,14 +4152,7 @@ export class OrchestratorCore {
       ...action,
       actor: action.actor ?? 'operator',
       reason_note: action.reason_note ?? null,
-      target_identifiers: action.target_identifiers ?? {
-        issue_id: issueId,
-        issue_identifier: typeof currentState.issue_identifier === 'string' ? currentState.issue_identifier : null,
-        run_id: typeof currentState.run_id === 'string' ? currentState.run_id : null,
-        attempt_id: typeof currentState.attempt_id === 'string' ? currentState.attempt_id : null,
-        thread_id: typeof currentState.thread_id === 'string' ? currentState.thread_id : null,
-        turn_id: typeof currentState.turn_id === 'string' ? currentState.turn_id : null
-      },
+      target_identifiers: action.target_identifiers ?? this.targetIdentifiersFromRuntimeState(issueId, currentState),
       pre_state: action.pre_state ?? currentState,
       post_state: action.post_state ?? currentState
     };
@@ -4166,6 +4160,21 @@ export class OrchestratorCore {
     const updated = [...existing, normalized].slice(-20);
     operatorActions.set(issueId, updated);
     void this.persistence?.upsertOperatorActions?.(issueId, JSON.stringify(updated));
+  }
+
+  private targetIdentifiersFromRuntimeState(
+    issueId: string,
+    runtimeState: Record<string, unknown>
+  ): NonNullable<OperatorActionRecord['target_identifiers']> {
+    return {
+      issue_id: issueId,
+      issue_identifier: typeof runtimeState.issue_identifier === 'string' ? runtimeState.issue_identifier : null,
+      run_id: typeof runtimeState.run_id === 'string' ? runtimeState.run_id : null,
+      attempt_id: typeof runtimeState.attempt_id === 'string' ? runtimeState.attempt_id : null,
+      thread_id: typeof runtimeState.thread_id === 'string' ? runtimeState.thread_id : null,
+      turn_id: typeof runtimeState.turn_id === 'string' ? runtimeState.turn_id : null,
+      session_id: typeof runtimeState.session_id === 'string' ? runtimeState.session_id : null
+    };
   }
 
   private maybeEmitTokenTelemetryWarning(runningEntry: RunningEntry, eventAtMs: number): void {
