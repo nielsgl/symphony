@@ -25,6 +25,7 @@ export const CANONICAL_EVENT = {
     toolInputAutoAnswered: 'codex.tool_input.auto_answered',
     toolCallCompleted: 'codex.tool.completed',
     toolCallFailed: 'codex.tool.failed',
+    dynamicToolCapabilityMismatch: 'codex.tool.dynamic_capability_mismatch',
     unsupportedToolCall: 'codex.tool.unsupported',
     unsupportedServerRequest: 'codex.protocol.unsupported_request',
     protocolMalformedLine: 'codex.protocol.malformed_line',

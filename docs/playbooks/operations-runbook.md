@@ -53,6 +53,38 @@ Issue check example:
 curl -sS http://127.0.0.1:3000/api/v1/SYM-101
 ```
 
+### Console Resume Dynamic-Tool Capability Mismatch
+
+Symphony-originated app sessions can advertise dynamic tools such as
+`linear_graphql`. A console/TUI continuation is not equivalent when that
+environment rejects dynamic tool execution.
+
+Operator signal:
+
+- Issue diagnostics: `capability_warnings[]`
+- Stable reason code: `unsupported_dynamic_tool_console_resume`
+- Source environment: `console_tui`
+- Unsupported message: `Dynamic tool calls are not available in TUI yet.`
+- Included identifiers: attempted tool name, call id when available, thread id,
+  and turn id
+
+Verification:
+
+```bash
+curl -sS http://127.0.0.1:3000/api/v1/issues/SYM-101/diagnostics
+curl -sS http://127.0.0.1:3000/api/v1/issues/SYM-101/forensics/export
+```
+
+Expected recovery:
+
+- Resume the session through the Symphony UI/API or another supported
+  app-session path.
+- Do not blindly retry `codex continue` in the console for dynamic-tool
+  sessions; that can repeat the same capability mismatch.
+- If the turn later succeeds through a fallback tool path, keep the capability
+  warning in diagnostics and forensics so operators can see that console
+  continuation was degraded.
+
 ### Workspace Copy-Ignored Failures
 
 If provisioning succeeds but copy step fails:

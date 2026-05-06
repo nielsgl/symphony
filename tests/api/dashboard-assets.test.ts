@@ -25,10 +25,13 @@ describe('dashboard assets', () => {
     expect(html).toContain('<th>Last Successful Step</th>');
     expect(html).toContain('id="thread-timeline-lanes"');
     expect(html).toContain('id="thread-blocker-card"');
+    expect(html).toContain('id="thread-capability-warnings"');
     expect(html).toContain('id="thread-raw-events"');
     expect(clientJs).toContain("fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics')");
     expect(clientJs).toContain("renderTimelineLane('Phase'");
     expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'classification'");
+    expect(clientJs).toContain('diagnostics.capability_warnings');
+    expect(clientJs).toContain('recommended_recovery_action');
     expect(clientJs).toContain('entry.current_blocker_class');
     expect(clientJs).toContain('entry.time_since_progress');
     expect(clientJs).toContain('entry.last_successful_step');

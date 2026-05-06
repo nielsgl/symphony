@@ -1,3 +1,5 @@
+import { DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION, UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE } from './dynamic-tool-capability';
+
 export const REASON_CODE_REGISTRY_VERSION = '2026-05-05.v1';
 
 export type ReasonCodeClassification =
@@ -40,6 +42,7 @@ export const REASON_CODES = {
   operatorNoProgressRedispatchBlocked: 'operator_action_required_no_progress_redispatch_blocked',
   operatorBudgetLimitExceeded: 'operator_action_required_budget_limit_exceeded',
   attemptTerminatedBudgetLimitExceeded: 'attempt_terminated_budget_limit_exceeded',
+  unsupportedDynamicToolConsoleResume: UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE,
   awaitingHumanReviewScopeIncomplete: 'awaiting_human_review_scope_incomplete',
   issueStateRefreshFailed: 'issue_state_refresh_failed',
   unsafeWorkspaceRoot: 'unsafe_workspace_root',
@@ -228,6 +231,17 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     label: 'Budget Limit Terminated Attempt',
     headline: 'Run failed',
     detail: 'The run exceeded the configured budget and the budget policy terminated the attempt.',
+    expected_transition: null
+  },
+  [REASON_CODES.unsupportedDynamicToolConsoleResume]: {
+    reason_code: REASON_CODES.unsupportedDynamicToolConsoleResume,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: [DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION],
+    label: 'Unsupported Console Dynamic Tool Resume',
+    headline: 'Console resume cannot run dynamic tools',
+    detail:
+      'A Symphony-originated dynamic-tool session was continued from a console/TUI environment that rejected dynamic tool execution.',
     expected_transition: null
   },
   [REASON_CODES.awaitingHumanReviewScopeIncomplete]: {
