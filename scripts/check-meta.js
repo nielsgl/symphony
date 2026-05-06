@@ -3,7 +3,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { assertHumanReadableMarkdownBody } = require('./lib/markdown-body');
-const { MANIFEST_RELATIVE_PATH: UI_EVIDENCE_MANIFEST_FILE, validateManifestFile } = require('./lib/ui-evidence');
 
 const checks = [
   'scripts/check-api-contract.js',
@@ -388,43 +387,6 @@ function extractArtifactReferences(text) {
   return Array.from(new Set((text.match(UI_EVIDENCE_REFERENCE_PATTERN) || []).map((entry) => entry.replace(/\\/g, '/'))));
 }
 
-function collectPublishedArtifactReferences(parsedManifest) {
-  const published = new Set();
-  if (!parsedManifest || typeof parsedManifest !== 'object') {
-    return published;
-  }
-
-  const artifacts = Array.isArray(parsedManifest.artifacts) ? parsedManifest.artifacts : [];
-  for (const artifact of artifacts) {
-    if (!artifact || typeof artifact !== 'object') {
-      continue;
-    }
-    const artifactPath = typeof artifact.path === 'string' ? artifact.path.replace(/\\/g, '/').trim() : '';
-    if (!artifactPath.startsWith('output/playwright/')) {
-      continue;
-    }
-    const hasPublishRef = typeof artifact.publish_reference === 'string' && artifact.publish_reference.trim().length > 0;
-    const hasPublishedUrl = typeof artifact.published_url === 'string' && artifact.published_url.trim().length > 0;
-    if (hasPublishRef || hasPublishedUrl) {
-      published.add(artifactPath);
-    }
-  }
-
-  const mapped = parsedManifest.published_artifacts;
-  if (mapped && typeof mapped === 'object') {
-    for (const [artifactPath, reference] of Object.entries(mapped)) {
-      const normalizedPath = String(artifactPath || '').replace(/\\/g, '/').trim();
-      if (!normalizedPath.startsWith('output/playwright/')) {
-        continue;
-      }
-      if (typeof reference === 'string' && reference.trim().length > 0) {
-        published.add(normalizedPath);
-      }
-    }
-  }
-  return published;
-}
-
 function enforceEvidencePublicationReferences() {
   const references = new Set();
   const bodyInputs = [String(process.env.SYMPHONY_PR_BODY || ''), String(process.env.SYMPHONY_REVIEW_BODY || '')];
@@ -454,44 +416,13 @@ function enforceEvidencePublicationReferences() {
     process.exit(1);
   }
 
-  const manifestPath = path.join(process.cwd(), UI_EVIDENCE_MANIFEST_FILE);
-  if (fs.existsSync(manifestPath)) {
-    let parsed;
-    try {
-      parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    } catch {
-      parsed = null;
+  if (references.size > 0) {
+    process.stderr.write('ui_evidence_unpublished: local output/playwright artifact references are not review evidence\n');
+    process.stderr.write('Publish UI evidence with the linear-ui-evidence skill and reference the Linear issue comment instead.\n');
+    process.stderr.write('Artifacts:\n');
+    for (const artifactPath of references) {
+      process.stderr.write(`  - ${artifactPath}\n`);
     }
-    if (parsed && Array.isArray(parsed.artifacts)) {
-      for (const artifact of parsed.artifacts) {
-        if (!artifact || typeof artifact !== 'object') {
-          continue;
-        }
-        const artifactPath = typeof artifact.path === 'string' ? artifact.path.replace(/\\/g, '/').trim() : '';
-        if (artifactPath.startsWith('output/playwright/')) {
-          references.add(artifactPath);
-        }
-      }
-    }
-
-    if (references.size > 0) {
-      const published = collectPublishedArtifactReferences(parsed);
-      for (const artifactPath of references) {
-        if (!published.has(artifactPath)) {
-          process.stderr.write(
-            'ui_evidence_unpublished: artifact referenced without markdown publish_reference or published_url\n'
-          );
-          process.stderr.write(`Artifact: ${artifactPath}\n`);
-          process.stderr.write(
-            'Add artifact.publish_reference, artifact.published_url, or published_artifacts[path] pointing to a Linear issue comment or GitHub PR comment.\n'
-          );
-          process.exit(1);
-        }
-      }
-    }
-  } else if (references.size > 0) {
-    process.stderr.write('ui_evidence_unpublished: artifact referenced without markdown publish_reference or published_url\n');
-    process.stderr.write(`Expected manifest: ${UI_EVIDENCE_MANIFEST_FILE}\n`);
     process.exit(1);
   }
 }
@@ -623,21 +554,6 @@ function enforceUiEvidenceGate() {
     return;
   }
 
-  const changedUiPaths = changedFiles.filter((candidate) => UI_PATH_PATTERNS.some((pattern) => pattern.test(candidate)));
-
-  if (uiEvidenceProfile.profile === 'strict') {
-    const strictEvidence = validateManifestFile(process.cwd(), { changedUiPaths, requireLinearProof: true });
-    if (!strictEvidence.ok) {
-      process.stderr.write('Meta check failed: strict UI evidence profile requires manifest-backed artifacts for UI-affecting changes.\n');
-      process.stderr.write(`Validation error: ${strictEvidence.code}: ${strictEvidence.message}\n`);
-      process.stderr.write(`Expected manifest: ${UI_EVIDENCE_MANIFEST_FILE}\n`);
-      process.exit(1);
-    }
-    enforceEvidencePublicationReferences();
-    process.stdout.write(`UI evidence gate passed via ${strictEvidence.mode}.\n`);
-    return;
-  }
-
   const evidence = hasUiEvidence();
   if (evidence.ok) {
     enforceEvidencePublicationReferences();
@@ -645,6 +561,7 @@ function enforceUiEvidenceGate() {
     return;
   }
 
+  const changedUiPaths = changedFiles.filter((candidate) => UI_PATH_PATTERNS.some((pattern) => pattern.test(candidate)));
   process.stderr.write('Meta check failed: UI-affecting changes detected without e2e evidence.\n');
   process.stderr.write('Changed UI paths:\n');
   for (const file of changedUiPaths) {
