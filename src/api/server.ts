@@ -2,6 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../observability/events';
+import type { DurableRunHistoryRecord } from '../persistence';
 import { redactUnknown } from '../security/redaction';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
 import { LocalApiError } from './errors';
@@ -23,6 +24,7 @@ import type {
   ApiStateResponse,
   ApiStateErrorResponse,
   ApiStateSnapshotResponse,
+  ThreadDiagnosticsResponse,
   LocalApiErrorEnvelope,
   LocalApiServerOptions
 } from './types';
@@ -38,6 +40,83 @@ interface Endpoint {
 }
 
 const ISSUE_DETAIL_ROUTES = ['/api/v1/:issue_identifier', '/api/v1/issues/:issue_identifier'];
+const TERMINAL_RUN_TIMELINE_EVENT = {
+  started: 'run.started',
+  rootCauseDiagnostic: 'run.root_cause_diagnostic',
+  terminal: 'run.terminal'
+} as const;
+
+function statusFromTerminalRun(run: DurableRunHistoryRecord): ThreadDiagnosticsResponse['status'] {
+  switch (run.terminal_status) {
+    case 'succeeded':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'stalled':
+    case 'timed_out':
+      return 'stalled';
+    default:
+      return 'completed';
+  }
+}
+
+function diagnosticsFromTerminalRun(run: DurableRunHistoryRecord): ThreadDiagnosticsResponse {
+  const startedAtMs = Date.parse(run.started_at);
+  const endedAtMs = run.ended_at ? Date.parse(run.ended_at) : Date.now();
+  const rootCauseAtMs = run.root_cause_at ? Date.parse(run.root_cause_at) : NaN;
+  const threadId = run.thread_id ?? run.session_id ?? run.session_ids[0] ?? run.run_id;
+  return {
+    thread_id: threadId,
+    issue_identifier: run.issue_identifier,
+    attempt: 0,
+    status: statusFromTerminalRun(run),
+    timeline: [
+      {
+        at_ms: Number.isFinite(startedAtMs) ? startedAtMs : 0,
+        event: TERMINAL_RUN_TIMELINE_EVENT.started,
+        reason_code: null,
+        reason_detail: null,
+        thread_id: threadId,
+        turn_id: run.turn_id,
+        session_id: run.session_id
+      },
+      ...(Number.isFinite(rootCauseAtMs)
+        ? [
+            {
+              at_ms: rootCauseAtMs,
+              event: TERMINAL_RUN_TIMELINE_EVENT.rootCauseDiagnostic,
+              reason_code: run.root_cause_reason_code,
+              reason_detail: run.root_cause_reason_detail,
+              thread_id: threadId,
+              turn_id: run.turn_id,
+              session_id: run.session_id
+            }
+          ]
+        : []),
+      {
+        at_ms: Number.isFinite(endedAtMs) ? endedAtMs : 0,
+        event: TERMINAL_RUN_TIMELINE_EVENT.terminal,
+        reason_code: run.terminal_reason_code ?? run.error_code,
+        reason_detail: run.terminal_reason_detail,
+        thread_id: threadId,
+        turn_id: run.turn_id,
+        session_id: run.session_id
+      }
+    ],
+    phase_spans: [],
+    tool_spans: [],
+    wait_spans: [],
+    capability_warnings: [],
+    current_blocker: null,
+    last_meaningful_progress_at_ms: Number.isFinite(rootCauseAtMs)
+      ? rootCauseAtMs
+      : Number.isFinite(startedAtMs)
+        ? startedAtMs
+        : null
+  };
+}
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode;
@@ -906,7 +985,8 @@ export class LocalApiServer {
               const state = this.snapshotSource.getStateSnapshot();
               const runtimeDiagnostics = this.buildDiagnosticsPayload();
               const latestLineage = this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier?.(issueIdentifier) ?? null;
-              const payload = buildThreadDiagnosticsByIssueIdentifier({
+              let terminalRun: DurableRunHistoryRecord | null = null;
+              let payload = buildThreadDiagnosticsByIssueIdentifier({
                 state,
                 issue_identifier: issueIdentifier,
                 reconstructThreadLineage: this.diagnosticsSource?.reconstructThreadLineage,
@@ -914,6 +994,13 @@ export class LocalApiServer {
                   this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier,
                 now_ms: generatedAtMs
               });
+              if (!payload && this.diagnosticsSource) {
+                terminalRun =
+                  this.diagnosticsSource
+                    .listRunHistory(10_000)
+                    .find((run) => run.issue_identifier === issueIdentifier || run.issue_id === issueIdentifier) ?? null;
+                payload = terminalRun ? diagnosticsFromTerminalRun(terminalRun) : null;
+              }
               if (!payload) {
                 throw new LocalApiError('forensics_bundle_not_found', `Issue ${issueIdentifier} has no forensics data`, 404);
               }
@@ -925,6 +1012,7 @@ export class LocalApiServer {
                 diagnostics: payload,
                 api_diagnostics: runtimeDiagnostics,
                 lineage,
+                terminal_run: terminalRun,
                 token_snapshot: this.resolveIssueTokenSnapshot(issueIdentifier),
                 generated_at_ms: generatedAtMs
               }));

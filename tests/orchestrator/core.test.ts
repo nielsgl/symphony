@@ -1794,6 +1794,63 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
+  it('preserves stalled root-cause diagnostics when non-active reconciliation cancels a run', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-nonactive-stalled',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      persistence
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-nonactive-stalled', identifier: 'ABC-STOP' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-nonactive-stalled', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for tool output',
+      thread_id: 'thread-stop',
+      turn_id: 'turn-stop',
+      session_id: 'session-stop'
+    });
+    harness.now.value += 2_000;
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-nonactive-stalled', identifier: 'ABC-STOP', state: 'Agent Review' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-nonactive-stalled',
+        cleanup_workspace: false,
+        reason: 'non_active_state_transition'
+      }
+    ]);
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        run_id: 'run-nonactive-stalled',
+        terminal_status: 'cancelled',
+        error_code: 'non_active_state_transition',
+        terminal_reason_code: 'non_active_state_transition',
+        root_cause_status: 'blocked',
+        root_cause_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+        root_cause_reason_detail: 'codex turn waiting: waiting for tool output',
+        root_cause_at: new Date(1_001_000).toISOString(),
+        session_id: 'session-stop',
+        thread_id: 'thread-stop',
+        turn_id: 'turn-stop'
+      })
+    ]);
+    expect(harness.orchestrator.getStateSnapshot().running.has('i-nonactive-stalled')).toBe(false);
+  });
+
   it('stops running worker with cleanup when state becomes terminal', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-terminal' })]);

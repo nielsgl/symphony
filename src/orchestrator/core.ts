@@ -4636,10 +4636,19 @@ export class OrchestratorCore {
     }
 
     try {
+      const rootCause = this.extractRootCauseDiagnostic(runningEntry, error_code);
       await this.persistence.completeRun({
         run_id: runningEntry.run_id,
         terminal_status,
-        error_code
+        error_code,
+        terminal_reason_code: error_code,
+        root_cause_status: rootCause.status,
+        root_cause_reason_code: rootCause.reason_code,
+        root_cause_reason_detail: rootCause.reason_detail,
+        root_cause_at: rootCause.at,
+        session_id: rootCause.session_id ?? runningEntry.session_id,
+        thread_id: rootCause.thread_id ?? runningEntry.thread_id ?? runningEntry.persisted_thread_id ?? null,
+        turn_id: rootCause.turn_id ?? runningEntry.turn_id ?? null
       });
     } catch {
       this.logger?.log({
@@ -4653,6 +4662,65 @@ export class OrchestratorCore {
         }
       });
     }
+  }
+
+  private extractRootCauseDiagnostic(
+    runningEntry: RunningEntry,
+    terminalReasonCode: string | null
+  ): {
+    status: 'blocked' | 'running' | null;
+    reason_code: string | null;
+    reason_detail: string | null;
+    at: string | null;
+    session_id: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+  } {
+    if (runningEntry.stalled_waiting_reason) {
+      return {
+        status: 'blocked',
+        reason_code: runningEntry.stalled_waiting_reason,
+        reason_detail: runningEntry.last_event_summary ?? runningEntry.last_message ?? null,
+        at:
+          typeof runningEntry.stalled_waiting_since_ms === 'number'
+            ? new Date(runningEntry.stalled_waiting_since_ms).toISOString()
+            : null,
+        session_id: runningEntry.session_id,
+        thread_id: runningEntry.thread_id ?? runningEntry.persisted_thread_id ?? null,
+        turn_id: runningEntry.turn_id
+      };
+    }
+
+    const outstandingToolCall = Object.values(runningEntry.outstanding_tool_calls ?? {}).sort(
+      (left, right) => left.started_at_ms - right.started_at_ms
+    )[0];
+    if (outstandingToolCall && terminalReasonCode !== REASON_CODES.missingToolOutput) {
+      return {
+        status: 'blocked',
+        reason_code: REASON_CODES.missingToolOutput,
+        reason_detail: [
+          `tool_name=${outstandingToolCall.tool_name}`,
+          `call_id=${outstandingToolCall.call_id}`,
+          `thread_id=${outstandingToolCall.thread_id ?? runningEntry.thread_id ?? 'unknown'}`,
+          `turn_id=${outstandingToolCall.turn_id ?? runningEntry.turn_id ?? 'unknown'}`,
+          `session_id=${outstandingToolCall.session_id ?? runningEntry.session_id ?? 'unknown'}`
+        ].join(' '),
+        at: new Date(outstandingToolCall.started_at_ms).toISOString(),
+        session_id: outstandingToolCall.session_id ?? runningEntry.session_id,
+        thread_id: outstandingToolCall.thread_id ?? runningEntry.thread_id ?? runningEntry.persisted_thread_id ?? null,
+        turn_id: outstandingToolCall.turn_id ?? runningEntry.turn_id
+      };
+    }
+
+    return {
+      status: null,
+      reason_code: null,
+      reason_detail: null,
+      at: null,
+      session_id: null,
+      thread_id: null,
+      turn_id: null
+    };
   }
 
 
