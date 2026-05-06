@@ -617,13 +617,14 @@ export class OrchestratorCore {
       }
       runningEntry.stalled_waiting_reason = null;
       this.maybeEmitHeartbeatOnly(issue_id, runningEntry, workerEvent.timestamp_ms);
-      this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
     } else if (this.shouldResetRunningWaitEpisode(workerEvent.event)) {
       runningEntry.running_waiting_started_at_ms = null;
       runningEntry.running_wait_stall_event_emitted = false;
       runningEntry.heartbeat_only_event_emitted = false;
       runningEntry.stalled_waiting_since_ms = null;
       runningEntry.stalled_waiting_reason = null;
+      runningEntry.last_progress_transition_at_ms = workerEvent.timestamp_ms;
+    } else if (this.isMeaningfulWorkerProgressEvent(workerEvent.event)) {
       runningEntry.last_progress_transition_at_ms = workerEvent.timestamp_ms;
     }
 
@@ -716,6 +717,9 @@ export class OrchestratorCore {
       runningEntry.token_telemetry_last_source = workerEvent.token_telemetry_last_source ?? 'worker_event_usage';
       runningEntry.token_telemetry_last_at_ms = workerEvent.token_telemetry_last_at_ms ?? workerEvent.timestamp_ms;
       if (totalDelta > 0) {
+        runningEntry.last_progress_transition_at_ms = runningEntry.token_telemetry_last_at_ms;
+      }
+      if (totalDelta > 0) {
         this.throughputTracker.observe({
           at_ms: workerEvent.timestamp_ms,
           tokens: totalDelta
@@ -739,6 +743,10 @@ export class OrchestratorCore {
     this.maybeEmitTokenTelemetryWarning(runningEntry, workerEvent.timestamp_ms);
     this.maybeEmitBudgetTelemetryUnavailable(runningEntry, workerEvent);
     this.maybeEnforceBudget(issue_id, runningEntry, workerEvent.timestamp_ms);
+
+    if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
+      this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
+    }
 
     if (workerEvent.rate_limits) {
       this.state.codex_rate_limits = { ...workerEvent.rate_limits };
@@ -2170,7 +2178,17 @@ export class OrchestratorCore {
       return;
     }
 
+    const previousTimestampMs = runningEntry.last_codex_timestamp_ms;
     runningEntry.last_codex_timestamp_ms = timestampMs;
+    const isFreshThreadActivity =
+      previousTimestampMs === null || previousTimestampMs === undefined || timestampMs > previousTimestampMs;
+    if (isFreshThreadActivity && runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting) {
+      const previousProgressAtMs = runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms;
+      if (timestampMs > previousProgressAtMs) {
+        runningEntry.last_progress_transition_at_ms = timestampMs;
+        runningEntry.stalled_waiting_reason = null;
+      }
+    }
   }
 
   private async reconcileStalledRuns(): Promise<void> {
@@ -3775,6 +3793,19 @@ export class OrchestratorCore {
     );
   }
 
+  private isMeaningfulWorkerProgressEvent(event: string): boolean {
+    return (
+      event === CANONICAL_EVENT.codex.phasePlanning ||
+      event === CANONICAL_EVENT.codex.phaseImplementation ||
+      event === CANONICAL_EVENT.codex.phaseValidation ||
+      event === CANONICAL_EVENT.codex.toolCallCompleted ||
+      event === CANONICAL_EVENT.codex.toolCallFailed ||
+      event === CANONICAL_EVENT.codex.approvalAutoApproved ||
+      event === CANONICAL_EVENT.codex.toolInputAutoAnswered ||
+      event === CANONICAL_EVENT.codex.sideOutput
+    );
+  }
+
   private maybeEmitHeartbeatOnly(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
     const thresholdMs = this.config.progress_heartbeat_only_warn_ms ?? 120_000;
     if (thresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
@@ -3805,7 +3836,12 @@ export class OrchestratorCore {
     const waitingStartedAtMs =
       runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
     runningEntry.running_waiting_started_at_ms = waitingStartedAtMs;
-    const thresholdCrossedAtMs = waitingStartedAtMs + waitThresholdMs;
+    const lastMeaningfulActivityAtMs =
+      typeof runningEntry.last_progress_transition_at_ms === 'number' &&
+      runningEntry.last_progress_transition_at_ms > waitingStartedAtMs
+        ? runningEntry.last_progress_transition_at_ms
+        : waitingStartedAtMs;
+    const thresholdCrossedAtMs = lastMeaningfulActivityAtMs + waitThresholdMs;
     runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
 
     if (observedAtMs < thresholdCrossedAtMs) {
