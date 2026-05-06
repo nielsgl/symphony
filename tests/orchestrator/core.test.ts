@@ -956,6 +956,32 @@ describe('OrchestratorCore', () => {
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-active-wait')).toBe(false);
   });
 
+  it('does not classify prolonged codex.turn.waiting as stalled when fresh thread activity is observed', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-active-thread', identifier: 'ABC-ACTIVE-THREAD' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-active-thread', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat',
+      thread_id: 'thread-active',
+      session_id: 'thread-active-turn-1'
+    });
+    harness.now.value += 750;
+    harness.orchestrator.updateCodexTimestamp('i-active-thread', harness.now.value);
+    harness.now.value += 500;
+    await harness.orchestrator.tick('interval');
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-active-thread');
+    expect(running?.stalled_waiting_reason).toBeNull();
+    expect(running?.stalled_waiting_since_ms).toBe(1_001_750);
+    expect(running?.last_progress_transition_at_ms).toBe(1_000_750);
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-active-thread')).toBe(false);
+  });
+
   it('emits stalled-wait threshold event once per waiting episode', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }

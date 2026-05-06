@@ -347,7 +347,7 @@ describe('SnapshotService', () => {
     expect(JSON.stringify(issue.operator_explainer)).toBe(JSON.stringify(service.projectIssue(state, 'ABC-1').operator_explainer));
   });
 
-  it('projects active long-running waiting turns as heartbeat-only without stalled-waiting blockers', () => {
+  it('projects active long-running waiting turns with fresh thread activity as heartbeat-only without stalled-waiting blockers', () => {
     const service = new SnapshotService({
       nowMs: () => Date.parse('2026-04-10T10:06:30.000Z')
     });
@@ -362,7 +362,7 @@ describe('SnapshotService', () => {
             running_waiting_started_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
             last_heartbeat_at_ms: Date.parse('2026-04-10T10:06:30.000Z'),
             last_codex_timestamp_ms: Date.parse('2026-04-10T10:06:30.000Z'),
-            last_progress_transition_at_ms: Date.parse('2026-04-10T10:06:00.000Z'),
+            last_progress_transition_at_ms: Date.parse('2026-04-10T10:06:30.000Z'),
             stalled_waiting_since_ms: Date.parse('2026-04-10T10:11:00.000Z'),
             stalled_waiting_reason: null,
             tokens: {
@@ -376,11 +376,6 @@ describe('SnapshotService', () => {
               total_tokens: 35
             },
             recent_events: [
-              {
-                at_ms: Date.parse('2026-04-10T10:06:00.000Z'),
-                event: CANONICAL_EVENT.codex.phaseImplementation,
-                message: 'running tool'
-              },
               {
                 at_ms: Date.parse('2026-04-10T10:06:30.000Z'),
                 event: CANONICAL_EVENT.codex.turnWaiting,

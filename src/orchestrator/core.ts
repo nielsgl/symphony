@@ -2178,7 +2178,17 @@ export class OrchestratorCore {
       return;
     }
 
+    const previousTimestampMs = runningEntry.last_codex_timestamp_ms;
     runningEntry.last_codex_timestamp_ms = timestampMs;
+    const isFreshThreadActivity =
+      previousTimestampMs === null || previousTimestampMs === undefined || timestampMs > previousTimestampMs;
+    if (isFreshThreadActivity && runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting) {
+      const previousProgressAtMs = runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms;
+      if (timestampMs > previousProgressAtMs) {
+        runningEntry.last_progress_transition_at_ms = timestampMs;
+        runningEntry.stalled_waiting_reason = null;
+      }
+    }
   }
 
   private async reconcileStalledRuns(): Promise<void> {

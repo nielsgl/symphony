@@ -52,7 +52,7 @@ function makeRunningEntry(overrides: Partial<RunningEntry> = {}): RunningEntry {
     stalled_waiting_since_ms: null,
     stalled_waiting_reason: null,
     running_waiting_started_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
-    last_progress_transition_at_ms: Date.parse('2026-04-10T10:06:00.000Z'),
+    last_progress_transition_at_ms: Date.parse('2026-04-10T10:06:30.000Z'),
     last_heartbeat_at_ms: Date.parse('2026-04-10T10:06:30.000Z'),
     heartbeat_only_event_emitted: true,
     running_wait_stall_event_emitted: false,
@@ -72,11 +72,6 @@ function makeRunningEntry(overrides: Partial<RunningEntry> = {}): RunningEntry {
     token_telemetry_turn_started_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
     token_telemetry_warning_emitted: false,
     recent_events: [
-      {
-        at_ms: Date.parse('2026-04-10T10:06:00.000Z'),
-        event: CANONICAL_EVENT.codex.phaseImplementation,
-        message: 'editing files'
-      },
       {
         at_ms: Date.parse('2026-04-10T10:06:30.000Z'),
         event: CANONICAL_EVENT.codex.turnWaiting,
@@ -191,7 +186,7 @@ describe('thread diagnostics blocker classification', () => {
     expect(blocker).toHaveProperty('expected_auto_transition');
   });
 
-  it('reports active long-running waiting turns as running with no blocker', () => {
+  it('reports active long-running waiting turns with fresh thread activity as running with no blocker', () => {
     const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
       state: makeState(makeRunningEntry()),
       issue_identifier: 'ABC-1'
