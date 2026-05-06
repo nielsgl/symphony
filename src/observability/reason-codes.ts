@@ -23,6 +23,11 @@ export interface ReasonCodeDefinition {
 
 export const REASON_CODES = {
   normalCompletion: 'normal_completion',
+  maxTurnsReached: 'max_turns_reached',
+  handoffStateReached: 'handoff_state_reached',
+  issueLeftActiveStates: 'issue_left_active_states',
+  issueStateMissing: 'issue_state_missing',
+  terminalStateReached: 'terminal_state_reached',
   dispatchStarted: 'dispatch_started',
   attemptStarted: 'attempt_started',
   codexSessionStarted: 'codex_session_started',
@@ -59,6 +64,56 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Run is progressing',
     detail: 'The worker completed normally and the orchestrator is continuing while the issue remains active.',
     expected_transition: 'Run continues until completion or a runtime signal changes state'
+  },
+  [REASON_CODES.maxTurnsReached]: {
+    reason_code: REASON_CODES.maxTurnsReached,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Max Turns Reached',
+    headline: 'Run turn budget reached',
+    detail: 'The worker completed normally after reaching the configured maximum turns for the current attempt.',
+    expected_transition: 'Orchestrator continuation may schedule the next attempt while the issue remains active'
+  },
+  [REASON_CODES.handoffStateReached]: {
+    reason_code: REASON_CODES.handoffStateReached,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Handoff State Reached',
+    headline: 'Run stopped at handoff',
+    detail: 'The worker completed normally and stopped because the refreshed issue state is configured as a handoff point.',
+    expected_transition: 'Separate handoff automation may dispatch the next workflow'
+  },
+  [REASON_CODES.issueLeftActiveStates]: {
+    reason_code: REASON_CODES.issueLeftActiveStates,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Issue Left Active States',
+    headline: 'Run stopped after state change',
+    detail: 'The worker completed normally and stopped because the refreshed issue state is no longer active.',
+    expected_transition: 'No same-workflow continuation is scheduled'
+  },
+  [REASON_CODES.issueStateMissing]: {
+    reason_code: REASON_CODES.issueStateMissing,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Issue State Missing',
+    headline: 'Run stopped after missing refresh result',
+    detail: 'The worker completed normally and stopped because the tracker refresh did not return the issue.',
+    expected_transition: 'No continuation is scheduled until the issue is visible again'
+  },
+  [REASON_CODES.terminalStateReached]: {
+    reason_code: REASON_CODES.terminalStateReached,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Terminal State Reached',
+    headline: 'Run stopped at terminal state',
+    detail: 'The worker completed normally and the refreshed issue state is terminal, so terminal cleanup applies.',
+    expected_transition: 'Workspace cleanup runs and no continuation is scheduled'
   },
   [REASON_CODES.dispatchStarted]: {
     reason_code: REASON_CODES.dispatchStarted,

@@ -9,6 +9,7 @@ import { REASON_CODES } from '../observability/reason-codes';
 import { buildCodexSpawnCommand } from '../codex/command-builder';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import type { WorkerCompletionReason } from './types';
 
 const DEFAULT_CONTINUATION_PROMPT =
   'Continue on the same thread for this issue. Focus on incremental progress and report outcomes clearly.';
@@ -29,7 +30,7 @@ export interface LocalWorkerRunInput {
 export interface LocalWorkerRunResult {
   reason: 'normal' | 'abnormal';
   session_id: string | null;
-  completion_reason?: 'max_turns_reached' | 'issue_state_missing' | 'handoff_state_reached' | 'issue_left_active_states';
+  completion_reason?: WorkerCompletionReason;
   refreshed_state?: string | null;
   error?: string;
   input_required_payload?: CodexInputRequestPayload;
@@ -133,7 +134,7 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
         return {
           reason: 'normal',
           session_id: lastSessionId,
-          completion_reason: 'max_turns_reached'
+          completion_reason: REASON_CODES.maxTurnsReached
         };
       }
 
@@ -152,16 +153,25 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
         return {
           reason: 'normal',
           session_id: lastSessionId,
-          completion_reason: 'issue_state_missing'
+          completion_reason: REASON_CODES.issueStateMissing
         };
       }
 
       const refreshedIssue = refreshedIssues.find((issue) => issue.id === currentIssue.id) ?? refreshedIssues[0];
+      if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.terminal_states)) {
+        return {
+          reason: 'normal',
+          session_id: lastSessionId,
+          completion_reason: REASON_CODES.terminalStateReached,
+          refreshed_state: refreshedIssue.state
+        };
+      }
+
       if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.handoff_states)) {
         return {
           reason: 'normal',
           session_id: lastSessionId,
-          completion_reason: 'handoff_state_reached',
+          completion_reason: REASON_CODES.handoffStateReached,
           refreshed_state: refreshedIssue.state
         };
       }
@@ -170,7 +180,7 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
         return {
           reason: 'normal',
           session_id: lastSessionId,
-          completion_reason: 'issue_left_active_states',
+          completion_reason: REASON_CODES.issueLeftActiveStates,
           refreshed_state: refreshedIssue?.state ?? null
         };
       }
@@ -178,11 +188,11 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       currentIssue = refreshedIssue;
     }
 
-    return {
-      reason: 'normal',
-      session_id: lastSessionId,
-      completion_reason: 'max_turns_reached'
-    };
+      return {
+        reason: 'normal',
+        session_id: lastSessionId,
+        completion_reason: REASON_CODES.maxTurnsReached
+      };
   } catch (error) {
     const workspaceConflictError = await renderWorkspaceConflictError(error, workspacePath);
     return {

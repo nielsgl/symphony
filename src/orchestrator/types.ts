@@ -7,6 +7,16 @@ import type { ExecutionGraphEntityStatus, RunTerminalStatus } from '../persisten
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
 export type WorkerExitReason = 'normal' | 'abnormal';
+export type WorkerCompletionReason =
+  | typeof REASON_CODES.maxTurnsReached
+  | typeof REASON_CODES.issueStateMissing
+  | typeof REASON_CODES.handoffStateReached
+  | typeof REASON_CODES.issueLeftActiveStates
+  | typeof REASON_CODES.terminalStateReached;
+export interface WorkerExitDetails {
+  completion_reason?: WorkerCompletionReason;
+  refreshed_state?: string | null;
+}
 export type RetryDelayType = 'continuation' | 'failure';
 export type BudgetHardLimitPolicy = 'block_requires_resume' | 'terminate_attempt';
 export type BudgetStatus = 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable';

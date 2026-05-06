@@ -25,6 +25,8 @@ import type {
   RetryEntry,
   RunningEntry,
   TickReason,
+  WorkerCompletionReason,
+  WorkerExitDetails,
   WorkerObservabilityEvent,
   WorkerExitReason
 } from './types';
@@ -994,6 +996,56 @@ export class OrchestratorCore {
     }
   }
 
+  private normalStopForWorkerCompletion(
+    completionReason: WorkerCompletionReason | null,
+    refreshedState: string | null
+  ): {
+    reason_code: string;
+    detail: string;
+    message: string;
+    cleanup_workspace: boolean;
+  } | null {
+    switch (completionReason) {
+      case REASON_CODES.handoffStateReached:
+        return {
+          reason_code: REASON_CODES.handoffStateReached,
+          detail: refreshedState
+            ? `worker completed after refreshed issue reached handoff state: ${refreshedState}`
+            : 'worker completed after refreshed issue reached a handoff state',
+          message: 'worker exit handled: completed at handoff state',
+          cleanup_workspace: false
+        };
+      case REASON_CODES.issueLeftActiveStates:
+        return {
+          reason_code: REASON_CODES.issueLeftActiveStates,
+          detail: refreshedState
+            ? `worker completed after refreshed issue left active states: ${refreshedState}`
+            : 'worker completed after refreshed issue left active states',
+          message: 'worker exit handled: completed after issue left active states',
+          cleanup_workspace: false
+        };
+      case REASON_CODES.issueStateMissing:
+        return {
+          reason_code: REASON_CODES.issueStateMissing,
+          detail: 'worker completed but tracker refresh did not return the issue',
+          message: 'worker exit handled: completed after missing issue refresh',
+          cleanup_workspace: false
+        };
+      case REASON_CODES.terminalStateReached:
+        return {
+          reason_code: REASON_CODES.terminalStateReached,
+          detail: refreshedState
+            ? `worker completed after refreshed issue reached terminal state: ${refreshedState}`
+            : 'worker completed after refreshed issue reached a terminal state',
+          message: 'worker exit handled: completed at terminal state',
+          cleanup_workspace: true
+        };
+      case REASON_CODES.maxTurnsReached:
+      case null:
+        return null;
+    }
+  }
+
   private async persistExecutionGraphStateTransition(
     runningEntry: RunningEntry,
     toStatus: string,
@@ -1507,7 +1559,12 @@ export class OrchestratorCore {
     this.ports.notifyObservers?.();
   }
 
-  async onWorkerExit(issue_id: string, reason: WorkerExitReason, error?: string): Promise<void> {
+  async onWorkerExit(
+    issue_id: string,
+    reason: WorkerExitReason,
+    error?: string,
+    details: WorkerExitDetails = {}
+  ): Promise<void> {
     const running = this.state.running.get(issue_id);
     if (!running) {
       return;
@@ -1518,6 +1575,53 @@ export class OrchestratorCore {
     this.recordBudgetUsageSample(issue_id, running.tokens.total_tokens, this.nowMs());
 
     if (reason === 'normal') {
+      const completionReason = details.completion_reason ?? null;
+      const normalStop = this.normalStopForWorkerCompletion(completionReason, details.refreshed_state ?? null);
+      if (normalStop) {
+        this.emitPhaseMarker(issue_id, {
+          phase: 'completed',
+          detail: normalStop.detail,
+          attempt: running.retry_attempt,
+          thread_id: running.thread_id,
+          session_id: running.session_id
+        });
+        if (normalStop.cleanup_workspace) {
+          await this.ports.terminateWorker({
+            issue_id,
+            worker_handle: running.worker_handle,
+            cleanup_workspace: true,
+            reason: 'terminal_state_transition'
+          });
+        }
+        await this.completeRunRecord(running, 'succeeded', null);
+        await this.persistExecutionGraphStateTransition(
+          running,
+          'succeeded',
+          'succeeded',
+          normalStop.reason_code,
+          normalStop.detail
+        );
+        this.state.completed.add(issue_id);
+        this.logger?.log({
+          level: 'info',
+          event: CANONICAL_EVENT.orchestration.workerExitHandled,
+          message: normalStop.message,
+          context: {
+            issue_id,
+            issue_identifier: running.identifier,
+            session_id: running.session_id,
+            reason,
+            outcome: 'completed',
+            completion_reason: completionReason,
+            refreshed_state: details.refreshed_state ?? null,
+            stop_reason_code: normalStop.reason_code,
+            cleanup_workspace: normalStop.cleanup_workspace
+          }
+        });
+        this.ports.notifyObservers?.();
+        return;
+      }
+
       this.emitPhaseMarker(issue_id, {
         phase: 'completed',
         detail: 'worker exited normally',

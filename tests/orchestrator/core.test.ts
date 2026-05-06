@@ -255,6 +255,71 @@ describe('OrchestratorCore', () => {
     expect(retryEntry?.due_at_ms).toBe(harness.now.value + 1000);
   });
 
+  it('does not schedule continuation retry when normal exit reached a handoff state', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-handoff' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit('i-handoff', 'normal', undefined, {
+      completion_reason: 'handoff_state_reached',
+      refreshed_state: 'Agent Review'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-handoff')).toBe(false);
+    expect(snapshot.completed.has('i-handoff')).toBe(true);
+    expect(harness.terminated).toEqual([]);
+  });
+
+  it('does not schedule continuation retry when normal exit left active states', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-paused' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit('i-paused', 'normal', undefined, {
+      completion_reason: 'issue_left_active_states',
+      refreshed_state: 'Paused'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-paused')).toBe(false);
+    expect(snapshot.completed.has('i-paused')).toBe(true);
+    expect(harness.terminated).toEqual([]);
+  });
+
+  it('does not schedule continuation retry when normal exit has no refreshed issue', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-missing-refresh' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit('i-missing-refresh', 'normal', undefined, {
+      completion_reason: 'issue_state_missing'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-missing-refresh')).toBe(false);
+    expect(snapshot.completed.has('i-missing-refresh')).toBe(true);
+    expect(harness.terminated).toEqual([]);
+  });
+
+  it('applies terminal cleanup without scheduling continuation when normal exit reached a terminal state', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-terminal' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit('i-terminal', 'normal', undefined, {
+      completion_reason: 'terminal_state_reached',
+      refreshed_state: 'Done'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-terminal')).toBe(false);
+    expect(snapshot.completed.has('i-terminal')).toBe(true);
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-terminal', cleanup_workspace: true, reason: 'terminal_state_transition' }
+    ]);
+  });
+
   it('moves abnormal retry to blocked no-progress state when redispatch gate fails', async () => {
     const harness = createHarness({ configOverrides: { max_retry_backoff_ms: 25_000 } });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);

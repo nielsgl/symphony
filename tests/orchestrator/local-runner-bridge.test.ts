@@ -676,6 +676,111 @@ describe('LocalRunnerBridge integration', () => {
     expect(completed?.context.session_id).toBe('thread-1-turn-1');
   });
 
+  it('does not schedule orchestrator continuation when a worker completes at an active handoff state', async () => {
+    const issue = makeIssue({ state: 'In Progress' });
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+
+    const startSessionAndRunTurn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        session_id: 'thread-1-turn-1',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      })
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-2',
+        turn_id: 'turn-2',
+        session_id: 'thread-2-turn-2',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      });
+
+    const workspaceManager = {
+      ensureWorkspace,
+      prepareAttempt,
+      finalizeAttempt,
+      cleanupWorkspace
+    } as unknown as WorkspaceManager;
+    const codexRunner = { startSessionAndRunTurn } as unknown as CodexRunner;
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => [issue]),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => [makeIssue({ id: issue.id, state: 'Agent Review' })]),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    let orchestrator!: OrchestratorCore;
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const bridgeConfig = makeConfig();
+    bridgeConfig.agent.max_turns = 5;
+    bridgeConfig.tracker.active_states = ['Todo', 'In Progress', 'Agent Review'];
+    bridgeConfig.tracker.handoff_states = ['Agent Review'];
+    const bridge = new LocalRunnerBridge({
+      workspaceManager,
+      codexRunner,
+      config: bridgeConfig,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      issueStateFetcher: (issueIds) => tracker.fetch_issue_states_by_ids(issueIds),
+      logger,
+      onWorkerExit: async ({ issue_id, reason, error, completion_reason, refreshed_state }) => {
+        await orchestrator.onWorkerExit(issue_id, reason, error, { completion_reason, refreshed_state });
+      }
+    });
+
+    const ports: OrchestratorPorts = {
+      tracker,
+      dispatchPreflight: () => ({ dispatch_allowed: true }),
+      spawnWorker: (params) => bridge.spawnWorker(params),
+      terminateWorker: async () => {},
+      scheduleRetryTimer: ({ issue_id }) => ({ issue_id }),
+      cancelRetryTimer: () => {}
+    };
+
+    const config: OrchestratorConfig = {
+      poll_interval_ms: 30000,
+      max_concurrent_agents: 2,
+      max_concurrent_agents_by_state: {},
+      max_retry_backoff_ms: 300000,
+      active_states: ['Todo', 'In Progress', 'Agent Review'],
+      terminal_states: ['Done'],
+      stall_timeout_ms: 300000
+    };
+
+    orchestrator = new OrchestratorCore({ config, ports, logger });
+    await orchestrator.tick('interval');
+    await flush();
+
+    const snapshot = orchestrator.getStateSnapshot();
+    expect(startSessionAndRunTurn).toHaveBeenCalledTimes(1);
+    expect(snapshot.retry_attempts.has('i-1')).toBe(false);
+    expect(snapshot.completed.has('i-1')).toBe(true);
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+
+    const completed = logs.find((entry) => entry.event === CANONICAL_EVENT.agentRunner.attemptCompleted);
+    expect(completed?.context).toMatchObject({
+      issue_id: 'i-1',
+      completion_reason: 'handoff_state_reached',
+      refreshed_state: 'Agent Review'
+    });
+    const handled = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerExitHandled);
+    expect(handled?.context).toMatchObject({
+      issue_id: 'i-1',
+      outcome: 'completed',
+      stop_reason_code: 'handoff_state_reached'
+    });
+  });
+
   it('invokes workspace cleanup helper when terminateWorker requests cleanup', async () => {
     const issue = makeIssue();
     const pending = new Promise<never>(() => {
