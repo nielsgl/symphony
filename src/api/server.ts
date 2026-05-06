@@ -8,6 +8,12 @@ import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { createApiDegradedDiagnostics } from './runtime-visibility';
 import { SnapshotService } from './snapshot-service';
+import {
+  buildTelemetryQueryResponse,
+  buildTelemetrySummaryResponse,
+  parseTelemetryQuery,
+  TelemetryQueryError
+} from './telemetry';
 import { buildThreadDiagnosticsByIssueIdentifier, buildThreadDiagnosticsByThreadId } from './thread-diagnostics';
 import type {
   ApiDiagnosticsResponse,
@@ -494,6 +500,50 @@ export class LocalApiServer {
                 accepted: payload
               });
               sendJson(response, 202, payload);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/telemetry\/summary$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (request, response) => {
+              const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+              const filters = parseTelemetryQuery(requestUrl);
+              const payload = this.buildStateSnapshotResponse();
+              if ('error' in payload) {
+                sendJson(response, 503, payload);
+                return;
+              }
+              sendJson(response, 200, buildTelemetrySummaryResponse({
+                state: payload,
+                diagnosticsSource: this.diagnosticsSource,
+                filters
+              }));
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/telemetry\/query$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (request, response) => {
+              const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+              const filters = parseTelemetryQuery(requestUrl);
+              const payload = this.buildStateSnapshotResponse();
+              if ('error' in payload) {
+                sendJson(response, 503, payload);
+                return;
+              }
+              sendJson(response, 200, buildTelemetryQueryResponse({
+                state: payload,
+                diagnosticsSource: this.diagnosticsSource,
+                filters
+              }));
             }
           }
         ]
@@ -1071,6 +1121,11 @@ export class LocalApiServer {
     try {
       await matchingMethodRoute.handler(req, res, endpointMatch.match);
     } catch (error) {
+      if (error instanceof TelemetryQueryError) {
+        sendError(res, 400, error.code, error.message);
+        return;
+      }
+
       if (error instanceof LocalApiError) {
         this.logger?.log({
           level: 'warn',
