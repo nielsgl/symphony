@@ -23,6 +23,7 @@ export const CANONICAL_EVENT = {
     startupFailed: 'codex.startup.failed',
     approvalAutoApproved: 'codex.approval.auto_approved',
     toolInputAutoAnswered: 'codex.tool_input.auto_answered',
+    toolCallStarted: 'codex.tool.started',
     toolCallCompleted: 'codex.tool.completed',
     toolCallFailed: 'codex.tool.failed',
     dynamicToolCapabilityMismatch: 'codex.tool.dynamic_capability_mismatch',

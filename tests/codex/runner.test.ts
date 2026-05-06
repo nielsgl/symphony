@@ -581,6 +581,7 @@ describe('CodexRunner', () => {
   it('executes supported dynamic tool calls and returns tool output payload', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
+    const events: Array<{ event: string; detail?: string; tool_call_id?: string; tool_name?: string }> = [];
     const runner = new CodexRunner({
       spawnProcess: () => fake,
       dynamicToolExecutor: {
@@ -593,7 +594,7 @@ describe('CodexRunner', () => {
       }
     });
 
-    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd, { onEvent: (event) => events.push(event) }));
     fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
@@ -610,6 +611,22 @@ describe('CodexRunner', () => {
         contentItems: [{ type: 'inputText', text: '{"ok":true}' }]
       }
     });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.toolCallStarted,
+          detail: 'linear_graphql',
+          tool_call_id: '100',
+          tool_name: 'linear_graphql'
+        }),
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.toolCallCompleted,
+          detail: 'linear_graphql',
+          tool_call_id: '100',
+          tool_name: 'linear_graphql'
+        })
+      ])
+    );
   });
 
   it('emits failed dynamic tool response without stalling when supported tool execution fails', async () => {

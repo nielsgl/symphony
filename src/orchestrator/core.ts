@@ -21,6 +21,7 @@ import type {
   OperatorActionRecord,
   OrchestratorOptions,
   OrchestratorState,
+  OutstandingToolCall,
   PhaseMarkerSettings,
   RetryDelayType,
   RetryEntry,
@@ -128,6 +129,9 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     current_phase: entry.current_phase,
     current_phase_at_ms: entry.current_phase_at_ms,
     phase_detail: entry.phase_detail,
+    outstanding_tool_calls: Object.fromEntries(
+      Object.entries(entry.outstanding_tool_calls ?? {}).map(([callId, call]) => [callId, { ...call }])
+    ),
     budget: entry.budget ? { ...entry.budget } : undefined
   };
 }
@@ -229,6 +233,12 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
             ...question,
             options: question.options ? question.options.map((option) => ({ ...option })) : undefined
           }))
+        }
+      : null,
+    tool_output_wait: entry.tool_output_wait
+      ? {
+          ...entry.tool_output_wait,
+          recommended_actions: [...entry.tool_output_wait.recommended_actions]
         }
       : null,
     session_console: (entry.session_console ?? []).map((event) => ({ ...event })),
@@ -680,6 +690,8 @@ export class OrchestratorCore {
       }
     }
 
+    this.updateOutstandingToolCalls(runningEntry, workerEvent);
+
     if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
       runningEntry.turn_count += 1;
       runningEntry.token_telemetry_status = 'pending';
@@ -757,7 +769,7 @@ export class OrchestratorCore {
     this.maybeEnforceBudget(issue_id, runningEntry, workerEvent.timestamp_ms);
 
     if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
-      this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
+      void this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
     }
 
     if (workerEvent.rate_limits) {
@@ -975,11 +987,16 @@ export class OrchestratorCore {
   private toolNameForWorkerEvent(workerEvent: WorkerObservabilityEvent): string | null {
     if (
       workerEvent.event !== CANONICAL_EVENT.codex.toolCallCompleted &&
+      workerEvent.event !== CANONICAL_EVENT.codex.toolCallStarted &&
       workerEvent.event !== CANONICAL_EVENT.codex.toolCallFailed &&
       workerEvent.event !== CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch &&
       workerEvent.event !== CANONICAL_EVENT.codex.unsupportedToolCall
     ) {
       return null;
+    }
+    const explicit = workerEvent.tool_name?.trim();
+    if (explicit) {
+      return explicit;
     }
     const mismatch = parseDynamicToolCapabilityMismatchDetail(workerEvent.detail);
     if (mismatch?.attempted_tool_name) {
@@ -2290,6 +2307,9 @@ export class OrchestratorCore {
 
       const issue = refreshedById.get(issueId);
       if (!issue || isTerminalState(issue.state, this.config) || !isActiveState(issue.state, this.config)) {
+        if (blocked.stop_reason_code === REASON_CODES.missingToolOutput) {
+          continue;
+        }
         this.clearBlockedInput(issueId, issue ? 'issue_no_longer_active' : 'issue_not_found');
       }
     }
@@ -2325,7 +2345,10 @@ export class OrchestratorCore {
         runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting
       ) {
         this.maybeEmitHeartbeatOnly(issueId, runningEntry, now);
-        this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
+        const handledAsBlocked = await this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
+        if (handledAsBlocked) {
+          continue;
+        }
       }
       if (runningEntry.last_event && this.shouldResetRunningWaitEpisode(runningEntry.last_event)) {
         runningEntry.running_waiting_started_at_ms = null;
@@ -2839,6 +2862,7 @@ export class OrchestratorCore {
       prompt_text: string | null;
       questions: Array<{ id: string; prompt?: string; options?: Array<{ label: string; value?: string }> }>;
     } | null;
+    tool_output_wait?: BlockedEntry['tool_output_wait'];
     session_console?: Array<{ at_ms: number; event: string; message: string | null }>;
     previous_thread_id: string | null;
     previous_session_id: string | null;
@@ -2926,6 +2950,12 @@ export class OrchestratorCore {
         : null,
       last_input_submit: null,
       resume_history: [],
+      tool_output_wait: params.tool_output_wait
+        ? {
+            ...params.tool_output_wait,
+            recommended_actions: [...params.tool_output_wait.recommended_actions]
+          }
+        : null,
       session_console: (params.session_console ?? []).slice(-40),
       quarantined_events: [],
       quarantined_event_count: 0,
@@ -4348,6 +4378,76 @@ export class OrchestratorCore {
     );
   }
 
+  private updateOutstandingToolCalls(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
+    if (workerEvent.event === CANONICAL_EVENT.codex.toolCallStarted) {
+      const callId = this.resolveToolCallId(workerEvent);
+      if (!callId) {
+        return;
+      }
+      const calls = runningEntry.outstanding_tool_calls ?? {};
+      calls[callId] = {
+        call_id: callId,
+        tool_name: this.resolveToolName(workerEvent),
+        thread_id: workerEvent.thread_id ?? runningEntry.thread_id ?? null,
+        turn_id: workerEvent.turn_id ?? runningEntry.turn_id ?? null,
+        session_id: workerEvent.session_id ?? runningEntry.session_id ?? null,
+        started_at_ms: workerEvent.timestamp_ms,
+        last_waiting_at_ms: null,
+        last_agent_message: runningEntry.last_message ?? null
+      };
+      runningEntry.outstanding_tool_calls = calls;
+      return;
+    }
+
+    if (
+      workerEvent.event === CANONICAL_EVENT.codex.toolCallCompleted ||
+      workerEvent.event === CANONICAL_EVENT.codex.toolCallFailed ||
+      workerEvent.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch ||
+      workerEvent.event === CANONICAL_EVENT.codex.unsupportedToolCall
+    ) {
+      const callId = this.resolveToolCallId(workerEvent);
+      if (!callId || !runningEntry.outstanding_tool_calls) {
+        return;
+      }
+      delete runningEntry.outstanding_tool_calls[callId];
+      return;
+    }
+
+    if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting && runningEntry.outstanding_tool_calls) {
+      for (const call of Object.values(runningEntry.outstanding_tool_calls)) {
+        call.last_waiting_at_ms = workerEvent.timestamp_ms;
+        call.last_agent_message = workerEvent.detail ?? runningEntry.last_message ?? call.last_agent_message;
+      }
+    }
+  }
+
+  private resolveToolCallId(workerEvent: WorkerObservabilityEvent): string | null {
+    const explicit = workerEvent.tool_call_id?.trim();
+    if (explicit) {
+      return explicit;
+    }
+
+    const detail = workerEvent.detail?.trim();
+    if (!detail) {
+      return null;
+    }
+    const mismatch = parseDynamicToolCapabilityMismatchDetail(detail);
+    if (mismatch?.call_id) {
+      return mismatch.call_id;
+    }
+    const match = detail.match(/\b(?:call_id|callId|id)=([^\s,]+)/);
+    return match?.[1] ?? null;
+  }
+
+  private resolveToolName(workerEvent: WorkerObservabilityEvent): string {
+    const explicit = workerEvent.tool_name?.trim();
+    if (explicit) {
+      return explicit;
+    }
+    const detail = workerEvent.detail?.trim();
+    return detail && detail.length > 0 ? detail : 'unknown_tool';
+  }
+
   private maybeEmitHeartbeatOnly(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
     const thresholdMs = this.config.progress_heartbeat_only_warn_ms ?? 120_000;
     if (thresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
@@ -4369,10 +4469,14 @@ export class OrchestratorCore {
     });
   }
 
-  private maybeClassifyRunningWaitStall(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
+  private async maybeClassifyRunningWaitStall(
+    issueId: string,
+    runningEntry: RunningEntry,
+    observedAtMs: number
+  ): Promise<boolean> {
     const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
     if (waitThresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
-      return;
+      return false;
     }
 
     const waitingStartedAtMs =
@@ -4388,12 +4492,17 @@ export class OrchestratorCore {
 
     if (observedAtMs < thresholdCrossedAtMs) {
       runningEntry.stalled_waiting_reason = null;
-      return;
+      return false;
     }
 
     runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
+    const missingToolOutput = this.findMissingToolOutputCandidate(runningEntry, thresholdCrossedAtMs);
+    if (missingToolOutput) {
+      await this.blockMissingToolOutput(issueId, runningEntry, missingToolOutput, observedAtMs);
+      return true;
+    }
     if (runningEntry.running_wait_stall_event_emitted) {
-      return;
+      return false;
     }
 
     runningEntry.running_wait_stall_event_emitted = true;
@@ -4412,6 +4521,109 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
     });
+    return false;
+  }
+
+  private findMissingToolOutputCandidate(
+    runningEntry: RunningEntry,
+    thresholdCrossedAtMs: number
+  ): OutstandingToolCall | null {
+    const calls = Object.values(runningEntry.outstanding_tool_calls ?? {});
+    if (calls.length === 0) {
+      return null;
+    }
+    const eligible = calls
+      .filter((call) => call.started_at_ms <= thresholdCrossedAtMs)
+      .sort((left, right) => left.started_at_ms - right.started_at_ms);
+    return eligible[0] ?? null;
+  }
+
+  private async blockMissingToolOutput(
+    issueId: string,
+    runningEntry: RunningEntry,
+    missingToolOutput: OutstandingToolCall,
+    observedAtMs: number
+  ): Promise<void> {
+    if (!this.state.running.has(issueId) || this.state.blocked_inputs.has(issueId)) {
+      return;
+    }
+
+    const elapsedWaitMs = Math.max(0, observedAtMs - missingToolOutput.started_at_ms);
+    const recommendedActions = ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run'];
+    const diagnostic = {
+      tool_name: missingToolOutput.tool_name,
+      call_id: missingToolOutput.call_id,
+      thread_id: missingToolOutput.thread_id ?? runningEntry.thread_id ?? null,
+      turn_id: missingToolOutput.turn_id ?? runningEntry.turn_id ?? null,
+      session_id: missingToolOutput.session_id ?? runningEntry.session_id ?? null,
+      elapsed_wait_ms: elapsedWaitMs,
+      last_agent_message: missingToolOutput.last_agent_message ?? runningEntry.last_message ?? null,
+      recommended_actions: recommendedActions
+    };
+    const detail = [
+      `tool_name=${diagnostic.tool_name}`,
+      `call_id=${diagnostic.call_id}`,
+      `thread_id=${diagnostic.thread_id ?? 'unknown'}`,
+      `turn_id=${diagnostic.turn_id ?? 'unknown'}`,
+      `session_id=${diagnostic.session_id ?? 'unknown'}`,
+      `elapsed_wait_ms=${diagnostic.elapsed_wait_ms}`
+    ].join(' ');
+
+    await this.ports.terminateWorker({
+      issue_id: issueId,
+      worker_handle: runningEntry.worker_handle,
+      cleanup_workspace: false,
+      reason: REASON_CODES.missingToolOutput
+    });
+
+    this.addRuntimeSecondsFromEntry(runningEntry);
+    await this.completeRunRecord(runningEntry, 'cancelled', REASON_CODES.missingToolOutput);
+    this.state.running.delete(issueId);
+
+    await this.scheduleBlockedInput({
+      issue_id: issueId,
+      issue_identifier: runningEntry.identifier,
+      attempt: runningEntry.retry_attempt + 1,
+      issue_run_id: runningEntry.issue_run_id ?? null,
+      previous_attempt_id: runningEntry.attempt_id ?? null,
+      worker_host: runningEntry.worker_host ?? null,
+      workspace_path: runningEntry.workspace_path ?? null,
+      provisioner_type: runningEntry.provisioner_type ?? null,
+      branch_name: runningEntry.branch_name ?? null,
+      repo_root: runningEntry.repo_root ?? null,
+      workspace_exists: runningEntry.workspace_exists,
+      workspace_git_status: runningEntry.workspace_git_status,
+      workspace_provisioned: runningEntry.workspace_provisioned,
+      workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
+      copy_ignored_applied: runningEntry.copy_ignored_applied,
+      copy_ignored_status: runningEntry.copy_ignored_status,
+      copy_ignored_summary: runningEntry.copy_ignored_summary,
+      stop_reason_code: REASON_CODES.missingToolOutput,
+      stop_reason_detail: detail,
+      resolution_hints: recommendedActions,
+      required_actions: recommendedActions,
+      session_console: runningEntry.recent_events,
+      previous_thread_id: diagnostic.thread_id,
+      previous_session_id: diagnostic.session_id,
+      last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
+      tool_output_wait: diagnostic
+    });
+
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.blockedInputScheduled,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: diagnostic.session_id ?? undefined,
+      detail
+    });
+    await this.persistExecutionGraphStateTransition(
+      runningEntry,
+      'blocked',
+      'blocked',
+      REASON_CODES.missingToolOutput,
+      detail
+    );
+    this.ports.notifyObservers?.();
   }
 
   private async completeRunRecord(

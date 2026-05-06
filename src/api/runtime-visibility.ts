@@ -80,7 +80,8 @@ export function resolveBlockedProgressSignal(entry: BlockedEntry): {
 } {
   if (
     entry.stop_reason_code === REASON_CODES.operatorNoProgressRedispatchBlocked ||
-    entry.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete
+    entry.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete ||
+    entry.stop_reason_code === REASON_CODES.missingToolOutput
   ) {
     return {
       progress_signal_state: 'stalled_waiting',

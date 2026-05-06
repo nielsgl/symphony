@@ -102,6 +102,18 @@ export interface RunningEntry {
   current_phase?: PhaseMarkerName | null;
   current_phase_at_ms?: number | null;
   phase_detail?: string | null;
+  outstanding_tool_calls?: Record<string, OutstandingToolCall>;
+}
+
+export interface OutstandingToolCall {
+  call_id: string;
+  tool_name: string;
+  thread_id: string | null;
+  turn_id: string | null;
+  session_id: string | null;
+  started_at_ms: number;
+  last_waiting_at_ms: number | null;
+  last_agent_message: string | null;
 }
 
 export type OperatorActionType = 'cancel' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
@@ -272,6 +284,16 @@ export interface BlockedEntry {
     event: string;
     message: string | null;
   }>;
+  tool_output_wait?: {
+    tool_name: string;
+    call_id: string;
+    thread_id: string | null;
+    turn_id: string | null;
+    session_id: string | null;
+    elapsed_wait_ms: number;
+    last_agent_message: string | null;
+    recommended_actions: string[];
+  } | null;
   quarantined_events?: Array<{
     at_ms: number;
     event: string;
@@ -548,6 +570,8 @@ export interface WorkerObservabilityEvent {
   token_telemetry_last_source?: string | null;
   token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
+  tool_call_id?: string;
+  tool_name?: string;
 }
 
 export interface OrchestratorConfig {
