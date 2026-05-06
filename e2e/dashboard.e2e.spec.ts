@@ -266,6 +266,7 @@ test.describe('phase-marker dashboard e2e', () => {
             phase_elapsed_ms: 120000,
             phase_detail: 'waiting heartbeat',
             awaiting_input: false,
+            progress_signal_state: 'stalled_waiting',
             stalled_waiting: true,
             stalled_waiting_since_ms: Date.parse('2026-04-30T09:59:00.000Z'),
             stalled_waiting_reason: 'turn_waiting_threshold_exceeded',
@@ -337,6 +338,14 @@ test.describe('phase-marker dashboard e2e', () => {
     });
 
     await page.goto('/');
+
+    const stalledStateCell = page.locator('tr[data-issue="NIE-49"] td').nth(1);
+    await expect(stalledStateCell).toContainText('Stalled Waiting');
+    await expect(stalledStateCell).toContainText('Run is alive but waiting too long');
+    await expect.poll(async () => (await stalledStateCell.textContent())?.match(/Stalled Waiting/g)?.length ?? 0).toBe(1);
+    await expect
+      .poll(async () => (await stalledStateCell.textContent())?.match(/Run is alive but waiting too long/g)?.length ?? 0)
+      .toBe(1);
 
     await expect(page.locator('#kpi-grid')).toContainText('Stalled Waiting');
     await expect(page.locator('#kpi-grid')).toContainText('Awaiting Input');
