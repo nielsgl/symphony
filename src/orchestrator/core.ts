@@ -766,7 +766,7 @@ export class OrchestratorCore {
     this.maybeEnforceBudget(issue_id, runningEntry, workerEvent.timestamp_ms);
 
     if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
-      this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
+      void this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
     }
 
     if (workerEvent.rate_limits) {
@@ -2226,7 +2226,10 @@ export class OrchestratorCore {
         runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting
       ) {
         this.maybeEmitHeartbeatOnly(issueId, runningEntry, now);
-        this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
+        const handledAsBlocked = await this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
+        if (handledAsBlocked) {
+          continue;
+        }
       }
       if (runningEntry.last_event && this.shouldResetRunningWaitEpisode(runningEntry.last_event)) {
         runningEntry.running_waiting_started_at_ms = null;
@@ -4341,10 +4344,14 @@ export class OrchestratorCore {
     });
   }
 
-  private maybeClassifyRunningWaitStall(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
+  private async maybeClassifyRunningWaitStall(
+    issueId: string,
+    runningEntry: RunningEntry,
+    observedAtMs: number
+  ): Promise<boolean> {
     const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
     if (waitThresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
-      return;
+      return false;
     }
 
     const waitingStartedAtMs =
@@ -4360,17 +4367,17 @@ export class OrchestratorCore {
 
     if (observedAtMs < thresholdCrossedAtMs) {
       runningEntry.stalled_waiting_reason = null;
-      return;
+      return false;
     }
 
     runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
     const missingToolOutput = this.findMissingToolOutputCandidate(runningEntry, thresholdCrossedAtMs);
     if (missingToolOutput) {
-      void this.blockMissingToolOutput(issueId, runningEntry, missingToolOutput, observedAtMs);
-      return;
+      await this.blockMissingToolOutput(issueId, runningEntry, missingToolOutput, observedAtMs);
+      return true;
     }
     if (runningEntry.running_wait_stall_event_emitted) {
-      return;
+      return false;
     }
 
     runningEntry.running_wait_stall_event_emitted = true;
@@ -4389,6 +4396,7 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
     });
+    return false;
   }
 
   private findMissingToolOutputCandidate(

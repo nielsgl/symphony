@@ -1265,6 +1265,71 @@ describe('OrchestratorCore', () => {
     });
   });
 
+  it('keeps missing tool output from being overwritten by generic stall timeout in the same tick', async () => {
+    const completedRuns: Array<{ terminal_status: string; error_code: string | null }> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-missing-timeout',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async ({ terminal_status, error_code }) => {
+        completedRuns.push({ terminal_status, error_code: error_code ?? null });
+      }
+    };
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 1_000 },
+      persistence
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-missing-timeout', identifier: 'ABC-MISS-TIMEOUT' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-missing-timeout', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_graphql',
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_timeout_collision',
+      thread_id: 'thread-timeout',
+      turn_id: 'turn-timeout',
+      session_id: 'session-timeout'
+    });
+    harness.orchestrator.onWorkerEvent('i-missing-timeout', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for linear_graphql output',
+      thread_id: 'thread-timeout',
+      turn_id: 'turn-timeout',
+      session_id: 'session-timeout'
+    });
+
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const blocked = snapshot.blocked_inputs.get('i-missing-timeout');
+    expect(blocked?.stop_reason_code).toBe(REASON_CODES.missingToolOutput);
+    expect(blocked?.requires_manual_resume).toBe(true);
+    expect(blocked?.tool_output_wait).toMatchObject({
+      tool_name: 'linear_graphql',
+      call_id: 'call_timeout_collision',
+      thread_id: 'thread-timeout',
+      turn_id: 'turn-timeout',
+      session_id: 'session-timeout'
+    });
+    expect(snapshot.running.has('i-missing-timeout')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-missing-timeout')).toBe(false);
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-missing-timeout', cleanup_workspace: false, reason: REASON_CODES.missingToolOutput }
+    ]);
+    expect(completedRuns).toEqual([{ terminal_status: 'cancelled', error_code: REASON_CODES.missingToolOutput }]);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (entry) =>
+          entry.event === CANONICAL_EVENT.orchestration.workerStalled && entry.issue_identifier === 'ABC-MISS-TIMEOUT'
+      )
+    ).toBe(false);
+  });
+
   it('does not block when matching tool output arrives before the waiting threshold', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
