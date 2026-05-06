@@ -1,5 +1,7 @@
-#!/usr/bin/env python3
-from __future__ import annotations
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# ///
 
 import asyncio
 import json

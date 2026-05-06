@@ -43,7 +43,7 @@ description:
 9.1 Before final merge, run the governed submit wrapper so body normalization and evidence gates are enforced at submit boundary:
    - `npm run submit:pr-governed -- --mode edit`
    - Wrapper sequence is mandatory: normalize body -> `check:pr-governance` -> `check:meta` -> `gh pr edit --body-file <normalized-file>`.
-   - Any `output/playwright/*` references require per-artifact markdown publication evidence (`publish_reference` or `published_url` pointing to a Linear issue comment or GitHub PR comment) or merge is blocked.
+   - Any `output/playwright/*` references must be replaced with the Linear issue evidence comment created by the `linear-ui-evidence` skill or merge is blocked.
 10. **Context guard:** Before implementing review feedback, confirm it does not
     conflict with the user’s stated intent or task context. If it conflicts,
     respond inline with a justification and ask the user before changing code.
@@ -109,7 +109,7 @@ Preferred: use the asyncio watcher to monitor review comments, CI, and head
 updates in parallel:
 
 ```bash
-python3 .codex/skills/land/land_watch.py
+uv run .codex/skills/land/scripts/land_watch.py
 ```
 
 Exit codes:
