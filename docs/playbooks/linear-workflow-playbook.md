@@ -108,6 +108,9 @@ tracker:
   active_states:
     - Todo
     - In Progress
+    - Agent Review
+    - Merging
+    - Rework
   terminal_states:
     - Done
     - Canceled
@@ -140,6 +143,26 @@ Important behavior:
 - If server.port is omitted and no CLI/env port is provided, HTTP API is disabled.
 - Prompt template body below front matter is rendered per issue and attempt.
 - If you use `workspace.provisioner.type: worktree`, both sandbox values must be `danger-full-access`.
+
+Recommended lifecycle:
+
+```text
+Todo -> In Progress -> Agent Review -> Merging -> Done
+Todo -> In Progress -> Agent Review -> Human Review -> Merging -> Done
+```
+
+`Agent Review` is automation-owned. Implementation agents move completed work
+there first; a separate reviewer then routes the issue:
+
+- `Agent Review -> In Progress` for fixable review findings.
+- `Agent Review -> Rework` when the implementation needs a fresh approach.
+- `Agent Review -> Human Review` when code review passes and UI/product or
+  human judgment is required.
+- `Agent Review -> Merging` when code review passes and no human review is
+  required.
+
+Reviewer findings should be posted as separate Linear comments. Passing reviews
+should also leave a short Linear decision comment for auditability.
 
 ## 6. Start Symphony (CLI and Desktop)
 
@@ -284,9 +307,14 @@ Runtime symptoms:
 
 ## 12. UI Evidence Capture (Deterministic)
 
-When UI-affecting files change and strict UI evidence mode is active, a marker
-or env pass flag alone is not enough. Capture and publish artifact evidence with
-the manifest contract below before handoff.
+When UI-affecting files change, capture Playwright evidence and publish it to
+the Linear issue before moving from `In Progress` to `Agent Review`. Use the
+`linear-ui-evidence` skill so images and videos render as rich Linear media in
+a comment.
+
+Capture screenshots for changed visual states and screencasts for changed
+interactions. If one media type is not needed for a UI change, state why in the
+handoff.
 
 Copy-paste flow:
 
@@ -295,50 +323,58 @@ mkdir -p output/playwright
 # place captured artifact(s) under output/playwright/, for example:
 # - output/playwright/dashboard-home.png
 # - output/playwright/demo.webm
-cat > output/playwright/ui-evidence.json <<'JSON'
-{
-  "artifacts": [
-    {
-      "path": "output/playwright/dashboard-home.png",
-      "type": "image",
-      "publish_reference": "https://linear.app/<workspace>/issue/<id>#comment-<id>"
-    }
-  ],
-  "ui_paths": [
-    "src/api/dashboard-assets.ts"
-  ],
-  "captured_at": "2026-05-01T00:00:00.000Z",
-  "summary": "Dashboard render and interaction flow validated.",
-  "publish_reference": "https://linear.app/<workspace>/issue/<id>#comment-<id>"
-}
-JSON
+
+node .codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js \
+  --issue ABC-123 \
+  --summary "Dashboard render and interaction flow validated." \
+  --image output/playwright/dashboard-home.png::"Dashboard home state after the UI change" \
+  --video output/playwright/demo.webm::"Interaction path introduced by the UI change"
+
 npm run check:meta
 ```
 
-Linear/GitHub markdown publish path (required when artifacts are referenced):
+`check:meta` is a local hygiene gate. It does not call Linear or verify
+rendered media; the publisher script re-reads the Linear comment, and Agent
+Review verifies the evidence renders in the issue before routing UI work to
+Human Review.
 
-- Add the evidence as markdown in a Linear issue comment or GitHub PR comment.
-- Prefer a concise summary plus markdown links to any externally reachable evidence.
-- Do not upload screenshot/video bytes as Linear base64 attachments for this workflow.
-- Record the resulting comment URL in `artifact.publish_reference` or `artifact.published_url`.
+Linear publication requirements:
+
+- The evidence must render in the Linear issue as image/video media.
+- Do not use Linear issue attachments, base64 payloads, raw HTML, public URLs,
+  markdown-only video links, or local paths as reviewer evidence.
+- The script uploads private Linear files and creates/updates one rich `bodyData`
+  comment.
+
+Evidence quality:
+
+- Capture at a viewport large enough for review, default `1280x900` or wider
+  unless the UI is mobile-specific.
+- Use full-page screenshots only when layout context matters; otherwise capture
+  the relevant viewport/state without excessive empty space.
+- Screencasts should show the changed interaction from start to result, usually
+  3-10 seconds.
+- Evidence must be readable without zooming: text, controls, and changed UI
+  states should be clear.
+- If mobile behavior changed, include mobile-width evidence in addition to
+  desktop evidence.
 
 Before committing:
 
 ```bash
-# publish evidence link first (PR comment and/or Linear workpad),
-# then ensure artifacts are not tracked in git:
+# publish evidence first, then ensure artifacts are not tracked in git:
 git restore --staged output/playwright/* 2>/dev/null || true
-rm -rf output/playwright/
 ```
 
 `check:meta` blocks staged/committed `output/playwright/*` by default. Use
 `SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED=1` only for explicit exceptional cases.
+Do not delete local Playwright artifacts unless the user asks.
 
 Workpad checklist snippet for UI tickets:
 
 - [ ] UI evidence captured under `output/playwright/` (`.png` and/or `.mp4`/`.webm`)
-- [ ] `output/playwright/ui-evidence.json` updated with `artifacts`, `ui_paths`, `captured_at`, `summary`, `publish_reference`
-- [ ] Every `output/playwright/*` artifact reference has one-to-one markdown publish evidence (`artifact.publish_reference` or `artifact.published_url`)
+- [ ] `linear-ui-evidence` published one Linear comment with rendered image/video media
+- [ ] Handoff says `Review routing: UI review required` and `UI evidence: published in this Linear issue`
 - [ ] `npm run check:meta` passes in the configured profile
 - [ ] `output/playwright/*` is not staged/committed before push
 ## 13. References

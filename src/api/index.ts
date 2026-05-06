@@ -3,5 +3,6 @@ export * from './dashboard-assets';
 export * from './refresh-coalescer';
 export * from './server';
 export * from './snapshot-service';
+export * from './telemetry';
 export * from './thread-diagnostics';
 export * from './types';

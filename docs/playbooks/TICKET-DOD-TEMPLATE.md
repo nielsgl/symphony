@@ -50,7 +50,7 @@ Document expected outcome for each:
 
 ## F) Closure gate
 
-Do not move to `Human Review` unless all are true:
+Do not move to `Agent Review` unless all are true:
 
 - [ ] Surface acceptance complete.
 - [ ] Semantic acceptance complete.

@@ -182,10 +182,10 @@ describe('WorkspaceManager', () => {
     git(workspace.path, ['config', 'user.email', 'test@example.com']);
     git(workspace.path, ['config', 'user.name', 'Workspace Test']);
     await fs.mkdir(path.join(workspace.path, 'output/playwright'), { recursive: true });
-    await fs.writeFile(path.join(workspace.path, 'output/playwright/ui-evidence.json'), '{}\n', 'utf8');
-    git(workspace.path, ['add', '-f', 'output/playwright/ui-evidence.json']);
+    await fs.writeFile(path.join(workspace.path, 'output/playwright/demo.webm'), 'stub-video\n', 'utf8');
+    git(workspace.path, ['add', '-f', 'output/playwright/demo.webm']);
     git(workspace.path, ['commit', '-m', 'track artifact']);
-    await fs.appendFile(path.join(workspace.path, 'output/playwright/ui-evidence.json'), '{"x":1}\n', 'utf8');
+    await fs.appendFile(path.join(workspace.path, 'output/playwright/demo.webm'), 'changed\n', 'utf8');
 
     await expect(manager.prepareAttempt(workspace.path)).rejects.toMatchObject({
       code: 'workspace_unprovisioned_conflict',
