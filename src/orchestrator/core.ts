@@ -3440,7 +3440,7 @@ export class OrchestratorCore {
       };
     }
     const preState = this.describeIssueRuntimeState(blocked.issue_id);
-    if (operator_context && operator_context.confirmed !== true) {
+    if (operator_context?.confirmed !== true) {
       this.recordOperatorAction(blocked.issue_id, {
         action: 'cancel',
         requested_at_ms: this.nowMs(),

@@ -793,10 +793,51 @@ describe('OrchestratorCore', () => {
       'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
     );
 
-    const cancelled = await harness.orchestrator.cancelBlockedIssue('ABC-CANCEL', 'operator_cancel_return_to_backlog');
+    const rejected = await harness.orchestrator.cancelBlockedIssue('ABC-CANCEL', 'operator_cancel_return_to_backlog');
+    expect(rejected).toEqual({
+      ok: false,
+      code: 'confirmation_required',
+      message: 'Cancel requires explicit confirmation'
+    });
+    expect(harness.tracker.update_issue_state).not.toHaveBeenCalled();
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-cancel')).toBe(true);
+
+    const cancelled = await harness.orchestrator.cancelBlockedIssue('ABC-CANCEL', 'operator_cancel_return_to_backlog', {
+      actor: 'operator@example.test',
+      reason_note: 'operator_cancel_return_to_backlog',
+      confirmed: true
+    });
     expect(cancelled).toEqual({ ok: true, issue_id: 'i-cancel', moved_to_state: 'Todo' });
     expect(harness.tracker.update_issue_state).toHaveBeenCalledWith('i-cancel', 'Todo');
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-cancel')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get('i-cancel')).toEqual([
+      expect.objectContaining({
+        action: 'cancel',
+        actor: 'operator',
+        reason_note: 'operator_cancel_return_to_backlog',
+        result: 'rejected',
+        result_code: 'confirmation_required',
+        target_identifiers: expect.objectContaining({
+          issue_id: 'i-cancel',
+          issue_identifier: 'ABC-CANCEL'
+        }),
+        pre_state: expect.objectContaining({ runtime_state: 'blocked' }),
+        post_state: expect.objectContaining({ runtime_state: 'blocked' })
+      }),
+      expect.objectContaining({
+        action: 'cancel',
+        actor: 'operator@example.test',
+        reason_note: 'operator_cancel_return_to_backlog',
+        result: 'accepted',
+        result_code: 'Todo',
+        target_identifiers: expect.objectContaining({
+          issue_id: 'i-cancel',
+          issue_identifier: null
+        }),
+        pre_state: expect.objectContaining({ runtime_state: 'blocked', issue_identifier: 'ABC-CANCEL' }),
+        post_state: expect.objectContaining({ runtime_state: 'untracked' })
+      })
+    ]);
     const cancelLog = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.cancelToBacklogExecuted);
     expect(cancelLog?.context?.issue_id).toBe('i-cancel');
     expect(cancelLog?.context?.next_operator_action).toBe('issue.state.todo');

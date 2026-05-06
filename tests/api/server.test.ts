@@ -1302,7 +1302,7 @@ describe('LocalApiServer', () => {
     expect(payload.error.code).toBe('input_submission_expired');
   });
 
-  it('accepts cancel blocked issue requests and returns destination state', async () => {
+  it('requires confirmation before dispatching cancel blocked issue requests', async () => {
     const cancelBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' }));
     server = new LocalApiServer({
       snapshotSource: {
@@ -1333,6 +1333,44 @@ describe('LocalApiServer', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ cancel_reason: 'operator_cancel_return_to_backlog' })
     });
+    const payload = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(409);
+    expect(payload.error.code).toBe('confirmation_required');
+    expect(cancelBlockedIssue).not.toHaveBeenCalled();
+  });
+
+  it('accepts confirmed cancel blocked issue requests and returns destination state', async () => {
+    const cancelBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue,
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cancel_reason: 'operator_cancel_return_to_backlog', confirmed: true })
+    });
     const payload = (await response.json()) as { cancelled: boolean; issue_identifier: string; moved_to_state: string };
 
     expect(response.status).toBe(202);
@@ -1342,7 +1380,7 @@ describe('LocalApiServer', () => {
     expect(cancelBlockedIssue).toHaveBeenCalledWith('ABC-3', {
       actor: undefined,
       cancel_reason: 'operator_cancel_return_to_backlog',
-      confirmed: undefined,
+      confirmed: true,
       reason_note: 'operator_cancel_return_to_backlog'
     });
   });

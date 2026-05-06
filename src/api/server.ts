@@ -1165,6 +1165,9 @@ export class LocalApiServer {
                 ...parsed,
                 reason_note: parsed.reason_note ?? parsed.cancel_reason
               });
+              if (parsed.confirmed !== true) {
+                throw new LocalApiError('confirmation_required', 'Cancel requires explicit confirmation', 409);
+              }
               const issueIdentifier = decodeURIComponent(match[1]);
               const result = await this.issueControlSource.cancelBlockedIssue(issueIdentifier, {
                 cancel_reason: parsed.cancel_reason ?? reasonNote,
