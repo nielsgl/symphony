@@ -130,14 +130,6 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       }
       lastSessionId = turnResult.session_id;
 
-      if (turnNumber >= maxTurns) {
-        return {
-          reason: 'normal',
-          session_id: lastSessionId,
-          completion_reason: REASON_CODES.maxTurnsReached
-        };
-      }
-
       let refreshedIssues: Issue[];
       try {
         refreshedIssues = await input.issueStateFetcher([currentIssue.id]);
@@ -186,13 +178,20 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       }
 
       currentIssue = refreshedIssue;
+      if (turnNumber >= maxTurns) {
+        return {
+          reason: 'normal',
+          session_id: lastSessionId,
+          completion_reason: REASON_CODES.maxTurnsReached
+        };
+      }
     }
 
-      return {
-        reason: 'normal',
-        session_id: lastSessionId,
-        completion_reason: REASON_CODES.maxTurnsReached
-      };
+    return {
+      reason: 'normal',
+      session_id: lastSessionId,
+      completion_reason: REASON_CODES.maxTurnsReached
+    };
   } catch (error) {
     const workspaceConflictError = await renderWorkspaceConflictError(error, workspacePath);
     return {
