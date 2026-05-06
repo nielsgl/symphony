@@ -351,6 +351,16 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       input_schema_type: 'options' | 'text' | 'unknown';
       input_required_at: string;
     } | null;
+    tool_output_wait: {
+      tool_name: string;
+      call_id: string;
+      thread_id: string | null;
+      turn_id: string | null;
+      session_id: string | null;
+      elapsed_wait_ms: number;
+      last_agent_message: string | null;
+      recommended_actions: string[];
+    } | null;
     last_input_submit: {
       submitted_at: string;
       request_id: string;
@@ -607,6 +617,16 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       }>;
       input_schema_type: 'options' | 'text' | 'unknown';
       input_required_at: string;
+    } | null;
+    tool_output_wait: {
+      tool_name: string;
+      call_id: string;
+      thread_id: string | null;
+      turn_id: string | null;
+      session_id: string | null;
+      elapsed_wait_ms: number;
+      last_agent_message: string | null;
+      recommended_actions: string[];
     } | null;
     last_input_submit: {
       submitted_at: string;

@@ -57,6 +57,17 @@ function projectBudget(entry: { budget?: ApiBudgetProjection | null }): ApiBudge
   return entry.budget ? { ...entry.budget } : defaultBudgetProjection();
 }
 
+function projectMissingToolOutput(
+  entry: { tool_output_wait?: import('../orchestrator').BlockedEntry['tool_output_wait'] }
+) {
+  return entry.tool_output_wait
+    ? {
+        ...entry.tool_output_wait,
+        recommended_actions: [...entry.tool_output_wait.recommended_actions]
+      }
+    : null;
+}
+
 function explainRunningEntry(entry: RunningEntry) {
   return explainOperatorRuntimeState({
     state_class: 'running',
@@ -320,6 +331,7 @@ export class SnapshotService {
               input_required_at: asIsoDate(entry.pending_input.input_required_at_ms)
             }
           : null,
+        tool_output_wait: projectMissingToolOutput(entry),
         last_input_submit: entry.last_input_submit
           ? {
               submitted_at: asIsoDate(entry.last_input_submit.submitted_at_ms),
@@ -597,6 +609,7 @@ export class SnapshotService {
                     input_required_at: asIsoDate(blockedEntry.pending_input.input_required_at_ms)
                   }
                 : null,
+              tool_output_wait: projectMissingToolOutput(blockedEntry),
               last_input_submit: blockedEntry.last_input_submit
                 ? {
                     submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),
@@ -746,6 +759,7 @@ export class SnapshotService {
                     input_required_at: asIsoDate(blockedEntry.pending_input.input_required_at_ms)
                   }
                 : null,
+              tool_output_wait: projectMissingToolOutput(blockedEntry),
               last_input_submit: blockedEntry.last_input_submit
                 ? {
                     submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),
@@ -870,6 +884,7 @@ export class SnapshotService {
               input_required_at: asIsoDate(blockedEntry.pending_input.input_required_at_ms)
             }
           : null,
+        tool_output_wait: projectMissingToolOutput(blockedEntry),
         last_input_submit: blockedEntry.last_input_submit
           ? {
               submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),

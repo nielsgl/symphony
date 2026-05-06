@@ -36,6 +36,7 @@ export const REASON_CODES = {
   operatorRetryStepRequested: 'operator_retry_step_requested',
   turnInputRequired: 'turn_input_required',
   turnWaitingThresholdExceeded: 'turn_waiting_threshold_exceeded',
+  missingToolOutput: 'missing_tool_output',
   operatorWorkspaceConflict: 'operator_action_required_workspace_conflict',
   operatorNoProgressRedispatchBlocked: 'operator_action_required_no_progress_redispatch_blocked',
   operatorBudgetLimitExceeded: 'operator_action_required_budget_limit_exceeded',
@@ -188,6 +189,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     label: 'Turn Waiting Threshold Exceeded',
     headline: 'Run is alive but waiting too long',
     detail: 'The run is still alive through codex.turn.waiting heartbeats after the configured wait threshold.',
+    expected_transition: null
+  },
+  [REASON_CODES.missingToolOutput]: {
+    reason_code: REASON_CODES.missingToolOutput,
+    classification: 'blocked_input',
+    actionability: 'required',
+    recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run'],
+    label: 'Missing Tool Output',
+    headline: 'Run is blocked on missing tool output',
+    detail: 'Codex emitted a tool call but Symphony did not observe the matching tool output before the wait threshold.',
     expected_transition: null
   },
   [REASON_CODES.operatorWorkspaceConflict]: {

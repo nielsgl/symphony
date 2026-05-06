@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { SnapshotService } from '../../src/api';
 import type { OrchestratorState } from '../../src/orchestrator';
 import { CANONICAL_EVENT } from '../../src/observability/events';
+import { REASON_CODES } from '../../src/observability/reason-codes';
 import type { Issue } from '../../src/tracker';
 
 function makeRunningEntry(overrides: Record<string, unknown> = {}) {
@@ -488,6 +489,78 @@ describe('SnapshotService', () => {
       requires_manual_resume: true,
       conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });
+  });
+
+  it('projects missing-tool-output blocked diagnostics as actionable API data', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      blocked_inputs: new Map([
+        [
+          'issue-tool',
+          {
+            issue_id: 'issue-tool',
+            issue_identifier: 'ABC-TOOL',
+            attempt: 1,
+            worker_host: null,
+            workspace_path: null,
+            provisioner_type: null,
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: REASON_CODES.missingToolOutput,
+            stop_reason_detail:
+              'tool_name=linear_graphql call_id=call_pfKTUH5GFubLHpXfln7UScnU thread_id=thread-1 turn_id=turn-1 session_id=session-1 elapsed_wait_ms=2000',
+            conflict_files: [],
+            resolution_hints: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run'],
+            previous_thread_id: 'thread-1',
+            previous_session_id: 'session-1',
+            blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            requires_manual_resume: true,
+            pending_input: null,
+            tool_output_wait: {
+              tool_name: 'linear_graphql',
+              call_id: 'call_pfKTUH5GFubLHpXfln7UScnU',
+              thread_id: 'thread-1',
+              turn_id: 'turn-1',
+              session_id: 'session-1',
+              elapsed_wait_ms: 2000,
+              last_agent_message: 'waiting for linear_graphql output',
+              recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
+            },
+            session_console: []
+          }
+        ]
+      ])
+    });
+
+    const stateProjection = service.projectState(state);
+    expect(stateProjection.counts.blocked).toBe(1);
+    expect(stateProjection.blocked[0]).toMatchObject({
+      stop_reason_code: REASON_CODES.missingToolOutput,
+      requires_manual_resume: true,
+      turn_control_state: 'blocked_manual_resume',
+      progress_signal_state: 'stalled_waiting',
+      tool_output_wait: {
+        tool_name: 'linear_graphql',
+        call_id: 'call_pfKTUH5GFubLHpXfln7UScnU',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        session_id: 'session-1',
+        elapsed_wait_ms: 2000,
+        last_agent_message: 'waiting for linear_graphql output',
+        recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
+      }
+    });
+
+    const issueProjection = service.projectIssue(state, 'ABC-TOOL');
+    expect(issueProjection.status).toBe('blocked');
+    expect(issueProjection.blocked?.tool_output_wait?.call_id).toBe('call_pfKTUH5GFubLHpXfln7UScnU');
+    expect(issueProjection.operator_explainer.reason_code).toBe(REASON_CODES.missingToolOutput);
   });
 
   it('only projects no-progress blocked issues as stalled waiting', () => {

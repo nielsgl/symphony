@@ -8,6 +8,7 @@ import {
   isActionRequiredCode,
   summarizeActionRequired
 } from '../../src/api/dashboard-view-model';
+import { REASON_CODES } from '../../src/observability/reason-codes';
 
 describe('dashboard view model', () => {
   it('summarizes action-required blocked reasons with grouped counts', () => {
@@ -28,6 +29,8 @@ describe('dashboard view model', () => {
   it('identifies supported action-required reason codes', () => {
     expect(isActionRequiredCode('operator_action_required_no_progress_redispatch_blocked')).toBe(true);
     expect(isActionRequiredCode('operator_action_required_budget_limit_exceeded')).toBe(true);
+    expect(isActionRequiredCode(REASON_CODES.missingToolOutput)).toBe(true);
+    expect(getActionRequiredLabel(REASON_CODES.missingToolOutput)).toBe('Missing Tool Output');
     expect(getActionRequiredLabel('awaiting_human_review_scope_incomplete')).toBe('Awaiting Human Review (Scope Incomplete)');
     expect(getActionRequiredLabel('attempt_terminated_budget_limit_exceeded')).toBe('Budget Limit Terminated Attempt');
     expect(isActionRequiredCode('manual_resume')).toBe(false);
