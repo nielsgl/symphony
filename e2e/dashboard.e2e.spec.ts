@@ -83,6 +83,7 @@ async function installDashboardApiMocks(
     state: DashboardStatePayload | (() => DashboardStatePayload);
     issues?: Record<string, IssuePayload | ((id: string) => IssuePayload)>;
     diagnostics?: Record<string, IssuePayload | ((id: string) => IssuePayload)>;
+    onInputSubmit?: (issueIdentifier: string, payload: Record<string, unknown>) => void;
     onRefresh?: () => void;
   }
 ): Promise<void> {
@@ -144,6 +145,32 @@ async function installDashboardApiMocks(
       status: 202,
       contentType: 'application/json',
       body: JSON.stringify({ issue_identifier: issueIdentifier })
+    });
+  });
+
+  await page.route('**/api/v1/issues/*/cancel', async (route) => {
+    const segments = route.request().url().split('/');
+    const issueIdentifier = decodeURIComponent(segments[segments.length - 2] || 'UNKNOWN');
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ issue_identifier: issueIdentifier, moved_to_state: 'Backlog' })
+    });
+  });
+
+  await page.route('**/api/v1/issues/*/input', async (route) => {
+    const segments = route.request().url().split('/');
+    const issueIdentifier = decodeURIComponent(segments[segments.length - 2] || 'UNKNOWN');
+    const payload = JSON.parse(route.request().postData() || '{}') as Record<string, unknown>;
+    options.onInputSubmit?.(issueIdentifier, payload);
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        issue_identifier: issueIdentifier,
+        resume_mode: 'native',
+        resume_reason_code: 'input_required_pending'
+      })
     });
   });
 
@@ -552,6 +579,153 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#retry-rows')).toContainText('tool call failed');
     await expect(page.locator('#blocked-rows')).toContainText('Last phase: validation');
     await expect(page.locator('#blocked-rows')).toContainText('awaiting operator response');
+  });
+
+  test('blocked manual-resume rows hide Reply while preserving manual actions', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await installDashboardApiMocks(page, {
+      state: baseState({
+        counts: {
+          running: 0,
+          retrying: 0,
+          blocked: 1,
+          running_stalled_waiting_count: 0,
+          running_awaiting_input_count: 0
+        },
+        blocked: [
+          {
+            issue_identifier: 'NIE-66-MANUAL',
+            attempt: 3,
+            blocked_at: ISO_NOW,
+            worker_host: 'hessian',
+            workspace_path: '/tmp/workspaces/NIE-66-MANUAL',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+            stop_reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+            previous_session_id: 'session-prev-manual',
+            previous_thread_id: 'thread-prev-manual',
+            turn_control_state: 'blocked_manual_resume',
+            progress_signal_state: 'stalled_waiting',
+            requires_manual_resume: true,
+            awaiting_operator: true,
+            required_actions: [
+              'Mark acceptance complete and resume',
+              'Push additional commit and resume',
+              'Cancel and return to backlog'
+            ],
+            pending_input: null,
+            last_input_submit: null
+          }
+        ]
+      }),
+      issues: {
+        'NIE-66-MANUAL': {
+          issue_identifier: 'NIE-66-MANUAL',
+          status: 'blocked',
+          workspace: { path: '/tmp/workspaces/NIE-66-MANUAL' },
+          running: null,
+          retry: null,
+          blocked: {
+            stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+            pending_input: null
+          },
+          phase_timeline: [],
+          recent_events: []
+        }
+      }
+    });
+    page.on('dialog', async (dialog) => {
+      if (dialog.type() === 'confirm') {
+        await dialog.accept();
+        return;
+      }
+      await dialog.accept('operator note');
+    });
+
+    await page.goto('/');
+
+    const row = page.locator('#blocked-rows tr').filter({ hasText: 'NIE-66-MANUAL' });
+    await expect(row).toContainText('Manual Resume Required');
+    await expect(row.getByRole('button', { name: 'Reply' })).toHaveCount(0);
+    await expect(row.getByRole('button', { name: 'Mark Acceptance Complete + Resume' })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Push Commit + Resume' })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Cancel to Backlog' })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Copy Prev Session' })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Copy Workspace' })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'JSON' })).toBeVisible();
+
+    await row.getByRole('button', { name: 'Mark Acceptance Complete + Resume' }).click();
+    await row.getByRole('button', { name: 'Push Commit + Resume' }).click();
+    await row.getByRole('button', { name: 'Cancel to Backlog' }).click();
+    await row.getByRole('button', { name: 'Copy Prev Session' }).click();
+    await row.getByRole('button', { name: 'Copy Workspace' }).click();
+    const popupPromise = page.waitForEvent('popup');
+    await row.getByRole('button', { name: 'JSON' }).click();
+    await popupPromise;
+
+    await expect(page.locator('#refresh-status')).not.toContainText('No pending input request payload');
+  });
+
+  test('blocked pending-input rows keep Reply and submit the current request id', async ({ page }) => {
+    const inputSubmissions: Array<{ issueIdentifier: string; payload: Record<string, unknown> }> = [];
+    await installDashboardApiMocks(page, {
+      state: baseState({
+        counts: {
+          running: 0,
+          retrying: 0,
+          blocked: 1,
+          running_stalled_waiting_count: 0,
+          running_awaiting_input_count: 0
+        },
+        blocked: [
+          {
+            issue_identifier: 'NIE-66-INPUT',
+            attempt: 1,
+            blocked_at: ISO_NOW,
+            worker_host: 'hessian',
+            workspace_path: '/tmp/workspaces/NIE-66-INPUT',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: 'turn_input_required',
+            stop_reason_detail: 'operator input required',
+            previous_session_id: 'session-prev-input',
+            previous_thread_id: 'thread-prev-input',
+            turn_control_state: 'operator_turn',
+            progress_signal_state: 'heartbeat_only',
+            pending_input: {
+              request_id: 'request-nie-66-input',
+              prompt_text: 'Approve continuation?',
+              questions: [{ id: 'approval', label: 'Approval' }],
+              input_schema_type: 'text',
+              input_required_at: ISO_NOW
+            }
+          }
+        ]
+      }),
+      onInputSubmit: (issueIdentifier, payload) => {
+        inputSubmissions.push({ issueIdentifier, payload });
+      }
+    });
+    page.on('dialog', async (dialog) => {
+      await dialog.accept(dialog.message().includes('Reason note') ? 'operator note' : 'approved');
+    });
+
+    await page.goto('/');
+
+    const row = page.locator('#blocked-rows tr').filter({ hasText: 'NIE-66-INPUT' });
+    await expect(row.getByRole('button', { name: 'Reply' })).toBeVisible();
+
+    await row.getByRole('button', { name: 'Reply' }).click();
+
+    await expect.poll(() => inputSubmissions.length).toBe(1);
+    expect(inputSubmissions[0]).toMatchObject({
+      issueIdentifier: 'NIE-66-INPUT',
+      payload: {
+        request_id: 'request-nie-66-input',
+        reason_note: 'operator note'
+      }
+    });
   });
 
   test('issue detail renders phase timeline and preserves context across transition', async ({ page }) => {
