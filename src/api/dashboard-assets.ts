@@ -1755,9 +1755,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const cancelToBacklogButton = createActionButton('Cancel to Backlog', 'ghost-button', function () {
         void cancelBlockedIssue(entry.issue_identifier, 'operator_cancel_return_to_backlog');
       });
-      const replyButton = createActionButton('Reply', 'ghost-button', function () {
-        void submitBlockedInput(entry);
-      });
+      const hasPendingInputRequest = Boolean(entry.pending_input && entry.pending_input.request_id);
+      let replyButton = null;
+      if (hasPendingInputRequest) {
+        replyButton = createActionButton('Reply', 'ghost-button', function () {
+          void submitBlockedInput(entry);
+        });
+      }
       const copyPreviousSession = createActionButton('Copy Prev Session', 'ghost-button', function () {
         copyText(entry.previous_session_id || '');
       });
@@ -1770,7 +1774,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const requeueButton = createActionButton('Requeue', 'ghost-button', function () {
         void runOperatorAction(entry.issue_identifier, 'requeue', false);
       });
-      actionsCell.append(replyButton, resumeButton, pushCommitResumeButton, cancelToBacklogButton, requeueButton, copyPreviousSession, copyWorkspace, openJson);
+      if (replyButton) {
+        actionsCell.append(replyButton);
+      } else {
+        const manualResumeNote = document.createElement('div');
+        manualResumeNote.className = 'muted';
+        manualResumeNote.textContent = 'Manual resume required; no pending input request.';
+        actionsCell.append(manualResumeNote);
+      }
+      actionsCell.append(resumeButton, pushCommitResumeButton, cancelToBacklogButton, requeueButton, copyPreviousSession, copyWorkspace, openJson);
 
       row.append(
         issueCell,
