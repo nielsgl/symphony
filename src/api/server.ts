@@ -8,6 +8,7 @@ import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { createApiDegradedDiagnostics } from './runtime-visibility';
 import { SnapshotService } from './snapshot-service';
+import { createForensicsBundle, type ForensicsTokenSnapshot } from './forensics';
 import {
   buildTelemetryQueryResponse,
   buildTelemetrySummaryResponse,
@@ -453,6 +454,115 @@ export class LocalApiServer {
     };
   }
 
+  private buildDiagnosticsPayload(): ApiDiagnosticsResponse {
+    if (!this.diagnosticsSource) {
+      throw new LocalApiError('diagnostics_unavailable', 'Diagnostics source is not configured', 503);
+    }
+
+    let observedDimensions = {
+      cached_input_tokens: false,
+      reasoning_output_tokens: false,
+      model_context_window: false
+    };
+    let tokenTelemetry: Pick<
+      ApiDiagnosticsResponse,
+      'token_telemetry_status' | 'token_telemetry_last_source' | 'token_telemetry_last_at_ms'
+    > = {
+      token_telemetry_status: 'unavailable',
+      token_telemetry_last_source: null,
+      token_telemetry_last_at_ms: null
+    };
+    try {
+      const snapshot = this.snapshotSource.getStateSnapshot();
+      const projected = this.snapshotService.projectState(snapshot);
+      this.enrichLiveTokenFallbackState(projected);
+      observedDimensions = {
+        cached_input_tokens: typeof projected.codex_totals.cached_input_tokens === 'number',
+        reasoning_output_tokens: typeof projected.codex_totals.reasoning_output_tokens === 'number',
+        model_context_window: typeof projected.codex_totals.model_context_window === 'number'
+      };
+      tokenTelemetry = this.summarizeTokenTelemetry(projected);
+    } catch {
+      // Diagnostics should remain available even when state snapshotting is degraded.
+    }
+
+    const runtimeResolution = this.diagnosticsSource.getRuntimeResolution();
+
+    return {
+      active_profile: this.diagnosticsSource.getActiveProfile(),
+      persistence: this.diagnosticsSource.getPersistenceHealth(),
+      logging: this.diagnosticsSource.getLoggingHealth(),
+      event_vocabulary_version: EVENT_VOCABULARY_VERSION,
+      token_accounting: {
+        mode: 'strict_canonical',
+        canonical_precedence: [
+          'terminal_turn_summary',
+          'thread/tokenUsage/updated.params.tokenUsage.total',
+          'params.info.total_token_usage',
+          'params.info.totalTokenUsage',
+          'params.total_token_usage',
+          'params.totalTokenUsage',
+          'params.usage.total_token_usage',
+          'params.usage.totalTokenUsage',
+          'last_token_usage',
+          'persisted_fallback_usage'
+        ],
+        excludes_generic_usage_for_totals: true,
+        excludes_last_usage_for_totals: false,
+        no_telemetry_warning_threshold_ms: 120_000,
+        optional_dimensions: [
+          'cached_input_tokens',
+          'reasoning_output_tokens',
+          'model_context_window'
+        ],
+        observed_dimensions: observedDimensions
+      },
+      ...tokenTelemetry,
+      workflow: {
+        prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
+      },
+      phase_markers: this.diagnosticsSource.getPhaseMarkers
+        ? this.diagnosticsSource.getPhaseMarkers()
+        : {
+            enabled: true,
+            timeline_limit: 30,
+            last_emit_error_code: null
+          },
+      breaker_statuses: this.diagnosticsSource.getBreakerStatuses
+        ? this.diagnosticsSource.getBreakerStatuses()
+        : [],
+      blocked_latch: this.diagnosticsSource.getBlockedLatchStats
+        ? this.diagnosticsSource.getBlockedLatchStats()
+        : {
+            blocked_latch_active_count: 0,
+            blocked_event_quarantine_total: 0,
+            blocked_event_allowlist_total: 0,
+            blocked_event_reject_total: 0,
+            blocked_latch_violation_total: 0
+          },
+      runtime_resolution: {
+        ...runtimeResolution,
+        effective_codex_home: runtimeResolution.effective_codex_home ?? null,
+        effective_codex_model: runtimeResolution.effective_codex_model ?? null,
+        effective_reasoning_effort: runtimeResolution.effective_reasoning_effort ?? null,
+        effective_extra_flags_count: runtimeResolution.effective_extra_flags_count ?? 0,
+        codex_resolution_mode: runtimeResolution.codex_resolution_mode ?? 'typed'
+      },
+      workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner(),
+      workspace_copy_ignored: this.diagnosticsSource.getWorkspaceCopyIgnored()
+    };
+  }
+
+  private resolveIssueTokenSnapshot(issueIdentifier: string): Partial<ForensicsTokenSnapshot> | null {
+    try {
+      const issue = this.snapshotService.projectIssue(this.snapshotSource.getStateSnapshot(), issueIdentifier);
+      this.enrichLiveTokenFallbackIssue(issue);
+      return issue.running?.tokens ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private registerEventStream(_request: IncomingMessage, response: ServerResponse): void {
     response.statusCode = 200;
     response.setHeader('content-type', 'text/event-stream; charset=utf-8');
@@ -687,93 +797,7 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
-              if (!this.diagnosticsSource) {
-                throw new LocalApiError('diagnostics_unavailable', 'Diagnostics source is not configured', 503);
-              }
-
-              let observedDimensions = {
-                cached_input_tokens: false,
-                reasoning_output_tokens: false,
-                model_context_window: false
-              };
-              let tokenTelemetry: Pick<
-                ApiDiagnosticsResponse,
-                'token_telemetry_status' | 'token_telemetry_last_source' | 'token_telemetry_last_at_ms'
-              > = {
-                token_telemetry_status: 'unavailable',
-                token_telemetry_last_source: null,
-                token_telemetry_last_at_ms: null
-              };
-              try {
-                const snapshot = this.snapshotSource.getStateSnapshot();
-                const projected = this.snapshotService.projectState(snapshot);
-                this.enrichLiveTokenFallbackState(projected);
-                observedDimensions = {
-                  cached_input_tokens: typeof projected.codex_totals.cached_input_tokens === 'number',
-                  reasoning_output_tokens: typeof projected.codex_totals.reasoning_output_tokens === 'number',
-                  model_context_window: typeof projected.codex_totals.model_context_window === 'number'
-                };
-                tokenTelemetry = this.summarizeTokenTelemetry(projected);
-              } catch {
-                // Diagnostics should remain available even when state snapshotting is degraded.
-              }
-
-              sendJson(response, 200, {
-                active_profile: this.diagnosticsSource.getActiveProfile(),
-                persistence: this.diagnosticsSource.getPersistenceHealth(),
-                logging: this.diagnosticsSource.getLoggingHealth(),
-                event_vocabulary_version: EVENT_VOCABULARY_VERSION,
-                token_accounting: {
-                  mode: 'strict_canonical',
-                  canonical_precedence: [
-                    'terminal_turn_summary',
-                    'thread/tokenUsage/updated.params.tokenUsage.total',
-                    'params.info.total_token_usage',
-                    'params.info.totalTokenUsage',
-                    'params.total_token_usage',
-                    'params.totalTokenUsage',
-                    'params.usage.total_token_usage',
-                    'params.usage.totalTokenUsage',
-                    'last_token_usage',
-                    'persisted_fallback_usage'
-                  ],
-                  excludes_generic_usage_for_totals: true,
-                  excludes_last_usage_for_totals: false,
-                  no_telemetry_warning_threshold_ms: 120_000,
-                  optional_dimensions: [
-                    'cached_input_tokens',
-                    'reasoning_output_tokens',
-                    'model_context_window'
-                  ],
-                  observed_dimensions: observedDimensions
-                },
-                ...tokenTelemetry,
-                workflow: {
-                  prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
-                },
-                phase_markers: this.diagnosticsSource.getPhaseMarkers
-                  ? this.diagnosticsSource.getPhaseMarkers()
-                  : {
-                      enabled: true,
-                      timeline_limit: 30,
-                      last_emit_error_code: null
-                    },
-                breaker_statuses: this.diagnosticsSource.getBreakerStatuses
-                  ? this.diagnosticsSource.getBreakerStatuses()
-                  : [],
-                blocked_latch: this.diagnosticsSource.getBlockedLatchStats
-                  ? this.diagnosticsSource.getBlockedLatchStats()
-                  : {
-                      blocked_latch_active_count: 0,
-                      blocked_event_quarantine_total: 0,
-                      blocked_event_allowlist_total: 0,
-                      blocked_event_reject_total: 0,
-                      blocked_latch_violation_total: 0
-                    },
-                runtime_resolution: this.diagnosticsSource.getRuntimeResolution(),
-                workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner(),
-                workspace_copy_ignored: this.diagnosticsSource.getWorkspaceCopyIgnored()
-              });
+              sendJson(response, 200, this.buildDiagnosticsPayload());
             }
           }
         ]
@@ -867,6 +891,43 @@ export class LocalApiServer {
               }
 
               sendJson(response, 200, payload);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/issues\/([^/]+)\/forensics\/export$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response, match) => {
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const generatedAtMs = Date.now();
+              const state = this.snapshotSource.getStateSnapshot();
+              const runtimeDiagnostics = this.buildDiagnosticsPayload();
+              const latestLineage = this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier?.(issueIdentifier) ?? null;
+              const payload = buildThreadDiagnosticsByIssueIdentifier({
+                state,
+                issue_identifier: issueIdentifier,
+                reconstructThreadLineage: this.diagnosticsSource?.reconstructThreadLineage,
+                reconstructLatestThreadLineageByIssueIdentifier:
+                  this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier,
+                now_ms: generatedAtMs
+              });
+              if (!payload) {
+                throw new LocalApiError('forensics_bundle_not_found', `Issue ${issueIdentifier} has no forensics data`, 404);
+              }
+              const lineage = payload.thread_id && this.diagnosticsSource?.reconstructThreadLineage
+                ? this.diagnosticsSource.reconstructThreadLineage(payload.thread_id) ?? latestLineage
+                : latestLineage;
+
+              sendJson(response, 200, createForensicsBundle({
+                diagnostics: payload,
+                api_diagnostics: runtimeDiagnostics,
+                lineage,
+                token_snapshot: this.resolveIssueTokenSnapshot(issueIdentifier),
+                generated_at_ms: generatedAtMs
+              }));
             }
           }
         ]

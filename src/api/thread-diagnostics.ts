@@ -222,7 +222,7 @@ function findRuntimeByIssueIdentifier(state: OrchestratorState, issueIdentifier:
   };
 }
 
-function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch): ThreadDiagnosticsResponse {
+function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: number = Date.now()): ThreadDiagnosticsResponse {
   const source = match.running;
   const retry = match.retry;
   const blocked = match.blocked;
@@ -290,7 +290,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch): ThreadDi
           stalled_waiting: Boolean(source?.stalled_waiting_since_ms && source?.stalled_waiting_reason),
           time_since_progress:
             typeof source?.last_progress_transition_at_ms === 'number'
-              ? Math.max(0, Date.now() - source.last_progress_transition_at_ms)
+              ? Math.max(0, nowMs - source.last_progress_transition_at_ms)
               : null
         });
 
@@ -308,7 +308,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch): ThreadDi
   };
 }
 
-function diagnosticsFromLineage(lineage: ExecutionGraphThreadLineage): ThreadDiagnosticsResponse {
+function diagnosticsFromLineage(lineage: ExecutionGraphThreadLineage, nowMs: number = Date.now()): ThreadDiagnosticsResponse {
   const threadId = lineage.thread.thread_id;
   const threadEndedAtMs = toMs(lineage.thread.ended_at);
   const timeline = sortTimeline([
@@ -434,7 +434,7 @@ function diagnosticsFromLineage(lineage: ExecutionGraphThreadLineage): ThreadDia
     time_since_progress:
       lastMeaningfulProgressAtMs(timeline) === null
         ? null
-        : Math.max(0, Date.now() - lastMeaningfulProgressAtMs(timeline)!)
+        : Math.max(0, nowMs - lastMeaningfulProgressAtMs(timeline)!)
   });
   return {
     thread_id: threadId,
@@ -472,10 +472,11 @@ function mergeTimelineEvents(events: ThreadDiagnosticsEvent[]): ThreadDiagnostic
 function mergeRuntimeWithLineage(
   threadId: string,
   match: RuntimeMatch,
-  lineage: ExecutionGraphThreadLineage
+  lineage: ExecutionGraphThreadLineage,
+  nowMs?: number
 ): ThreadDiagnosticsResponse {
-  const persisted = diagnosticsFromLineage(lineage);
-  const runtime = diagnosticsFromRuntime(threadId, match);
+  const persisted = diagnosticsFromLineage(lineage, nowMs);
+  const runtime = diagnosticsFromRuntime(threadId, match, nowMs);
   const timeline = mergeTimelineEvents([...persisted.timeline, ...runtime.timeline]);
   const wait_spans = [...persisted.wait_spans, ...runtime.wait_spans].sort((left, right) => {
     if (left.started_at_ms !== right.started_at_ms) {
@@ -501,18 +502,26 @@ export function buildThreadDiagnosticsByThreadId(params: {
   state: OrchestratorState;
   thread_id: string;
   lineage: ExecutionGraphThreadLineage | null;
+  now_ms?: number;
 }): ThreadDiagnosticsResponse | null {
   const runtimeMatch = findRuntimeByThreadId(params.state, params.thread_id);
   if (runtimeMatch) {
     if (params.lineage) {
-      return mergeRuntimeWithLineage(params.thread_id, runtimeMatch, params.lineage);
+      return mergeRuntimeWithLineage(params.thread_id, runtimeMatch, params.lineage, params.now_ms);
     }
-    return diagnosticsFromRuntime(params.thread_id, runtimeMatch);
+    return diagnosticsFromRuntime(params.thread_id, runtimeMatch, params.now_ms);
   }
   if (params.lineage) {
-    return diagnosticsFromLineage(params.lineage);
+    return diagnosticsFromLineage(params.lineage, params.now_ms);
   }
   return null;
+}
+
+export function buildThreadDiagnosticsFromLineage(params: {
+  lineage: ExecutionGraphThreadLineage;
+  now_ms?: number;
+}): ThreadDiagnosticsResponse {
+  return diagnosticsFromLineage(params.lineage, params.now_ms);
 }
 
 export function buildThreadDiagnosticsByIssueIdentifier(params: {
@@ -520,20 +529,21 @@ export function buildThreadDiagnosticsByIssueIdentifier(params: {
   issue_identifier: string;
   reconstructThreadLineage?: (threadId: string) => ExecutionGraphThreadLineage | null;
   reconstructLatestThreadLineageByIssueIdentifier?: (issueIdentifier: string) => ExecutionGraphThreadLineage | null;
+  now_ms?: number;
 }): ThreadDiagnosticsResponse | null {
   const runtimeMatch = findRuntimeByIssueIdentifier(params.state, params.issue_identifier);
   if (!runtimeMatch) {
     const lineage = params.reconstructLatestThreadLineageByIssueIdentifier?.(params.issue_identifier) ?? null;
-    return lineage ? diagnosticsFromLineage(lineage) : null;
+    return lineage ? diagnosticsFromLineage(lineage, params.now_ms) : null;
   }
   const threadId = runtimeMatch.running?.thread_id ?? runtimeMatch.running?.persisted_thread_id ?? runtimeMatch.blocked?.previous_thread_id ?? runtimeMatch.retry?.previous_thread_id;
   if (!threadId) {
     const lineage = params.reconstructLatestThreadLineageByIssueIdentifier?.(params.issue_identifier) ?? null;
-    return lineage ? diagnosticsFromLineage(lineage) : null;
+    return lineage ? diagnosticsFromLineage(lineage, params.now_ms) : null;
   }
   const lineage = params.reconstructThreadLineage?.(threadId) ?? null;
   if (lineage) {
-    return mergeRuntimeWithLineage(threadId, runtimeMatch, lineage);
+    return mergeRuntimeWithLineage(threadId, runtimeMatch, lineage, params.now_ms);
   }
-  return diagnosticsFromRuntime(threadId, runtimeMatch);
+  return diagnosticsFromRuntime(threadId, runtimeMatch, params.now_ms);
 }

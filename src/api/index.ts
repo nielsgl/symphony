@@ -1,5 +1,6 @@
 export * from './errors';
 export * from './dashboard-assets';
+export * from './forensics';
 export * from './refresh-coalescer';
 export * from './server';
 export * from './snapshot-service';

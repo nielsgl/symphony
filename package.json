@@ -34,7 +34,8 @@
     "start:api": "npm run start:dashboard",
     "start:web": "npm run start:dashboard",
     "start:desktop": "npm run build && tauri dev",
-    "build:desktop": "tauri build"
+    "build:desktop": "tauri build",
+    "forensics": "npm run build --silent && node scripts/forensics.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
