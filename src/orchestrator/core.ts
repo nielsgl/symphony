@@ -2,6 +2,7 @@ import type { Issue } from '../tracker';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
+import { parseDynamicToolCapabilityMismatchDetail } from '../observability/dynamic-tool-capability';
 import { isKnownPhaseMarker, isTerminalPhaseMarker, phaseMarkerOrder, type PhaseMarker, type PhaseMarkerName } from '../observability';
 import { ThroughputTracker } from '../observability/throughput';
 import {
@@ -931,6 +932,7 @@ export class OrchestratorCore {
         return 'succeeded';
       case CANONICAL_EVENT.codex.turnFailed:
       case CANONICAL_EVENT.codex.toolCallFailed:
+      case CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch:
       case CANONICAL_EVENT.codex.unsupportedToolCall:
         return 'failed';
       case CANONICAL_EVENT.codex.turnInputRequired:
@@ -943,6 +945,9 @@ export class OrchestratorCore {
   }
 
   private reasonCodeForWorkerEvent(eventName: string): string {
+    if (eventName === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch) {
+      return REASON_CODES.unsupportedDynamicToolConsoleResume;
+    }
     return eventName.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
   }
 
@@ -971,9 +976,14 @@ export class OrchestratorCore {
     if (
       workerEvent.event !== CANONICAL_EVENT.codex.toolCallCompleted &&
       workerEvent.event !== CANONICAL_EVENT.codex.toolCallFailed &&
+      workerEvent.event !== CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch &&
       workerEvent.event !== CANONICAL_EVENT.codex.unsupportedToolCall
     ) {
       return null;
+    }
+    const mismatch = parseDynamicToolCapabilityMismatchDetail(workerEvent.detail);
+    if (mismatch?.attempted_tool_name) {
+      return mismatch.attempted_tool_name;
     }
     const detail = workerEvent.detail?.trim();
     return detail && detail.length > 0 ? detail : 'unknown_tool';
@@ -4331,6 +4341,7 @@ export class OrchestratorCore {
       event === CANONICAL_EVENT.codex.phaseValidation ||
       event === CANONICAL_EVENT.codex.toolCallCompleted ||
       event === CANONICAL_EVENT.codex.toolCallFailed ||
+      event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch ||
       event === CANONICAL_EVENT.codex.approvalAutoApproved ||
       event === CANONICAL_EVENT.codex.toolInputAutoAnswered ||
       event === CANONICAL_EVENT.codex.sideOutput
