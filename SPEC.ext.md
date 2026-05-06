@@ -59,6 +59,8 @@ Validation:
 - The value must be a list of non-empty strings when provided.
 - Every state listed in `tracker.fresh_dispatch_states` must also be listed in
   `tracker.handoff_states`.
+- Every state listed in `tracker.fresh_dispatch_states` must also be listed in
+  `tracker.active_states`.
 - A state listed in `tracker.fresh_dispatch_states` must not also be listed in
   `tracker.terminal_states`.
 
@@ -76,6 +78,12 @@ Example:
 
 ```yaml
 tracker:
+  active_states:
+    - Todo
+    - In Progress
+    - Agent Review
+    - Merging
+    - Rework
   handoff_states:
     - Agent Review
     - Human Review

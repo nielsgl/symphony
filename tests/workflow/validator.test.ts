@@ -170,6 +170,7 @@ describe('ConfigValidator', () => {
   it('accepts non-terminal handoff and fresh dispatch states', () => {
     const validator = new ConfigValidator();
     const config = baseConfig();
+    config.tracker.active_states = ['Todo', 'In Progress', 'Agent Review'];
     config.tracker.handoff_states = ['Agent Review', 'Human Review'];
     config.tracker.fresh_dispatch_states = ['Agent Review'];
 
@@ -209,6 +210,20 @@ describe('ConfigValidator', () => {
     if (!result.ok) {
       expect(result.error_code).toBe('invalid_tracker_fresh_dispatch_states');
       expect(result.message).toContain('tracker.handoff_states');
+    }
+  });
+
+  it('requires fresh dispatch states to also be active states', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.handoff_states = ['Agent Review'];
+    config.tracker.fresh_dispatch_states = ['Agent Review'];
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_tracker_fresh_dispatch_states');
+      expect(result.message).toContain('tracker.active_states');
     }
   });
 
