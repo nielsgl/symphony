@@ -154,6 +154,33 @@ function readStringList(value: unknown, fallback: string[]): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
+function readStrictStringList(value: unknown, fallback: string[], fieldName: string): string[] {
+  if (value === undefined || value === null) {
+    return [...fallback];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new WorkflowConfigError(
+      fieldName === 'tracker.handoff_states'
+        ? 'invalid_tracker_handoff_states'
+        : 'invalid_tracker_fresh_dispatch_states',
+      `${fieldName} must be a string array`
+    );
+  }
+
+  return value.map((entry) => {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      throw new WorkflowConfigError(
+        fieldName === 'tracker.handoff_states'
+          ? 'invalid_tracker_handoff_states'
+          : 'invalid_tracker_fresh_dispatch_states',
+        `${fieldName} must be a string array of non-empty state names`
+      );
+    }
+    return entry;
+  });
+}
+
 function readOptionalStringList(value: unknown): string[] | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -494,7 +521,13 @@ export class ConfigResolver {
           mode: trackerGithubLinkingMode
         },
         active_states: readStringList(tracker.active_states, getDefaultActiveStates(trackerKind)),
-        terminal_states: readStringList(tracker.terminal_states, getDefaultTerminalStates(trackerKind))
+        terminal_states: readStringList(tracker.terminal_states, getDefaultTerminalStates(trackerKind)),
+        handoff_states: readStrictStringList(tracker.handoff_states, [], 'tracker.handoff_states'),
+        fresh_dispatch_states: readStrictStringList(
+          tracker.fresh_dispatch_states,
+          [],
+          'tracker.fresh_dispatch_states'
+        )
       },
       polling: {
         interval_ms: readIntStrict(polling.interval_ms, 30000)

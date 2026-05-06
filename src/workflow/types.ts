@@ -14,6 +14,8 @@ export type ValidationErrorCode =
   | 'missing_tracker_repo'
   | 'invalid_tracker_active_states_for_github'
   | 'invalid_tracker_github_linking_mode'
+  | 'invalid_tracker_handoff_states'
+  | 'invalid_tracker_fresh_dispatch_states'
   | 'missing_codex_command'
   | 'invalid_codex_reasoning_effort'
   | 'invalid_codex_extra_flags'
@@ -75,6 +77,8 @@ export interface TrackerConfig {
   };
   active_states: string[];
   terminal_states: string[];
+  handoff_states: string[];
+  fresh_dispatch_states: string[];
 }
 
 export interface HooksConfig {

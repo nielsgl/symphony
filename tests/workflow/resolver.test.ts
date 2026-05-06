@@ -21,6 +21,8 @@ describe('ConfigResolver', () => {
 
     expect(config.polling.interval_ms).toBe(30000);
     expect(config.tracker.active_states).toEqual(['Todo', 'In Progress']);
+    expect(config.tracker.handoff_states).toEqual([]);
+    expect(config.tracker.fresh_dispatch_states).toEqual([]);
     expect(config.tracker.github_linking?.mode).toBe('off');
     expect(config.workspace.root).toBe('/tmp/symphony_workspaces');
     expect(config.workspace.root_source).toBe('default');
@@ -166,6 +168,59 @@ describe('ConfigResolver', () => {
     });
 
     expect(config.tracker.github_linking?.mode).toBe('required');
+  });
+
+  it('resolves tracker handoff and fresh dispatch states from workflow config', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        tracker: {
+          kind: 'linear',
+          api_key: 'token',
+          project_slug: 'ABC',
+          active_states: ['Todo', 'In Progress', 'Agent Review', 'Merging', 'Rework'],
+          handoff_states: ['Agent Review', 'Human Review'],
+          fresh_dispatch_states: ['Agent Review']
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.tracker.handoff_states).toEqual(['Agent Review', 'Human Review']);
+    expect(config.tracker.fresh_dispatch_states).toEqual(['Agent Review']);
+  });
+
+  it('rejects malformed tracker handoff and fresh dispatch state lists during resolution', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    expect(() =>
+      resolver.resolve({
+        config: {
+          tracker: {
+            kind: 'linear',
+            api_key: 'token',
+            project_slug: 'ABC',
+            handoff_states: 'Agent Review'
+          }
+        },
+        prompt_template: 'prompt'
+      })
+    ).toThrow('tracker.handoff_states must be a string array');
+
+    expect(() =>
+      resolver.resolve({
+        config: {
+          tracker: {
+            kind: 'linear',
+            api_key: 'token',
+            project_slug: 'ABC',
+            fresh_dispatch_states: ['Agent Review', 12]
+          }
+        },
+        prompt_template: 'prompt'
+      })
+    ).toThrow('tracker.fresh_dispatch_states must be a string array of non-empty state names');
   });
 
   it('uses memory defaults without tracker token fallback', () => {

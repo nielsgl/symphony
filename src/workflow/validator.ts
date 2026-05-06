@@ -53,6 +53,10 @@ function isPositiveInteger(value: number | undefined): boolean {
   return value === undefined || (Number.isFinite(value) && value > 0 && Math.trunc(value) === value);
 }
 
+function normalizeStateName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 export class ConfigValidator {
   private readonly clock: () => Date;
 
@@ -139,6 +143,57 @@ export class ConfigValidator {
         ok: false,
         error_code: 'invalid_tracker_github_linking_mode',
         message: `tracker.github_linking.mode '${githubLinkingMode}' is not supported`,
+        at
+      };
+    }
+
+    const terminalStates = new Set(effectiveConfig.tracker.terminal_states.map(normalizeStateName));
+    const activeStates = new Set(effectiveConfig.tracker.active_states.map(normalizeStateName));
+    const handoffStates = new Set(effectiveConfig.tracker.handoff_states.map(normalizeStateName));
+    const handoffTerminalOverlap = effectiveConfig.tracker.handoff_states.find((stateName) =>
+      terminalStates.has(normalizeStateName(stateName))
+    );
+    if (handoffTerminalOverlap !== undefined) {
+      return {
+        ok: false,
+        error_code: 'invalid_tracker_handoff_states',
+        message: `tracker.handoff_states must not include terminal state '${handoffTerminalOverlap}'`,
+        at
+      };
+    }
+
+    const freshTerminalOverlap = effectiveConfig.tracker.fresh_dispatch_states.find((stateName) =>
+      terminalStates.has(normalizeStateName(stateName))
+    );
+    if (freshTerminalOverlap !== undefined) {
+      return {
+        ok: false,
+        error_code: 'invalid_tracker_fresh_dispatch_states',
+        message: `tracker.fresh_dispatch_states must not include terminal state '${freshTerminalOverlap}'`,
+        at
+      };
+    }
+
+    const freshOutsideHandoff = effectiveConfig.tracker.fresh_dispatch_states.find(
+      (stateName) => !handoffStates.has(normalizeStateName(stateName))
+    );
+    if (freshOutsideHandoff !== undefined) {
+      return {
+        ok: false,
+        error_code: 'invalid_tracker_fresh_dispatch_states',
+        message: `tracker.fresh_dispatch_states must also be listed in tracker.handoff_states: '${freshOutsideHandoff}'`,
+        at
+      };
+    }
+
+    const freshOutsideActive = effectiveConfig.tracker.fresh_dispatch_states.find(
+      (stateName) => !activeStates.has(normalizeStateName(stateName))
+    );
+    if (freshOutsideActive !== undefined) {
+      return {
+        ok: false,
+        error_code: 'invalid_tracker_fresh_dispatch_states',
+        message: `tracker.fresh_dispatch_states must also be listed in tracker.active_states: '${freshOutsideActive}'`,
         at
       };
     }
