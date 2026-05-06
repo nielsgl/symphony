@@ -1381,7 +1381,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         void loadIssue(entry.issue_identifier);
       });
       investigate.disabled = !entry.stalled_waiting;
-      actionsCell.append(copySession, copyThreadTurn, respondNow, investigate, openJson);
+      const cancelTurn = createActionButton('Cancel Turn', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'cancel-turn', true);
+      });
+      const requeue = createActionButton('Requeue', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'requeue', true);
+      });
+      actionsCell.append(copySession, copyThreadTurn, respondNow, investigate, cancelTurn, requeue, openJson);
 
       row.append(
         issueCell,
@@ -1559,7 +1565,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const openJson = createActionButton('JSON', 'ghost-button', function () {
         window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
       });
-      actionsCell.append(copyPreviousSession, copyPreviousThread, openJson);
+      const retryStep = createActionButton('Retry Step', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'retry-step', false);
+      });
+      const requeue = createActionButton('Requeue', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'requeue', false);
+      });
+      actionsCell.append(copyPreviousSession, copyPreviousThread, retryStep, requeue, openJson);
 
       row.append(
         issueCell,
@@ -1755,7 +1767,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const openJson = createActionButton('JSON', 'ghost-button', function () {
         window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
       });
-      actionsCell.append(replyButton, resumeButton, pushCommitResumeButton, cancelToBacklogButton, copyPreviousSession, copyWorkspace, openJson);
+      const requeueButton = createActionButton('Requeue', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'requeue', false);
+      });
+      actionsCell.append(replyButton, resumeButton, pushCommitResumeButton, cancelToBacklogButton, requeueButton, copyPreviousSession, copyWorkspace, openJson);
 
       row.append(
         issueCell,
@@ -2011,7 +2026,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const operatorActions = Array.isArray(payload.operator_actions) ? payload.operator_actions : [];
       const operatorActionText = operatorActions.length
         ? operatorActions.map(function (entry) {
-            return new Date(entry.requested_at_ms).toISOString() + ' | ' + entry.action + ' | ' + entry.result + ' | ' + (entry.result_code || 'n/a') + ' | ' + (entry.message || 'n/a');
+            return new Date(entry.requested_at_ms).toISOString() + ' | ' + (entry.actor || 'operator') + ' | ' + entry.action + ' | ' + entry.result + ' | ' + (entry.result_code || 'n/a') + ' | ' + (entry.reason_note || 'no reason note') + ' | ' + (entry.message || 'n/a');
           }).join('\\n')
         : 'No operator action outcomes.';
       const operatorTimelineText = operatorTimelineRows.length
@@ -2084,10 +2099,19 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
   async function cancelBlockedIssue(issueIdentifier, cancelReason) {
     try {
+      const reasonNote = window.prompt('Reason note for cancelling this blocked issue', cancelReason || '');
+      if (!reasonNote) {
+        setRefreshStatus('Cancel skipped: reason note is required', true);
+        return;
+      }
+      if (!window.confirm('Cancel this blocked issue to backlog?')) {
+        setRefreshStatus('Cancel skipped: confirmation declined', true);
+        return;
+      }
       const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/cancel', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(cancelReason ? { cancel_reason: cancelReason } : {})
+        body: JSON.stringify({ cancel_reason: cancelReason || reasonNote, reason_note: reasonNote, confirmed: true })
       });
       setRefreshStatus('Cancel requested for ' + payload.issue_identifier + ' -> ' + payload.moved_to_state, false);
       await loadStateViaPoll();
@@ -2096,6 +2120,32 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
     } catch (error) {
       setRefreshStatus('Cancel failed: ' + String(error), true);
+    }
+  }
+
+  async function runOperatorAction(issueIdentifier, actionPath, destructive) {
+    try {
+      const reasonNote = window.prompt('Reason note for ' + actionPath.replace('-', ' '), '');
+      if (!reasonNote) {
+        setRefreshStatus('Action skipped: reason note is required', true);
+        return;
+      }
+      if (destructive && !window.confirm('Run destructive action "' + actionPath + '" for ' + issueIdentifier + '?')) {
+        setRefreshStatus('Action skipped: confirmation declined', true);
+        return;
+      }
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/' + actionPath, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason_note: reasonNote, confirmed: destructive ? true : undefined })
+      });
+      setRefreshStatus('Operator action requested for ' + (payload.issue_identifier || issueIdentifier), false);
+      await loadStateViaPoll();
+      if (state.selectedIssue === issueIdentifier) {
+        await loadIssue(issueIdentifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Operator action failed: ' + String(error), true);
     }
   }
 

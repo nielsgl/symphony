@@ -777,6 +777,137 @@ describe('OrchestratorCore', () => {
     expect(cancelLog?.context?.next_operator_action).toBe('issue.state.todo');
   });
 
+  it('requires confirmation before cancelling a running turn and records audit context', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-cancel-turn', identifier: 'ABC-CANCEL-TURN' })]);
+    await harness.orchestrator.tick('interval');
+
+    const rejected = await harness.orchestrator.cancelCurrentTurn('ABC-CANCEL-TURN', {
+      actor: 'operator@example.test',
+      reason_note: 'wrong branch'
+    });
+    expect(rejected).toEqual({
+      ok: false,
+      code: 'confirmation_required',
+      message: 'Cancel current turn requires explicit confirmation'
+    });
+    expect(harness.terminated).toEqual([]);
+
+    const accepted = await harness.orchestrator.cancelCurrentTurn('ABC-CANCEL-TURN', {
+      actor: 'operator@example.test',
+      reason_note: 'wrong branch',
+      confirmed: true
+    });
+    expect(accepted).toEqual({ ok: true, issue_id: 'i-cancel-turn' });
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-cancel-turn', cleanup_workspace: false, reason: 'wrong branch' }
+    ]);
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get('i-cancel-turn')).toEqual([
+      expect.objectContaining({
+        action: 'cancel',
+        actor: 'operator@example.test',
+        reason_note: 'wrong branch',
+        result: 'rejected',
+        result_code: 'confirmation_required',
+        pre_state: expect.objectContaining({ runtime_state: 'running' }),
+        post_state: expect.objectContaining({ runtime_state: 'running' })
+      }),
+      expect.objectContaining({
+        action: 'cancel',
+        actor: 'operator@example.test',
+        reason_note: 'wrong branch',
+        result: 'accepted',
+        result_code: 'current_turn_cancelled',
+        pre_state: expect.objectContaining({ runtime_state: 'running' }),
+        post_state: expect.objectContaining({ runtime_state: 'untracked' })
+      })
+    ]);
+  });
+
+  it('requeues blocked issues and persists immutable audit state transition details', async () => {
+    const persistedActions = new Map<string, string>();
+    const harness = createHarness({
+      persistence: {
+        startRun: async () => 'run-requeue',
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async () => undefined,
+        deleteBlockedInput: async () => undefined,
+        upsertOperatorActions: async (issueId, payload) => {
+          persistedActions.set(issueId, payload);
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-requeue', identifier: 'ABC-REQUEUE' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-requeue',
+      'abnormal',
+      'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
+    );
+
+    const result = await harness.orchestrator.requeueIssue('ABC-REQUEUE', {
+      actor: 'operator@example.test',
+      reason_note: 'workspace repaired'
+    });
+
+    expect(result).toEqual({ ok: true, issue_id: 'i-requeue', retry_attempt: 1 });
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-requeue')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().retry_attempts.get('i-requeue')).toMatchObject({
+      identifier: 'ABC-REQUEUE',
+      stop_reason_code: 'operator_requeue_requested'
+    });
+    const persisted = JSON.parse(persistedActions.get('i-requeue') ?? '[]') as Array<Record<string, unknown>>;
+    expect(persisted).toEqual([
+      expect.objectContaining({
+        action: 'requeue',
+        actor: 'operator@example.test',
+        reason_note: 'workspace repaired',
+        result: 'accepted',
+        pre_state: expect.objectContaining({ runtime_state: 'blocked' }),
+        post_state: expect.objectContaining({ runtime_state: 'retrying' }),
+        target_identifiers: expect.objectContaining({
+          issue_id: 'i-requeue',
+          issue_identifier: 'ABC-REQUEUE'
+        })
+      })
+    ]);
+  });
+
+  it('retries the last failed or stalled retry step where supported', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-retry-step', identifier: 'ABC-RETRY' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-retry-step', 'abnormal', 'worker exited');
+
+    const result = await harness.orchestrator.retryLastFailedStep('ABC-RETRY', {
+      actor: 'operator@example.test',
+      reason_note: 'transient failure cleared'
+    });
+    const unsupported = await harness.orchestrator.retryLastFailedStep('ABC-MISSING', {
+      actor: 'operator@example.test',
+      reason_note: 'try missing'
+    });
+
+    expect(result).toEqual({ ok: true, issue_id: 'i-retry-step', retry_attempt: 1 });
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get('i-retry-step')).toEqual([
+      expect.objectContaining({
+        action: 'retry_step',
+        actor: 'operator@example.test',
+        reason_note: 'transient failure cleared',
+        result: 'accepted',
+        result_code: 'retry_step_scheduled',
+        pre_state: expect.objectContaining({ runtime_state: 'retrying' }),
+        post_state: expect.objectContaining({ runtime_state: 'retrying' })
+      })
+    ]);
+    expect(unsupported).toEqual({
+      ok: false,
+      code: 'unsupported_transition',
+      message: 'Issue ABC-MISSING has no failed or stalled retry step'
+    });
+  });
+
   it('returns typed not-answerable error when native blocked input transport is unavailable', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-submit', identifier: 'ABC-SUBMIT' })]);

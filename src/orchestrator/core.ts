@@ -2893,10 +2893,262 @@ export class OrchestratorCore {
     }
   }
 
+  async cancelCurrentTurn(
+    issue_identifier: string,
+    params: { actor?: string | null; reason_note?: string | null; confirmed?: boolean | null } = {}
+  ): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
+    const running = Array.from(this.state.running.values()).find((entry) => entry.identifier === issue_identifier);
+    if (!running) {
+      return { ok: false, code: 'unsupported_transition', message: `Issue ${issue_identifier} has no running turn to cancel` };
+    }
+    const preState = this.describeIssueRuntimeState(running.issue.id);
+    if (params.confirmed !== true) {
+      this.recordOperatorAction(running.issue.id, {
+        action: 'cancel',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'confirmation_required',
+        message: 'Cancel current turn requires explicit confirmation',
+        actor: params.actor ?? null,
+        reason_note: params.reason_note ?? null,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(running.issue.id)
+      });
+      return { ok: false, code: 'confirmation_required', message: 'Cancel current turn requires explicit confirmation' };
+    }
+
+    await this.terminateRunningIssue(running.issue.id, false, params.reason_note?.trim() || 'operator_cancel_current_turn');
+    this.recordOperatorAction(running.issue.id, {
+      action: 'cancel',
+      requested_at_ms: this.nowMs(),
+      result: 'accepted',
+      result_code: 'current_turn_cancelled',
+      message: 'current turn cancelled',
+      actor: params.actor ?? null,
+      reason_note: params.reason_note ?? null,
+      pre_state: preState,
+      post_state: this.describeIssueRuntimeState(running.issue.id)
+    });
+    this.ports.notifyObservers?.();
+    return { ok: true, issue_id: running.issue.id };
+  }
+
+  async requeueIssue(
+    issue_identifier: string,
+    params: { actor?: string | null; reason_note?: string | null; confirmed?: boolean | null } = {}
+  ): Promise<{ ok: true; issue_id: string; retry_attempt: number } | { ok: false; code: string; message: string }> {
+    const running = Array.from(this.state.running.values()).find((entry) => entry.identifier === issue_identifier);
+    if (running) {
+      const preState = this.describeIssueRuntimeState(running.issue.id);
+      if (params.confirmed !== true) {
+        this.recordOperatorAction(running.issue.id, {
+          action: 'requeue',
+          requested_at_ms: this.nowMs(),
+          result: 'rejected',
+          result_code: 'confirmation_required',
+          message: 'Requeue from a running turn requires explicit confirmation',
+          actor: params.actor ?? null,
+          reason_note: params.reason_note ?? null,
+          pre_state: preState,
+          post_state: this.describeIssueRuntimeState(running.issue.id)
+        });
+        return { ok: false, code: 'confirmation_required', message: 'Requeue from a running turn requires explicit confirmation' };
+      }
+      await this.terminateRunningIssue(running.issue.id, false, params.reason_note?.trim() || 'operator_requeue_issue');
+      const retryAttempt = running.retry_attempt + 1;
+      await this.scheduleRetry({
+        issue_id: running.issue.id,
+        identifier: running.identifier,
+        attempt: retryAttempt,
+        issue_run_id: running.issue_run_id ?? null,
+        previous_attempt_id: running.attempt_id ?? null,
+        delay_type: 'continuation',
+        error: 'operator requeue requested',
+        worker_host: running.worker_host ?? null,
+        workspace_path: running.workspace_path,
+        provisioner_type: running.provisioner_type,
+        branch_name: running.branch_name,
+        repo_root: running.repo_root,
+        workspace_exists: running.workspace_exists,
+        workspace_git_status: running.workspace_git_status,
+        workspace_provisioned: running.workspace_provisioned,
+        workspace_is_git_worktree: running.workspace_is_git_worktree,
+        copy_ignored_applied: running.copy_ignored_applied,
+        copy_ignored_status: running.copy_ignored_status,
+        copy_ignored_summary: running.copy_ignored_summary,
+        stop_reason_code: REASON_CODES.operatorRequeueRequested,
+        stop_reason_detail: params.reason_note?.trim() || 'operator requeue requested',
+        previous_thread_id: running.thread_id,
+        previous_session_id: running.session_id,
+        issue_snapshot: running.issue
+      });
+      this.recordOperatorAction(running.issue.id, {
+        action: 'requeue',
+        requested_at_ms: this.nowMs(),
+        result: 'accepted',
+        result_code: 'requeue_scheduled',
+        message: 'issue requeued',
+        actor: params.actor ?? null,
+        reason_note: params.reason_note ?? null,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(running.issue.id)
+      });
+      this.ports.notifyObservers?.();
+      return { ok: true, issue_id: running.issue.id, retry_attempt: retryAttempt };
+    }
+
+    const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
+    if (blocked) {
+      const preState = this.describeIssueRuntimeState(blocked.issue_id);
+      const retryAttempt = blocked.attempt;
+      await this.scheduleRetry({
+        issue_id: blocked.issue_id,
+        identifier: blocked.issue_identifier,
+        attempt: retryAttempt,
+        issue_run_id: blocked.issue_run_id,
+        previous_attempt_id: blocked.previous_attempt_id,
+        delay_type: 'continuation',
+        error: 'operator requeue requested',
+        worker_host: blocked.worker_host,
+        workspace_path: blocked.workspace_path,
+        provisioner_type: blocked.provisioner_type,
+        branch_name: blocked.branch_name,
+        repo_root: blocked.repo_root,
+        workspace_exists: blocked.workspace_exists,
+        workspace_git_status: blocked.workspace_git_status,
+        workspace_provisioned: blocked.workspace_provisioned,
+        workspace_is_git_worktree: blocked.workspace_is_git_worktree,
+        copy_ignored_applied: blocked.copy_ignored_applied,
+        copy_ignored_status: blocked.copy_ignored_status,
+        copy_ignored_summary: blocked.copy_ignored_summary,
+        stop_reason_code: REASON_CODES.operatorRequeueRequested,
+        stop_reason_detail: params.reason_note?.trim() || 'operator requeue requested',
+        previous_thread_id: blocked.previous_thread_id,
+        previous_session_id: blocked.previous_session_id,
+        issue_snapshot: null
+      });
+      await this.persistence?.deleteBlockedInput?.(blocked.issue_id);
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'requeue',
+        requested_at_ms: this.nowMs(),
+        result: 'accepted',
+        result_code: 'requeue_scheduled',
+        message: 'issue requeued',
+        actor: params.actor ?? null,
+        reason_note: params.reason_note ?? null,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(blocked.issue_id)
+      });
+      this.ports.notifyObservers?.();
+      return { ok: true, issue_id: blocked.issue_id, retry_attempt: retryAttempt };
+    }
+
+    const retry = Array.from(this.state.retry_attempts.values()).find((entry) => entry.identifier === issue_identifier);
+    if (retry) {
+      const preState = this.describeIssueRuntimeState(retry.issue_id);
+      await this.scheduleRetry({
+        issue_id: retry.issue_id,
+        identifier: retry.identifier,
+        attempt: retry.attempt,
+        issue_run_id: retry.issue_run_id,
+        previous_attempt_id: retry.previous_attempt_id,
+        delay_type: 'continuation',
+        error: 'operator requeue requested',
+        worker_host: retry.worker_host,
+        workspace_path: retry.workspace_path,
+        provisioner_type: retry.provisioner_type,
+        branch_name: retry.branch_name,
+        repo_root: retry.repo_root,
+        workspace_exists: retry.workspace_exists,
+        workspace_git_status: retry.workspace_git_status,
+        workspace_provisioned: retry.workspace_provisioned,
+        workspace_is_git_worktree: retry.workspace_is_git_worktree,
+        copy_ignored_applied: retry.copy_ignored_applied,
+        copy_ignored_status: retry.copy_ignored_status,
+        copy_ignored_summary: retry.copy_ignored_summary,
+        stop_reason_code: REASON_CODES.operatorRequeueRequested,
+        stop_reason_detail: params.reason_note?.trim() || 'operator requeue requested',
+        previous_thread_id: retry.previous_thread_id,
+        previous_session_id: retry.previous_session_id,
+        issue_snapshot: null
+      });
+      this.recordOperatorAction(retry.issue_id, {
+        action: 'requeue',
+        requested_at_ms: this.nowMs(),
+        result: 'accepted',
+        result_code: 'requeue_scheduled',
+        message: 'issue requeued',
+        actor: params.actor ?? null,
+        reason_note: params.reason_note ?? null,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(retry.issue_id)
+      });
+      this.ports.notifyObservers?.();
+      return { ok: true, issue_id: retry.issue_id, retry_attempt: retry.attempt };
+    }
+
+    return { ok: false, code: 'unsupported_transition', message: `Issue ${issue_identifier} is not running, blocked, or retrying` };
+  }
+
+  async retryLastFailedStep(
+    issue_identifier: string,
+    params: { actor?: string | null; reason_note?: string | null } = {}
+  ): Promise<{ ok: true; issue_id: string; retry_attempt: number } | { ok: false; code: string; message: string }> {
+    const retry = Array.from(this.state.retry_attempts.values()).find((entry) => entry.identifier === issue_identifier);
+    if (!retry) {
+      return {
+        ok: false,
+        code: 'unsupported_transition',
+        message: `Issue ${issue_identifier} has no failed or stalled retry step`
+      };
+    }
+    const preState = this.describeIssueRuntimeState(retry.issue_id);
+    await this.scheduleRetry({
+      issue_id: retry.issue_id,
+      identifier: retry.identifier,
+      attempt: retry.attempt,
+      issue_run_id: retry.issue_run_id,
+      previous_attempt_id: retry.previous_attempt_id,
+      delay_type: 'continuation',
+      error: 'operator retry-step requested',
+      worker_host: retry.worker_host,
+      workspace_path: retry.workspace_path,
+      provisioner_type: retry.provisioner_type,
+      branch_name: retry.branch_name,
+      repo_root: retry.repo_root,
+      workspace_exists: retry.workspace_exists,
+      workspace_git_status: retry.workspace_git_status,
+      workspace_provisioned: retry.workspace_provisioned,
+      workspace_is_git_worktree: retry.workspace_is_git_worktree,
+      copy_ignored_applied: retry.copy_ignored_applied,
+      copy_ignored_status: retry.copy_ignored_status,
+      copy_ignored_summary: retry.copy_ignored_summary,
+      stop_reason_code: REASON_CODES.operatorRetryStepRequested,
+      stop_reason_detail: params.reason_note?.trim() || 'operator retry-step requested',
+      previous_thread_id: retry.previous_thread_id,
+      previous_session_id: retry.previous_session_id,
+      issue_snapshot: null
+    });
+    this.recordOperatorAction(retry.issue_id, {
+      action: 'retry_step',
+      requested_at_ms: this.nowMs(),
+      result: 'accepted',
+      result_code: 'retry_step_scheduled',
+      message: 'last failed or stalled step retry scheduled',
+      actor: params.actor ?? null,
+      reason_note: params.reason_note ?? null,
+      pre_state: preState,
+      post_state: this.describeIssueRuntimeState(retry.issue_id)
+    });
+    this.ports.notifyObservers?.();
+    return { ok: true, issue_id: retry.issue_id, retry_attempt: retry.attempt };
+  }
+
   async resumeBlockedIssue(
     issue_identifier: string,
     resume_context: string | null = null,
     resume_override_reason: string | null = null,
+    operator_context: { actor?: string | null; reason_note?: string | null } | null = null,
     resume_metadata?: {
       request_id: string;
       resume_mode: 'native' | 'fallback';
@@ -2911,6 +3163,7 @@ export class OrchestratorCore {
         message: `Issue ${issue_identifier} is not blocked`
       };
     }
+    const preState = this.describeIssueRuntimeState(blocked.issue_id);
 
     let refreshedIssues: Issue[];
     try {
@@ -2921,7 +3174,11 @@ export class OrchestratorCore {
         requested_at_ms: this.nowMs(),
         result: 'failed',
         result_code: 'resume_failed',
-        message: error instanceof Error ? error.message : 'failed to refresh issue state'
+        message: error instanceof Error ? error.message : 'failed to refresh issue state',
+        actor: operator_context?.actor ?? null,
+        reason_note: operator_context?.reason_note ?? resume_override_reason ?? null,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(blocked.issue_id)
       });
       return {
         ok: false,
@@ -2937,7 +3194,10 @@ export class OrchestratorCore {
         requested_at_ms: this.nowMs(),
         result: 'rejected',
         result_code: 'issue_not_found',
-        message: `Issue ${issue_identifier} no longer exists in tracker`
+        message: `Issue ${issue_identifier} no longer exists in tracker`,
+        actor: operator_context?.actor ?? null,
+        reason_note: operator_context?.reason_note ?? resume_override_reason ?? null,
+        pre_state: preState
       });
       this.clearBlockedInput(blocked.issue_id, 'issue_not_found');
       return {
@@ -2953,7 +3213,10 @@ export class OrchestratorCore {
         requested_at_ms: this.nowMs(),
         result: 'rejected',
         result_code: 'issue_not_active',
-        message: `Issue ${issue_identifier} is no longer in an active state`
+        message: `Issue ${issue_identifier} is no longer in an active state`,
+        actor: operator_context?.actor ?? null,
+        reason_note: operator_context?.reason_note ?? resume_override_reason ?? null,
+        pre_state: preState
       });
       this.clearBlockedInput(blocked.issue_id, 'issue_not_active');
       return {
@@ -2982,7 +3245,11 @@ export class OrchestratorCore {
         requested_at_ms: this.nowMs(),
         result: 'rejected',
         result_code: 'resume_failed',
-        message: `Issue ${issue_identifier} requires progress or an explicit resume override reason`
+        message: `Issue ${issue_identifier} requires progress or an explicit resume override reason`,
+        actor: operator_context?.actor ?? null,
+        reason_note: operator_context?.reason_note ?? resume_override_reason ?? null,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(blocked.issue_id)
       });
       return {
         ok: false,
@@ -3099,7 +3366,11 @@ export class OrchestratorCore {
       requested_at_ms: this.nowMs(),
       result: 'accepted',
       result_code: resume_metadata?.resume_reason_code ?? 'resume_accepted',
-      message: 'blocked issue resumed'
+      message: 'blocked issue resumed',
+      actor: operator_context?.actor ?? null,
+      reason_note: operator_context?.reason_note ?? resume_override_reason ?? null,
+      pre_state: preState,
+      post_state: this.describeIssueRuntimeState(blocked.issue_id)
     });
     this.ports.notifyObservers?.();
     return {
@@ -3110,7 +3381,8 @@ export class OrchestratorCore {
 
   async cancelBlockedIssue(
     issue_identifier: string,
-    cancel_reason: string | null = null
+    cancel_reason: string | null = null,
+    operator_context: { actor?: string | null; reason_note?: string | null; confirmed?: boolean | null } | null = null
   ): Promise<{ ok: true; issue_id: string; moved_to_state: string } | { ok: false; code: string; message: string }> {
     const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
     if (!blocked) {
@@ -3119,6 +3391,21 @@ export class OrchestratorCore {
         code: 'issue_not_blocked',
         message: `Issue ${issue_identifier} is not blocked`
       };
+    }
+    const preState = this.describeIssueRuntimeState(blocked.issue_id);
+    if (operator_context && operator_context.confirmed !== true) {
+      this.recordOperatorAction(blocked.issue_id, {
+        action: 'cancel',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'confirmation_required',
+        message: 'Cancel requires explicit confirmation',
+        actor: operator_context?.actor ?? null,
+        reason_note: operator_context?.reason_note ?? cancel_reason ?? null,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(blocked.issue_id)
+      });
+      return { ok: false, code: 'confirmation_required', message: 'Cancel requires explicit confirmation' };
     }
 
     const targetState = this.resolveBacklogStateName();
@@ -3130,7 +3417,11 @@ export class OrchestratorCore {
         requested_at_ms: this.nowMs(),
         result: 'failed',
         result_code: 'cancel_failed',
-        message: error instanceof Error ? error.message : 'failed to move issue to backlog state'
+        message: error instanceof Error ? error.message : 'failed to move issue to backlog state',
+        actor: operator_context?.actor ?? null,
+        reason_note: operator_context?.reason_note ?? cancel_reason ?? null,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(blocked.issue_id)
       });
       return {
         ok: false,
@@ -3147,7 +3438,11 @@ export class OrchestratorCore {
       requested_at_ms: this.nowMs(),
       result: 'accepted',
       result_code: targetState,
-      message: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog'
+      message: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog',
+      actor: operator_context?.actor ?? null,
+      reason_note: operator_context?.reason_note ?? cancel_reason ?? null,
+      pre_state: preState,
+      post_state: this.describeIssueRuntimeState(blocked.issue_id)
     });
     this.recordRuntimeEvent({
       event: CANONICAL_EVENT.orchestration.cancelToBacklogExecuted,
@@ -3257,7 +3552,7 @@ export class OrchestratorCore {
           request_id: params.request_id
         }
       });
-      const resumed = await this.resumeBlockedIssue(params.issue_identifier, nativeAttempt.resume_context ?? null, null, {
+      const resumed = await this.resumeBlockedIssue(params.issue_identifier, nativeAttempt.resume_context ?? null, null, null, {
         request_id: params.request_id,
         resume_mode: 'native',
         resume_reason_code: 'native_applied'
@@ -3723,11 +4018,77 @@ export class OrchestratorCore {
     this.state.codex_totals.seconds_running += Math.max(0, Math.floor((this.nowMs() - runningEntry.started_at_ms) / 1000));
   }
 
+  private describeIssueRuntimeState(issueId: string): Record<string, unknown> {
+    const running = this.state.running.get(issueId);
+    if (running) {
+      return {
+        runtime_state: 'running',
+        issue_id: issueId,
+        issue_identifier: running.identifier,
+        run_id: running.issue_run_id ?? running.run_id ?? null,
+        attempt_id: running.attempt_id ?? null,
+        retry_attempt: running.retry_attempt,
+        thread_id: running.thread_id,
+        turn_id: running.turn_id,
+        session_id: running.session_id
+      };
+    }
+    const blocked = this.state.blocked_inputs.get(issueId);
+    if (blocked) {
+      return {
+        runtime_state: 'blocked',
+        issue_id: issueId,
+        issue_identifier: blocked.issue_identifier,
+        run_id: blocked.issue_run_id ?? null,
+        attempt_id: blocked.previous_attempt_id ?? null,
+        retry_attempt: blocked.attempt,
+        thread_id: blocked.previous_thread_id,
+        session_id: blocked.previous_session_id,
+        reason_code: blocked.stop_reason_code
+      };
+    }
+    const retry = this.state.retry_attempts.get(issueId);
+    if (retry) {
+      return {
+        runtime_state: 'retrying',
+        issue_id: issueId,
+        issue_identifier: retry.identifier,
+        run_id: retry.issue_run_id ?? null,
+        attempt_id: retry.previous_attempt_id ?? null,
+        retry_attempt: retry.attempt,
+        thread_id: retry.previous_thread_id,
+        session_id: retry.previous_session_id,
+        due_at_ms: retry.due_at_ms,
+        reason_code: retry.stop_reason_code
+      };
+    }
+    return {
+      runtime_state: this.state.completed.has(issueId) ? 'completed' : 'untracked',
+      issue_id: issueId
+    };
+  }
+
   private recordOperatorAction(issueId: string, action: OperatorActionRecord): void {
     const operatorActions = this.state.operator_actions ?? new Map<string, OperatorActionRecord[]>();
     this.state.operator_actions = operatorActions;
+    const currentState = this.describeIssueRuntimeState(issueId);
+    const normalized: OperatorActionRecord = {
+      ...action,
+      actor: action.actor ?? 'operator',
+      reason_note: action.reason_note ?? null,
+      target_identifiers: action.target_identifiers ?? {
+        issue_id: issueId,
+        issue_identifier: typeof currentState.issue_identifier === 'string' ? currentState.issue_identifier : null,
+        run_id: typeof currentState.run_id === 'string' ? currentState.run_id : null,
+        attempt_id: typeof currentState.attempt_id === 'string' ? currentState.attempt_id : null,
+        thread_id: typeof currentState.thread_id === 'string' ? currentState.thread_id : null,
+        turn_id: typeof currentState.turn_id === 'string' ? currentState.turn_id : null
+      },
+      pre_state: action.pre_state ?? currentState,
+      post_state: action.post_state ?? currentState
+    };
     const existing = operatorActions.get(issueId) ?? [];
-    const updated = [...existing, { ...action }].slice(-20);
+    const updated = [...existing, normalized].slice(-20);
     operatorActions.set(issueId, updated);
     void this.persistence?.upsertOperatorActions?.(issueId, JSON.stringify(updated));
   }

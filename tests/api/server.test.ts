@@ -869,7 +869,7 @@ describe('LocalApiServer', () => {
       resumed: true,
       issue_identifier: 'ABC-3'
     });
-    expect(resumeBlockedIssue).toHaveBeenCalledWith('ABC-3');
+    expect(resumeBlockedIssue).toHaveBeenCalledWith('ABC-3', { actor: undefined, reason_note: undefined });
   });
 
   it('passes resume override payload through POST /api/v1/issues/:issue_identifier/resume', async () => {
@@ -1331,7 +1331,119 @@ describe('LocalApiServer', () => {
     expect(payload.cancelled).toBe(true);
     expect(payload.issue_identifier).toBe('ABC-3');
     expect(payload.moved_to_state).toBe('Todo');
-    expect(cancelBlockedIssue).toHaveBeenCalledWith('ABC-3', { cancel_reason: 'operator_cancel_return_to_backlog' });
+    expect(cancelBlockedIssue).toHaveBeenCalledWith('ABC-3', {
+      actor: undefined,
+      cancel_reason: 'operator_cancel_return_to_backlog',
+      confirmed: undefined,
+      reason_note: 'operator_cancel_return_to_backlog'
+    });
+  });
+
+  it('accepts operator action console requests for cancel-turn, requeue, and retry-step', async () => {
+    const cancelCurrentTurn = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
+    const requeueIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 2 }));
+    const retryLastFailedStep = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 3 }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        cancelCurrentTurn,
+        requeueIssue,
+        retryLastFailedStep,
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const cancelResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/cancel-turn`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'stalled', confirmed: true })
+    });
+    const requeueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/requeue`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'rerun', confirmed: true })
+    });
+    const retryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/retry-step`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'retry failed step' })
+    });
+
+    expect(cancelResponse.status).toBe(202);
+    expect(requeueResponse.status).toBe(202);
+    expect(retryResponse.status).toBe(202);
+    expect(cancelCurrentTurn).toHaveBeenCalledWith('ABC-3', {
+      actor: 'ops@example.test',
+      confirmed: true,
+      reason_note: 'stalled'
+    });
+    expect(requeueIssue).toHaveBeenCalledWith('ABC-3', {
+      actor: 'ops@example.test',
+      confirmed: true,
+      reason_note: 'rerun'
+    });
+    expect(retryLastFailedStep).toHaveBeenCalledWith('ABC-3', {
+      actor: 'ops@example.test',
+      reason_note: 'retry failed step'
+    });
+  });
+
+  it('maps unsupported operator transitions to typed conflict envelopes', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        retryLastFailedStep: vi.fn(async () => ({
+          ok: false as const,
+          code: 'unsupported_transition',
+          message: 'Issue ABC-3 has no failed or stalled retry step'
+        })),
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/retry-step`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason_note: 'try anyway' })
+    });
+    const payload = (await response.json()) as { error: { code: string } };
+
+    expect(response.status).toBe(409);
+    expect(payload.error.code).toBe('unsupported_transition');
   });
 
   it('accepts blocked input submit requests and resumes issue', async () => {

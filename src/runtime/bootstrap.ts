@@ -1104,10 +1104,23 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             }
           },
           issueControlSource: {
+            cancelCurrentTurn: async (issueIdentifier, params) =>
+              orchestrator.cancelCurrentTurn(issueIdentifier, params),
+            requeueIssue: async (issueIdentifier, params) =>
+              orchestrator.requeueIssue(issueIdentifier, params),
+            retryLastFailedStep: async (issueIdentifier, params) =>
+              orchestrator.retryLastFailedStep(issueIdentifier, params),
             resumeBlockedIssue: async (issueIdentifier, params) =>
-              orchestrator.resumeBlockedIssue(issueIdentifier, null, params?.resume_override_reason ?? null),
+              orchestrator.resumeBlockedIssue(issueIdentifier, null, params?.resume_override_reason ?? null, {
+                actor: params?.actor ?? null,
+                reason_note: params?.reason_note ?? null
+              }),
             cancelBlockedIssue: async (issueIdentifier, params) =>
-              orchestrator.cancelBlockedIssue(issueIdentifier, params?.cancel_reason ?? null),
+              orchestrator.cancelBlockedIssue(issueIdentifier, params?.cancel_reason ?? null, {
+                actor: params?.actor ?? null,
+                reason_note: params?.reason_note ?? null,
+                confirmed: params?.confirmed ?? null
+              }),
             submitBlockedIssueInput: async (params) =>
               orchestrator.submitBlockedIssueInput({
                 issue_identifier: params.issueIdentifier,

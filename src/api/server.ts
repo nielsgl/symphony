@@ -72,6 +72,60 @@ function sendError(res: ServerResponse, statusCode: number, code: string, messag
   sendJson(res, statusCode, payload);
 }
 
+interface OperatorActionBody {
+  actor?: string;
+  reason_note?: string;
+  confirmed?: boolean;
+  resume_override_reason?: string;
+  cancel_reason?: string;
+}
+
+async function readOptionalJsonObject(request: IncomingMessage, errorCode: string): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const payloadText = Buffer.concat(chunks).toString('utf8').trim();
+  if (!payloadText) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(payloadText) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new LocalApiError(errorCode, 'Request body must be a JSON object', 400);
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof LocalApiError) {
+      throw error;
+    }
+    throw new LocalApiError(errorCode, 'Request body must be valid JSON', 400);
+  }
+}
+
+function parseOperatorActionBody(payload: Record<string, unknown>): OperatorActionBody {
+  return {
+    actor: typeof payload.actor === 'string' ? payload.actor.trim() : undefined,
+    reason_note: typeof payload.reason_note === 'string' ? payload.reason_note.trim() : undefined,
+    confirmed: typeof payload.confirmed === 'boolean' ? payload.confirmed : undefined,
+    resume_override_reason: typeof payload.resume_override_reason === 'string' ? payload.resume_override_reason.trim() : undefined,
+    cancel_reason: typeof payload.cancel_reason === 'string' ? payload.cancel_reason.trim() : undefined
+  };
+}
+
+function statusForOperatorActionFailure(code: string): number {
+  if (code === 'issue_not_found' || code === 'issue_not_blocked') {
+    return 404;
+  }
+  if (code === 'confirmation_required' || code === 'issue_not_active' || code === 'unsupported_transition') {
+    return 409;
+  }
+  if (code.endsWith('_unavailable')) {
+    return 503;
+  }
+  return 422;
+}
+
 export class LocalApiServer {
   private readonly host: string;
   private readonly port: number;
@@ -947,6 +1001,91 @@ export class LocalApiServer {
         ]
       },
       {
+        path: /^\/api\/v1\/issues\/([^/]+)\/cancel-turn$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response, match) => {
+              if (!this.issueControlSource?.cancelCurrentTurn) {
+                throw new LocalApiError('cancel_failed', 'Issue control source is not configured', 503);
+              }
+              const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_cancel_submit'));
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const result = await this.issueControlSource.cancelCurrentTurn(issueIdentifier, {
+                actor: parsed.actor,
+                reason_note: parsed.reason_note ?? parsed.cancel_reason,
+                confirmed: parsed.confirmed
+              });
+              if (!result.ok) {
+                throw new LocalApiError(result.code, result.message, statusForOperatorActionFailure(result.code));
+              }
+              sendJson(response, 202, {
+                cancelled: true,
+                issue_identifier: issueIdentifier,
+                requested_at: new Date().toISOString()
+              });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/issues\/([^/]+)\/requeue$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response, match) => {
+              if (!this.issueControlSource?.requeueIssue) {
+                throw new LocalApiError('requeue_failed', 'Issue control source is not configured', 503);
+              }
+              const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_requeue_submit'));
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const result = await this.issueControlSource.requeueIssue(issueIdentifier, {
+                actor: parsed.actor,
+                reason_note: parsed.reason_note,
+                confirmed: parsed.confirmed
+              });
+              if (!result.ok) {
+                throw new LocalApiError(result.code, result.message, statusForOperatorActionFailure(result.code));
+              }
+              sendJson(response, 202, {
+                requeued: true,
+                issue_identifier: issueIdentifier,
+                retry_attempt: result.retry_attempt,
+                requested_at: new Date().toISOString()
+              });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/issues\/([^/]+)\/retry-step$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response, match) => {
+              if (!this.issueControlSource?.retryLastFailedStep) {
+                throw new LocalApiError('retry_step_failed', 'Issue control source is not configured', 503);
+              }
+              const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_retry_step_submit'));
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const result = await this.issueControlSource.retryLastFailedStep(issueIdentifier, {
+                actor: parsed.actor,
+                reason_note: parsed.reason_note
+              });
+              if (!result.ok) {
+                throw new LocalApiError(result.code, result.message, statusForOperatorActionFailure(result.code));
+              }
+              sendJson(response, 202, {
+                retry_step: true,
+                issue_identifier: issueIdentifier,
+                retry_attempt: result.retry_attempt,
+                requested_at: new Date().toISOString()
+              });
+            }
+          }
+        ]
+      },
+      {
         path: /^\/api\/v1\/issues\/([^/]+)\/resume$/,
         routes: [
           {
@@ -955,34 +1094,21 @@ export class LocalApiServer {
               if (!this.issueControlSource) {
                 throw new LocalApiError('resume_failed', 'Issue control source is not configured', 503);
               }
-              const chunks: Buffer[] = [];
-              for await (const chunk of request) {
-                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-              }
-              let parsed: { resume_override_reason?: string } | undefined;
-              const payloadText = Buffer.concat(chunks).toString('utf8').trim();
-              if (payloadText) {
-                try {
-                  parsed = JSON.parse(payloadText) as { resume_override_reason?: string };
-                } catch {
-                  throw new LocalApiError('invalid_resume_submit', 'Request body must be valid JSON', 400);
-                }
-              }
+              const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_resume_submit'));
 
               const issueIdentifier = decodeURIComponent(match[1]);
-              const result = parsed?.resume_override_reason
+              const result = parsed.resume_override_reason
                 ? await this.issueControlSource.resumeBlockedIssue(issueIdentifier, {
-                    resume_override_reason: parsed.resume_override_reason
+                    resume_override_reason: parsed.resume_override_reason,
+                    actor: parsed.actor,
+                    reason_note: parsed.reason_note
                   })
-                : await this.issueControlSource.resumeBlockedIssue(issueIdentifier);
+                : await this.issueControlSource.resumeBlockedIssue(issueIdentifier, {
+                    actor: parsed.actor,
+                    reason_note: parsed.reason_note
+                  });
               if (!result.ok) {
-                const status =
-                  result.code === 'issue_not_found' || result.code === 'issue_not_blocked'
-                    ? 404
-                    : result.code === 'issue_not_active'
-                      ? 409
-                      : 422;
-                throw new LocalApiError(result.code, result.message, status);
+                throw new LocalApiError(result.code, result.message, statusForOperatorActionFailure(result.code));
               }
 
               sendJson(response, 202, {
@@ -1003,26 +1129,16 @@ export class LocalApiServer {
               if (!this.issueControlSource) {
                 throw new LocalApiError('cancel_failed', 'Issue control source is not configured', 503);
               }
-              const chunks: Buffer[] = [];
-              for await (const chunk of request) {
-                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-              }
-              let parsed: { cancel_reason?: string } | undefined;
-              const payloadText = Buffer.concat(chunks).toString('utf8').trim();
-              if (payloadText) {
-                try {
-                  parsed = JSON.parse(payloadText) as { cancel_reason?: string };
-                } catch {
-                  throw new LocalApiError('invalid_cancel_submit', 'Request body must be valid JSON', 400);
-                }
-              }
+              const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_cancel_submit'));
               const issueIdentifier = decodeURIComponent(match[1]);
-              const result = parsed?.cancel_reason
-                ? await this.issueControlSource.cancelBlockedIssue(issueIdentifier, { cancel_reason: parsed.cancel_reason })
-                : await this.issueControlSource.cancelBlockedIssue(issueIdentifier);
+              const result = await this.issueControlSource.cancelBlockedIssue(issueIdentifier, {
+                cancel_reason: parsed.cancel_reason ?? parsed.reason_note,
+                actor: parsed.actor,
+                reason_note: parsed.reason_note ?? parsed.cancel_reason,
+                confirmed: parsed.confirmed
+              });
               if (!result.ok) {
-                const status = result.code === 'issue_not_blocked' ? 404 : 422;
-                throw new LocalApiError(result.code, result.message, status);
+                throw new LocalApiError(result.code, result.message, statusForOperatorActionFailure(result.code));
               }
               sendJson(response, 202, {
                 cancelled: true,
