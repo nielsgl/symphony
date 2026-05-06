@@ -29,6 +29,8 @@ export interface LocalWorkerRunInput {
 export interface LocalWorkerRunResult {
   reason: 'normal' | 'abnormal';
   session_id: string | null;
+  completion_reason?: 'max_turns_reached' | 'issue_state_missing' | 'handoff_state_reached' | 'issue_left_active_states';
+  refreshed_state?: string | null;
   error?: string;
   input_required_payload?: CodexInputRequestPayload;
 }
@@ -130,7 +132,8 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       if (turnNumber >= maxTurns) {
         return {
           reason: 'normal',
-          session_id: lastSessionId
+          session_id: lastSessionId,
+          completion_reason: 'max_turns_reached'
         };
       }
 
@@ -148,15 +151,27 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       if (refreshedIssues.length === 0) {
         return {
           reason: 'normal',
-          session_id: lastSessionId
+          session_id: lastSessionId,
+          completion_reason: 'issue_state_missing'
         };
       }
 
       const refreshedIssue = refreshedIssues.find((issue) => issue.id === currentIssue.id) ?? refreshedIssues[0];
+      if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.handoff_states)) {
+        return {
+          reason: 'normal',
+          session_id: lastSessionId,
+          completion_reason: 'handoff_state_reached',
+          refreshed_state: refreshedIssue.state
+        };
+      }
+
       if (!refreshedIssue || !isActiveState(refreshedIssue.state, input.config.tracker.active_states)) {
         return {
           reason: 'normal',
-          session_id: lastSessionId
+          session_id: lastSessionId,
+          completion_reason: 'issue_left_active_states',
+          refreshed_state: refreshedIssue?.state ?? null
         };
       }
 
@@ -165,7 +180,8 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
 
     return {
       reason: 'normal',
-      session_id: lastSessionId
+      session_id: lastSessionId,
+      completion_reason: 'max_turns_reached'
     };
   } catch (error) {
     const workspaceConflictError = await renderWorkspaceConflictError(error, workspacePath);
@@ -363,9 +379,13 @@ function dedupeConflictFiles(
 }
 
 function isActiveState(state: string | null | undefined, activeStates: string[]): boolean {
+  return isStateListed(state, activeStates);
+}
+
+function isStateListed(state: string | null | undefined, stateNames: string[]): boolean {
   if (!state) {
     return false;
   }
   const normalized = state.trim().toLowerCase();
-  return activeStates.some((activeState) => activeState.trim().toLowerCase() === normalized);
+  return stateNames.some((stateName) => stateName.trim().toLowerCase() === normalized);
 }

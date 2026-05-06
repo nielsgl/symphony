@@ -170,6 +170,268 @@ describe('LocalRunnerBridge integration', () => {
     expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
   });
 
+  it('stops continuation turns when tracker refresh reaches a handoff state', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+
+    const startSessionAndRunTurn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        session_id: 'thread-1-turn-1',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      })
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-2',
+        turn_id: 'turn-2',
+        session_id: 'thread-2-turn-2',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      });
+
+    const issueStateFetcher = vi.fn().mockResolvedValueOnce([
+      makeIssue({ id: 'i-1', identifier: 'ABC-1', state: 'Agent Review' })
+    ]);
+
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+    };
+    const config = makeConfig();
+    config.agent.max_turns = 5;
+    config.tracker.active_states = ['Todo', 'In Progress', 'Agent Review'];
+    config.tracker.handoff_states = ['Agent Review'];
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+      config,
+      issueStateFetcher,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      logger
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledTimes(1);
+    expect(issueStateFetcher).toHaveBeenCalledTimes(1);
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+    expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
+
+    const completed = logs.find((entry) => entry.event === CANONICAL_EVENT.agentRunner.attemptCompleted);
+    expect(completed?.context).toMatchObject({
+      issue_id: 'i-1',
+      completion_reason: 'handoff_state_reached',
+      refreshed_state: 'Agent Review'
+    });
+  });
+
+  it('preserves same-thread continuation for active states when handoff states are empty', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+
+    const startSessionAndRunTurn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        session_id: 'thread-1-turn-1',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      })
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-2',
+        turn_id: 'turn-2',
+        session_id: 'thread-2-turn-2',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      });
+
+    const issueStateFetcher = vi
+      .fn()
+      .mockResolvedValueOnce([makeIssue({ id: 'i-1', identifier: 'ABC-1', state: 'Agent Review' })])
+      .mockResolvedValueOnce([makeIssue({ id: 'i-1', identifier: 'ABC-1', state: 'Done' })]);
+
+    const config = makeConfig();
+    config.agent.max_turns = 5;
+    config.tracker.active_states = ['Todo', 'In Progress', 'Agent Review'];
+    config.tracker.handoff_states = [];
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+      config,
+      issueStateFetcher,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledTimes(2);
+    expect(startSessionAndRunTurn.mock.calls[1][0]).toMatchObject({
+      prompt: expect.stringContaining('Continue on the same thread'),
+      maxTurns: 1
+    });
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('returns abnormal when issue state refresh fails after a completed turn', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+
+    const startSessionAndRunTurn = vi.fn().mockResolvedValueOnce({
+      status: 'completed' as const,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      last_event: CANONICAL_EVENT.codex.turnCompleted
+    });
+
+    const issueStateFetcher = vi.fn(async () => {
+      throw new Error('Linear unavailable');
+    });
+    const exits: Array<{ reason: string; error?: string }> = [];
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+      config: { ...makeConfig(), agent: { ...makeConfig().agent, max_turns: 5 } },
+      issueStateFetcher,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      onWorkerExit: ({ reason, error }) => {
+        exits.push({ reason, error });
+      }
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledTimes(1);
+    expect(exits).toEqual([{ reason: 'abnormal', error: 'issue_state_refresh_failed: Linear unavailable' }]);
+    expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
+  });
+
+  it('stops normally when a completed turn has no refreshed issue', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+
+    const startSessionAndRunTurn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        session_id: 'thread-1-turn-1',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      })
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-2',
+        turn_id: 'turn-2',
+        session_id: 'thread-2-turn-2',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      });
+
+    const issueStateFetcher = vi.fn().mockResolvedValueOnce([]);
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+      config: { ...makeConfig(), agent: { ...makeConfig().agent, max_turns: 5 } },
+      issueStateFetcher,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledTimes(1);
+    expect(issueStateFetcher).toHaveBeenCalledWith(['i-1']);
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+    expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
+  });
+
+  it('stops normally when refreshed state is non-active and non-terminal', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+
+    const startSessionAndRunTurn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        session_id: 'thread-1-turn-1',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      })
+      .mockResolvedValueOnce({
+        status: 'completed' as const,
+        thread_id: 'thread-2',
+        turn_id: 'turn-2',
+        session_id: 'thread-2-turn-2',
+        last_event: CANONICAL_EVENT.codex.turnCompleted
+      });
+
+    const issueStateFetcher = vi
+      .fn()
+      .mockResolvedValueOnce([makeIssue({ id: 'i-1', identifier: 'ABC-1', state: 'Paused' })]);
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+    };
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+      config: { ...makeConfig(), agent: { ...makeConfig().agent, max_turns: 5 } },
+      issueStateFetcher,
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      logger
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(startSessionAndRunTurn).toHaveBeenCalledTimes(1);
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+    const completed = logs.find((entry) => entry.event === CANONICAL_EVENT.agentRunner.attemptCompleted);
+    expect(completed?.context).toMatchObject({
+      completion_reason: 'issue_left_active_states',
+      refreshed_state: 'Paused'
+    });
+  });
+
   it('prepends resume context to first prompt when provided', async () => {
     const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
     const prepareAttempt = vi.fn(async () => {});

@@ -2,6 +2,7 @@ import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
+import { REASON_CODES } from '../observability/reason-codes';
 import type { Issue } from '../tracker';
 import { TemplateEngine, type Template } from '../workflow';
 import type { EffectiveConfig } from '../workflow';
@@ -159,7 +160,9 @@ export class LocalRunnerBridge {
         context: {
           issue_id: issue.id,
           issue_identifier: issue.identifier,
-          session_id: result.session_id
+          session_id: result.session_id,
+          completion_reason: result.completion_reason ?? REASON_CODES.normalCompletion,
+          refreshed_state: result.refreshed_state ?? null
         }
       });
     } else {
