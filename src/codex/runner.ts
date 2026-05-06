@@ -73,6 +73,11 @@ function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function readToolCallId(message: ProtocolMessage): string {
+  const params = asRecord(message.params);
+  return readString(params?.call_id) ?? readString(params?.callId) ?? readString(params?.id) ?? String(message.id);
+}
+
 function normalizeOptionText(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -1185,10 +1190,23 @@ class ProtocolClient {
           const params = asRecord(message.params);
           const toolName = readString(params?.tool) ?? readString(params?.name);
           const argumentsValue = params?.arguments ?? {};
+          const toolCallId = readToolCallId(message);
+          const emittedToolName = toolName ?? 'unknown_tool';
+          emit({
+            event: CANONICAL_EVENT.codex.toolCallStarted,
+            detail: emittedToolName,
+            tool_call_id: toolCallId,
+            tool_name: emittedToolName
+          });
           const toolResult = await this.dynamicToolExecutor.execute(toolName, argumentsValue);
           this.write({ id: message.id, result: toolResult });
           if (toolResult.success) {
-            emit({ event: CANONICAL_EVENT.codex.toolCallCompleted, detail: toolName ?? 'unknown_tool' });
+            emit({
+              event: CANONICAL_EVENT.codex.toolCallCompleted,
+              detail: emittedToolName,
+              tool_call_id: toolCallId,
+              tool_name: emittedToolName
+            });
             emit({ event: CANONICAL_EVENT.codex.phaseImplementation, detail: toolName ?? 'unknown_tool' });
           } else if (toolName) {
             const unsupportedCapabilityMessage = extractUnsupportedDynamicToolConsoleMessage(toolResult.output);
@@ -1198,19 +1216,30 @@ class ProtocolClient {
                 thread_id: this.activeTurnContext?.thread_id,
                 turn_id: this.activeTurnContext?.turn_id,
                 session_id: this.activeTurnContext?.session_id,
+                tool_call_id: toolCallId,
+                tool_name: toolName,
                 detail: serializeDynamicToolCapabilityMismatchDetail(
                   createDynamicToolCapabilityMismatchDetail({
                     attempted_tool_name: toolName,
-                    call_id: message.id ?? null,
+                    call_id: toolCallId,
                     unsupported_capability_message: unsupportedCapabilityMessage
                   })
                 )
               });
             } else {
-              emit({ event: CANONICAL_EVENT.codex.toolCallFailed, detail: toolName });
+              emit({
+                event: CANONICAL_EVENT.codex.toolCallFailed,
+                detail: toolName,
+                tool_call_id: toolCallId,
+                tool_name: toolName
+              });
             }
           } else {
-            emit({ event: CANONICAL_EVENT.codex.unsupportedToolCall });
+            emit({
+              event: CANONICAL_EVENT.codex.unsupportedToolCall,
+              tool_call_id: toolCallId,
+              tool_name: emittedToolName
+            });
           }
           continue;
         }

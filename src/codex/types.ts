@@ -109,4 +109,6 @@ export interface CodexRunnerEvent {
   token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
   detail?: string;
+  tool_call_id?: string;
+  tool_name?: string;
 }

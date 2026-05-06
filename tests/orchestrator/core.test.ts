@@ -4,6 +4,7 @@ import { OrchestratorCore } from '../../src/orchestrator/core';
 import type { OrchestratorConfig, OrchestratorPersistencePort, OrchestratorPorts } from '../../src/orchestrator/types';
 import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
+import { REASON_CODES } from '../../src/observability/reason-codes';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -1221,6 +1222,283 @@ describe('OrchestratorCore', () => {
     const running = harness.orchestrator.getStateSnapshot().running.get('i-wait');
     expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait')).toBe(false);
+  });
+
+  it('blocks a dynamic tool call that never records matching tool output by call id', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-missing-tool', identifier: 'ABC-MISS-TOOL' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-missing-tool', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-missing',
+      turn_id: 'turn-1',
+      session_id: 'session-missing'
+    });
+    harness.orchestrator.onWorkerEvent('i-missing-tool', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'dynamic_tool',
+      thread_id: 'thread-missing',
+      turn_id: 'turn-1',
+      session_id: 'session-missing',
+      tool_name: 'dynamic_tool',
+      tool_call_id: 'call_dynamic_1'
+    });
+    harness.orchestrator.onWorkerEvent('i-missing-tool', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for dynamic tool output',
+      thread_id: 'thread-missing',
+      turn_id: 'turn-1',
+      session_id: 'session-missing'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-missing-tool');
+    expect(blocked).toMatchObject({
+      stop_reason_code: REASON_CODES.missingToolOutput,
+      requires_manual_resume: true,
+      previous_thread_id: 'thread-missing',
+      previous_session_id: 'session-missing',
+      tool_output_wait: {
+        tool_name: 'dynamic_tool',
+        call_id: 'call_dynamic_1',
+        thread_id: 'thread-missing',
+        turn_id: 'turn-1',
+        session_id: 'session-missing',
+        last_agent_message: 'waiting for dynamic tool output'
+      }
+    });
+    expect(blocked?.tool_output_wait?.elapsed_wait_ms).toBeGreaterThanOrEqual(1_990);
+    expect(blocked?.required_actions).toEqual(['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']);
+    expect(harness.orchestrator.getStateSnapshot().running.has('i-missing-tool')).toBe(false);
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-missing-tool', cleanup_workspace: false, reason: REASON_CODES.missingToolOutput }
+    ]);
+  });
+
+  it('blocks a linear_graphql MCP-style tool call that never records matching tool output by call id', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-linear-tool', identifier: 'ABC-LINEAR-TOOL' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-linear-tool', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-linear',
+      turn_id: 'turn-linear',
+      session_id: 'session-linear'
+    });
+    harness.orchestrator.onWorkerEvent('i-linear-tool', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_graphql',
+      thread_id: 'thread-linear',
+      turn_id: 'turn-linear',
+      session_id: 'session-linear',
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_pfKTUH5GFubLHpXfln7UScnU'
+    });
+    harness.orchestrator.onWorkerEvent('i-linear-tool', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for linear_graphql output',
+      thread_id: 'thread-linear',
+      turn_id: 'turn-linear',
+      session_id: 'session-linear'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-linear-tool');
+    expect(blocked?.stop_reason_code).toBe(REASON_CODES.missingToolOutput);
+    expect(blocked?.tool_output_wait).toMatchObject({
+      tool_name: 'linear_graphql',
+      call_id: 'call_pfKTUH5GFubLHpXfln7UScnU',
+      thread_id: 'thread-linear',
+      turn_id: 'turn-linear',
+      session_id: 'session-linear'
+    });
+  });
+
+  it('keeps missing tool output from being overwritten by generic stall timeout in the same tick', async () => {
+    const completedRuns: Array<{ terminal_status: string; error_code: string | null }> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-missing-timeout',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async ({ terminal_status, error_code }) => {
+        completedRuns.push({ terminal_status, error_code: error_code ?? null });
+      }
+    };
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 1_000 },
+      persistence
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-missing-timeout', identifier: 'ABC-MISS-TIMEOUT' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-missing-timeout', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_graphql',
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_timeout_collision',
+      thread_id: 'thread-timeout',
+      turn_id: 'turn-timeout',
+      session_id: 'session-timeout'
+    });
+    harness.orchestrator.onWorkerEvent('i-missing-timeout', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for linear_graphql output',
+      thread_id: 'thread-timeout',
+      turn_id: 'turn-timeout',
+      session_id: 'session-timeout'
+    });
+
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const blocked = snapshot.blocked_inputs.get('i-missing-timeout');
+    expect(blocked?.stop_reason_code).toBe(REASON_CODES.missingToolOutput);
+    expect(blocked?.requires_manual_resume).toBe(true);
+    expect(blocked?.tool_output_wait).toMatchObject({
+      tool_name: 'linear_graphql',
+      call_id: 'call_timeout_collision',
+      thread_id: 'thread-timeout',
+      turn_id: 'turn-timeout',
+      session_id: 'session-timeout'
+    });
+    expect(snapshot.running.has('i-missing-timeout')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-missing-timeout')).toBe(false);
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-missing-timeout', cleanup_workspace: false, reason: REASON_CODES.missingToolOutput }
+    ]);
+    expect(completedRuns).toEqual([{ terminal_status: 'cancelled', error_code: REASON_CODES.missingToolOutput }]);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (entry) =>
+          entry.event === CANONICAL_EVENT.orchestration.workerStalled && entry.issue_identifier === 'ABC-MISS-TIMEOUT'
+      )
+    ).toBe(false);
+  });
+
+  it('does not block when matching tool output arrives before the waiting threshold', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-tool-ok', identifier: 'ABC-TOOL-OK' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-tool-ok', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'dynamic_tool',
+      tool_name: 'dynamic_tool',
+      tool_call_id: 'call_ok'
+    });
+    harness.orchestrator.onWorkerEvent('i-tool-ok', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.toolCallCompleted,
+      detail: 'dynamic_tool',
+      tool_name: 'dynamic_tool',
+      tool_call_id: 'call_ok'
+    });
+    harness.orchestrator.onWorkerEvent('i-tool-ok', {
+      timestamp_ms: harness.now.value + 200,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting after tool output'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-tool-ok')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().running.get('i-tool-ok')?.stalled_waiting_reason).toBe(
+      REASON_CODES.turnWaitingThresholdExceeded
+    );
+  });
+
+  it('quarantines duplicate or late tool output after missing-output blocked classification', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-tool-late', identifier: 'ABC-TOOL-LATE' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-tool-late', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'dynamic_tool',
+      tool_name: 'dynamic_tool',
+      tool_call_id: 'call_late'
+    });
+    harness.orchestrator.onWorkerEvent('i-tool-late', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for tool output'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    harness.orchestrator.onWorkerEvent('i-tool-late', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.toolCallCompleted,
+      detail: 'dynamic_tool',
+      tool_name: 'dynamic_tool',
+      tool_call_id: 'call_late'
+    });
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-tool-late');
+    expect(blocked?.stop_reason_code).toBe(REASON_CODES.missingToolOutput);
+    expect(blocked?.quarantined_event_count).toBe(1);
+    expect(blocked?.tool_output_wait?.call_id).toBe('call_late');
+  });
+
+  it('preserves missing-tool-output root cause when tracker state later leaves active states', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-tool-terminal', identifier: 'ABC-TOOL-TERM' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-tool-terminal', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_graphql',
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_terminal'
+    });
+    harness.orchestrator.onWorkerEvent('i-tool-terminal', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for tool output'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-tool-terminal', identifier: 'ABC-TOOL-TERM', state: 'Done' })
+    ]);
+    await harness.orchestrator.reconcileBlockedInputs();
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-tool-terminal');
+    expect(blocked?.stop_reason_code).toBe(REASON_CODES.missingToolOutput);
+    expect(blocked?.tool_output_wait?.call_id).toBe('call_terminal');
   });
 
   it('does not reset stalled-wait classification when waiting heartbeats continue', async () => {
