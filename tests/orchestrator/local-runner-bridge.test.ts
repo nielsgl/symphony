@@ -36,7 +36,9 @@ function makeConfig(): EffectiveConfig {
       api_key: 'token',
       project_slug: 'PROJ',
       active_states: ['Todo', 'In Progress'],
-      terminal_states: ['Done']
+      terminal_states: ['Done'],
+      handoff_states: [],
+      fresh_dispatch_states: []
     },
     polling: { interval_ms: 30000 },
     workspace: {
