@@ -12,7 +12,9 @@ function baseConfig(): EffectiveConfig {
       project_slug: 'ABC',
       github_linking: { mode: 'off' },
       active_states: ['Todo', 'In Progress'],
-      terminal_states: ['Done']
+      terminal_states: ['Done'],
+      handoff_states: [],
+      fresh_dispatch_states: []
     },
     polling: { interval_ms: 30000 },
     workspace: {
@@ -162,6 +164,51 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('invalid_tracker_github_linking_mode');
+    }
+  });
+
+  it('accepts non-terminal handoff and fresh dispatch states', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.handoff_states = ['Agent Review', 'Human Review'];
+    config.tracker.fresh_dispatch_states = ['Agent Review'];
+
+    expect(validator.validate(config)).toEqual({ ok: true, at: expect.any(String) });
+  });
+
+  it('rejects terminal state overlap in handoff and fresh dispatch states', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.handoff_states = ['Agent Review', 'Done'];
+
+    const invalidHandoff = validator.validate(config);
+    expect(invalidHandoff.ok).toBe(false);
+    if (!invalidHandoff.ok) {
+      expect(invalidHandoff.error_code).toBe('invalid_tracker_handoff_states');
+      expect(invalidHandoff.message).toContain("terminal state 'Done'");
+    }
+
+    config.tracker.handoff_states = ['Agent Review'];
+    config.tracker.fresh_dispatch_states = ['Done'];
+    const invalidFreshDispatch = validator.validate(config);
+    expect(invalidFreshDispatch.ok).toBe(false);
+    if (!invalidFreshDispatch.ok) {
+      expect(invalidFreshDispatch.error_code).toBe('invalid_tracker_fresh_dispatch_states');
+      expect(invalidFreshDispatch.message).toContain("terminal state 'Done'");
+    }
+  });
+
+  it('requires fresh dispatch states to also be handoff states', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.tracker.handoff_states = ['Human Review'];
+    config.tracker.fresh_dispatch_states = ['Agent Review'];
+
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_tracker_fresh_dispatch_states');
+      expect(result.message).toContain('tracker.handoff_states');
     }
   });
 

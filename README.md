@@ -6,12 +6,15 @@ retry and reconciliation behavior.
 
 This repository is driven by SPEC and PRD artifacts. The current implementation
 includes workflow loading/validation, orchestrator runtime logic, local worker
-execution, and a local observability API with an embedded dashboard.
+execution, and a local observability API with an embedded dashboard. Symphony
+implements the base contract in `SPEC.md` plus documented local extensions in
+`SPEC.ext.md`.
 
 ## Current Status
 
 - Core implementation and parity hardening phases are merged on `main`.
-- Canonical requirements and governance evidence live in `SPEC.md` and `docs/prd/`.
+- Canonical requirements and governance evidence live in `SPEC.md`, `SPEC.ext.md`,
+  and `docs/prd/`.
 
 ## Quick Start
 
