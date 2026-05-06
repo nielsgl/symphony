@@ -2541,6 +2541,8 @@ describe('LocalApiServer', () => {
     expect(firstPayload).toHaveProperty('phase_spans');
     expect(firstPayload).toHaveProperty('tool_spans');
     expect(firstPayload).toHaveProperty('wait_spans');
+    expect(firstPayload).toHaveProperty('capability_warnings');
+    expect(firstPayload.capability_warnings).toEqual([]);
     expect((firstPayload.phase_spans as Array<{ duration_ms: number }>)[0].duration_ms).toBe(10_000);
     expect((firstPayload.tool_spans as Array<{ tool_name: string; duration_ms: number }>)[0]).toMatchObject({
       tool_name: 'exec_command',

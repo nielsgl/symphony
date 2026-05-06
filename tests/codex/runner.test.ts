@@ -7,6 +7,10 @@ import { describe, expect, it } from 'vitest';
 
 import { CodexRunner, CONTINUATION_GUIDANCE } from '../../src/codex';
 import type { CodexRunnerStartInput } from '../../src/codex';
+import {
+  DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION,
+  UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE
+} from '../../src/observability/dynamic-tool-capability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 
 class FakeProcess {
@@ -657,6 +661,50 @@ describe('CodexRunner', () => {
         contentItems: [{ type: 'inputText', text: '{"error":"failed"}' }]
       }
     });
+  });
+
+  it('emits a capability mismatch diagnostic for TUI dynamic-tool rejection and still completes after fallback', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: Array<{ event: string; detail?: string; thread_id?: string; turn_id?: string }> = [];
+    const runner = new CodexRunner({
+      spawnProcess: () => fake,
+      dynamicToolExecutor: {
+        toolSpecs: () => [{ name: 'linear_graphql', description: 'tool', inputSchema: {} }],
+        execute: async () => ({
+          success: false,
+          output: JSON.stringify({ error: { message: 'Dynamic tool calls are not available in TUI yet.' } }),
+          contentItems: [{ type: 'inputText', text: 'Dynamic tool calls are not available in TUI yet.' }]
+        })
+      }
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        onEvent: (event) => events.push(event)
+      })
+    );
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":101,"method":"item/tool/call","params":{"name":"linear_graphql","arguments":{"query":"q"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+    const mismatch = events.find((event) => event.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch);
+    expect(mismatch).toMatchObject({
+      thread_id: 'thread-1',
+      turn_id: 'turn-1'
+    });
+    expect(JSON.parse(mismatch?.detail ?? '{}')).toMatchObject({
+      reason_code: UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE,
+      source_environment: 'console_tui',
+      attempted_tool_name: 'linear_graphql',
+      call_id: '101',
+      unsupported_capability_message: 'Dynamic tool calls are not available in TUI yet.',
+      recommended_recovery_action: DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION
+    });
+    expect(events.some((event) => event.event === CANONICAL_EVENT.codex.toolCallFailed)).toBe(false);
   });
 
   it('rejects unknown server requests so they cannot silently stall a turn', async () => {
