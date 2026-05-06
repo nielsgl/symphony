@@ -270,6 +270,7 @@ describe('createRuntimeEnvironment', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         request_id: 'req-native-1',
+        reason_note: 'continue with selected answer',
         answer: { question_id: 'q-1', option_label: 'Continue' }
       })
     });

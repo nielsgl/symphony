@@ -1125,6 +1125,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               orchestrator.submitBlockedIssueInput({
                 issue_identifier: params.issueIdentifier,
                 request_id: params.request_id,
+                actor: params.actor ?? null,
+                reason_note: params.reason_note,
                 answer: params.answer
               })
           },

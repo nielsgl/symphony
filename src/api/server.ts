@@ -113,7 +113,17 @@ function parseOperatorActionBody(payload: Record<string, unknown>): OperatorActi
   };
 }
 
+function requireOperatorReasonNote(parsed: OperatorActionBody): string {
+  if (!parsed.reason_note) {
+    throw new LocalApiError('reason_note_required', 'reason_note is required', 400);
+  }
+  return parsed.reason_note;
+}
+
 function statusForOperatorActionFailure(code: string): number {
+  if (code === 'reason_note_required') {
+    return 400;
+  }
   if (code === 'issue_not_found' || code === 'issue_not_blocked') {
     return 404;
   }
@@ -960,19 +970,33 @@ export class LocalApiServer {
               if (!payloadText) {
                 throw new LocalApiError('invalid_input_submit', 'Request body is required', 400);
               }
-              let parsed: { request_id?: string; answer?: { question_id?: string; option_label?: string; text?: string } };
+              let parsed: {
+                request_id?: string;
+                actor?: string;
+                reason_note?: string;
+                answer?: { question_id?: string; option_label?: string; text?: string };
+              };
               try {
-                parsed = JSON.parse(payloadText) as { request_id?: string; answer?: { question_id?: string; option_label?: string; text?: string } };
+                parsed = JSON.parse(payloadText) as {
+                  request_id?: string;
+                  actor?: string;
+                  reason_note?: string;
+                  answer?: { question_id?: string; option_label?: string; text?: string };
+                };
               } catch {
                 throw new LocalApiError('invalid_input_submit', 'Request body must be valid JSON', 400);
               }
               if (!parsed.request_id || !parsed.answer) {
                 throw new LocalApiError('invalid_input_submit', 'request_id and answer are required', 400);
               }
+              const operatorAction = parseOperatorActionBody(parsed as Record<string, unknown>);
+              const reasonNote = requireOperatorReasonNote(operatorAction);
               const issueIdentifier = decodeURIComponent(match[1]);
               const result = await this.issueControlSource.submitBlockedIssueInput({
                 issueIdentifier,
                 request_id: parsed.request_id,
+                actor: operatorAction.actor,
+                reason_note: reasonNote,
                 answer: parsed.answer
               });
               if (!result.ok) {
@@ -1010,10 +1034,14 @@ export class LocalApiServer {
                 throw new LocalApiError('cancel_failed', 'Issue control source is not configured', 503);
               }
               const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_cancel_submit'));
+              const reasonNote = requireOperatorReasonNote({
+                ...parsed,
+                reason_note: parsed.reason_note ?? parsed.cancel_reason
+              });
               const issueIdentifier = decodeURIComponent(match[1]);
               const result = await this.issueControlSource.cancelCurrentTurn(issueIdentifier, {
                 actor: parsed.actor,
-                reason_note: parsed.reason_note ?? parsed.cancel_reason,
+                reason_note: reasonNote,
                 confirmed: parsed.confirmed
               });
               if (!result.ok) {
@@ -1038,10 +1066,11 @@ export class LocalApiServer {
                 throw new LocalApiError('requeue_failed', 'Issue control source is not configured', 503);
               }
               const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_requeue_submit'));
+              const reasonNote = requireOperatorReasonNote(parsed);
               const issueIdentifier = decodeURIComponent(match[1]);
               const result = await this.issueControlSource.requeueIssue(issueIdentifier, {
                 actor: parsed.actor,
-                reason_note: parsed.reason_note,
+                reason_note: reasonNote,
                 confirmed: parsed.confirmed
               });
               if (!result.ok) {
@@ -1067,10 +1096,11 @@ export class LocalApiServer {
                 throw new LocalApiError('retry_step_failed', 'Issue control source is not configured', 503);
               }
               const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_retry_step_submit'));
+              const reasonNote = requireOperatorReasonNote(parsed);
               const issueIdentifier = decodeURIComponent(match[1]);
               const result = await this.issueControlSource.retryLastFailedStep(issueIdentifier, {
                 actor: parsed.actor,
-                reason_note: parsed.reason_note
+                reason_note: reasonNote
               });
               if (!result.ok) {
                 throw new LocalApiError(result.code, result.message, statusForOperatorActionFailure(result.code));
@@ -1095,17 +1125,18 @@ export class LocalApiServer {
                 throw new LocalApiError('resume_failed', 'Issue control source is not configured', 503);
               }
               const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_resume_submit'));
+              const reasonNote = requireOperatorReasonNote(parsed);
 
               const issueIdentifier = decodeURIComponent(match[1]);
               const result = parsed.resume_override_reason
                 ? await this.issueControlSource.resumeBlockedIssue(issueIdentifier, {
                     resume_override_reason: parsed.resume_override_reason,
                     actor: parsed.actor,
-                    reason_note: parsed.reason_note
+                    reason_note: reasonNote
                   })
                 : await this.issueControlSource.resumeBlockedIssue(issueIdentifier, {
                     actor: parsed.actor,
-                    reason_note: parsed.reason_note
+                    reason_note: reasonNote
                   });
               if (!result.ok) {
                 throw new LocalApiError(result.code, result.message, statusForOperatorActionFailure(result.code));
@@ -1130,11 +1161,15 @@ export class LocalApiServer {
                 throw new LocalApiError('cancel_failed', 'Issue control source is not configured', 503);
               }
               const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_cancel_submit'));
+              const reasonNote = requireOperatorReasonNote({
+                ...parsed,
+                reason_note: parsed.reason_note ?? parsed.cancel_reason
+              });
               const issueIdentifier = decodeURIComponent(match[1]);
               const result = await this.issueControlSource.cancelBlockedIssue(issueIdentifier, {
-                cancel_reason: parsed.cancel_reason ?? parsed.reason_note,
+                cancel_reason: parsed.cancel_reason ?? reasonNote,
                 actor: parsed.actor,
-                reason_note: parsed.reason_note ?? parsed.cancel_reason,
+                reason_note: reasonNote,
                 confirmed: parsed.confirmed
               });
               if (!result.ok) {

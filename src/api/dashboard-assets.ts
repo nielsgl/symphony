@@ -2082,10 +2082,19 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
   async function resumeBlockedIssue(issueIdentifier, resumeOverrideReason) {
     try {
+      const reasonNote = window.prompt('Reason note for resuming this blocked issue', '');
+      if (!reasonNote) {
+        setRefreshStatus('Resume skipped: reason note is required', true);
+        return;
+      }
       const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/resume', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(resumeOverrideReason ? { resume_override_reason: resumeOverrideReason } : {})
+        body: JSON.stringify(
+          resumeOverrideReason
+            ? { resume_override_reason: resumeOverrideReason, reason_note: reasonNote }
+            : { reason_note: reasonNote }
+        )
       });
       setRefreshStatus('Resume requested for ' + payload.issue_identifier, false);
       await loadStateViaPoll();
@@ -2166,11 +2175,17 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         const text = window.prompt(pending.prompt_text || 'Enter response', '');
         answer = { question_id: questionId, text: text || '' };
       }
+      const reasonNote = window.prompt('Reason note for submitting this blocked input', '');
+      if (!reasonNote) {
+        setRefreshStatus('Input submit skipped: reason note is required', true);
+        return;
+      }
       const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(entry.issue_identifier) + '/input', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           request_id: pending.request_id,
+          reason_note: reasonNote,
           answer: answer
         })
       });

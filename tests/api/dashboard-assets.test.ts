@@ -56,4 +56,15 @@ describe('dashboard assets', () => {
       ]
     `);
   });
+
+  it('renders reason-note prompts for blocked resume and input submission actions', () => {
+    const clientJs = renderDashboardClientJs();
+
+    expect(clientJs).toContain("window.prompt('Reason note for resuming this blocked issue'");
+    expect(clientJs).toContain("resume_override_reason: resumeOverrideReason, reason_note: reasonNote");
+    expect(clientJs).toContain("window.prompt('Reason note for submitting this blocked input'");
+    expect(clientJs).toContain('reason_note: reasonNote');
+    expect(clientJs).toContain('Resume skipped: reason note is required');
+    expect(clientJs).toContain('Input submit skipped: reason note is required');
+  });
 });

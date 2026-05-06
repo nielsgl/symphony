@@ -805,6 +805,8 @@ export interface LocalApiServerOptions {
     submitBlockedIssueInput: (params: {
       issueIdentifier: string;
       request_id: string;
+      actor?: string;
+      reason_note: string;
       answer: { question_id?: string; option_label?: string; text?: string };
     }) => Promise<
       | {
