@@ -59,6 +59,10 @@ web_modules/
 # Optional REPL history
 .node_repl_history
 
+# Python caches
+__pycache__/
+*.py[cod]
+
 # Output of 'npm pack'
 *.tgz
 
@@ -147,6 +151,7 @@ src-tauri/resources/symphony-backend*
 test-results/
 playwright-report/
 output/playwright/
+.playwright-cli/
 
 .worktrees
 .symphony/
