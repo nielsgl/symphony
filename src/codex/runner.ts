@@ -5,6 +5,11 @@ import path from 'node:path';
 
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
+import {
+  createDynamicToolCapabilityMismatchDetail,
+  extractUnsupportedDynamicToolConsoleMessage,
+  serializeDynamicToolCapabilityMismatchDetail
+} from '../observability/dynamic-tool-capability';
 import { CodexRunnerError } from './errors';
 import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
 import { buildSshSpawnArgs } from './ssh-target';
@@ -1186,7 +1191,24 @@ class ProtocolClient {
             emit({ event: CANONICAL_EVENT.codex.toolCallCompleted, detail: toolName ?? 'unknown_tool' });
             emit({ event: CANONICAL_EVENT.codex.phaseImplementation, detail: toolName ?? 'unknown_tool' });
           } else if (toolName) {
-            emit({ event: CANONICAL_EVENT.codex.toolCallFailed, detail: toolName });
+            const unsupportedCapabilityMessage = extractUnsupportedDynamicToolConsoleMessage(toolResult.output);
+            if (unsupportedCapabilityMessage) {
+              emit({
+                event: CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch,
+                thread_id: this.activeTurnContext?.thread_id,
+                turn_id: this.activeTurnContext?.turn_id,
+                session_id: this.activeTurnContext?.session_id,
+                detail: serializeDynamicToolCapabilityMismatchDetail(
+                  createDynamicToolCapabilityMismatchDetail({
+                    attempted_tool_name: toolName,
+                    call_id: message.id ?? null,
+                    unsupported_capability_message: unsupportedCapabilityMessage
+                  })
+                )
+              });
+            } else {
+              emit({ event: CANONICAL_EVENT.codex.toolCallFailed, detail: toolName });
+            }
           } else {
             emit({ event: CANONICAL_EVENT.codex.unsupportedToolCall });
           }

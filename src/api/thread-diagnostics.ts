@@ -6,7 +6,13 @@ import type {
 } from '../orchestrator';
 import type { ExecutionGraphThreadLineage } from '../persistence';
 import { REASON_CODES, requireReasonCodeDefinition } from '../observability/reason-codes';
+import {
+  DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION,
+  parseDynamicToolCapabilityMismatchDetail,
+  UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE
+} from '../observability/dynamic-tool-capability';
 import type {
+  ThreadDiagnosticsCapabilityWarning,
   ThreadDiagnosticsBlocker,
   ThreadDiagnosticsBlockerClassification,
   ThreadDiagnosticsEvent,
@@ -132,6 +138,37 @@ function buildBlocker(
     ...blockerDetails(classification),
     expected_auto_transition: reasonDefinition?.expected_transition ?? null
   };
+}
+
+function capabilityWarningsFromToolSpans(
+  threadId: string,
+  spans: Array<{
+    tool_name: string;
+    turn_id: string | null;
+    reason_code: string | null;
+    reason_detail: string | null;
+  }>
+): ThreadDiagnosticsCapabilityWarning[] {
+  return spans.flatMap((span) => {
+    const detail = parseDynamicToolCapabilityMismatchDetail(span.reason_detail);
+    if (!detail && span.reason_code !== UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE) {
+      return [];
+    }
+
+    return [
+      {
+        reason_code: UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE,
+        source_environment: detail?.source_environment ?? 'console_tui',
+        attempted_tool_name: detail?.attempted_tool_name ?? span.tool_name,
+        call_id: detail?.call_id ?? null,
+        thread_id: threadId,
+        turn_id: span.turn_id,
+        unsupported_capability_message:
+          detail?.unsupported_capability_message ?? 'Dynamic tool calls are not available in TUI yet.',
+        recommended_recovery_action: detail?.recommended_recovery_action ?? DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION
+      }
+    ];
+  });
 }
 
 export function classifyThreadBlocker(params: {
@@ -303,6 +340,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
     phase_spans: [],
     tool_spans: [],
     wait_spans,
+    capability_warnings: [],
     current_blocker: currentBlocker,
     last_meaningful_progress_at_ms: lastMeaningfulProgressAtMs(timeline)
   };
@@ -403,6 +441,7 @@ function diagnosticsFromLineage(lineage: ExecutionGraphThreadLineage, nowMs: num
       const endedAtMs = toMs(span.ended_at);
       return {
         tool_name: span.tool_name,
+        turn_id: turn.turn_id,
         started_at_ms: startedAtMs,
         ended_at_ms: endedAtMs,
         duration_ms: durationMs(startedAtMs, endedAtMs),
@@ -445,6 +484,7 @@ function diagnosticsFromLineage(lineage: ExecutionGraphThreadLineage, nowMs: num
     phase_spans,
     tool_spans,
     wait_spans,
+    capability_warnings: capabilityWarningsFromToolSpans(threadId, tool_spans),
     current_blocker: currentBlocker,
     last_meaningful_progress_at_ms: lastMeaningfulProgressAtMs(timeline)
   };
@@ -493,6 +533,7 @@ function mergeRuntimeWithLineage(
     status: runtime.status,
     timeline,
     wait_spans,
+    capability_warnings: persisted.capability_warnings,
     current_blocker: runtime.current_blocker ?? persisted.current_blocker,
     last_meaningful_progress_at_ms: lastMeaningfulProgressAtMs(timeline)
   };

@@ -231,6 +231,10 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
                 <h3>Blocker Intelligence</h3>
                 <dl id="thread-blocker-card" class="blocker-card"></dl>
               </section>
+              <section class="thread-detail-section">
+                <h3>Capability Warnings</h3>
+                <div id="thread-capability-warnings" class="capability-warnings muted">No capability warnings.</div>
+              </section>
             </div>
             <section class="thread-detail-section">
               <h3>Raw Event Stream</h3>
@@ -379,6 +383,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     threadDetail: document.getElementById('thread-detail'),
     threadTimelineLanes: document.getElementById('thread-timeline-lanes'),
     threadBlockerCard: document.getElementById('thread-blocker-card'),
+    threadCapabilityWarnings: document.getElementById('thread-capability-warnings'),
     threadRawEvents: document.getElementById('thread-raw-events'),
     issueOutput: document.getElementById('issue-output'),
     runtimeEventsPanel: document.getElementById('runtime-events-panel'),
@@ -1072,6 +1077,35 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       renderTimelineLane('Wait', diagnostics.wait_spans, 'wait')
     );
     renderThreadBlockerCard(diagnostics.current_blocker || null);
+    const warnings = Array.isArray(diagnostics.capability_warnings) ? diagnostics.capability_warnings : [];
+    if (!warnings.length) {
+      elements.threadCapabilityWarnings.className = 'capability-warnings muted';
+      elements.threadCapabilityWarnings.textContent = 'No capability warnings.';
+    } else {
+      elements.threadCapabilityWarnings.className = 'capability-warnings';
+      const list = document.createElement('ul');
+      for (const warning of warnings) {
+        const item = document.createElement('li');
+        item.textContent =
+          (warning.reason_code || 'capability_warning') +
+          ' | source ' +
+          (warning.source_environment || 'n/a') +
+          ' | tool ' +
+          (warning.attempted_tool_name || 'n/a') +
+          ' | call ' +
+          (warning.call_id || 'n/a') +
+          ' | thread ' +
+          (warning.thread_id || 'n/a') +
+          ' | turn ' +
+          (warning.turn_id || 'n/a') +
+          ' | ' +
+          (warning.unsupported_capability_message || 'unsupported capability') +
+          ' | recovery ' +
+          (warning.recommended_recovery_action || 'n/a');
+        list.append(item);
+      }
+      elements.threadCapabilityWarnings.replaceChildren(list);
+    }
     const events = Array.isArray(diagnostics.timeline) ? diagnostics.timeline : [];
     elements.threadRawEvents.textContent = events.length
       ? events

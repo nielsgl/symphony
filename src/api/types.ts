@@ -717,6 +717,7 @@ export interface ThreadDiagnosticsPhaseSpan {
 
 export interface ThreadDiagnosticsToolSpan {
   tool_name: string;
+  turn_id: string | null;
   started_at_ms: number;
   ended_at_ms: number | null;
   duration_ms: number | null;
@@ -744,6 +745,17 @@ export interface ThreadDiagnosticsBlocker {
   expected_auto_transition: string | null;
 }
 
+export interface ThreadDiagnosticsCapabilityWarning {
+  reason_code: string;
+  source_environment: 'console_tui';
+  attempted_tool_name: string | null;
+  call_id: string | null;
+  thread_id: string;
+  turn_id: string | null;
+  unsupported_capability_message: string;
+  recommended_recovery_action: string;
+}
+
 export interface ThreadDiagnosticsResponse {
   thread_id: string;
   issue_identifier: string;
@@ -753,6 +765,7 @@ export interface ThreadDiagnosticsResponse {
   phase_spans: ThreadDiagnosticsPhaseSpan[];
   tool_spans: ThreadDiagnosticsToolSpan[];
   wait_spans: ThreadDiagnosticsWaitSpan[];
+  capability_warnings: ThreadDiagnosticsCapabilityWarning[];
   current_blocker: ThreadDiagnosticsBlocker | null;
   last_meaningful_progress_at_ms: number | null;
 }

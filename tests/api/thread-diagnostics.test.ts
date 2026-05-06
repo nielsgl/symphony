@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { buildThreadDiagnosticsByIssueIdentifier, classifyThreadBlocker } from '../../src/api';
 import type { OrchestratorState, RunningEntry } from '../../src/orchestrator';
+import {
+  createDynamicToolCapabilityMismatchDetail,
+  DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION,
+  serializeDynamicToolCapabilityMismatchDetail,
+  UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE
+} from '../../src/observability/dynamic-tool-capability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
+import type { ExecutionGraphThreadLineage } from '../../src/persistence';
 import type { Issue } from '../../src/tracker';
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -114,6 +121,101 @@ function makeState(running: RunningEntry): OrchestratorState {
       sample_count: 0
     },
     recent_runtime_events: []
+  };
+}
+
+function makeConsoleResumeLineage(includeDynamicToolMismatch: boolean): ExecutionGraphThreadLineage {
+  const mismatchDetail = serializeDynamicToolCapabilityMismatchDetail(
+    createDynamicToolCapabilityMismatchDetail({
+      attempted_tool_name: 'linear_graphql',
+      call_id: 'tool-call-7',
+      unsupported_capability_message: 'Dynamic tool calls are not available in TUI yet.'
+    })
+  );
+
+  return {
+    issue_run: {
+      issue_run_id: 'issue-run-1',
+      issue_id: 'issue-1',
+      issue_identifier: 'ABC-1',
+      started_at: '2026-04-10T10:00:00.000Z',
+      ended_at: null,
+      status: 'running',
+      reason_code: 'dispatch_started',
+      reason_detail: null
+    },
+    attempt: {
+      attempt_id: 'attempt-1',
+      issue_run_id: 'issue-run-1',
+      attempt_number: 2,
+      started_at: '2026-04-10T10:00:01.000Z',
+      ended_at: null,
+      status: 'running',
+      reason_code: 'manual_resume',
+      reason_detail: 'source_environment=console_tui'
+    },
+    thread: {
+      thread_id: 'thread-1',
+      attempt_id: 'attempt-1',
+      started_at: '2026-04-10T10:00:02.000Z',
+      ended_at: null,
+      status: 'running',
+      reason_code: 'manual_resume',
+      reason_detail: 'source_environment=console_tui'
+    },
+    turns: [
+      {
+        turn_id: 'turn-console',
+        thread_id: 'thread-1',
+        turn_index: 0,
+        started_at: '2026-04-10T10:00:03.000Z',
+        ended_at: '2026-04-10T10:00:20.000Z',
+        status: 'succeeded',
+        reason_code: 'normal_completion',
+        reason_detail: null,
+        phase_spans: [],
+        tool_spans: includeDynamicToolMismatch
+          ? [
+              {
+                tool_span_id: 'tool-mismatch',
+                turn_id: 'turn-console',
+                tool_name: 'linear_graphql',
+                started_at: '2026-04-10T10:00:05.000Z',
+                ended_at: '2026-04-10T10:00:05.000Z',
+                status: 'failed',
+                reason_code: UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE,
+                reason_detail: mismatchDetail
+              },
+              {
+                tool_span_id: 'tool-fallback',
+                turn_id: 'turn-console',
+                tool_name: 'linear_mcp',
+                started_at: '2026-04-10T10:00:08.000Z',
+                ended_at: '2026-04-10T10:00:10.000Z',
+                status: 'succeeded',
+                reason_code: 'codex_tool_completed',
+                reason_detail: 'linear_mcp'
+              }
+            ]
+          : [],
+        state_transitions: []
+      }
+    ],
+    state_transitions: [
+      {
+        state_transition_id: 'transition-1',
+        issue_run_id: 'issue-run-1',
+        attempt_id: 'attempt-1',
+        thread_id: 'thread-1',
+        turn_id: 'turn-console',
+        from_status: 'running',
+        to_status: 'succeeded',
+        transitioned_at: '2026-04-10T10:00:20.000Z',
+        status: 'succeeded',
+        reason_code: 'normal_completion',
+        reason_detail: null
+      }
+    ]
   };
 }
 
@@ -231,5 +333,37 @@ describe('thread diagnostics blocker classification', () => {
       reason_code: 'turn_waiting_threshold_exceeded',
       reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
     });
+  });
+
+  it('preserves console/TUI dynamic-tool capability warnings after fallback success', () => {
+    const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
+      state: makeState(makeRunningEntry()),
+      issue_identifier: 'ABC-1',
+      reconstructThreadLineage: () => makeConsoleResumeLineage(true)
+    });
+
+    expect(diagnostics?.status).toBe('running');
+    expect(diagnostics?.capability_warnings).toEqual([
+      {
+        reason_code: UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE,
+        source_environment: 'console_tui',
+        attempted_tool_name: 'linear_graphql',
+        call_id: 'tool-call-7',
+        thread_id: 'thread-1',
+        turn_id: 'turn-console',
+        unsupported_capability_message: 'Dynamic tool calls are not available in TUI yet.',
+        recommended_recovery_action: DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION
+      }
+    ]);
+  });
+
+  it('does not warn for normal console resume lineage without dynamic tools', () => {
+    const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
+      state: makeState(makeRunningEntry()),
+      issue_identifier: 'ABC-1',
+      reconstructThreadLineage: () => makeConsoleResumeLineage(false)
+    });
+
+    expect(diagnostics?.capability_warnings).toEqual([]);
   });
 });
