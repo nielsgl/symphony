@@ -108,6 +108,9 @@ tracker:
   active_states:
     - Todo
     - In Progress
+    - Agent Review
+    - Merging
+    - Rework
   terminal_states:
     - Done
     - Canceled
@@ -140,6 +143,26 @@ Important behavior:
 - If server.port is omitted and no CLI/env port is provided, HTTP API is disabled.
 - Prompt template body below front matter is rendered per issue and attempt.
 - If you use `workspace.provisioner.type: worktree`, both sandbox values must be `danger-full-access`.
+
+Recommended lifecycle:
+
+```text
+Todo -> In Progress -> Agent Review -> Merging -> Done
+Todo -> In Progress -> Agent Review -> Human Review -> Merging -> Done
+```
+
+`Agent Review` is automation-owned. Implementation agents move completed work
+there first; a separate reviewer then routes the issue:
+
+- `Agent Review -> In Progress` for fixable review findings.
+- `Agent Review -> Rework` when the implementation needs a fresh approach.
+- `Agent Review -> Human Review` when code review passes and UI/product or
+  human judgment is required.
+- `Agent Review -> Merging` when code review passes and no human review is
+  required.
+
+Reviewer findings should be posted as separate Linear comments. Passing reviews
+should also leave a short Linear decision comment for auditability.
 
 ## 6. Start Symphony (CLI and Desktop)
 
@@ -285,8 +308,9 @@ Runtime symptoms:
 ## 12. UI Evidence Capture (Deterministic)
 
 When UI-affecting files change, capture Playwright evidence and publish it to
-the Linear issue before handoff. Use the `linear-ui-evidence` skill so images
-and videos render as rich Linear media in a comment.
+the Linear issue before moving from `In Progress` to `Agent Review`. Use the
+`linear-ui-evidence` skill so images and videos render as rich Linear media in
+a comment.
 
 Capture screenshots for changed visual states and screencasts for changed
 interactions. If one media type is not needed for a UI change, state why in the
@@ -311,7 +335,8 @@ npm run check:meta
 
 `check:meta` is a local hygiene gate. It does not call Linear or verify
 rendered media; the publisher script re-reads the Linear comment, and Agent
-Review verifies the evidence renders in the issue.
+Review verifies the evidence renders in the issue before routing UI work to
+Human Review.
 
 Linear publication requirements:
 

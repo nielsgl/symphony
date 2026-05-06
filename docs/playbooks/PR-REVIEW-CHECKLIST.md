@@ -1,6 +1,7 @@
 # PR Review Checklist (Behavior-First)
 
-Use this checklist for every review before moving an issue to `Human Review`.
+Use this checklist for every implementation handoff before moving an issue to
+`Agent Review`, and during Agent Review before routing the issue onward.
 
 ## 1) Semantic correctness (must pass)
 
