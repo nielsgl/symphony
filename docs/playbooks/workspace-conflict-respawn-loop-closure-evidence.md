@@ -36,7 +36,7 @@ Preconditions:
 - Runtime is on a clean issue branch.
 - A tracked ephemeral artifact or mixed staged/unstaged drift is present before dispatch.
 - Example conflict payload contains:
-  - `output/playwright/ui-evidence.json` with staged/tracked artifact status.
+  - `output/playwright/demo.webm` with staged/tracked artifact status.
   - `src/api/dashboard-assets.ts` with unstaged source drift.
 
 Command proof:
@@ -80,21 +80,21 @@ Before trace excerpt:
 attempt=1 issue=i-workspace-conflict-blocked
 stop_reason_code=operator_action_required_workspace_conflict
 detail=workspace_unprovisioned_conflict: worktree_branch_conflict
-conflict_files=[{"path":"output/playwright/ui-evidence.json","status":"staged"},
+conflict_files=[{"path":"output/playwright/demo.webm","status":"staged"},
   {"path":"src/api/dashboard-assets.ts","status":"unstaged"}]
 runtime_action=retry_scheduled_or_spawned
 
 attempt=2 issue=i-workspace-conflict-blocked
 stop_reason_code=operator_action_required_workspace_conflict
 detail=workspace_unprovisioned_conflict: worktree_branch_conflict
-conflict_files=[{"path":"output/playwright/ui-evidence.json","status":"staged"},
+conflict_files=[{"path":"output/playwright/demo.webm","status":"staged"},
   {"path":"src/api/dashboard-assets.ts","status":"unstaged"}]
 runtime_action=retry_scheduled_or_spawned
 
 attempt=3 issue=i-workspace-conflict-blocked
 stop_reason_code=operator_action_required_workspace_conflict
 detail=workspace_unprovisioned_conflict: worktree_branch_conflict
-conflict_files=[{"path":"output/playwright/ui-evidence.json","status":"staged"},
+conflict_files=[{"path":"output/playwright/demo.webm","status":"staged"},
   {"path":"src/api/dashboard-assets.ts","status":"unstaged"}]
 runtime_action=retry_scheduled_or_spawned
 ```

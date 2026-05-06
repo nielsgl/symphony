@@ -334,7 +334,7 @@ query IssueFieldArgs {
 }
 ```
 
-### Upload a video to a comment
+### Upload UI evidence media to a comment
 
 Do this in three steps:
 
@@ -343,7 +343,11 @@ Do this in three steps:
 2. Upload the local file bytes to `uploadUrl` with `curl -X PUT` and the exact
    headers returned by `fileUpload`.
 3. Call `linear_graphql` again with `commentCreate` (or `commentUpdate`) and
-   include the resulting `assetUrl` in the comment body.
+   include the resulting `assetUrl` in rich `bodyData`.
+
+For UI evidence, use private uploads for both screenshots and videos:
+`makePublic:false`. Do not use `attachmentCreate`, base64 payloads, raw HTML,
+or markdown-only video links.
 
 Useful mutations:
 
@@ -372,6 +376,63 @@ mutation FileUpload(
   }
 }
 ```
+
+Rich comment bodyData pattern:
+
+```json
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [{ "type": "text", "text": "UI Evidence for Review" }]
+    },
+    {
+      "type": "paragraph",
+      "content": [{ "type": "text", "text": "Screenshot caption" }]
+    },
+    {
+      "type": "image",
+      "attrs": {
+        "uploadState": "finished",
+        "uploadId": null,
+        "src": "https://uploads.linear.app/...",
+        "alt": "screenshot.png",
+        "title": null,
+        "attribution": null,
+        "originalSrc": null,
+        "width": null,
+        "height": null,
+        "displayWidth": null
+      }
+    },
+    {
+      "type": "paragraph",
+      "content": [{ "type": "text", "text": "Screencast caption" }]
+    },
+    {
+      "type": "video",
+      "attrs": {
+        "uploadState": "finished",
+        "uploadId": null,
+        "src": "https://uploads.linear.app/...",
+        "title": "demo.webm",
+        "size": null,
+        "controls": true,
+        "height": null,
+        "width": null,
+        "metadataId": null,
+        "mimetype": "video/webm"
+      }
+    }
+  ]
+}
+```
+
+Use `commentCreate(input: { issueId, bodyData })` or
+`commentUpdate(id, input: { bodyData })`, then re-read the comment and verify
+the expected `image`/`video` nodes exist.
 
 ## Usage rules
 

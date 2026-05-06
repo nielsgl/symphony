@@ -48,6 +48,14 @@ Baseline hygiene checks:
 - Document manual verification steps and outputs in PRs.
 - Add or update automated tests alongside runtime code changes.
 
+## Skill Authoring
+- When adding or editing `.codex/skills/*/SKILL.md`, validate the skill with the
+  system quick validator through `uv` so transient Python dependencies are
+  provided explicitly:
+  `SKILL_DIR=.codex/skills/linear-ui-evidence; uv run --with pyyaml python "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" "$SKILL_DIR"`.
+- Keep skill helper code under the skill's `scripts/` directory unless the
+  skill specification requires a different layout.
+
 ## Commit, Merge & Pull Request Guidelines
 Follow `.codex/skills/commit/SKILL.md` for every commit.
 - The commit skill workflow is mandatory whenever creating commits.

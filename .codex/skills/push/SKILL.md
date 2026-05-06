@@ -57,7 +57,7 @@ description:
    - `npm run submit:pr-governed -- --mode create --title "<clear PR title written for this change>"`
    - `npm run submit:pr-governed -- --mode edit`
    - Wrapper sequence is deterministic and mandatory: normalize body -> `check:pr-governance` -> `check:meta` -> `gh pr create/edit --body-file <normalized-file>`.
-9. If body/review text references `output/playwright/*`, ensure each referenced artifact has markdown publication evidence in `output/playwright/ui-evidence.json` (`artifact.publish_reference` or `artifact.published_url` pointing to a Linear issue comment or GitHub PR comment) before wrapper submit.
+9. If body/review text references `output/playwright/*`, replace the local path reference with the Linear issue evidence comment created by the `linear-ui-evidence` skill before wrapper submit.
 10. Reply with the PR URL from `gh pr view`.
 
 ## Commands

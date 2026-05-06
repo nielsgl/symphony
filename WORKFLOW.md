@@ -218,7 +218,7 @@ Use this only when completion is blocked by missing required tools or missing au
   - exact human action needed to unblock.
 - Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
 
-## Step 2: Execution phase (Todo -> In Progress -> Human Review)
+## Step 2: Execution phase (Todo -> In Progress -> Agent Review/Human Review)
 
 1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
 2.  If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
@@ -238,7 +238,9 @@ Use this only when completion is blocked by missing required tools or missing au
     - Revert every temporary proof edit before commit/push.
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
-    - For UI-affecting diffs in strict UI evidence mode, env/marker-only evidence is insufficient: capture at least one screenshot (`.png`) or short video (`.mp4`/`.webm`), persist under `output/playwright/`, add the evidence as markdown in a Linear issue comment or GitHub PR comment, and publish `output/playwright/ui-evidence.json` with artifact list, changed UI paths, capture time, summary, and per-artifact publish evidence (`publish_reference` or `published_url`) for reviewer access.
+    - For UI-affecting diffs, capture Playwright evidence under `output/playwright/` and publish it to the Linear issue with `.codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js` before leaving `In Progress`.
+    - Capture screenshots for changed visual states and screencasts for changed interactions. If one media type is not needed for a UI change, state why in the handoff.
+    - UI evidence must render in Linear as rich image/video media. Local paths, markdown-only video links, base64 payloads, Linear issue attachments, and `output/playwright/ui-evidence.json` are insufficient.
     - If any PR/review/workpad payload references `output/playwright/*`, run `npm run check:meta` with the outgoing body supplied as `SYMPHONY_PR_BODY` and/or `SYMPHONY_REVIEW_BODY` before marking review-ready.
     - After publishing evidence, unstage/remove `output/playwright/*` before commit. `check:meta` deterministically fails when evidence artifacts are staged/committed unless `SYMPHONY_UI_EVIDENCE_ALLOW_TRACKED=1` is intentionally set.
 6.  Re-check all acceptance criteria and close any gaps.
@@ -255,8 +257,11 @@ Use this only when completion is blocked by missing required tools or missing au
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
     - For UI-affecting changes, add a `### UI Evidence for Review` section in the workpad with:
       - artifact summary,
-      - where evidence was published (link/token/reference),
+      - the Linear evidence comment created by the `linear-ui-evidence` skill,
       - explicit reviewer instructions to access and verify.
+    - Add review routing lines:
+      - `Review routing: UI review required` and `UI evidence: published in this Linear issue`, or
+      - `Review routing: no UI review required` and `UI evidence: not applicable`.
     - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
     - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
     - Do not post any additional completion summary comment.
@@ -360,7 +365,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 - [ ] Criterion 1
 - [ ] Criterion 2
-- [ ] If UI-affecting changes are present: captured screenshot/video artifact(s) exist under `output/playwright/` and are listed in `output/playwright/ui-evidence.json`
+- [ ] If UI-affecting changes are present: Playwright screenshot/video artifact(s) were published with the `linear-ui-evidence` skill and render in the Linear issue
 
 ### Validation
 
