@@ -222,7 +222,7 @@ function findRuntimeByIssueIdentifier(state: OrchestratorState, issueIdentifier:
   };
 }
 
-function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch): ThreadDiagnosticsResponse {
+function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: number = Date.now()): ThreadDiagnosticsResponse {
   const source = match.running;
   const retry = match.retry;
   const blocked = match.blocked;
@@ -290,7 +290,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch): ThreadDi
           stalled_waiting: Boolean(source?.stalled_waiting_since_ms && source?.stalled_waiting_reason),
           time_since_progress:
             typeof source?.last_progress_transition_at_ms === 'number'
-              ? Math.max(0, Date.now() - source.last_progress_transition_at_ms)
+              ? Math.max(0, nowMs - source.last_progress_transition_at_ms)
               : null
         });
 
@@ -476,7 +476,7 @@ function mergeRuntimeWithLineage(
   nowMs?: number
 ): ThreadDiagnosticsResponse {
   const persisted = diagnosticsFromLineage(lineage, nowMs);
-  const runtime = diagnosticsFromRuntime(threadId, match);
+  const runtime = diagnosticsFromRuntime(threadId, match, nowMs);
   const timeline = mergeTimelineEvents([...persisted.timeline, ...runtime.timeline]);
   const wait_spans = [...persisted.wait_spans, ...runtime.wait_spans].sort((left, right) => {
     if (left.started_at_ms !== right.started_at_ms) {
@@ -509,7 +509,7 @@ export function buildThreadDiagnosticsByThreadId(params: {
     if (params.lineage) {
       return mergeRuntimeWithLineage(params.thread_id, runtimeMatch, params.lineage, params.now_ms);
     }
-    return diagnosticsFromRuntime(params.thread_id, runtimeMatch);
+    return diagnosticsFromRuntime(params.thread_id, runtimeMatch, params.now_ms);
   }
   if (params.lineage) {
     return diagnosticsFromLineage(params.lineage, params.now_ms);
@@ -539,11 +539,11 @@ export function buildThreadDiagnosticsByIssueIdentifier(params: {
   const threadId = runtimeMatch.running?.thread_id ?? runtimeMatch.running?.persisted_thread_id ?? runtimeMatch.blocked?.previous_thread_id ?? runtimeMatch.retry?.previous_thread_id;
   if (!threadId) {
     const lineage = params.reconstructLatestThreadLineageByIssueIdentifier?.(params.issue_identifier) ?? null;
-    return lineage ? diagnosticsFromLineage(lineage) : null;
+    return lineage ? diagnosticsFromLineage(lineage, params.now_ms) : null;
   }
   const lineage = params.reconstructThreadLineage?.(threadId) ?? null;
   if (lineage) {
     return mergeRuntimeWithLineage(threadId, runtimeMatch, lineage, params.now_ms);
   }
-  return diagnosticsFromRuntime(threadId, runtimeMatch);
+  return diagnosticsFromRuntime(threadId, runtimeMatch, params.now_ms);
 }

@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { LocalApiServer } from '../../src/api';
 import { LocalApiError } from '../../src/api/errors';
+import { replayForensicsBundle, type ForensicsBundle } from '../../src/api/forensics';
 import type { OrchestratorState } from '../../src/orchestrator';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../../src/observability/events';
 import type { ExecutionGraphThreadLineage } from '../../src/persistence';
@@ -2589,6 +2590,119 @@ describe('LocalApiServer', () => {
     });
     expect(payload.phase_spans[0]).toMatchObject({ phase: 'implementation' });
     expect(payload.tool_spans[0]).toMatchObject({ tool_name: 'exec_command' });
+  });
+
+  it('exports forensics bundles whose diagnostics replay with the same generated-at time', async () => {
+    const blockedLineage = makeThreadLineage({
+      thread_id: 'thread-blocked',
+      issue_identifier: 'ABC-1',
+      thread_status: 'blocked',
+      thread_ended_at: null
+    });
+    const nowSpy = vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(Date.parse('2026-04-10T10:06:00.000Z'))
+      .mockReturnValue(Date.parse('2026-04-10T10:10:00.000Z'));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        getActiveProfile: () => ({
+          name: 'balanced',
+          approval_policy: 'on-request',
+          thread_sandbox: 'workspace-write',
+          turn_sandbox_policy: { type: 'workspace' },
+          user_input_policy: 'fail_attempt'
+        }),
+        getPersistenceHealth: () => ({
+          enabled: true,
+          db_path: '/tmp/runtime.sqlite',
+          retention_days: 14,
+          run_count: 1,
+          last_pruned_at: null,
+          integrity_ok: true
+        }),
+        getLoggingHealth: () => ({
+          root: '/tmp/log',
+          active_file: '/tmp/log/symphony.log',
+          rotation: { max_bytes: 10485760, max_files: 5 },
+          sinks: ['stderr']
+        }),
+        listRunHistory: () => [],
+        reconstructLatestThreadLineageByIssueIdentifier: (issueIdentifier: string) =>
+          issueIdentifier === 'ABC-1' ? blockedLineage : null,
+        getUiState: () => null,
+        setUiState: () => undefined,
+        getPromptFallbackActive: () => false,
+        getRuntimeResolution: () => ({
+          workflow_path: '/tmp/WORKFLOW.md',
+          workflow_dir: '/tmp',
+          workspace_root: '/tmp/workspaces',
+          workspace_root_source: 'workflow',
+          server: { host: '127.0.0.1', port: 3000 },
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null
+        }),
+        getWorkspaceProvisioner: () => ({
+          provisioner_type: 'none',
+          repo_root: null,
+          base_ref: null,
+          branch_name_template: null,
+          last_provision_result: null,
+          last_teardown_result: null,
+          last_error_code: null,
+          last_verification_result: null,
+          last_cleanup_on_failure_result: null,
+          verification_mode: 'none',
+          last_integrity_status: null,
+          last_integrity_reason_code: null,
+          last_integrity_checked_at: null,
+          last_integrity_reconciled_at: null
+        }),
+        getWorkspaceCopyIgnored: () => ({
+          enabled: false,
+          include_file: '/tmp/.worktreeinclude',
+          from: 'primary_worktree',
+          conflict_policy: 'skip',
+          require_gitignored: true,
+          max_files: 10000,
+          max_total_bytes: 5 * 1024 * 1024 * 1024,
+          last_status: null,
+          last_error_code: null,
+          last_error_message: null,
+          source_path: null,
+          copied_files: 0,
+          skipped_existing: 0,
+          blocked_files: 0,
+          bytes_copied: 0,
+          duration_ms: 0
+        })
+      } as never
+    });
+
+    try {
+      await server.listen();
+      const address = server.address();
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/forensics/export`);
+      const bundle = (await response.json()) as ForensicsBundle;
+      const replay = replayForensicsBundle(bundle, Date.parse('2026-04-10T10:30:00.000Z'));
+
+      expect(response.status).toBe(200);
+      expect(bundle.generated_at_ms).toBe(Date.parse('2026-04-10T10:06:00.000Z'));
+      expect(replay.deterministic).toBe(true);
+      expect(bundle.diagnostics.current_blocker?.time_since_progress).toBe(
+        replay.diagnostics.current_blocker?.time_since_progress
+      );
+      expect(bundle.diagnostics).toEqual(replay.diagnostics);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('keeps persisted phase and tool spans when active runtime diagnostics also exist', async () => {

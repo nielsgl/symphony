@@ -902,6 +902,7 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (_request, response, match) => {
               const issueIdentifier = decodeURIComponent(match[1]);
+              const generatedAtMs = Date.now();
               const state = this.snapshotSource.getStateSnapshot();
               const runtimeDiagnostics = this.buildDiagnosticsPayload();
               const latestLineage = this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier?.(issueIdentifier) ?? null;
@@ -910,7 +911,8 @@ export class LocalApiServer {
                 issue_identifier: issueIdentifier,
                 reconstructThreadLineage: this.diagnosticsSource?.reconstructThreadLineage,
                 reconstructLatestThreadLineageByIssueIdentifier:
-                  this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier
+                  this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier,
+                now_ms: generatedAtMs
               });
               if (!payload) {
                 throw new LocalApiError('forensics_bundle_not_found', `Issue ${issueIdentifier} has no forensics data`, 404);
@@ -923,7 +925,8 @@ export class LocalApiServer {
                 diagnostics: payload,
                 api_diagnostics: runtimeDiagnostics,
                 lineage,
-                token_snapshot: this.resolveIssueTokenSnapshot(issueIdentifier)
+                token_snapshot: this.resolveIssueTokenSnapshot(issueIdentifier),
+                generated_at_ms: generatedAtMs
               }));
             }
           }
