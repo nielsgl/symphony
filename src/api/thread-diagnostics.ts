@@ -5,7 +5,7 @@ import type {
   RunningEntry
 } from '../orchestrator';
 import type { ExecutionGraphThreadLineage } from '../persistence';
-import { REASON_CODES } from '../observability/reason-codes';
+import { REASON_CODES, requireReasonCodeDefinition } from '../observability/reason-codes';
 import type {
   ThreadDiagnosticsBlocker,
   ThreadDiagnosticsBlockerClassification,
@@ -120,13 +120,17 @@ function blockerDetails(classification: ThreadDiagnosticsBlockerClassification):
 function buildBlocker(
   classification: ThreadDiagnosticsBlockerClassification,
   reasonCode: string | null,
-  reasonDetail: string | null
+  reasonDetail: string | null,
+  timeSinceProgress: number | null = null
 ): ThreadDiagnosticsBlocker {
+  const reasonDefinition = reasonCode ? requireReasonCodeDefinition(reasonCode) : null;
   return {
     classification,
     reason_code: reasonCode,
     reason_detail: reasonDetail,
-    ...blockerDetails(classification)
+    time_since_progress: timeSinceProgress,
+    ...blockerDetails(classification),
+    expected_auto_transition: reasonDefinition?.expected_transition ?? null
   };
 }
 
@@ -138,31 +142,32 @@ export function classifyThreadBlocker(params: {
   has_pending_input?: boolean;
   stalled_waiting?: boolean;
   retrying?: boolean;
+  time_since_progress?: number | null;
 }): ThreadDiagnosticsBlocker | null {
   const reasonCode = params.reason_code;
   const reasonDetail = params.reason_detail;
   const normalized = `${reasonCode ?? ''} ${reasonDetail ?? ''} ${params.status ?? ''}`.toLowerCase();
 
   if (params.retrying || normalized.includes('retry')) {
-    return buildBlocker('retry_backoff_wait', reasonCode, reasonDetail);
+    return buildBlocker('retry_backoff_wait', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   if (params.stalled_waiting || reasonCode === REASON_CODES.turnWaitingThresholdExceeded) {
-    return buildBlocker('tool_waiting_long', reasonCode, reasonDetail);
+    return buildBlocker('tool_waiting_long', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   if (params.has_conflict_files || normalized.includes('workspace') || normalized.includes('conflict')) {
-    return buildBlocker('workspace_integrity_conflict', reasonCode, reasonDetail);
+    return buildBlocker('workspace_integrity_conflict', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   if (params.has_pending_input || reasonCode === REASON_CODES.turnInputRequired || normalized.includes('input_required')) {
-    return buildBlocker('input_required_pending', reasonCode, reasonDetail);
+    return buildBlocker('input_required_pending', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   if (normalized.includes('tracker') || normalized.includes('transition')) {
-    return buildBlocker('tracker_transition_pending', reasonCode, reasonDetail);
+    return buildBlocker('tracker_transition_pending', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   if (normalized.includes('no_progress') || normalized.includes('no progress') || normalized.includes('stalled')) {
-    return buildBlocker('codex_no_progress', reasonCode, reasonDetail);
+    return buildBlocker('codex_no_progress', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   if (params.status === 'blocked') {
-    return buildBlocker('codex_no_progress', reasonCode, reasonDetail);
+    return buildBlocker('codex_no_progress', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   return null;
 }
@@ -266,21 +271,27 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch): ThreadDi
         reason_detail: blocked.stop_reason_detail,
         status: 'blocked',
         has_conflict_files: blocked.conflict_files.length > 0,
-        has_pending_input: Boolean(blocked.pending_input)
+        has_pending_input: Boolean(blocked.pending_input),
+        time_since_progress: null
       })
     : retry
       ? classifyThreadBlocker({
           reason_code: retry.stop_reason_code,
           reason_detail: retry.stop_reason_detail ?? retry.error,
           status: 'retrying',
-          retrying: true
+          retrying: true,
+          time_since_progress: null
         })
       : classifyThreadBlocker({
           reason_code: source?.stalled_waiting_reason ?? null,
           reason_detail: source?.last_event_summary ?? source?.last_message ?? null,
           status: source?.stalled_waiting_reason ? 'blocked' : 'running',
           has_pending_input: Boolean(source?.awaiting_input_since_ms),
-          stalled_waiting: Boolean(source?.stalled_waiting_since_ms && source?.stalled_waiting_reason)
+          stalled_waiting: Boolean(source?.stalled_waiting_since_ms && source?.stalled_waiting_reason),
+          time_since_progress:
+            typeof source?.last_progress_transition_at_ms === 'number'
+              ? Math.max(0, Date.now() - source.last_progress_transition_at_ms)
+              : null
         });
 
   return {
@@ -419,7 +430,11 @@ function diagnosticsFromLineage(lineage: ExecutionGraphThreadLineage): ThreadDia
   const currentBlocker = classifyThreadBlocker({
     reason_code: finalTransition?.reason_code ?? lineage.thread.reason_code,
     reason_detail: finalTransition?.reason_detail ?? lineage.thread.reason_detail,
-    status: finalTransition?.status ?? lineage.thread.status
+    status: finalTransition?.status ?? lineage.thread.status,
+    time_since_progress:
+      lastMeaningfulProgressAtMs(timeline) === null
+        ? null
+        : Math.max(0, Date.now() - lastMeaningfulProgressAtMs(timeline)!)
   });
   return {
     thread_id: threadId,

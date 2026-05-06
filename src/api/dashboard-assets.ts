@@ -114,6 +114,9 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
               <th>Runtime</th>
               <th>Turns</th>
               <th>Tokens</th>
+              <th>Blocker</th>
+              <th>Time Since Progress</th>
+              <th>Last Successful Step</th>
               <th>Last Event</th>
               <th>Last Message</th>
               <th>Last Event At</th>
@@ -121,7 +124,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
             </tr>
           </thead>
           <tbody id="running-rows">
-            <tr><td colspan="11" class="muted">No running issues.</td></tr>
+            <tr><td colspan="14" class="muted">No running issues.</td></tr>
           </tbody>
         </table>
       </div>
@@ -217,6 +220,22 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
               </div>
             </dl>
             <p id="issue-explainer-detail" class="muted"></p>
+          </div>
+          <div id="thread-detail" class="thread-detail hidden" aria-live="polite">
+            <div class="thread-detail-grid">
+              <section class="thread-detail-section">
+                <h3>Timeline Lanes</h3>
+                <div id="thread-timeline-lanes" class="timeline-lanes"></div>
+              </section>
+              <section class="thread-detail-section">
+                <h3>Blocker Intelligence</h3>
+                <dl id="thread-blocker-card" class="blocker-card"></dl>
+              </section>
+            </div>
+            <section class="thread-detail-section">
+              <h3>Raw Event Stream</h3>
+              <pre id="thread-raw-events" class="code-block raw-event-stream">No thread diagnostics loaded.</pre>
+            </section>
           </div>
           <pre id="issue-output" class="code-block">Select a running issue or enter an issue identifier.</pre>
         </div>
@@ -357,6 +376,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     issueExplainerTransition: document.getElementById('issue-explainer-transition'),
     issueExplainerVersion: document.getElementById('issue-explainer-version'),
     issueExplainerDetail: document.getElementById('issue-explainer-detail'),
+    threadDetail: document.getElementById('thread-detail'),
+    threadTimelineLanes: document.getElementById('thread-timeline-lanes'),
+    threadBlockerCard: document.getElementById('thread-blocker-card'),
+    threadRawEvents: document.getElementById('thread-raw-events'),
     issueOutput: document.getElementById('issue-output'),
     runtimeEventsPanel: document.getElementById('runtime-events-panel'),
     eventFeedFilter: document.getElementById('event-feed-filter'),
@@ -375,6 +398,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   function formatDate(value) {
     if (!value) {
       return 'n/a';
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return new Date(value).toLocaleString();
     }
     const parsed = Date.parse(value);
     if (!Number.isFinite(parsed)) {
@@ -444,6 +470,16 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       return 'n/a';
     }
     const seconds = Math.max(0, Math.floor((Date.now() - Number(timestampMs)) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const remain = seconds % 60;
+    return minutes + 'm ' + remain + 's';
+  }
+
+  function formatElapsedMs(durationMs) {
+    if (!Number.isFinite(durationMs)) {
+      return 'n/a';
+    }
+    const seconds = Math.max(0, Math.floor(Number(durationMs) / 1000));
     const minutes = Math.floor(seconds / 60);
     const remain = seconds % 60;
     return minutes + 'm ' + remain + 's';
@@ -941,6 +977,125 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.issueExplainerDetail.textContent = explainer.detail || '';
   }
 
+  function appendDefinitionValue(list, label, value) {
+    const wrapper = document.createElement('div');
+    const term = document.createElement('dt');
+    const definition = document.createElement('dd');
+    term.textContent = label;
+    definition.textContent = value === null || value === undefined || value === '' ? 'n/a' : String(value);
+    wrapper.append(term, definition);
+    list.append(wrapper);
+  }
+
+  function renderThreadBlockerCard(blocker) {
+    elements.threadBlockerCard.replaceChildren();
+    if (!blocker) {
+      appendDefinitionValue(elements.threadBlockerCard, 'classification', 'n/a');
+      appendDefinitionValue(elements.threadBlockerCard, 'reason_code', 'n/a');
+      appendDefinitionValue(elements.threadBlockerCard, 'reason_detail', 'n/a');
+      appendDefinitionValue(elements.threadBlockerCard, 'time_since_progress', 'n/a');
+      appendDefinitionValue(elements.threadBlockerCard, 'recommended_actions', 'No blocker actions reported.');
+      appendDefinitionValue(elements.threadBlockerCard, 'expected_auto_transition', 'n/a');
+      return;
+    }
+    appendDefinitionValue(elements.threadBlockerCard, 'classification', blocker.classification);
+    appendDefinitionValue(elements.threadBlockerCard, 'reason_code', blocker.reason_code);
+    appendDefinitionValue(elements.threadBlockerCard, 'reason_detail', blocker.reason_detail);
+    appendDefinitionValue(elements.threadBlockerCard, 'time_since_progress', blocker.time_since_progress);
+    appendDefinitionValue(
+      elements.threadBlockerCard,
+      'recommended_actions',
+      Array.isArray(blocker.recommended_actions) ? blocker.recommended_actions.join('; ') : 'n/a'
+    );
+    appendDefinitionValue(elements.threadBlockerCard, 'expected_auto_transition', blocker.expected_auto_transition);
+  }
+
+  function spanLabel(span, kind) {
+    if (kind === 'phase') {
+      return span.phase || 'phase';
+    }
+    if (kind === 'tool') {
+      return span.tool_name || 'tool';
+    }
+    return span.reason_code || span.status || 'wait';
+  }
+
+  function renderTimelineLane(title, spans, kind) {
+    const lane = document.createElement('section');
+    lane.className = 'timeline-lane timeline-lane-' + kind;
+    const heading = document.createElement('h4');
+    heading.textContent = title;
+    lane.append(heading);
+    const safeSpans = Array.isArray(spans) ? spans : [];
+    if (!safeSpans.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No ' + title.toLowerCase() + ' spans.';
+      lane.append(empty);
+      return lane;
+    }
+    const list = document.createElement('ul');
+    for (const span of safeSpans) {
+      const item = document.createElement('li');
+      const label = document.createElement('strong');
+      const meta = document.createElement('span');
+      label.textContent = spanLabel(span, kind);
+      meta.textContent =
+        ' | started ' +
+        formatDate(span.started_at_ms) +
+        ' | ended ' +
+        (span.ended_at_ms === null || span.ended_at_ms === undefined ? 'open' : formatDate(span.ended_at_ms)) +
+        ' | duration ' +
+        (span.duration_ms === null || span.duration_ms === undefined ? 'open' : String(span.duration_ms)) +
+        ' | status ' +
+        (span.status || 'n/a') +
+        ' | reason ' +
+        (span.reason_code || 'n/a') +
+        ' | ' +
+        (span.reason_detail || 'n/a');
+      item.append(label, meta);
+      list.append(item);
+    }
+    lane.append(list);
+    return lane;
+  }
+
+  function renderThreadDiagnostics(diagnostics) {
+    if (!diagnostics) {
+      elements.threadDetail.classList.add('hidden');
+      return;
+    }
+    elements.threadDetail.classList.remove('hidden');
+    elements.threadTimelineLanes.replaceChildren(
+      renderTimelineLane('Phase', diagnostics.phase_spans, 'phase'),
+      renderTimelineLane('Tool', diagnostics.tool_spans, 'tool'),
+      renderTimelineLane('Wait', diagnostics.wait_spans, 'wait')
+    );
+    renderThreadBlockerCard(diagnostics.current_blocker || null);
+    const events = Array.isArray(diagnostics.timeline) ? diagnostics.timeline : [];
+    elements.threadRawEvents.textContent = events.length
+      ? events
+          .map(function (event) {
+            return (
+              event.at_ms +
+              ' | ' +
+              event.event +
+              ' | thread ' +
+              (event.thread_id || 'n/a') +
+              ' | turn ' +
+              (event.turn_id || 'n/a') +
+              ' | session ' +
+              (event.session_id || 'n/a') +
+              ' | reason ' +
+              (event.reason_code || 'n/a') +
+              ' | ' +
+              (event.reason_detail || 'n/a')
+            );
+          })
+          .join('\\n')
+      : 'No raw event stream entries.';
+  }
+
   function formatInputDecisionContext(detail) {
     if (!detail) {
       return null;
@@ -1018,7 +1173,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     if (!rows.length) {
       const emptyRow = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 11;
+      cell.colSpan = 14;
       cell.className = 'muted';
       cell.textContent = 'No running issues match current filters.';
       emptyRow.appendChild(cell);
@@ -1034,7 +1189,16 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
 
       const issueCell = document.createElement('td');
-      issueCell.textContent = entry.issue_identifier;
+      const issueLink = document.createElement('a');
+      issueLink.href = '#thread-detail-' + encodeURIComponent(entry.issue_identifier);
+      issueLink.textContent = entry.issue_identifier;
+      issueLink.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        elements.issueInput.value = entry.issue_identifier;
+        void loadIssue(entry.issue_identifier);
+      });
+      issueCell.append(issueLink);
 
       const stateCell = document.createElement('td');
       stateCell.appendChild(createStateBadge(entry.state));
@@ -1162,6 +1326,18 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       tokensCell.append(tokenTotal, tokenBadge, tokenDetail);
       tokensCell.append(createBudgetBlock(entry));
 
+      const blockerCell = document.createElement('td');
+      blockerCell.textContent = entry.current_blocker_class || 'n/a';
+
+      const timeSinceProgressCell = document.createElement('td');
+      timeSinceProgressCell.textContent =
+        typeof entry.time_since_progress === 'number'
+          ? String(entry.time_since_progress) + ' ms (' + formatElapsedMs(entry.time_since_progress) + ')'
+          : 'n/a';
+
+      const lastSuccessfulStepCell = document.createElement('td');
+      lastSuccessfulStepCell.textContent = entry.last_successful_step || 'n/a';
+
       const eventCell = document.createElement('td');
       eventCell.textContent = entry.last_event_summary || entry.last_event || 'n/a';
 
@@ -1215,6 +1391,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         runtimeCell,
         turnsCell,
         tokensCell,
+        blockerCell,
+        timeSinceProgressCell,
+        lastSuccessfulStepCell,
         eventCell,
         messageCell,
         lastEventAtCell,
@@ -1745,6 +1924,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
     try {
       const payload = await fetchJson('/api/v1/' + encodeURIComponent(issueId));
+      let diagnostics = null;
+      try {
+        diagnostics = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics');
+      } catch (_diagnosticsError) {
+        diagnostics = null;
+      }
       state.selectedIssue = issueId;
       elements.issueInput.value = issueId;
       const summaryParts = [];
@@ -1814,6 +1999,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
       elements.issueSummary.textContent = summaryParts.join(' • ');
       renderIssueExplainer(payload.operator_explainer || null);
+      renderThreadDiagnostics(diagnostics);
       const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
       const sessionConsole = payload.blocked && Array.isArray(payload.blocked.session_console) ? payload.blocked.session_console : [];
       const timelineText = timeline.length
@@ -1871,6 +2057,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     } catch (error) {
       elements.issueSummary.textContent = 'Issue detail degraded: fallback mode active.';
       renderIssueExplainer(null);
+      renderThreadDiagnostics(null);
       elements.issueOutput.textContent =
         'Issue load failed: ' +
         String(error) +
@@ -2632,6 +2819,83 @@ td {
   overflow-wrap: anywhere;
 }
 
+.thread-detail {
+  margin-top: 12px;
+}
+
+.thread-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.8fr);
+  gap: 12px;
+}
+
+.thread-detail-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdf9;
+  padding: 10px;
+}
+
+.timeline-lanes {
+  display: grid;
+  gap: 8px;
+}
+
+.timeline-lane {
+  border-left: 4px solid #7aa182;
+  padding-left: 8px;
+}
+
+.timeline-lane-tool {
+  border-left-color: #416b9b;
+}
+
+.timeline-lane-wait {
+  border-left-color: #b35f4b;
+}
+
+.timeline-lane h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+.timeline-lane ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.timeline-lane li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.blocker-card {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.blocker-card div {
+  min-width: 0;
+}
+
+.blocker-card dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.blocker-card dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.raw-event-stream {
+  max-height: 220px;
+}
+
 .action-cell {
   display: flex;
   flex-wrap: wrap;
@@ -2685,6 +2949,10 @@ details summary {
 
   .panel {
     grid-column: span 12;
+  }
+
+  .thread-detail-grid {
+    grid-template-columns: 1fr;
   }
 
   .panel-head {

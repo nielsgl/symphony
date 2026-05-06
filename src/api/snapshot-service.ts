@@ -78,6 +78,22 @@ function explainRunningEntry(entry: RunningEntry) {
   });
 }
 
+function isWaitLikeEvent(event: RunningEntry['recent_events'][number]): boolean {
+  const normalized = `${event.event} ${event.message ?? ''}`.toLowerCase();
+  return normalized.includes('waiting') || normalized.includes('heartbeat') || normalized.includes('wait');
+}
+
+function resolveLastSuccessfulStep(entry: RunningEntry): string | null {
+  const lastProgressEvent = [...entry.recent_events].reverse().find((event) => !isWaitLikeEvent(event));
+  if (lastProgressEvent) {
+    return lastProgressEvent.message ? `${lastProgressEvent.event}: ${lastProgressEvent.message}` : lastProgressEvent.event;
+  }
+  if (entry.current_phase) {
+    return entry.phase_detail ? `${entry.current_phase}: ${entry.phase_detail}` : entry.current_phase;
+  }
+  return entry.last_event_summary ?? entry.last_event ?? null;
+}
+
 function toStateRunningRow(
   issueId: string,
   entry: RunningEntry,
@@ -97,6 +113,10 @@ function toStateRunningRow(
     stalled_waiting_ms: 300_000
   });
   const operatorExplainer = explainRunningEntry(entry);
+  const timeSinceProgress =
+    typeof entry.last_progress_transition_at_ms === 'number'
+      ? Math.max(0, nowMs - entry.last_progress_transition_at_ms)
+      : null;
   return {
     issue_id: issueId,
     issue_identifier: entry.identifier,
@@ -146,6 +166,9 @@ function toStateRunningRow(
     ...turnControl,
     ...progressSignal,
     ...resolveTokenTelemetryQuality(entry),
+    current_blocker_class: operatorExplainer.actionability === 'none' ? null : operatorExplainer.classification,
+    time_since_progress: timeSinceProgress,
+    last_successful_step: resolveLastSuccessfulStep(entry),
     ...notBlockedExplainer,
     operator_actions: (operatorActions?.get(issueId) ?? []).map((action) => ({ ...action })),
     tokens: {

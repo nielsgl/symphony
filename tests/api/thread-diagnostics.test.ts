@@ -67,5 +67,7 @@ describe('thread diagnostics blocker classification', () => {
     });
     expect(['none', 'recommended', 'required']).toContain(blocker?.actionability);
     expect(blocker?.recommended_actions.length).toBeGreaterThan(0);
+    expect(blocker).toHaveProperty('time_since_progress');
+    expect(blocker).toHaveProperty('expected_auto_transition');
   });
 });

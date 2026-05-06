@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { renderDashboardClientJs } from '../../src/api/dashboard-assets';
+import { renderDashboardClientJs, renderDashboardHtml } from '../../src/api/dashboard-assets';
 
 describe('dashboard assets', () => {
   it('renders client budget display logic for visible status, policy, and stop messages', () => {
@@ -14,5 +14,46 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('tokensCell.append(createBudgetBlock(entry));');
     expect(clientJs.split('stopReasonCell.append(createBudgetBlock(entry));')).toHaveLength(3);
     expect(clientJs).toContain("'\\n\\nBudget\\n' +");
+  });
+
+  it('renders dashboard drilldown contract surfaces and row-level blocker fields', () => {
+    const html = renderDashboardHtml();
+    const clientJs = renderDashboardClientJs();
+
+    expect(html).toContain('<th>Blocker</th>');
+    expect(html).toContain('<th>Time Since Progress</th>');
+    expect(html).toContain('<th>Last Successful Step</th>');
+    expect(html).toContain('id="thread-timeline-lanes"');
+    expect(html).toContain('id="thread-blocker-card"');
+    expect(html).toContain('id="thread-raw-events"');
+    expect(clientJs).toContain("fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics')");
+    expect(clientJs).toContain("renderTimelineLane('Phase'");
+    expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'classification'");
+    expect(clientJs).toContain('entry.current_blocker_class');
+    expect(clientJs).toContain('entry.time_since_progress');
+    expect(clientJs).toContain('entry.last_successful_step');
+  });
+
+  it('snapshots the stuck drilldown rendering vocabulary', () => {
+    const clientJs = renderDashboardClientJs();
+    const stuckVocabulary = [
+      'Blocker Intelligence',
+      'Raw Event Stream',
+      'expected_auto_transition',
+      'time_since_progress',
+      'recommended_actions',
+      'No raw event stream entries.'
+    ].filter((token) => clientJs.includes(token) || renderDashboardHtml().includes(token));
+
+    expect(stuckVocabulary).toMatchInlineSnapshot(`
+      [
+        "Blocker Intelligence",
+        "Raw Event Stream",
+        "expected_auto_transition",
+        "time_since_progress",
+        "recommended_actions",
+        "No raw event stream entries.",
+      ]
+    `);
   });
 });
