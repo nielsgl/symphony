@@ -9,6 +9,7 @@ import { REASON_CODES } from '../observability/reason-codes';
 import { buildCodexSpawnCommand } from '../codex/command-builder';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import type { WorkerCompletionReason } from './types';
 
 const DEFAULT_CONTINUATION_PROMPT =
   'Continue on the same thread for this issue. Focus on incremental progress and report outcomes clearly.';
@@ -29,6 +30,8 @@ export interface LocalWorkerRunInput {
 export interface LocalWorkerRunResult {
   reason: 'normal' | 'abnormal';
   session_id: string | null;
+  completion_reason?: WorkerCompletionReason;
+  refreshed_state?: string | null;
   error?: string;
   input_required_payload?: CodexInputRequestPayload;
 }
@@ -127,13 +130,6 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       }
       lastSessionId = turnResult.session_id;
 
-      if (turnNumber >= maxTurns) {
-        return {
-          reason: 'normal',
-          session_id: lastSessionId
-        };
-      }
-
       let refreshedIssues: Issue[];
       try {
         refreshedIssues = await input.issueStateFetcher([currentIssue.id]);
@@ -148,24 +144,53 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       if (refreshedIssues.length === 0) {
         return {
           reason: 'normal',
-          session_id: lastSessionId
+          session_id: lastSessionId,
+          completion_reason: REASON_CODES.issueStateMissing
         };
       }
 
       const refreshedIssue = refreshedIssues.find((issue) => issue.id === currentIssue.id) ?? refreshedIssues[0];
+      if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.terminal_states)) {
+        return {
+          reason: 'normal',
+          session_id: lastSessionId,
+          completion_reason: REASON_CODES.terminalStateReached,
+          refreshed_state: refreshedIssue.state
+        };
+      }
+
+      if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.handoff_states)) {
+        return {
+          reason: 'normal',
+          session_id: lastSessionId,
+          completion_reason: REASON_CODES.handoffStateReached,
+          refreshed_state: refreshedIssue.state
+        };
+      }
+
       if (!refreshedIssue || !isActiveState(refreshedIssue.state, input.config.tracker.active_states)) {
         return {
           reason: 'normal',
-          session_id: lastSessionId
+          session_id: lastSessionId,
+          completion_reason: REASON_CODES.issueLeftActiveStates,
+          refreshed_state: refreshedIssue?.state ?? null
         };
       }
 
       currentIssue = refreshedIssue;
+      if (turnNumber >= maxTurns) {
+        return {
+          reason: 'normal',
+          session_id: lastSessionId,
+          completion_reason: REASON_CODES.maxTurnsReached
+        };
+      }
     }
 
     return {
       reason: 'normal',
-      session_id: lastSessionId
+      session_id: lastSessionId,
+      completion_reason: REASON_CODES.maxTurnsReached
     };
   } catch (error) {
     const workspaceConflictError = await renderWorkspaceConflictError(error, workspacePath);
@@ -363,9 +388,13 @@ function dedupeConflictFiles(
 }
 
 function isActiveState(state: string | null | undefined, activeStates: string[]): boolean {
+  return isStateListed(state, activeStates);
+}
+
+function isStateListed(state: string | null | undefined, stateNames: string[]): boolean {
   if (!state) {
     return false;
   }
   const normalized = state.trim().toLowerCase();
-  return activeStates.some((activeState) => activeState.trim().toLowerCase() === normalized);
+  return stateNames.some((stateName) => stateName.trim().toLowerCase() === normalized);
 }

@@ -2,11 +2,12 @@ import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
+import { REASON_CODES } from '../observability/reason-codes';
 import type { Issue } from '../tracker';
 import { TemplateEngine, type Template } from '../workflow';
 import type { EffectiveConfig } from '../workflow';
 import type { WorkspaceManager } from '../workspace';
-import type { SpawnWorkerResult } from './types';
+import type { SpawnWorkerResult, WorkerExitDetails } from './types';
 import { runLocalWorkerAttempt } from './local-worker-runner';
 
 interface WorkerHandle {
@@ -24,7 +25,9 @@ export interface LocalRunnerBridgeOptions {
   renderPrompt?: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
   issueStateFetcher?: (issue_ids: string[]) => Promise<Issue[]>;
   logger?: StructuredLogger;
-  onWorkerExit?: (params: { issue_id: string; reason: 'normal' | 'abnormal'; error?: string }) => Promise<void> | void;
+  onWorkerExit?: (
+    params: { issue_id: string; reason: 'normal' | 'abnormal'; error?: string } & WorkerExitDetails
+  ) => Promise<void> | void;
   onWorkerEvent?: (params: { issue_id: string; event: CodexRunnerEvent }) => void;
 }
 
@@ -159,7 +162,9 @@ export class LocalRunnerBridge {
         context: {
           issue_id: issue.id,
           issue_identifier: issue.identifier,
-          session_id: result.session_id
+          session_id: result.session_id,
+          completion_reason: result.completion_reason ?? REASON_CODES.normalCompletion,
+          refreshed_state: result.refreshed_state ?? null
         }
       });
     } else {
@@ -179,7 +184,9 @@ export class LocalRunnerBridge {
     await this.onWorkerExit?.({
       issue_id: issue.id,
       reason: result.reason,
-      error: result.error
+      error: result.error,
+      completion_reason: result.completion_reason,
+      refreshed_state: result.refreshed_state
     });
   }
 }
