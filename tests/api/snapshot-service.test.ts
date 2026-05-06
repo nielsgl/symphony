@@ -347,6 +347,68 @@ describe('SnapshotService', () => {
     expect(JSON.stringify(issue.operator_explainer)).toBe(JSON.stringify(service.projectIssue(state, 'ABC-1').operator_explainer));
   });
 
+  it('projects active long-running waiting turns as heartbeat-only without stalled-waiting blockers', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:06:30.000Z')
+    });
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            last_event: CANONICAL_EVENT.codex.turnWaiting,
+            last_event_summary: 'codex turn waiting: waiting_for_turn_completion elapsed_s=390',
+            last_message: 'waiting_for_turn_completion elapsed_s=390',
+            running_waiting_started_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+            last_heartbeat_at_ms: Date.parse('2026-04-10T10:06:30.000Z'),
+            last_codex_timestamp_ms: Date.parse('2026-04-10T10:06:30.000Z'),
+            last_progress_transition_at_ms: Date.parse('2026-04-10T10:06:00.000Z'),
+            stalled_waiting_since_ms: Date.parse('2026-04-10T10:11:00.000Z'),
+            stalled_waiting_reason: null,
+            tokens: {
+              input_tokens: 20,
+              output_tokens: 15,
+              total_tokens: 35
+            },
+            last_reported_tokens: {
+              input_tokens: 20,
+              output_tokens: 15,
+              total_tokens: 35
+            },
+            recent_events: [
+              {
+                at_ms: Date.parse('2026-04-10T10:06:00.000Z'),
+                event: CANONICAL_EVENT.codex.phaseImplementation,
+                message: 'running tool'
+              },
+              {
+                at_ms: Date.parse('2026-04-10T10:06:30.000Z'),
+                event: CANONICAL_EVENT.codex.turnWaiting,
+                message: 'waiting_for_turn_completion elapsed_s=390'
+              }
+            ]
+          })
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+
+    expect(projected.running[0]?.stalled_waiting).toBe(false);
+    expect(projected.running[0]?.stalled_waiting_since_ms).toBeNull();
+    expect(projected.running[0]?.stalled_waiting_reason).toBeNull();
+    expect(projected.running[0]?.progress_signal_state).toBe('heartbeat_only');
+    expect(projected.counts.running_stalled_waiting_count).toBe(0);
+    expect(projected.running[0]?.operator_explainer_hint?.classification).not.toBe('stalled_waiting');
+
+    const issue = service.projectIssue(state, 'ABC-1');
+    expect(issue.operator_explainer).toMatchObject({
+      classification: 'healthy',
+      actionability: 'none'
+    });
+    expect(issue.operator_explainer.reason_detail).not.toBe('codex.turn.waiting heartbeat loop exceeded threshold');
+  });
+
   it('truncates pending input previews by UTF-8 characters after redaction', () => {
     const service = new SnapshotService();
     const prompt = `${'界'.repeat(170)} operator@example.com`;
