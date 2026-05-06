@@ -108,7 +108,6 @@ tracker:
   active_states:
     - Todo
     - In Progress
-    - Agent Review
     - Merging
     - Rework
   terminal_states:
@@ -151,8 +150,9 @@ Todo -> In Progress -> Agent Review -> Merging -> Done
 Todo -> In Progress -> Agent Review -> Human Review -> Merging -> Done
 ```
 
-`Agent Review` is automation-owned. Implementation agents move completed work
-there first; a separate reviewer then routes the issue:
+`Agent Review` is automation-owned, but it is intentionally omitted from this
+workflow's `active_states` so implementation runs stop after handoff. A separate
+review automation watches that state and routes the issue:
 
 - `Agent Review -> In Progress` for fixable review findings.
 - `Agent Review -> Rework` when the implementation needs a fresh approach.

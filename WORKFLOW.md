@@ -10,7 +10,6 @@ tracker:
   active_states:
     - Todo
     - In Progress
-    - Agent Review
     - Merging
     - Rework
   terminal_states:
@@ -129,7 +128,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Agent Review`).
 - `In Progress` -> implementation or fix iteration actively underway.
-- `Agent Review` -> automation-owned review state; a separate reviewer checks code quality, workflow compliance, and routing.
+- `Agent Review` -> handoff state watched by separate review automation; not in `active_states` for this implementation dispatcher.
 - `Human Review` -> human/product/UI judgment or blocked human input; not routine code review.
 - `Merging` -> approved for landing; execute the `land` skill flow (do not call `gh pr merge` directly).
 - `Rework` -> reset-level implementation restart; the current approach/branch/workpad is not a good continuation base.
@@ -144,8 +143,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `In Progress` -> continue execution flow from current scratchpad comment.
-   - `Agent Review` -> run the Agent Review flow in a separate review context.
-     - If this same run implemented the current branch, do not review your own work; leave the issue in `Agent Review` and stop after recording that a separate review run is required.
+   - `Agent Review` -> do not dispatch in this implementation workflow; this state is picked up by separate review automation.
    - `Human Review` -> wait and poll for decision/review updates.
    - `Merging` -> on entry, open and follow `.codex/skills/land/SKILL.md`; do not call `gh pr merge` directly.
    - `Rework` -> run rework flow.
@@ -284,16 +282,17 @@ Use this only when completion is blocked by missing required tools or missing au
     - Confirm no in-scope production path uses hardcoded fallback stubs that make the claimed primary path unreachable.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Only then move issue to `Agent Review`.
+12. Only then move issue to `Agent Review` and end the run.
+    - `Agent Review` is intentionally not in `active_states`, so the implementation worker should stop after this handoff and allow separate review automation to start a new run.
     - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `Human Review` with `Review routing: blocked human input required`, `UI evidence: not applicable`, the blocker brief, and explicit unblock actions.
 13. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.
-    - Then move to `Agent Review`.
+    - Then move to `Agent Review` and end the run.
 
 ## Step 3: Agent Review
 
-1. Treat `Agent Review` as an automation-owned review state, not a passive waiting state.
+1. Treat `Agent Review` as an automation-owned review state handled by a separate review automation, not by this implementation dispatcher.
 2. Perform Agent Review in a separate run/context from the implementation run.
    - Implementation agents may self-check before handoff, but they must not perform the formal Agent Review for their own run.
    - If this run authored the implementation being reviewed, stop and leave the issue in `Agent Review` for another automation run.
