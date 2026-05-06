@@ -1218,7 +1218,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         awaitingBadge.textContent = 'Awaiting Input';
         stateFlags.append(awaitingBadge);
       }
-      if (entry.stalled_waiting) {
+      if (entry.stalled_waiting && entry.progress_signal_state !== 'stalled_waiting') {
         const stalledBadge = document.createElement('span');
         stalledBadge.className = 'status-pill failed';
         stalledBadge.textContent = 'Stalled Waiting';
