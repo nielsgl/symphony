@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 
 import { REASON_CODE_REGISTRY_VERSION } from '../observability/reason-codes';
-import type { ExecutionGraphThreadLineage } from '../persistence';
+import type { DurableRunHistoryRecord, ExecutionGraphThreadLineage } from '../persistence';
 import { redactUnknown } from '../security/redaction';
 import { buildThreadDiagnosticsFromLineage } from './thread-diagnostics';
 import type {
@@ -53,6 +53,7 @@ export interface ForensicsBundle {
   token_snapshot: ForensicsTokenSnapshot;
   diagnostics: ThreadDiagnosticsResponse;
   lineage: ExecutionGraphThreadLineage | null;
+  terminal_run: DurableRunHistoryRecord | null;
 }
 
 export interface ForensicsReplayResult {
@@ -138,6 +139,7 @@ export function createForensicsBundle(params: {
   api_diagnostics: ApiDiagnosticsResponse | null;
   lineage?: ExecutionGraphThreadLineage | null;
   token_snapshot?: Partial<ForensicsTokenSnapshot> | null;
+  terminal_run?: DurableRunHistoryRecord | null;
   generated_at_ms?: number;
 }): ForensicsBundle {
   const generatedAtMs = params.generated_at_ms ?? Date.now();
@@ -169,7 +171,8 @@ export function createForensicsBundle(params: {
     reason_taxonomy_version: REASON_CODE_REGISTRY_VERSION,
     token_snapshot: normalizeTokens(params.token_snapshot),
     diagnostics: params.diagnostics,
-    lineage: params.lineage ?? null
+    lineage: params.lineage ?? null,
+    terminal_run: params.terminal_run ?? null
   };
 
   return redactUnknown(bundle) as ForensicsBundle;

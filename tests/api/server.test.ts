@@ -213,6 +213,82 @@ function makeThreadLineage(overrides: {
   };
 }
 
+function makeDiagnosticsSource(overrides: Record<string, unknown> = {}) {
+  return {
+    getActiveProfile: () => ({
+      name: 'balanced',
+      approval_policy: 'on-request',
+      thread_sandbox: 'workspace-write',
+      turn_sandbox_policy: { type: 'workspace' },
+      user_input_policy: 'fail_attempt'
+    }),
+    getPersistenceHealth: () => ({
+      enabled: true,
+      db_path: '/tmp/runtime.sqlite',
+      retention_days: 14,
+      run_count: 1,
+      last_pruned_at: null,
+      integrity_ok: true
+    }),
+    getLoggingHealth: () => ({
+      root: '/tmp/log',
+      active_file: '/tmp/log/symphony.log',
+      rotation: { max_bytes: 10485760, max_files: 5 },
+      sinks: ['stderr']
+    }),
+    listRunHistory: () => [],
+    getUiState: () => null,
+    setUiState: () => undefined,
+    getPromptFallbackActive: () => false,
+    getRuntimeResolution: () => ({
+      workflow_path: '/tmp/WORKFLOW.md',
+      workflow_dir: '/tmp',
+      workspace_root: '/tmp/workspaces',
+      workspace_root_source: 'workflow',
+      server: { host: '127.0.0.1', port: 3000 },
+      provisioner_type: 'none',
+      repo_root: null,
+      base_ref: null,
+      branch_name_template: null
+    }),
+    getWorkspaceProvisioner: () => ({
+      provisioner_type: 'none',
+      repo_root: null,
+      base_ref: null,
+      branch_name_template: null,
+      last_provision_result: null,
+      last_teardown_result: null,
+      last_error_code: null,
+      last_verification_result: null,
+      last_cleanup_on_failure_result: null,
+      verification_mode: 'none',
+      last_integrity_status: null,
+      last_integrity_reason_code: null,
+      last_integrity_checked_at: null,
+      last_integrity_reconciled_at: null
+    }),
+    getWorkspaceCopyIgnored: () => ({
+      enabled: false,
+      include_file: '/tmp/.worktreeinclude',
+      from: 'primary_worktree',
+      conflict_policy: 'skip',
+      require_gitignored: true,
+      max_files: 10000,
+      max_total_bytes: 5 * 1024 * 1024 * 1024,
+      last_status: null,
+      last_error_code: null,
+      last_error_message: null,
+      source_path: null,
+      copied_files: 0,
+      skipped_existing: 0,
+      blocked_files: 0,
+      bytes_copied: 0,
+      duration_ms: 0
+    }),
+    ...overrides
+  } as never;
+}
+
 let server: LocalApiServer | null = null;
 
 async function readSseEvents(
@@ -647,6 +723,15 @@ describe('LocalApiServer', () => {
             ended_at: '2026-04-10T10:01:00.000Z',
             terminal_status: 'succeeded',
             error_code: null,
+            terminal_reason_code: null,
+            terminal_reason_detail: null,
+            root_cause_status: null,
+            root_cause_reason_code: null,
+            root_cause_reason_detail: null,
+            root_cause_at: null,
+            session_id: null,
+            thread_id: null,
+            turn_id: null,
             session_ids: ['thread-1-turn-1']
           }
         ],
@@ -2047,6 +2132,15 @@ describe('LocalApiServer', () => {
             ended_at: '2026-04-10T10:01:00.000Z',
             terminal_status: 'succeeded',
             error_code: null,
+            terminal_reason_code: null,
+            terminal_reason_detail: null,
+            root_cause_status: null,
+            root_cause_reason_code: null,
+            root_cause_reason_detail: null,
+            root_cause_at: null,
+            session_id: null,
+            thread_id: null,
+            turn_id: null,
             session_ids: ['thread-1-turn-1']
           }
         ],
@@ -2705,6 +2799,164 @@ describe('LocalApiServer', () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+
+  it('exports terminal-run forensics from durable history when issue is absent from runtime state and lineage', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-04-10T10:06:00.000Z'));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource({
+        listRunHistory: () => [
+          {
+            run_id: 'run-unfinished',
+            issue_id: 'issue-stop',
+            issue_identifier: 'ABC-STOP',
+            started_at: '2026-04-10T10:04:00.000Z',
+            ended_at: null,
+            terminal_status: null,
+            error_code: null,
+            terminal_reason_code: null,
+            terminal_reason_detail: null,
+            root_cause_status: null,
+            root_cause_reason_code: null,
+            root_cause_reason_detail: null,
+            root_cause_at: null,
+            session_id: 'session-unfinished',
+            thread_id: 'thread-unfinished',
+            turn_id: 'turn-unfinished',
+            session_ids: ['session-unfinished']
+          },
+          {
+            run_id: 'run-stop',
+            issue_id: 'issue-stop',
+            issue_identifier: 'ABC-STOP',
+            started_at: '2026-04-10T10:00:00.000Z',
+            ended_at: '2026-04-10T10:05:00.000Z',
+            terminal_status: 'cancelled',
+            error_code: 'non_active_state_transition',
+            terminal_reason_code: 'non_active_state_transition',
+            terminal_reason_detail: null,
+            root_cause_status: 'blocked',
+            root_cause_reason_code: 'missing_tool_output',
+            root_cause_reason_detail: 'tool_name=linear_graphql call_id=call-stop',
+            root_cause_at: '2026-04-10T10:03:00.000Z',
+            session_id: 'session-stop',
+            thread_id: 'thread-stop',
+            turn_id: 'turn-stop',
+            session_ids: ['session-stop']
+          }
+        ],
+        reconstructLatestThreadLineageByIssueIdentifier: () => null,
+        reconstructThreadLineage: () => null
+      })
+    });
+
+    try {
+      await server.listen();
+      const address = server.address();
+
+      const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+      const statePayload = (await stateResponse.json()) as { running: unknown[]; blocked: unknown[] };
+      const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history`);
+      const historyPayload = (await historyResponse.json()) as {
+        runs: Array<{
+          run_id: string;
+          terminal_reason_code: string | null;
+          root_cause_reason_code: string | null;
+          thread_id: string | null;
+          turn_id: string | null;
+        }>;
+      };
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-STOP/forensics/export`);
+      const bundle = (await response.json()) as ForensicsBundle;
+      const missingResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-MISSING/forensics/export`);
+      const missingPayload = (await missingResponse.json()) as { error: { code: string } };
+
+      expect(stateResponse.status).toBe(200);
+      expect(statePayload.running).toEqual([]);
+      expect(statePayload.blocked).toEqual([]);
+      expect(historyResponse.status).toBe(200);
+      expect(historyPayload.runs.find((run) => run.run_id === 'run-stop')).toMatchObject({
+        run_id: 'run-stop',
+        terminal_reason_code: 'non_active_state_transition',
+        root_cause_reason_code: 'missing_tool_output',
+        thread_id: 'thread-stop',
+        turn_id: 'turn-stop'
+      });
+      expect(response.status).toBe(200);
+      expect(bundle.terminal_run).toMatchObject({
+        run_id: 'run-stop',
+        issue_id: 'issue-stop',
+        issue_identifier: 'ABC-STOP',
+        session_id: 'session-stop',
+        thread_id: 'thread-stop',
+        turn_id: 'turn-stop',
+        terminal_status: 'cancelled',
+        terminal_reason_code: 'non_active_state_transition',
+        root_cause_reason_code: 'missing_tool_output',
+        root_cause_at: '2026-04-10T10:03:00.000Z',
+        ended_at: '2026-04-10T10:05:00.000Z'
+      });
+      expect(bundle.diagnostics.timeline.map((entry) => entry.event)).toEqual([
+        'run.started',
+        'run.root_cause_diagnostic',
+        'run.terminal'
+      ]);
+      expect(missingResponse.status).toBe(404);
+      expect(missingPayload.error.code).toBe('forensics_bundle_not_found');
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('returns typed not-found instead of terminal forensics when durable history only has an unfinished matching run', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource({
+        listRunHistory: () => [
+          {
+            run_id: 'run-unfinished-only',
+            issue_id: 'issue-unfinished',
+            issue_identifier: 'ABC-UNFINISHED',
+            started_at: '2026-04-10T10:04:00.000Z',
+            ended_at: null,
+            terminal_status: null,
+            error_code: null,
+            terminal_reason_code: null,
+            terminal_reason_detail: null,
+            root_cause_status: null,
+            root_cause_reason_code: null,
+            root_cause_reason_detail: null,
+            root_cause_at: null,
+            session_id: 'session-unfinished',
+            thread_id: 'thread-unfinished',
+            turn_id: 'turn-unfinished',
+            session_ids: ['session-unfinished']
+          }
+        ],
+        reconstructLatestThreadLineageByIssueIdentifier: () => null,
+        reconstructThreadLineage: () => null
+      })
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-UNFINISHED/forensics/export`);
+    const payload = (await response.json()) as { error: { code: string } };
+
+    expect(response.status).toBe(404);
+    expect(payload.error.code).toBe('forensics_bundle_not_found');
   });
 
   it('keeps persisted phase and tool spans when active runtime diagnostics also exist', async () => {

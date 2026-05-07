@@ -48,6 +48,55 @@ describe('SqlitePersistenceStore', () => {
     expect(history[0].session_ids).toEqual(['thread-1-turn-1']);
   });
 
+  it('persists terminal reconciliation reason with root-cause diagnostics across restart', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-terminal-diagnostics-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:05:00.000Z') });
+    stores.push(storeA);
+
+    const runId = storeA.startRun({ issue_id: 'i-1', issue_identifier: 'ABC-1' });
+    storeA.recordSession(runId, 'session-linear');
+    storeA.completeRun({
+      run_id: runId,
+      terminal_status: 'cancelled',
+      error_code: 'non_active_state_transition',
+      terminal_reason_code: 'non_active_state_transition',
+      root_cause_status: 'blocked',
+      root_cause_reason_code: 'missing_tool_output',
+      root_cause_reason_detail: 'tool_name=linear_graphql call_id=call-1',
+      root_cause_at: '2026-04-11T10:03:00.000Z',
+      session_id: 'session-linear',
+      thread_id: 'thread-linear',
+      turn_id: 'turn-linear'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const history = storeB.listRunHistory();
+
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      run_id: runId,
+      issue_id: 'i-1',
+      issue_identifier: 'ABC-1',
+      terminal_status: 'cancelled',
+      error_code: 'non_active_state_transition',
+      terminal_reason_code: 'non_active_state_transition',
+      root_cause_status: 'blocked',
+      root_cause_reason_code: 'missing_tool_output',
+      root_cause_reason_detail: 'tool_name=linear_graphql call_id=call-1',
+      root_cause_at: '2026-04-11T10:03:00.000Z',
+      session_id: 'session-linear',
+      thread_id: 'thread-linear',
+      turn_id: 'turn-linear',
+      session_ids: ['session-linear']
+    });
+  });
+
   it('persists normalized execution graph lineage across restart', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-'));
     dirs.push(dir);
