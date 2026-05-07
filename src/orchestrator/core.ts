@@ -4898,7 +4898,7 @@ export class OrchestratorCore {
         const entryPath = path.join(current, entry.name);
         if (entry.isDirectory()) {
           stack.push(entryPath);
-        } else if (entry.isFile() && entry.name.endsWith('.jsonl') && this.transcriptPathMayMatch(entryPath, runningEntry)) {
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl') && this.transcriptMayMatchRunningEntry(entryPath, runningEntry)) {
           candidates.push(entryPath);
         }
       }
@@ -4906,11 +4906,110 @@ export class OrchestratorCore {
     return candidates;
   }
 
+  private transcriptMayMatchRunningEntry(transcriptPath: string, runningEntry: RunningEntry): boolean {
+    if (this.transcriptPathMayMatch(transcriptPath, runningEntry)) {
+      return true;
+    }
+    if (!runningEntry.workspace_path && !runningEntry.repo_root) {
+      return false;
+    }
+    return this.transcriptContentMayMatch(transcriptPath, runningEntry);
+  }
+
   private transcriptPathMayMatch(transcriptPath: string, runningEntry: RunningEntry): boolean {
     const normalized = transcriptPath.toLowerCase();
     return [runningEntry.session_id, runningEntry.thread_id, runningEntry.turn_id].some((identifier) =>
       Boolean(identifier && normalized.includes(identifier.toLowerCase()))
     );
+  }
+
+  private transcriptContentMayMatch(transcriptPath: string, runningEntry: RunningEntry): boolean {
+    let content: string;
+    try {
+      content = fs.readFileSync(transcriptPath, 'utf8');
+    } catch {
+      return false;
+    }
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      const record = asRecord(parsed);
+      if (record && this.transcriptRecordMayMatchRunningEntry(record, runningEntry)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private transcriptRecordMayMatchRunningEntry(record: Record<string, unknown>, runningEntry: RunningEntry): boolean {
+    const payload = asRecord(record.payload);
+    const item = this.readTranscriptResponseItem(record);
+    const threadId = this.readTranscriptString(['thread_id', 'threadId'], record, payload, item);
+    const turnId = this.readTranscriptString(['turn_id', 'turnId'], record, payload, item);
+    const sessionId = this.readTranscriptString(['session_id', 'sessionId'], record, payload, item);
+    if (
+      (runningEntry.thread_id && threadId === runningEntry.thread_id) ||
+      (runningEntry.turn_id && turnId === runningEntry.turn_id) ||
+      (runningEntry.session_id && sessionId === runningEntry.session_id)
+    ) {
+      return true;
+    }
+
+    const activePaths = [runningEntry.workspace_path, runningEntry.repo_root]
+      .map((candidate) => candidate?.trim())
+      .filter((candidate): candidate is string => Boolean(candidate));
+    if (activePaths.length === 0) {
+      return false;
+    }
+    const transcriptPaths = [
+      this.readTranscriptString(['cwd', 'workspace_path', 'workspacePath', 'repo_root', 'repoRoot'], record),
+      this.readTranscriptString(['cwd', 'workspace_path', 'workspacePath', 'repo_root', 'repoRoot'], payload),
+      this.readTranscriptString(['cwd', 'workspace_path', 'workspacePath', 'repo_root', 'repoRoot'], item)
+    ]
+      .map((candidate) => candidate?.trim())
+      .filter((candidate): candidate is string => Boolean(candidate));
+    return transcriptPaths.some((candidate) => activePaths.includes(candidate));
+  }
+
+  private readTranscriptResponseItem(record: Record<string, unknown>): Record<string, unknown> {
+    const payload = asRecord(record.payload);
+    const item =
+      asRecord(record.response_item) ??
+      asRecord(record.responseItem) ??
+      asRecord(record.rawResponseItem) ??
+      asRecord(record.raw_response_item) ??
+      asRecord(record.item);
+    if (item) {
+      return item;
+    }
+    const recordType = readString(record.type);
+    if (payload && (recordType === 'response_item' || recordType === 'rawResponseItem' || recordType === 'raw_response_item')) {
+      return payload;
+    }
+    return record;
+  }
+
+  private readTranscriptString(keys: string[], ...records: Array<Record<string, unknown> | null | undefined>): string | undefined {
+    for (const record of records) {
+      if (!record) {
+        continue;
+      }
+      for (const key of keys) {
+        const value = readString(record[key]);
+        if (value) {
+          return value;
+        }
+      }
+    }
+    return undefined;
   }
 
   private readToolCallObservationFromTranscriptRecord(
@@ -4922,13 +5021,7 @@ export class OrchestratorCore {
     if (!record) {
       return null;
     }
-    const item =
-      asRecord(record.response_item) ??
-      asRecord(record.responseItem) ??
-      asRecord(record.rawResponseItem) ??
-      asRecord(record.raw_response_item) ??
-      asRecord(record.item) ??
-      record;
+    const item = this.readTranscriptResponseItem(record);
     const type = readString(item.type);
     if (type !== 'function_call' && type !== 'function_call_output') {
       return null;
@@ -4937,10 +5030,10 @@ export class OrchestratorCore {
     if (!callId) {
       return null;
     }
-    const threadId = readString(record.thread_id) ?? readString(record.threadId) ?? readString(item.thread_id) ?? readString(item.threadId);
-    const turnId = readString(record.turn_id) ?? readString(record.turnId) ?? readString(item.turn_id) ?? readString(item.turnId);
-    const sessionId =
-      readString(record.session_id) ?? readString(record.sessionId) ?? readString(item.session_id) ?? readString(item.sessionId);
+    const payload = asRecord(record.payload);
+    const threadId = this.readTranscriptString(['thread_id', 'threadId'], record, payload, item);
+    const turnId = this.readTranscriptString(['turn_id', 'turnId'], record, payload, item);
+    const sessionId = this.readTranscriptString(['session_id', 'sessionId'], record, payload, item);
     if (
       (runningEntry.thread_id && threadId && threadId !== runningEntry.thread_id) ||
       (runningEntry.turn_id && turnId && turnId !== runningEntry.turn_id) ||
