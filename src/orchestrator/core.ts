@@ -858,11 +858,27 @@ export class OrchestratorCore {
       return true;
     }
 
+    if (this.isSameThreadContinuationTurnStart(runningEntry, workerEvent)) {
+      return false;
+    }
+
     if (runningEntry.turn_id && workerEvent.turn_id && workerEvent.turn_id !== runningEntry.turn_id) {
       return true;
     }
 
     return Boolean(runningEntry.session_id && workerEvent.session_id && workerEvent.session_id !== runningEntry.session_id);
+  }
+
+  private isSameThreadContinuationTurnStart(
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): boolean {
+    return (
+      workerEvent.event === CANONICAL_EVENT.codex.turnStarted &&
+      runningEntry.last_event === CANONICAL_EVENT.codex.turnCompleted &&
+      Boolean(runningEntry.thread_id) &&
+      workerEvent.thread_id === runningEntry.thread_id
+    );
   }
 
   private recordStaleRunningWorkerEvent(
