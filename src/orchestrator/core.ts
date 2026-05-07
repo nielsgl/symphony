@@ -617,6 +617,11 @@ export class OrchestratorCore {
       return;
     }
 
+    if (this.isStaleWorkerEventForRunningEntry(runningEntry, workerEvent)) {
+      this.recordStaleRunningWorkerEvent(issue_id, runningEntry, workerEvent);
+      return;
+    }
+
     runningEntry.last_codex_timestamp_ms = workerEvent.timestamp_ms;
     runningEntry.last_event = workerEvent.event;
     runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
@@ -841,6 +846,66 @@ export class OrchestratorCore {
     if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
       this.emitMappedPhaseMarker(issue_id, workerEvent);
     }
+  }
+
+  private isStaleWorkerEventForRunningEntry(
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): boolean {
+    if (runningEntry.thread_id && workerEvent.thread_id && workerEvent.thread_id !== runningEntry.thread_id) {
+      return true;
+    }
+
+    if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
+      return false;
+    }
+
+    if (runningEntry.turn_id && workerEvent.turn_id && workerEvent.turn_id !== runningEntry.turn_id) {
+      return true;
+    }
+
+    return Boolean(runningEntry.session_id && workerEvent.session_id && workerEvent.session_id !== runningEntry.session_id);
+  }
+
+  private recordStaleRunningWorkerEvent(
+    issueId: string,
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): void {
+    const detail = [
+      `issue_id=${issueId}`,
+      `active_thread_id=${runningEntry.thread_id ?? 'unknown'}`,
+      `event_thread_id=${workerEvent.thread_id ?? 'unknown'}`,
+      `active_turn_id=${runningEntry.turn_id ?? 'unknown'}`,
+      `event_turn_id=${workerEvent.turn_id ?? 'unknown'}`,
+      `active_session_id=${runningEntry.session_id ?? 'unknown'}`,
+      `event_session_id=${workerEvent.session_id ?? 'unknown'}`,
+      `event=${workerEvent.event}`
+    ].join(' ');
+
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.staleWorkerEventIgnored,
+      message: 'stale worker event ignored for active run',
+      context: {
+        issue_id: issueId,
+        issue_identifier: runningEntry.identifier,
+        active_thread_id: runningEntry.thread_id,
+        event_thread_id: workerEvent.thread_id ?? null,
+        active_turn_id: runningEntry.turn_id,
+        event_turn_id: workerEvent.turn_id ?? null,
+        active_session_id: runningEntry.session_id,
+        event_session_id: workerEvent.session_id ?? null,
+        event: workerEvent.event
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.staleWorkerEventIgnored,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail
+    });
   }
 
   private async persistExecutionGraphWorkerEvent(
