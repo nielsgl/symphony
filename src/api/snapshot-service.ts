@@ -12,6 +12,7 @@ import {
   resolveSnapshotFreshness,
   resolveTokenTelemetryQuality
 } from './runtime-visibility';
+import { projectMissingToolOutputRecovery } from './missing-tool-output-recovery';
 import type {
   ApiBlockedRootCauseProjection,
   ApiBudgetProjection,
@@ -339,6 +340,7 @@ function toStateRunningRow(
         : {})
     },
     recovery: entry.recovery ? { ...entry.recovery } : null,
+    missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
     operator_explainer_hint: toOperatorExplainerHint(operatorExplainer)
   };
 }
@@ -387,6 +389,7 @@ export class SnapshotService {
       last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
       last_phase_detail: entry.last_phase_detail ?? null,
       recovery: entry.recovery ? { ...entry.recovery } : null,
+      missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
       operator_explainer_hint: toOperatorExplainerHint(
         explainOperatorRuntimeState({
           state_class: 'retrying',
@@ -465,6 +468,7 @@ export class SnapshotService {
         ...progressSignal,
         operator_actions: projectOperatorActions(state, entry.issue_id),
         recovery: entry.recovery ? { ...entry.recovery } : null,
+        missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
         operator_explainer_hint: toOperatorExplainerHint(
           explainOperatorRuntimeState({
             state_class: 'blocked',
@@ -682,7 +686,8 @@ export class SnapshotService {
               ? { model_context_window: entry.tokens.model_context_window }
               : {})
           },
-          recovery: entry.recovery ? { ...entry.recovery } : null
+          recovery: entry.recovery ? { ...entry.recovery } : null,
+          missing_tool_output_recovery: projectMissingToolOutputRecovery(entry)
         },
         retry: retryEntry
           ? {
@@ -708,7 +713,8 @@ export class SnapshotService {
               previous_session_id: retryEntry.previous_session_id ?? null,
               last_phase: retryEntry.last_phase ?? null,
               last_phase_at: retryEntry.last_phase_at_ms ? asIsoDate(retryEntry.last_phase_at_ms) : null,
-              last_phase_detail: retryEntry.last_phase_detail ?? null
+              last_phase_detail: retryEntry.last_phase_detail ?? null,
+              missing_tool_output_recovery: projectMissingToolOutputRecovery(retryEntry)
             }
           : null,
         blocked: blockedEntry
@@ -751,6 +757,7 @@ export class SnapshotService {
           ...(blockedProgressSignal ?? resolveBlockedProgressSignal(blockedEntry)),
           operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
           recovery: blockedEntry.recovery ? { ...blockedEntry.recovery } : null,
+          missing_tool_output_recovery: projectMissingToolOutputRecovery(blockedEntry),
           breaker_active: breakerEntry?.breaker_active ?? false,
           breaker_hit_count: breakerEntry?.breaker_hit_count ?? 0,
           breaker_window_minutes: breakerEntry?.breaker_window_minutes ?? 0,
@@ -866,7 +873,8 @@ export class SnapshotService {
           previous_session_id: retryOnlyEntry.previous_session_id ?? null,
           last_phase: retryOnlyEntry.last_phase ?? null,
           last_phase_at: retryOnlyEntry.last_phase_at_ms ? asIsoDate(retryOnlyEntry.last_phase_at_ms) : null,
-          last_phase_detail: retryOnlyEntry.last_phase_detail ?? null
+          last_phase_detail: retryOnlyEntry.last_phase_detail ?? null,
+          missing_tool_output_recovery: projectMissingToolOutputRecovery(retryOnlyEntry)
         },
         blocked: blockedEntry
           ? {
@@ -917,6 +925,8 @@ export class SnapshotService {
               ...resolveBlockedTurnControl(blockedEntry),
               ...(blockedProgressSignal ?? resolveBlockedProgressSignal(blockedEntry)),
               operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
+              recovery: blockedEntry.recovery ? { ...blockedEntry.recovery } : null,
+              missing_tool_output_recovery: projectMissingToolOutputRecovery(blockedEntry),
               pending_input: blockedEntry.pending_input
                 ? {
                     ...blockedEntry.pending_input,
@@ -1046,6 +1056,8 @@ export class SnapshotService {
         ...resolveBlockedTurnControl(blockedEntry),
         ...resolveBlockedProgressSignal(blockedEntry),
         operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
+        recovery: blockedEntry.recovery ? { ...blockedEntry.recovery } : null,
+        missing_tool_output_recovery: projectMissingToolOutputRecovery(blockedEntry),
         pending_input: blockedEntry.pending_input
           ? {
               ...blockedEntry.pending_input,

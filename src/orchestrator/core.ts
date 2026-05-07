@@ -2078,7 +2078,15 @@ export class OrchestratorCore {
         }
       });
     } else {
-      await this.completeRunRecord(running, 'failed', error ?? `worker exited: ${reason}`);
+      const recoveryFailure = this.isMissingToolOutputRecoveryInProgress(running)
+        ? {
+            ...running.recovery,
+            last_result: 'failed' as const,
+            last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+            last_result_detail: error ?? `worker exited: ${reason}`
+          }
+        : null;
+      await this.completeRunRecord(running, 'failed', error ?? `worker exited: ${reason}`, recoveryFailure);
       this.state.health.last_error = `worker exited for ${running.identifier}`;
       const stopReasonCode = this.inferStopReasonCode(error, REASON_CODES.workerExitAbnormal);
       if (this.isMissingToolOutputRecoveryInProgress(running)) {
@@ -5707,6 +5715,14 @@ export class OrchestratorCore {
       session_id: previousSessionId ?? undefined,
       detail: `thread_id=${previousThreadId} turn_id=${previousTurnId} tool_name=${missingToolOutput.tool_name} call_id=${missingToolOutput.call_id}`
     });
+    const interruptedRecovery: MissingToolOutputRecoveryState = {
+      ...recovery,
+      interrupt_cancel_result: {
+        status: 'succeeded',
+        reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+        detail: `interrupted previous turn ${previousTurnId ?? 'unknown'} on thread ${previousThreadId ?? 'unknown'}`
+      }
+    };
 
     const recovered = await this.ports.recoverMissingToolOutput({
       issue: runningEntry.issue,
@@ -5729,13 +5745,18 @@ export class OrchestratorCore {
         observedAtMs,
         REASON_CODES.missingToolOutputRecoveryStartFailed,
         recovered.error,
-        { ...recovery, last_result: 'failed', last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed }
+        { ...interruptedRecovery, last_result: 'failed', last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed }
       );
       return;
     }
 
     this.addRuntimeSecondsFromEntry(runningEntry);
-    await this.completeRunRecord(runningEntry, 'cancelled', REASON_CODES.missingToolOutputRecoveryInterrupted);
+    await this.completeRunRecord(
+      runningEntry,
+      'cancelled',
+      REASON_CODES.missingToolOutputRecoveryInterrupted,
+      { ...interruptedRecovery, last_result: 'started' }
+    );
     await this.persistExecutionGraphStateTransition(
       runningEntry,
       'cancelled',
@@ -5761,8 +5782,8 @@ export class OrchestratorCore {
       copy_ignored_applied: recovered.copy_ignored_applied ?? runningEntry.copy_ignored_applied,
       copy_ignored_status: recovered.copy_ignored_status ?? runningEntry.copy_ignored_status,
       copy_ignored_summary: recovered.copy_ignored_summary ?? runningEntry.copy_ignored_summary,
-      run_id: null,
-      attempt_id: null,
+      run_id: runningEntry.run_id,
+      attempt_id: runningEntry.attempt_id ?? null,
       codex_app_server_pid: null,
       thread_id: previousThreadId,
       turn_id: previousTurnId,
@@ -5788,7 +5809,7 @@ export class OrchestratorCore {
       running_wait_stall_event_emitted: false,
       outstanding_tool_calls: {},
       codex_session_transcript_scan_offsets: {},
-      recovery: { ...recovery, last_result: 'started' }
+      recovery: { ...interruptedRecovery, last_result: 'started' }
     });
 
     this.recordRuntimeEvent({
@@ -5835,6 +5856,11 @@ export class OrchestratorCore {
       quarantined_event_count: runningEntry.quarantined_event_count ?? 0,
       prompt_hash: createHash('sha256').update(params.recoveryPrompt).digest('hex').slice(0, 16),
       prompt_summary: 'guarded recovery prompt: inspect state before retrying indeterminate tool action',
+      interrupt_cancel_result: {
+        status: 'not_started',
+        reason_code: null,
+        detail: null
+      },
       last_result: 'started'
     };
   }
@@ -5937,7 +5963,7 @@ export class OrchestratorCore {
 
     this.rememberInactiveWorkerPid(runningEntry, stopReasonCode);
     this.addRuntimeSecondsFromEntry(runningEntry);
-    await this.completeRunRecord(runningEntry, 'cancelled', stopReasonCode);
+    await this.completeRunRecord(runningEntry, 'cancelled', stopReasonCode, recovery);
     this.state.running.delete(issueId);
 
     await this.scheduleBlockedInput({
@@ -5991,7 +6017,8 @@ export class OrchestratorCore {
   private async completeRunRecord(
     runningEntry: RunningEntry,
     terminal_status: 'succeeded' | 'failed' | 'timed_out' | 'stalled' | 'cancelled',
-    error_code: string | null
+    error_code: string | null,
+    recoveryOverride: MissingToolOutputRecoveryState | null = null
   ): Promise<void> {
     if (!runningEntry.run_id || !this.persistence) {
       return;
@@ -6010,7 +6037,8 @@ export class OrchestratorCore {
         root_cause_at: rootCause.at,
         session_id: rootCause.session_id ?? runningEntry.session_id,
         thread_id: rootCause.thread_id ?? runningEntry.thread_id ?? runningEntry.persisted_thread_id ?? null,
-        turn_id: rootCause.turn_id ?? runningEntry.turn_id ?? null
+        turn_id: rootCause.turn_id ?? runningEntry.turn_id ?? null,
+        missing_tool_output_recovery: this.buildDurableMissingToolOutputRecoveryContext(runningEntry, recoveryOverride)
       });
     } catch {
       this.logger?.log({
@@ -6024,6 +6052,72 @@ export class OrchestratorCore {
         }
       });
     }
+  }
+
+  private buildDurableMissingToolOutputRecoveryContext(
+    runningEntry: RunningEntry,
+    recoveryOverride: MissingToolOutputRecoveryState | null
+  ): Record<string, unknown> | null {
+    const recovery = recoveryOverride ?? runningEntry.recovery ?? null;
+    if (!recovery) {
+      return null;
+    }
+    const replacementTurnId = runningEntry.turn_id && runningEntry.turn_id !== recovery.previous_turn_id ? runningEntry.turn_id : null;
+    const replacementSessionId =
+      runningEntry.session_id && runningEntry.session_id !== recovery.previous_session_id ? runningEntry.session_id : null;
+    return {
+      status:
+        recovery.last_result === 'started'
+          ? 'in_progress'
+          : recovery.last_result === 'succeeded'
+            ? 'succeeded'
+            : recovery.last_result === 'blocked' || recovery.last_result_reason_code === REASON_CODES.missingToolOutputRecoveryUnsafe
+              ? 'manual_action_required'
+              : 'failed',
+      original_tool_name: recovery.last_tool_name,
+      original_call_id: recovery.last_call_id,
+      evidence_source: recovery.evidence_source,
+      elapsed_wait_ms: recovery.elapsed_wait_ms,
+      active_ownership: {
+        issue_id: runningEntry.issue.id,
+        issue_identifier: runningEntry.identifier,
+        run_id: runningEntry.run_id ?? null,
+        issue_run_id: runningEntry.issue_run_id ?? null,
+        attempt_id: runningEntry.attempt_id ?? null,
+        thread_id: runningEntry.thread_id ?? null,
+        turn_id: runningEntry.turn_id ?? null,
+        session_id: runningEntry.session_id ?? null,
+        codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+        app_server_owned: Boolean(runningEntry.codex_app_server_pid || runningEntry.run_id || runningEntry.issue_run_id)
+      },
+      interrupt_cancel_result: {
+        status: recovery.interrupt_cancel_result?.status ?? 'not_started',
+        reason_code: recovery.interrupt_cancel_result?.reason_code ?? null,
+        detail: recovery.interrupt_cancel_result?.detail ?? null
+      },
+      replacement_turn: {
+        thread_id: runningEntry.thread_id ?? recovery.previous_thread_id ?? null,
+        turn_id: replacementTurnId,
+        session_id: replacementSessionId
+      },
+      guarded_prompt_dispatch: {
+        status:
+          recovery.last_result === 'failed' && recovery.last_result_reason_code === REASON_CODES.missingToolOutputRecoveryStartFailed
+            ? recovery.interrupt_cancel_result?.status === 'succeeded'
+              ? 'failed'
+              : 'not_started'
+            : recovery.last_result === 'blocked'
+              ? 'not_started'
+            : 'sent',
+        prompt_hash: recovery.prompt_hash,
+        prompt_summary: recovery.prompt_summary
+      },
+      final_outcome: {
+        result: recovery.last_result,
+        reason_code: recovery.last_result_reason_code ?? null,
+        detail: recovery.last_result_detail ?? null
+      }
+    };
   }
 
   private extractRootCauseDiagnostic(

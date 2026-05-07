@@ -19,6 +19,7 @@ import type {
   ThreadDiagnosticsResponse,
   ThreadDiagnosticsStatus
 } from './types';
+import { projectMissingToolOutputRecovery, type MissingToolOutputRecoveryEvidence } from './missing-tool-output-recovery';
 
 interface RuntimeMatch {
   issue_id: string;
@@ -133,7 +134,8 @@ function buildBlocker(
   reasonCode: string | null,
   reasonDetail: string | null,
   timeSinceProgress: number | null = null,
-  toolOutputWait: ThreadDiagnosticsBlocker['tool_output_wait'] = null
+  toolOutputWait: ThreadDiagnosticsBlocker['tool_output_wait'] = null,
+  missingToolOutputRecovery: MissingToolOutputRecoveryEvidence | null = null
 ): ThreadDiagnosticsBlocker {
   const reasonDefinition = reasonCode ? requireReasonCodeDefinition(reasonCode) : null;
   const details = blockerDetails(classification);
@@ -145,7 +147,8 @@ function buildBlocker(
     ...details,
     recommended_actions: toolOutputWait?.recommended_actions ?? details.recommended_actions,
     expected_auto_transition: reasonDefinition?.expected_transition ?? null,
-    ...(toolOutputWait ? { tool_output_wait: { ...toolOutputWait, recommended_actions: [...toolOutputWait.recommended_actions] } } : {})
+    ...(toolOutputWait ? { tool_output_wait: { ...toolOutputWait, recommended_actions: [...toolOutputWait.recommended_actions] } } : {}),
+    ...(missingToolOutputRecovery ? { missing_tool_output_recovery: missingToolOutputRecovery } : {})
   };
 }
 
@@ -190,13 +193,26 @@ export function classifyThreadBlocker(params: {
   retrying?: boolean;
   time_since_progress?: number | null;
   tool_output_wait?: ThreadDiagnosticsBlocker['tool_output_wait'];
+  missing_tool_output_recovery?: MissingToolOutputRecoveryEvidence | null;
 }): ThreadDiagnosticsBlocker | null {
   const reasonCode = params.reason_code;
   const reasonDetail = params.reason_detail;
   const normalized = `${reasonCode ?? ''} ${reasonDetail ?? ''} ${params.status ?? ''}`.toLowerCase();
 
-  if (reasonCode === REASON_CODES.missingToolOutput) {
-    return buildBlocker(REASON_CODES.missingToolOutput, reasonCode, reasonDetail, params.time_since_progress ?? null, params.tool_output_wait ?? null);
+  if (
+    reasonCode === REASON_CODES.missingToolOutput ||
+    reasonCode === REASON_CODES.missingToolOutputRecoveryExhausted ||
+    reasonCode === REASON_CODES.missingToolOutputRecoveryStartFailed ||
+    reasonCode === REASON_CODES.missingToolOutputRecoveryUnsafe
+  ) {
+    return buildBlocker(
+      REASON_CODES.missingToolOutput,
+      reasonCode,
+      reasonDetail,
+      params.time_since_progress ?? null,
+      params.tool_output_wait ?? null,
+      params.missing_tool_output_recovery ?? null
+    );
   }
   if (params.retrying || normalized.includes('retry')) {
     return buildBlocker('retry_backoff_wait', reasonCode, reasonDetail, params.time_since_progress ?? null);
@@ -323,7 +339,8 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
         has_conflict_files: blocked.conflict_files.length > 0,
         has_pending_input: Boolean(blocked.pending_input),
         time_since_progress: null,
-        tool_output_wait: blocked.tool_output_wait ?? null
+        tool_output_wait: blocked.tool_output_wait ?? null,
+        missing_tool_output_recovery: projectMissingToolOutputRecovery(blocked)
       })
     : retry
       ? classifyThreadBlocker({
@@ -331,14 +348,16 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
           reason_detail: retry.stop_reason_detail ?? retry.error,
           status: 'retrying',
           retrying: true,
-          time_since_progress: null
+          time_since_progress: null,
+          missing_tool_output_recovery: projectMissingToolOutputRecovery(retry)
         })
       : classifyThreadBlocker({
-          reason_code: source?.stalled_waiting_reason ?? null,
-          reason_detail: source?.last_event_summary ?? source?.last_message ?? null,
-          status: source?.stalled_waiting_reason ? 'blocked' : 'running',
+          reason_code: source?.recovery?.reason_code ?? source?.stalled_waiting_reason ?? null,
+          reason_detail: source?.recovery?.prompt_summary ?? source?.last_event_summary ?? source?.last_message ?? null,
+          status: source?.recovery || source?.stalled_waiting_reason ? 'blocked' : 'running',
           has_pending_input: Boolean(source?.awaiting_input_since_ms),
           stalled_waiting: Boolean(source?.stalled_waiting_since_ms && source?.stalled_waiting_reason),
+          missing_tool_output_recovery: source ? projectMissingToolOutputRecovery(source) : null,
           time_since_progress:
             typeof source?.last_progress_transition_at_ms === 'number'
               ? Math.max(0, nowMs - source.last_progress_transition_at_ms)

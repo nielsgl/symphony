@@ -241,6 +241,56 @@ describe('forensics export bundle', () => {
     expect(bundle.reason_taxonomy_version).toBe('2026-05-05.v1');
   });
 
+  it('exports redacted missing-output recovery lineage for offline review', () => {
+    const bundle = createForensicsBundle({
+      diagnostics: buildThreadDiagnosticsFromLineage({
+        lineage: makeLineage({ tool: 'linear_graphql', reason: 'missing_tool_output', reasonDetail: 'tool_name=linear_graphql call_id=call-1' }),
+        now_ms: Date.parse('2026-04-11T10:06:00.000Z')
+      }),
+      api_diagnostics: makeApiDiagnostics(),
+      terminal_run: {
+        run_id: 'run-recovery',
+        issue_id: 'issue-1',
+        issue_identifier: 'ABC-1',
+        started_at: '2026-04-11T10:00:00.000Z',
+        ended_at: '2026-04-11T10:04:00.000Z',
+        terminal_status: 'cancelled',
+        error_code: 'missing_tool_output_recovery_interrupted',
+        terminal_reason_code: 'missing_tool_output_recovery_interrupted',
+        terminal_reason_detail: null,
+        root_cause_status: 'blocked',
+        root_cause_reason_code: 'missing_tool_output',
+        root_cause_reason_detail: 'tool_name=linear_graphql call_id=call-1 secret=super-secret-token',
+        root_cause_at: '2026-04-11T10:02:00.000Z',
+        session_id: 'session-recovery',
+        thread_id: 'thread-1',
+        turn_id: 'turn-recovery',
+        session_ids: ['session-recovery'],
+        missing_tool_output_recovery: {
+          status: 'succeeded',
+          original_tool_name: 'linear_graphql',
+          original_call_id: 'call-1',
+          final_outcome: {
+            result: 'succeeded',
+            detail: 'token=super-secret-token'
+          }
+        }
+      },
+      generated_at_ms: Date.parse('2026-04-11T10:06:00.000Z')
+    });
+
+    expect(bundle.missing_tool_output_recovery).toMatchObject({
+      status: 'succeeded',
+      original_tool_name: 'linear_graphql',
+      original_call_id: 'call-1',
+      final_outcome: {
+        result: 'succeeded',
+        detail: 'token=***REDACTED***'
+      }
+    });
+    expect(JSON.stringify(bundle)).not.toContain('super-secret-token');
+  });
+
   it('replays lineage bundles deterministically with generated-at time', () => {
     const bundle = makeBundle();
     const first = replayForensicsBundle(bundle, Date.parse('2026-04-11T10:10:00.000Z'));

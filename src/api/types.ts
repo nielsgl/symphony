@@ -335,6 +335,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       model_context_window?: number;
     };
     recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
+    missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
     operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   retrying: Array<ApiBudgetProjection & {
@@ -487,6 +488,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_heartbeat_at_ms: number | null;
     operator_actions: OperatorActionProjection[];
     recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
+    missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
     operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   stopped_runs: Array<{
@@ -647,6 +649,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       model_context_window?: number;
     };
     recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
+    missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
   }) | null;
   retry: (ApiBudgetProjection & {
     attempt: number;
@@ -677,6 +680,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
+    missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
   }) | null;
   blocked: (ApiBudgetProjection & {
     attempt: number;
@@ -793,6 +797,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_heartbeat_at_ms: number | null;
     operator_actions: OperatorActionProjection[];
     recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
+    missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
   }) | null;
   phase_timeline: Array<{
     at: string;
@@ -895,6 +900,7 @@ export interface ThreadDiagnosticsBlocker {
   recommended_actions: string[];
   expected_auto_transition: string | null;
   tool_output_wait?: import('../orchestrator').BlockedEntry['tool_output_wait'];
+  missing_tool_output_recovery?: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
 }
 
 export interface ThreadDiagnosticsCapabilityWarning {

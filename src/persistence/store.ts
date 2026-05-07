@@ -42,6 +42,18 @@ function asExecutionGraphId(kind: string, parts: Array<string | number | null | 
   return `${kind}_${hash}`;
 }
 
+function parseNullableJsonObject(value: string | null): Record<string, unknown> | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 function ensureMonotonicTimestamp(next: string, previous: string | null | undefined, label: string): void {
   if (previous && next < previous) {
     throw new Error(`${label} timestamp must be monotonic`);
@@ -201,7 +213,8 @@ export class SqlitePersistenceStore {
         root_cause_at TEXT,
         session_id TEXT,
         thread_id TEXT,
-        turn_id TEXT
+        turn_id TEXT,
+        missing_tool_output_recovery TEXT
       );
       CREATE TABLE IF NOT EXISTS run_sessions (
         run_id TEXT NOT NULL,
@@ -594,10 +607,14 @@ export class SqlitePersistenceStore {
     session_id?: string | null;
     thread_id?: string | null;
     turn_id?: string | null;
+    missing_tool_output_recovery?: Record<string, unknown> | null;
   }): void {
     const redactedError = redactUnknown(params.error_code ?? null) as string | null;
     const redactedTerminalDetail = redactUnknown(params.terminal_reason_detail ?? null) as string | null;
     const redactedRootCauseDetail = redactUnknown(params.root_cause_reason_detail ?? null) as string | null;
+    const redactedRecovery = params.missing_tool_output_recovery
+      ? JSON.stringify(redactUnknown(params.missing_tool_output_recovery))
+      : null;
     const terminalReasonCode = params.terminal_reason_code ?? params.error_code ?? null;
     this.db
       .prepare(
@@ -613,7 +630,8 @@ export class SqlitePersistenceStore {
           root_cause_at = ?,
           session_id = ?,
           thread_id = ?,
-          turn_id = ?
+          turn_id = ?,
+          missing_tool_output_recovery = ?
         WHERE run_id = ?`
       )
       .run(
@@ -629,6 +647,7 @@ export class SqlitePersistenceStore {
         params.session_id ?? null,
         params.thread_id ?? null,
         params.turn_id ?? null,
+        redactedRecovery,
         params.run_id
       );
   }
@@ -638,7 +657,7 @@ export class SqlitePersistenceStore {
       .prepare(
         `SELECT run_id, issue_id, issue_identifier, started_at, ended_at, terminal_status, error_code,
           terminal_reason_code, terminal_reason_detail, root_cause_status, root_cause_reason_code,
-          root_cause_reason_detail, root_cause_at, session_id, thread_id, turn_id
+          root_cause_reason_detail, root_cause_at, session_id, thread_id, turn_id, missing_tool_output_recovery
         FROM runs ORDER BY started_at DESC LIMIT ?`
       )
       .all(limit) as Array<{
@@ -658,6 +677,7 @@ export class SqlitePersistenceStore {
       session_id: string | null;
       thread_id: string | null;
       turn_id: string | null;
+      missing_tool_output_recovery: string | null;
     }>;
 
     const sessionStmt = this.db.prepare('SELECT session_id FROM run_sessions WHERE run_id = ? ORDER BY session_id ASC');
@@ -681,7 +701,8 @@ export class SqlitePersistenceStore {
         session_id: row.session_id,
         thread_id: row.thread_id,
         turn_id: row.turn_id,
-        session_ids: sessions.map((entry) => entry.session_id)
+        session_ids: sessions.map((entry) => entry.session_id),
+        missing_tool_output_recovery: parseNullableJsonObject(row.missing_tool_output_recovery)
       };
 
       return redactUnknown(record) as DurableRunHistoryRecord;
@@ -700,7 +721,8 @@ export class SqlitePersistenceStore {
       ['root_cause_at', 'ALTER TABLE runs ADD COLUMN root_cause_at TEXT'],
       ['session_id', 'ALTER TABLE runs ADD COLUMN session_id TEXT'],
       ['thread_id', 'ALTER TABLE runs ADD COLUMN thread_id TEXT'],
-      ['turn_id', 'ALTER TABLE runs ADD COLUMN turn_id TEXT']
+      ['turn_id', 'ALTER TABLE runs ADD COLUMN turn_id TEXT'],
+      ['missing_tool_output_recovery', 'ALTER TABLE runs ADD COLUMN missing_tool_output_recovery TEXT']
     ];
     for (const [column, sql] of migrations) {
       if (!existing.has(column)) {

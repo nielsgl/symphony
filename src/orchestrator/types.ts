@@ -167,6 +167,7 @@ export interface ToolCallLedgerEntry {
 
 export type MissingToolOutputRecoveryMode = 'same_thread_guarded_continuation';
 export type MissingToolOutputRecoveryResult = 'started' | 'succeeded' | 'blocked' | 'failed';
+export type MissingToolOutputRecoveryInterruptStatus = 'not_started' | 'succeeded' | 'failed' | 'unknown';
 
 export interface MissingToolOutputRecoveryState {
   attempt_count: number;
@@ -189,6 +190,11 @@ export interface MissingToolOutputRecoveryState {
   quarantined_event_count: number;
   prompt_hash: string;
   prompt_summary: string;
+  interrupt_cancel_result?: {
+    status: MissingToolOutputRecoveryInterruptStatus;
+    reason_code?: string | null;
+    detail?: string | null;
+  } | null;
   last_result: MissingToolOutputRecoveryResult;
   last_result_reason_code?: string | null;
   last_result_detail?: string | null;
@@ -697,6 +703,7 @@ export interface OrchestratorPersistencePort {
     session_id?: string | null;
     thread_id?: string | null;
     turn_id?: string | null;
+    missing_tool_output_recovery?: Record<string, unknown> | null;
   }) => Promise<void>;
   upsertBreaker?: (params: {
     issue_id: string;
