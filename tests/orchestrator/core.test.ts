@@ -168,6 +168,90 @@ describe('OrchestratorCore', () => {
     expect(snapshot.retry_attempts.has('i-claim')).toBe(false);
   });
 
+  it('prevents duplicate dispatch while overlapping ticks wait for worker spawn', async () => {
+    const issue = makeIssue({ id: 'i-overlap', identifier: 'ABC-OVERLAP' });
+    let releaseSpawn!: () => void;
+    const spawnGate = new Promise<void>((resolve) => {
+      releaseSpawn = resolve;
+    });
+    const harness = createHarness({
+      spawnWorker: async ({ issue: spawnedIssue, attempt, worker_host, resume_context }) => {
+        harness.spawned.push({ issue_id: spawnedIssue.id, attempt, worker_host, resume_context });
+        await spawnGate;
+        return {
+          ok: true,
+          worker_handle: { issue_id: spawnedIssue.id },
+          monitor_handle: { issue_id: spawnedIssue.id },
+          worker_host
+        };
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+
+    const firstTick = harness.orchestrator.tick('interval');
+    await vi.waitFor(() => expect(harness.spawned).toHaveLength(1));
+
+    const secondTick = harness.orchestrator.tick('manual_refresh');
+    await Promise.resolve();
+    releaseSpawn();
+    await Promise.all([firstTick, secondTick]);
+
+    expect(harness.spawned).toEqual([{ issue_id: 'i-overlap', attempt: null, worker_host: null, resume_context: null }]);
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-overlap')).toBe(true);
+    expect(
+      snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.orchestration.dispatchDuplicateSkipped)
+    ).toBe(true);
+  });
+
+  it('releases pre-spawn claim after spawn failure so a later eligible tick retries', async () => {
+    const issue = makeIssue({ id: 'i-spawn-release', identifier: 'ABC-SPAWN-RELEASE' });
+    const harness = createHarness({
+      spawnWorker: async ({ issue: spawnedIssue, attempt, worker_host, resume_context }) => {
+        harness.spawned.push({ issue_id: spawnedIssue.id, attempt, worker_host, resume_context });
+        if (harness.spawned.length === 1) {
+          return { ok: false, error: 'workspace provisioning failed' };
+        }
+        return {
+          ok: true,
+          worker_handle: { issue_id: spawnedIssue.id },
+          monitor_handle: { issue_id: spawnedIssue.id },
+          worker_host
+        };
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+
+    await harness.orchestrator.tick('interval');
+
+    let snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.claimed.has('i-spawn-release')).toBe(true);
+    expect(snapshot.running.has('i-spawn-release')).toBe(false);
+    expect(snapshot.retry_attempts.get('i-spawn-release')?.stop_reason_code).toBe(REASON_CODES.spawnFailed);
+
+    const internals = harness.orchestrator as unknown as {
+      state: {
+        redispatch_progress: Map<
+          string,
+          Array<{ at_ms: number; commit_sha: string | null; checklist_checkpoint: string | null; state_marker: string | null; pr_open: boolean }>
+        >;
+      };
+    };
+    internals.state.redispatch_progress = new Map([
+      [
+        'i-spawn-release',
+        [{ at_ms: harness.now.value - 1, commit_sha: 'sha-old', checklist_checkpoint: 'chk-old', state_marker: null, pr_open: false }]
+      ]
+    ]);
+
+    await harness.scheduled.get('i-spawn-release')?.callback();
+
+    snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-spawn-release', 'i-spawn-release']);
+    expect(snapshot.running.has('i-spawn-release')).toBe(true);
+    expect(snapshot.retry_attempts.has('i-spawn-release')).toBe(false);
+  });
+
   it('skips dispatch when github-linking mode is required and issue has no linked GitHub issue', async () => {
     const harness = createHarness({ configOverrides: { github_linking_mode: 'required' } });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([
