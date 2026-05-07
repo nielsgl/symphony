@@ -1434,6 +1434,7 @@ describe('OrchestratorCore', () => {
     expect(blocked?.tool_output_wait?.elapsed_wait_ms).toBeGreaterThanOrEqual(1_990);
     expect(blocked?.required_actions).toEqual(['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']);
     expect(harness.orchestrator.getStateSnapshot().running.has('i-missing-tool')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().claimed.has('i-missing-tool')).toBe(false);
     expect(harness.terminated).toEqual([
       { issue_id: 'i-missing-tool', cleanup_workspace: false, reason: REASON_CODES.missingToolOutput }
     ]);

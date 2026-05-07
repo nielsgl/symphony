@@ -3022,6 +3022,7 @@ export class OrchestratorCore {
     };
     required_actions?: string[];
     apply_circuit_breaker?: boolean;
+    claim_issue?: boolean;
     budget?: BudgetRuntimeProjection;
   }): Promise<{ created: boolean }> {
     const existingRetry = this.state.retry_attempts.get(params.issue_id);
@@ -3107,7 +3108,9 @@ export class OrchestratorCore {
       last_quarantined_event_at_ms: null
     };
     this.state.blocked_inputs.set(params.issue_id, blockedEntry);
-    this.state.claimed.add(params.issue_id);
+    if (params.claim_issue !== false) {
+      this.state.claimed.add(params.issue_id);
+    }
 
     if (params.apply_circuit_breaker) {
       await this.upsertCircuitBreaker({
@@ -4724,6 +4727,7 @@ export class OrchestratorCore {
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'cancelled', REASON_CODES.missingToolOutput);
     this.state.running.delete(issueId);
+    this.state.claimed.delete(issueId);
 
     await this.scheduleBlockedInput({
       issue_id: issueId,
@@ -4751,7 +4755,8 @@ export class OrchestratorCore {
       previous_thread_id: diagnostic.thread_id,
       previous_session_id: diagnostic.session_id,
       last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
-      tool_output_wait: diagnostic
+      tool_output_wait: diagnostic,
+      claim_issue: false
     });
 
     this.recordRuntimeEvent({
