@@ -4908,13 +4908,8 @@ export class OrchestratorCore {
 
   private transcriptPathMayMatch(transcriptPath: string, runningEntry: RunningEntry): boolean {
     const normalized = transcriptPath.toLowerCase();
-    return Boolean(
-      (runningEntry.session_id && normalized.includes(runningEntry.session_id.toLowerCase())) ||
-        (runningEntry.thread_id && normalized.includes(runningEntry.thread_id.toLowerCase())) ||
-        (runningEntry.turn_id && normalized.includes(runningEntry.turn_id.toLowerCase())) ||
-        runningEntry.session_id ||
-        runningEntry.thread_id ||
-        runningEntry.turn_id
+    return [runningEntry.session_id, runningEntry.thread_id, runningEntry.turn_id].some((identifier) =>
+      Boolean(identifier && normalized.includes(identifier.toLowerCase()))
     );
   }
 

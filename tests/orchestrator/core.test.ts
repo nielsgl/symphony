@@ -1946,6 +1946,50 @@ describe('OrchestratorCore', () => {
     });
   });
 
+  it('ignores unrelated no-lineage transcript function_call records', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-unrelated', identifier: 'ABC-TRANSCRIPT-UNRELATED' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-unrelated', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-related',
+        turn_id: 'turn-related',
+        session_id: 'session-related'
+      });
+      writeSessionTranscript(codexHome, 'unrelated-session.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 10).toISOString(),
+          response_item: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_unrelated_no_lineage'
+          }
+        }
+      ]);
+      harness.orchestrator.onWorkerEvent('i-transcript-unrelated', {
+        timestamp_ms: harness.now.value + 20,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with unrelated transcript present',
+        thread_id: 'thread-related',
+        turn_id: 'turn-related',
+        session_id: 'session-related'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-transcript-unrelated')).toBe(false);
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-unrelated')?.outstanding_tool_calls ?? {}).toEqual({});
+    });
+  });
+
   it('keeps missing tool output from being overwritten by generic stall timeout in the same tick', async () => {
     const completedRuns: Array<{ terminal_status: string; error_code: string | null }> = [];
     const persistence: OrchestratorPersistencePort = {
