@@ -102,6 +102,38 @@ function projectToolCallLedger(entry: RunningEntry) {
     }));
 }
 
+function projectTranscriptToolCallDiagnostics(entry: {
+  transcript_tool_call_diagnostics?: import('../orchestrator').TranscriptToolCallDiagnostic[];
+}) {
+  return (entry.transcript_tool_call_diagnostics ?? []).map((diagnostic) => ({
+    kind: diagnostic.kind,
+    call_id: diagnostic.call_id,
+    tool_name: diagnostic.tool_name,
+    thread_id: diagnostic.thread_id,
+    turn_id: diagnostic.turn_id,
+    session_id: diagnostic.session_id,
+    issue_id: diagnostic.issue_id,
+    issue_identifier: diagnostic.issue_identifier,
+    run_id: diagnostic.run_id,
+    issue_run_id: diagnostic.issue_run_id,
+    attempt_id: diagnostic.attempt_id,
+    codex_app_server_pid: diagnostic.codex_app_server_pid,
+    observed_at: asIsoDate(diagnostic.observed_at_ms),
+    observed_at_ms: diagnostic.observed_at_ms,
+    lineage: diagnostic.lineage,
+    reason: diagnostic.reason,
+    active_issue_id: diagnostic.active_issue_id,
+    active_issue_identifier: diagnostic.active_issue_identifier,
+    active_run_id: diagnostic.active_run_id,
+    active_issue_run_id: diagnostic.active_issue_run_id,
+    active_attempt_id: diagnostic.active_attempt_id,
+    active_codex_app_server_pid: diagnostic.active_codex_app_server_pid,
+    active_thread_id: diagnostic.active_thread_id,
+    active_turn_id: diagnostic.active_turn_id,
+    active_session_id: diagnostic.active_session_id
+  }));
+}
+
 function projectQuarantinedRunningEvents(entry: RunningEntry) {
   return (entry.quarantined_events ?? []).map((event) => ({
     at: asIsoDate(event.at_ms),
@@ -289,6 +321,7 @@ function toStateRunningRow(
     time_since_progress: timeSinceProgress,
     last_successful_step: resolveLastSuccessfulStep(entry),
     tool_call_ledger: projectToolCallLedger(entry),
+    transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(entry),
     ...notBlockedExplainer,
     operator_actions: (operatorActions?.get(issueId) ?? []).map((action) => ({ ...action })),
     tokens: {
@@ -446,6 +479,7 @@ export class SnapshotService {
             }
           : null,
         tool_output_wait: projectMissingToolOutput(entry),
+        transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(entry),
         last_input_submit: entry.last_input_submit
           ? {
               submitted_at: asIsoDate(entry.last_input_submit.submitted_at_ms),
@@ -633,6 +667,7 @@ export class SnapshotService {
           }),
           operator_actions: projectOperatorActions(state, issueId),
           tool_call_ledger: projectToolCallLedger(entry),
+          transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(entry),
           tokens: {
             input_tokens: entry.tokens.input_tokens,
             output_tokens: entry.tokens.output_tokens,
@@ -735,6 +770,7 @@ export class SnapshotService {
                   }
                 : null,
               tool_output_wait: projectMissingToolOutput(blockedEntry),
+              transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(blockedEntry),
               last_input_submit: blockedEntry.last_input_submit
                 ? {
                     submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),
@@ -888,6 +924,7 @@ export class SnapshotService {
                   }
                 : null,
               tool_output_wait: projectMissingToolOutput(blockedEntry),
+              transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(blockedEntry),
               last_input_submit: blockedEntry.last_input_submit
                 ? {
                     submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),
@@ -1016,6 +1053,7 @@ export class SnapshotService {
             }
           : null,
         tool_output_wait: projectMissingToolOutput(blockedEntry),
+        transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(blockedEntry),
         last_input_submit: blockedEntry.last_input_submit
           ? {
               submitted_at: asIsoDate(blockedEntry.last_input_submit.submitted_at_ms),
