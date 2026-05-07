@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildThreadDiagnosticsByIssueIdentifier, classifyThreadBlocker } from '../../src/api';
-import type { OrchestratorState, RunningEntry } from '../../src/orchestrator';
+import type { BlockedEntry, OrchestratorState, RunningEntry } from '../../src/orchestrator';
 import {
   createDynamicToolCapabilityMismatchDetail,
   DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION,
@@ -9,6 +9,7 @@ import {
   UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE
 } from '../../src/observability/dynamic-tool-capability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
+import { REASON_CODES } from '../../src/observability/reason-codes';
 import type { ExecutionGraphThreadLineage } from '../../src/persistence';
 import type { Issue } from '../../src/tracker';
 
@@ -91,14 +92,55 @@ function makeRunningEntry(overrides: Partial<RunningEntry> = {}): RunningEntry {
   };
 }
 
-function makeState(running: RunningEntry): OrchestratorState {
+function makeBlockedEntry(overrides: Partial<BlockedEntry> = {}): BlockedEntry {
+  return {
+    issue_id: 'issue-1',
+    issue_identifier: 'ABC-1',
+    attempt: 1,
+    worker_host: null,
+    workspace_path: '/tmp/symphony/ABC-1',
+    provisioner_type: 'none',
+    branch_name: null,
+    repo_root: null,
+    workspace_exists: true,
+    workspace_git_status: 'unknown',
+    workspace_provisioned: false,
+    workspace_is_git_worktree: false,
+    stop_reason_code: REASON_CODES.missingToolOutput,
+    stop_reason_detail:
+      'tool_name=linear_graphql call_id=call-1 thread_id=thread-1 turn_id=turn-1 session_id=thread-1-turn-1 evidence_source=session_transcript elapsed_wait_ms=120000',
+    conflict_files: [],
+    resolution_hints: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run'],
+    previous_thread_id: 'thread-1',
+    previous_session_id: 'thread-1-turn-1',
+    blocked_at_ms: Date.parse('2026-04-10T10:02:00.000Z'),
+    requires_manual_resume: true,
+    required_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run'],
+    pending_input: null,
+    tool_output_wait: {
+      tool_name: 'linear_graphql',
+      call_id: 'call-1',
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      elapsed_wait_ms: 120_000,
+      last_agent_message: 'waiting_for_turn_completion elapsed_s=120',
+      evidence_source: 'session_transcript',
+      recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
+    },
+    session_console: [],
+    ...overrides
+  };
+}
+
+function makeState(running: RunningEntry | null, blocked: BlockedEntry | null = null): OrchestratorState {
   return {
     poll_interval_ms: 30_000,
     max_concurrent_agents: 10,
-    running: new Map([[running.issue.id, running]]),
+    running: running ? new Map([[running.issue.id, running]]) : new Map(),
     claimed: new Set(),
     retry_attempts: new Map(),
-    blocked_inputs: new Map(),
+    blocked_inputs: blocked ? new Map([[blocked.issue_id, blocked]]) : new Map(),
     circuit_breakers: new Map(),
     budget_usage_samples: new Map(),
     completed: new Set(),
@@ -231,6 +273,15 @@ describe('thread diagnostics blocker classification', () => {
       }
     ],
     [
+      'missing_tool_output',
+      'required',
+      {
+        reason_code: REASON_CODES.missingToolOutput,
+        reason_detail:
+          'tool_name=linear_graphql call_id=call-1 thread_id=thread-1 turn_id=turn-1 session_id=thread-1-turn-1 evidence_source=session_transcript elapsed_wait_ms=120000'
+      }
+    ],
+    [
       'tracker_transition_pending',
       'recommended',
       {
@@ -332,6 +383,31 @@ describe('thread diagnostics blocker classification', () => {
       status: 'blocked',
       reason_code: 'turn_waiting_threshold_exceeded',
       reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
+    });
+  });
+
+  it('reports missing tool output as a diagnostic blocker with exact call evidence', () => {
+    const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
+      state: makeState(null, makeBlockedEntry()),
+      issue_identifier: 'ABC-1',
+      now_ms: Date.parse('2026-04-10T10:03:00.000Z')
+    });
+
+    expect(diagnostics?.status).toBe('stalled');
+    expect(diagnostics?.current_blocker).toMatchObject({
+      classification: 'missing_tool_output',
+      reason_code: REASON_CODES.missingToolOutput,
+      actionability: 'required',
+      tool_output_wait: {
+        tool_name: 'linear_graphql',
+        call_id: 'call-1',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        session_id: 'thread-1-turn-1',
+        elapsed_wait_ms: 120_000,
+        evidence_source: 'session_transcript',
+        recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
+      }
     });
   });
 
