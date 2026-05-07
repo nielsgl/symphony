@@ -697,6 +697,7 @@ export interface OrchestratorPersistencePort {
     session_id?: string | null;
     thread_id?: string | null;
     turn_id?: string | null;
+    missing_tool_output_recovery?: Record<string, unknown> | null;
   }) => Promise<void>;
   upsertBreaker?: (params: {
     issue_id: string;

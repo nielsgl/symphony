@@ -69,7 +69,15 @@ describe('SqlitePersistenceStore', () => {
       root_cause_at: '2026-04-11T10:03:00.000Z',
       session_id: 'session-linear',
       thread_id: 'thread-linear',
-      turn_id: 'turn-linear'
+      turn_id: 'turn-linear',
+      missing_tool_output_recovery: {
+        status: 'failed',
+        original_tool_name: 'linear_graphql',
+        original_call_id: 'call-1',
+        final_outcome: {
+          detail: 'token=abcd1234'
+        }
+      }
     });
     storeA.close();
     stores.pop();
@@ -93,7 +101,15 @@ describe('SqlitePersistenceStore', () => {
       session_id: 'session-linear',
       thread_id: 'thread-linear',
       turn_id: 'turn-linear',
-      session_ids: ['session-linear']
+      session_ids: ['session-linear'],
+      missing_tool_output_recovery: {
+        status: 'failed',
+        original_tool_name: 'linear_graphql',
+        original_call_id: 'call-1',
+        final_outcome: {
+          detail: 'token=***REDACTED***'
+        }
+      }
     });
   });
 

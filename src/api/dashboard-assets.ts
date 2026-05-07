@@ -1061,6 +1061,40 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     appendDefinitionValue(elements.threadBlockerCard, 'reason_code', blocker.reason_code);
     appendDefinitionValue(elements.threadBlockerCard, 'reason_detail', blocker.reason_detail);
     appendDefinitionValue(elements.threadBlockerCard, 'time_since_progress', blocker.time_since_progress);
+    if (blocker.missing_tool_output_recovery) {
+      const recovery = blocker.missing_tool_output_recovery;
+      appendDefinitionValue(elements.threadBlockerCard, 'recovery_headline', recovery.headline);
+      appendDefinitionValue(elements.threadBlockerCard, 'recovery_state', recovery.status);
+      appendDefinitionValue(elements.threadBlockerCard, 'recovery_next_action', recovery.next_action);
+      appendDefinitionValue(elements.threadBlockerCard, 'original_tool', recovery.original_tool_name);
+      appendDefinitionValue(elements.threadBlockerCard, 'original_call_id', recovery.original_call_id);
+      appendDefinitionValue(elements.threadBlockerCard, 'evidence_source', recovery.evidence_source);
+      appendDefinitionValue(elements.threadBlockerCard, 'elapsed_wait_ms', recovery.elapsed_wait_ms);
+      appendDefinitionValue(
+        elements.threadBlockerCard,
+        'active_ownership',
+        recovery.active_ownership
+          ? [
+              'issue ' + (recovery.active_ownership.issue_identifier || recovery.active_ownership.issue_id || 'n/a'),
+              'thread ' + (recovery.active_ownership.thread_id || 'n/a'),
+              'turn ' + (recovery.active_ownership.turn_id || 'n/a'),
+              'session ' + (recovery.active_ownership.session_id || 'n/a'),
+              'app_server_owned ' + String(Boolean(recovery.active_ownership.app_server_owned))
+            ].join(' | ')
+          : 'n/a'
+      );
+      appendDefinitionValue(
+        elements.threadBlockerCard,
+        'recovery_lineage',
+        [
+          'interrupt ' + ((recovery.interrupt_cancel_result && recovery.interrupt_cancel_result.status) || 'n/a'),
+          'replacement_thread ' + ((recovery.replacement_turn && recovery.replacement_turn.thread_id) || 'n/a'),
+          'replacement_turn ' + ((recovery.replacement_turn && recovery.replacement_turn.turn_id) || 'n/a'),
+          'prompt ' + ((recovery.guarded_prompt_dispatch && recovery.guarded_prompt_dispatch.status) || 'n/a'),
+          'outcome ' + ((recovery.final_outcome && recovery.final_outcome.result) || 'n/a')
+        ].join(' | ')
+      );
+    }
     appendDefinitionValue(
       elements.threadBlockerCard,
       'recommended_actions',

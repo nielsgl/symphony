@@ -601,12 +601,38 @@ describe('SnapshotService', () => {
         elapsed_wait_ms: 2000,
         last_agent_message: 'waiting for linear_graphql output',
         recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
+      },
+      missing_tool_output_recovery: {
+        status: 'not_started',
+        headline: 'Missing tool output detected',
+        original_tool_name: 'linear_graphql',
+        original_call_id: 'call_pfKTUH5GFubLHpXfln7UScnU',
+        evidence_source: null,
+        active_ownership: {
+          issue_id: 'issue-tool',
+          issue_identifier: 'ABC-TOOL',
+          thread_id: 'thread-1',
+          turn_id: 'turn-1',
+          session_id: 'session-1',
+          app_server_owned: false
+        },
+        interrupt_cancel_result: {
+          status: 'not_started',
+          reason_code: null
+        },
+        guarded_prompt_dispatch: {
+          status: 'not_started'
+        },
+        final_outcome: {
+          result: null
+        }
       }
     });
 
     const issueProjection = service.projectIssue(state, 'ABC-TOOL');
     expect(issueProjection.status).toBe('blocked');
     expect(issueProjection.blocked?.tool_output_wait?.call_id).toBe('call_pfKTUH5GFubLHpXfln7UScnU');
+    expect(issueProjection.blocked?.missing_tool_output_recovery?.next_action).toContain('Inspect the active Codex thread');
     expect(issueProjection.operator_explainer.reason_code).toBe(REASON_CODES.missingToolOutput);
   });
 

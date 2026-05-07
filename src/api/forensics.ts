@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { REASON_CODE_REGISTRY_VERSION } from '../observability/reason-codes';
 import type { DurableRunHistoryRecord, ExecutionGraphThreadLineage } from '../persistence';
 import { redactUnknown } from '../security/redaction';
+import type { MissingToolOutputRecoveryEvidence } from './missing-tool-output-recovery';
 import { buildThreadDiagnosticsFromLineage } from './thread-diagnostics';
 import type {
   ApiDiagnosticsResponse,
@@ -52,6 +53,7 @@ export interface ForensicsBundle {
   reason_taxonomy_version: string;
   token_snapshot: ForensicsTokenSnapshot;
   diagnostics: ThreadDiagnosticsResponse;
+  missing_tool_output_recovery: MissingToolOutputRecoveryEvidence | Record<string, unknown> | null;
   lineage: ExecutionGraphThreadLineage | null;
   terminal_run: DurableRunHistoryRecord | null;
 }
@@ -171,6 +173,8 @@ export function createForensicsBundle(params: {
     reason_taxonomy_version: REASON_CODE_REGISTRY_VERSION,
     token_snapshot: normalizeTokens(params.token_snapshot),
     diagnostics: params.diagnostics,
+    missing_tool_output_recovery:
+      params.diagnostics.current_blocker?.missing_tool_output_recovery ?? params.terminal_run?.missing_tool_output_recovery ?? null,
     lineage: params.lineage ?? null,
     terminal_run: params.terminal_run ?? null
   };

@@ -90,6 +90,7 @@ export interface DurableRunHistoryRecord {
   thread_id: string | null;
   turn_id: string | null;
   session_ids: string[];
+  missing_tool_output_recovery?: Record<string, unknown> | null;
 }
 
 export interface UiContinuityState {

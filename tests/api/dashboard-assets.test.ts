@@ -32,6 +32,9 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'classification'");
     expect(clientJs).toContain('diagnostics.capability_warnings');
     expect(clientJs).toContain('recommended_recovery_action');
+    expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'recovery_headline'");
+    expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'recovery_next_action'");
+    expect(clientJs).toContain('missing_tool_output_recovery');
     expect(clientJs).toContain('entry.current_blocker_class');
     expect(clientJs).toContain('entry.time_since_progress');
     expect(clientJs).toContain('entry.last_successful_step');

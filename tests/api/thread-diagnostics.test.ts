@@ -407,6 +407,95 @@ describe('thread diagnostics blocker classification', () => {
         elapsed_wait_ms: 120_000,
         evidence_source: 'session_transcript',
         recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
+      },
+      missing_tool_output_recovery: {
+        status: 'not_started',
+        headline: 'Missing tool output detected',
+        original_tool_name: 'linear_graphql',
+        original_call_id: 'call-1',
+        active_ownership: {
+          issue_id: 'issue-1',
+          issue_identifier: 'ABC-1',
+          thread_id: 'thread-1',
+          turn_id: 'turn-1',
+          session_id: 'thread-1-turn-1',
+          app_server_owned: false
+        },
+        interrupt_cancel_result: {
+          status: 'not_started'
+        },
+        final_outcome: {
+          result: null
+        }
+      }
+    });
+  });
+
+  it('reports in-progress guarded recovery against the active owned runtime lineage', () => {
+    const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
+      state: makeState(
+        makeRunningEntry({
+          thread_id: 'thread-1',
+          turn_id: 'turn-recovery',
+          session_id: 'session-recovery',
+          recovery: {
+            attempt_count: 1,
+            started_at_ms: Date.parse('2026-04-10T10:02:00.000Z'),
+            reason_code: REASON_CODES.missingToolOutput,
+            mode: 'same_thread_guarded_continuation',
+            previous_thread_id: 'thread-1',
+            previous_turn_id: 'turn-1',
+            previous_session_id: 'thread-1-turn-1',
+            previous_worker_handle_known: true,
+            previous_codex_app_server_pid: '12345',
+            last_tool_name: 'linear_graphql',
+            last_call_id: 'call-1',
+            evidence_source: 'session_transcript',
+            elapsed_wait_ms: 120_000,
+            last_agent_message: 'waiting_for_turn_completion elapsed_s=120',
+            last_observed_phase: null,
+            last_observed_phase_detail: null,
+            recent_event_count: 4,
+            quarantined_event_count: 1,
+            prompt_hash: 'abc123',
+            prompt_summary: 'guarded recovery prompt: inspect state before retrying indeterminate tool action',
+            last_result: 'started'
+          }
+        })
+      ),
+      issue_identifier: 'ABC-1',
+      now_ms: Date.parse('2026-04-10T10:03:00.000Z')
+    });
+
+    expect(diagnostics?.current_blocker).toMatchObject({
+      classification: 'missing_tool_output',
+      missing_tool_output_recovery: {
+        status: 'in_progress',
+        headline: 'Guarded missing-output recovery is in progress',
+        original_tool_name: 'linear_graphql',
+        original_call_id: 'call-1',
+        active_ownership: {
+          issue_id: 'issue-1',
+          issue_identifier: 'ABC-1',
+          run_id: 'run-1',
+          thread_id: 'thread-1',
+          turn_id: 'turn-recovery',
+          session_id: 'session-recovery',
+          codex_app_server_pid: '12345',
+          app_server_owned: true
+        },
+        replacement_turn: {
+          thread_id: 'thread-1',
+          turn_id: 'turn-recovery',
+          session_id: 'session-recovery'
+        },
+        guarded_prompt_dispatch: {
+          status: 'sent',
+          prompt_hash: 'abc123'
+        },
+        final_outcome: {
+          result: 'started'
+        }
       }
     });
   });
