@@ -9,6 +9,11 @@ description: |
 
 Use this skill for raw Linear GraphQL work during Symphony app-server sessions.
 
+Prefer the Linear MCP issue/comment tools for routine issue lookup, comment
+listing, and workpad discovery. Reserve `linear_graphql` for operations the MCP
+tools cannot perform, such as comment edits, upload flows, targeted
+introspection, or narrowly scoped ad-hoc API operations.
+
 ## Primary tool
 
 Use the `linear_graphql` client tool exposed by Symphony's app-server session.
@@ -72,6 +77,10 @@ query CommentCreateInputShape {
 ## Common workflows
 
 ### Query an issue by key, identifier, or id
+
+Use Linear MCP issue tools for this routine read path when they are available.
+Only use the raw GraphQL queries below when MCP access is unavailable or the
+workflow needs fields that the MCP tools do not expose.
 
 Use these progressively:
 
