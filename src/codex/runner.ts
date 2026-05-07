@@ -76,6 +76,11 @@ interface TranscriptTerminalEvidence {
   time_to_first_token_ms?: number;
 }
 
+interface TranscriptScanResult {
+  terminal: TranscriptTerminalEvidence | null;
+  observedProgress: boolean;
+}
+
 const CONTINUATION_GUIDANCE = 'Continue working on the same issue thread. Provide concise progress and next actions.';
 const NON_INTERACTIVE_TOOL_INPUT_ANSWER = 'This is a non-interactive session. Operator input is unavailable.';
 
@@ -105,6 +110,15 @@ function normalizeEpochMs(value: unknown): number | undefined {
     return undefined;
   }
   return parsed < 1_000_000_000_000 ? Math.round(parsed * 1000) : Math.round(parsed);
+}
+
+function normalizeTimestampMs(value: unknown): number | undefined {
+  const timestamp = readString(value);
+  if (!timestamp) {
+    return undefined;
+  }
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function buildTerminalMetadata(waitResult: WaitForTerminalResult): Partial<CodexTurnResult> {
@@ -1364,6 +1378,7 @@ class ProtocolClient {
   private readonly messageEmitter = new EventEmitter();
   private readonly usageTracker = new UsageTracker();
   private readonly transcriptOffsets = new Map<string, number>();
+  private readonly transcriptTails = new Map<string, string>();
 
   private latestRateLimits: Record<string, unknown> | null = null;
   private stdoutBuffer = '';
@@ -1610,10 +1625,13 @@ class ProtocolClient {
         }
       }
 
-      const transcriptTerminal = this.consumeTranscriptTerminalEvidence(emit);
-      if (transcriptTerminal) {
+      const transcriptScanResult = this.consumeTranscriptTerminalEvidence(emit);
+      if (transcriptScanResult.observedProgress) {
+        markProgress();
+      }
+      if (transcriptScanResult.terminal) {
         return {
-          ...transcriptTerminal,
+          ...transcriptScanResult.terminal,
           terminal_source: 'session_transcript',
           usage: this.usageTracker.snapshot(),
           telemetry: this.usageTracker.telemetrySnapshot(),
@@ -1624,8 +1642,49 @@ class ProtocolClient {
       return null;
     };
 
+    let markProgress = (): void => {};
+
     return new Promise((resolve, reject) => {
       const waitStartedAtMs = Date.now();
+      let lastProgressAtMs = waitStartedAtMs;
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        clearInterval(transcriptScan);
+        if (timer) {
+          clearTimeout(timer);
+        }
+        this.messageEmitter.off('message', onMessageWrapper);
+        this.messageEmitter.off('exit', onExit);
+      };
+
+      const scheduleIdleTimeout = () => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        const delayMs = Math.max(1, timeoutMs - (Date.now() - lastProgressAtMs));
+        timer = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          const idleMs = Date.now() - lastProgressAtMs;
+          if (idleMs < timeoutMs) {
+            scheduleIdleTimeout();
+            return;
+          }
+          settled = true;
+          cleanup();
+          reject(new CodexRunnerError('turn_timeout', 'Timed out waiting for turn terminal event'));
+        }, delayMs);
+      };
+
+      markProgress = () => {
+        lastProgressAtMs = Date.now();
+        scheduleIdleTimeout();
+      };
+
       const heartbeat = setInterval(() => {
         const elapsedSeconds = Math.floor((Date.now() - waitStartedAtMs) / 1000);
         emit({ event: CANONICAL_EVENT.codex.phasePlanning, detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
@@ -1639,19 +1698,14 @@ class ProtocolClient {
         void onMessage();
       };
 
-      const timer = setTimeout(() => {
-        clearInterval(heartbeat);
-        clearInterval(transcriptScan);
-        this.messageEmitter.off('message', onMessageWrapper);
-        this.messageEmitter.off('exit', onExit);
-        reject(new CodexRunnerError('turn_timeout', 'Timed out waiting for turn terminal event'));
-      }, timeoutMs);
+      scheduleIdleTimeout();
 
       const onExit = () => {
-        clearInterval(heartbeat);
-        clearInterval(transcriptScan);
-        clearTimeout(timer);
-        this.messageEmitter.off('message', onMessageWrapper);
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
         reject(new CodexRunnerError('port_exit', 'Codex process exited before turn completed'));
       };
 
@@ -1661,17 +1715,21 @@ class ProtocolClient {
           return;
         }
         handlingMessage = true;
+        const beforeIndex = this.nextNotificationIndex;
         const terminal = await consume();
         handlingMessage = false;
+        if (this.nextNotificationIndex > beforeIndex) {
+          markProgress();
+        }
         if (!terminal) {
           return;
         }
 
-        clearInterval(heartbeat);
-        clearInterval(transcriptScan);
-        clearTimeout(timer);
-        this.messageEmitter.off('message', onMessageWrapper);
-        this.messageEmitter.off('exit', onExit);
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
         resolve(terminal);
       };
 
@@ -1683,11 +1741,12 @@ class ProtocolClient {
 
   private consumeTranscriptTerminalEvidence(
     emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
-  ): TranscriptTerminalEvidence | null {
+  ): TranscriptScanResult {
     const context = this.activeTurnContext;
     if (!context) {
-      return null;
+      return { terminal: null, observedProgress: false };
     }
+    let observedProgress = false;
 
     for (const transcriptPath of this.findCandidateTranscriptPaths(context)) {
       let stat: fs.Stats;
@@ -1700,10 +1759,15 @@ class ProtocolClient {
         continue;
       }
 
-      const previousOffset = Math.min(this.transcriptOffsets.get(transcriptPath) ?? 0, stat.size);
+      const storedOffset = this.transcriptOffsets.get(transcriptPath) ?? 0;
+      const previousOffset = Math.min(storedOffset, stat.size);
+      if (stat.size < storedOffset) {
+        this.transcriptTails.delete(transcriptPath);
+      }
       if (stat.size <= previousOffset) {
         continue;
       }
+      observedProgress = true;
 
       let content = '';
       try {
@@ -1718,9 +1782,20 @@ class ProtocolClient {
       } catch {
         continue;
       }
+      const previousTail = this.transcriptTails.get(transcriptPath) ?? '';
+      const combined = previousTail + content;
+      const endsWithNewline = combined.endsWith('\n');
+      const rawLines = combined.split('\n');
+      const completeLines = rawLines.slice(0, -1);
+      const nextTail = endsWithNewline ? '' : rawLines.at(-1) ?? '';
       this.transcriptOffsets.set(transcriptPath, stat.size);
+      if (nextTail) {
+        this.transcriptTails.set(transcriptPath, nextTail);
+      } else {
+        this.transcriptTails.delete(transcriptPath);
+      }
 
-      for (const line of content.split('\n')) {
+      for (const line of completeLines) {
         const trimmed = line.trim();
         if (!trimmed) {
           continue;
@@ -1734,12 +1809,12 @@ class ProtocolClient {
         this.observeTranscriptUsage(payload);
         const terminalEvidence = this.readTranscriptTerminalEvidence(record, transcriptPath, context, emit);
         if (terminalEvidence) {
-          return terminalEvidence;
+          return { terminal: terminalEvidence, observedProgress };
         }
       }
     }
 
-    return null;
+    return { terminal: null, observedProgress };
   }
 
   private findCandidateTranscriptPaths(context: TurnEventContext): string[] {
@@ -1818,7 +1893,7 @@ class ProtocolClient {
     return {
       terminal,
       last_agent_message: readString(payload.last_agent_message) ?? readString(payload.lastAgentMessage),
-      completed_at_ms: normalizeEpochMs(payload.completed_at ?? payload.completedAt),
+      completed_at_ms: normalizeEpochMs(payload.completed_at ?? payload.completedAt) ?? normalizeTimestampMs(record.timestamp),
       duration_ms: readNumber(payload.duration_ms ?? payload.durationMs),
       time_to_first_token_ms: readNumber(payload.time_to_first_token_ms ?? payload.timeToFirstTokenMs)
     };

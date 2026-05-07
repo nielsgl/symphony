@@ -74,6 +74,12 @@ function writeTranscriptRecord(codexHome: string, filename: string, record: Reco
   fs.appendFileSync(path.join(sessionsDir, filename), `${JSON.stringify(record)}\n`, 'utf8');
 }
 
+function appendTranscriptText(codexHome: string, filename: string, text: string): void {
+  const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.appendFileSync(path.join(sessionsDir, filename), text, 'utf8');
+}
+
 describe('CodexRunner', () => {
   it('[SPEC-10.1-1][SPEC-17.5-1] launches with bash command/cwd and performs ordered startup handshake', async () => {
     const fake = new FakeProcess();
@@ -537,6 +543,45 @@ describe('CodexRunner', () => {
 
     await expect(promise).rejects.toMatchObject({
       code: 'turn_timeout'
+    });
+  });
+
+  it('keeps waiting beyond the original turn timeout while real progress is still arriving', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 60
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-progress"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-progress"}}}\n');
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    fake.emitStdout('{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}}\n');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    writeTranscriptRecord(codexHome, 'rollout-thread-progress.jsonl', {
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-progress'
+      }
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-progress',
+      turn_id: 'turn-progress',
+      terminal_source: 'session_transcript'
     });
   });
 
@@ -1395,7 +1440,6 @@ describe('CodexRunner', () => {
         type: 'task_complete',
         turn_id: 'turn-transcript',
         last_agent_message: 'done from transcript',
-        completed_at: 1778183120,
         duration_ms: 111124,
         time_to_first_token_ms: 6884
       }
@@ -1408,7 +1452,7 @@ describe('CodexRunner', () => {
       session_id: 'thread-transcript-turn-transcript',
       terminal_source: 'session_transcript',
       last_agent_message: 'done from transcript',
-      completed_at_ms: 1778183120000,
+      completed_at_ms: Date.parse('2026-05-07T19:45:20.171Z'),
       duration_ms: 111124,
       time_to_first_token_ms: 6884,
       usage: {
@@ -1426,6 +1470,78 @@ describe('CodexRunner', () => {
         terminal_source: 'session_transcript'
       })
     );
+  });
+
+  it('completes after a transcript task_complete JSONL record is split across scans', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const terminalRecord = JSON.stringify({
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-split',
+        last_agent_message: 'split complete'
+      }
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-split"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-split"}}}\n');
+    appendTranscriptText(codexHome, 'rollout-thread-split.jsonl', terminalRecord.slice(0, 70));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    appendTranscriptText(codexHome, 'rollout-thread-split.jsonl', `${terminalRecord.slice(70)}\n`);
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-split',
+      turn_id: 'turn-split',
+      terminal_source: 'session_transcript',
+      last_agent_message: 'split complete'
+    });
+  });
+
+  it('keeps scanning after a complete malformed transcript line', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-malformed"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-malformed"}}}\n');
+    appendTranscriptText(codexHome, 'rollout-thread-malformed.jsonl', '{"type":"event_msg"\n');
+    writeTranscriptRecord(codexHome, 'rollout-thread-malformed.jsonl', {
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-malformed'
+      }
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-malformed',
+      turn_id: 'turn-malformed',
+      terminal_source: 'session_transcript'
+    });
   });
 
   it('keeps wrong-lineage transcript task_complete diagnostic-only until protocol completion', async () => {
