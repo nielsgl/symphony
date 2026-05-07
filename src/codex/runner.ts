@@ -50,9 +50,14 @@ type SpawnProcess = (params: {
 
 interface WaitForTerminalResult {
   terminal: 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required';
+  terminal_source: 'app_server_protocol' | 'session_transcript';
   usage: CodexUsageTotals;
   telemetry: TokenTelemetrySnapshot;
   rate_limits: Record<string, unknown> | null;
+  last_agent_message?: string;
+  completed_at_ms?: number;
+  duration_ms?: number;
+  time_to_first_token_ms?: number;
   input_required_detail?: string;
   input_required_payload?: CodexInputRequestPayload;
 }
@@ -61,6 +66,19 @@ interface TurnEventContext {
   thread_id: string;
   turn_id: string;
   session_id: string;
+}
+
+interface TranscriptTerminalEvidence {
+  terminal: 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required';
+  last_agent_message?: string;
+  completed_at_ms?: number;
+  duration_ms?: number;
+  time_to_first_token_ms?: number;
+}
+
+interface TranscriptScanResult {
+  terminal: TranscriptTerminalEvidence | null;
+  observedProgress: boolean;
 }
 
 const CONTINUATION_GUIDANCE = 'Continue working on the same issue thread. Provide concise progress and next actions.';
@@ -72,6 +90,63 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> | null {
+  try {
+    return asRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeEpochMs(value: unknown): number | undefined {
+  const parsed = readNumber(value);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  return parsed < 1_000_000_000_000 ? Math.round(parsed * 1000) : Math.round(parsed);
+}
+
+function normalizeTimestampMs(value: unknown): number | undefined {
+  const timestamp = readString(value);
+  if (!timestamp) {
+    return undefined;
+  }
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function buildTerminalMetadata(waitResult: WaitForTerminalResult): Partial<CodexTurnResult> {
+  return {
+    terminal_source: waitResult.terminal_source,
+    ...(waitResult.last_agent_message !== undefined ? { last_agent_message: waitResult.last_agent_message } : {}),
+    ...(waitResult.completed_at_ms !== undefined ? { completed_at_ms: waitResult.completed_at_ms } : {}),
+    ...(waitResult.duration_ms !== undefined ? { duration_ms: waitResult.duration_ms } : {}),
+    ...(waitResult.time_to_first_token_ms !== undefined ? { time_to_first_token_ms: waitResult.time_to_first_token_ms } : {})
+  };
+}
+
+function normalizeCodexHome(input: CodexRunnerStartInput): string {
+  const envHome =
+    input.commandEnv?.CODEX_HOME?.trim() ||
+    input.commandEnv?.SYMPHONY_CODEX_HOME?.trim() ||
+    readEnvAssignment(input.command, 'CODEX_HOME') ||
+    readEnvAssignment(input.command, 'SYMPHONY_CODEX_HOME') ||
+    process.env.SYMPHONY_CODEX_HOME?.trim() ||
+    process.env.CODEX_HOME?.trim() ||
+    path.join(process.env.HOME ?? '', '.codex');
+  return path.normalize(envHome);
+}
+
+function readEnvAssignment(command: string, name: string): string | null {
+  const pattern = new RegExp(`(?:^|\\s)${name}=([^\\s]+)`);
+  const match = command.match(pattern);
+  return match?.[1]?.replace(/^['"]|['"]$/g, '') ?? null;
 }
 
 function readToolCallId(message: ProtocolMessage): string {
@@ -790,7 +865,7 @@ export class CodexRunner {
       throw new CodexRunnerError('invalid_workspace_cwd', `Failed to launch codex process in cwd: ${input.workspaceCwd}`);
     }
 
-    const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor);
+    const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor, normalizeCodexHome(input));
     const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
     protocol.setEventEmitter(emit);
 
@@ -897,6 +972,7 @@ export class CodexRunner {
         const usage = waitResult.usage;
         const telemetry = waitResult.telemetry;
         const rate_limits = waitResult.rate_limits;
+        const terminalMetadata = buildTerminalMetadata(waitResult);
 
         if (waitResult.terminal === 'turn/completed') {
           turnsCompleted += 1;
@@ -914,7 +990,8 @@ export class CodexRunner {
             session_id,
             usage,
             ...telemetry,
-            rate_limits
+            rate_limits,
+            terminal_source: waitResult.terminal_source
           });
 
           if (turnIndex < maxTurns - 1) {
@@ -930,7 +1007,8 @@ export class CodexRunner {
             turns_completed: turnsCompleted,
             usage,
             ...telemetry,
-            rate_limits
+            rate_limits,
+            ...terminalMetadata
           };
         }
 
@@ -946,7 +1024,8 @@ export class CodexRunner {
             turns_completed: turnsCompleted,
             usage,
             ...telemetry,
-            rate_limits
+            rate_limits,
+            ...terminalMetadata
           };
         }
 
@@ -962,7 +1041,8 @@ export class CodexRunner {
             turns_completed: turnsCompleted,
             usage,
             ...telemetry,
-            rate_limits
+            rate_limits,
+            ...terminalMetadata
           };
         }
 
@@ -990,7 +1070,8 @@ export class CodexRunner {
           turns_completed: turnsCompleted,
           usage,
           ...telemetry,
-          rate_limits
+          rate_limits,
+          ...terminalMetadata
         };
       }
 
@@ -1032,7 +1113,7 @@ export class CodexRunner {
       throw new CodexRunnerError('invalid_workspace_cwd', `Failed to launch codex process in cwd: ${input.workspaceCwd}`);
     }
 
-    const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor);
+    const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor, normalizeCodexHome(input));
     const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
     protocol.setEventEmitter(emit);
 
@@ -1123,9 +1204,19 @@ export class CodexRunner {
       const usage = waitResult.usage;
       const telemetry = waitResult.telemetry;
       const rate_limits = waitResult.rate_limits;
+      const terminalMetadata = buildTerminalMetadata(waitResult);
       if (waitResult.terminal === 'turn/completed') {
         emit({ event: CANONICAL_EVENT.codex.phaseValidation, thread_id, turn_id, session_id });
-        emit({ event: CANONICAL_EVENT.codex.turnCompleted, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+        emit({
+          event: CANONICAL_EVENT.codex.turnCompleted,
+          thread_id,
+          turn_id,
+          session_id,
+          usage,
+          ...telemetry,
+          rate_limits,
+          terminal_source: waitResult.terminal_source
+        });
         return {
           status: 'completed',
           thread_id,
@@ -1135,7 +1226,8 @@ export class CodexRunner {
           turns_completed: 1,
           usage,
           ...telemetry,
-          rate_limits
+          rate_limits,
+          ...terminalMetadata
         };
       }
       if (waitResult.terminal === 'turn/failed') {
@@ -1150,7 +1242,8 @@ export class CodexRunner {
           turns_completed: 0,
           usage,
           ...telemetry,
-          rate_limits
+          rate_limits,
+          ...terminalMetadata
         };
       }
       if (waitResult.terminal === 'turn/cancelled') {
@@ -1165,7 +1258,8 @@ export class CodexRunner {
           turns_completed: 0,
           usage,
           ...telemetry,
-          rate_limits
+          rate_limits,
+          ...terminalMetadata
         };
       }
 
@@ -1182,7 +1276,8 @@ export class CodexRunner {
         turns_completed: 0,
         usage,
         ...telemetry,
-        rate_limits
+        rate_limits,
+        ...terminalMetadata
       };
     } catch (error) {
       if (error instanceof CodexRunnerError) {
@@ -1276,11 +1371,14 @@ export class CodexRunner {
 class ProtocolClient {
   private readonly processHandle: RunnerProcess;
   private readonly dynamicToolExecutor: DynamicToolExecutor;
+  private readonly codexHome: string;
   private readonly pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
   private readonly earlyResponses = new Map<number, ProtocolMessage>();
   private readonly notifications: ProtocolMessage[] = [];
   private readonly messageEmitter = new EventEmitter();
   private readonly usageTracker = new UsageTracker();
+  private readonly transcriptOffsets = new Map<string, number>();
+  private readonly transcriptTails = new Map<string, string>();
 
   private latestRateLimits: Record<string, unknown> | null = null;
   private stdoutBuffer = '';
@@ -1291,10 +1389,12 @@ class ProtocolClient {
   private emitEvent?: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void;
   private activeTurnContext: TurnEventContext | null = null;
   private static readonly TURN_WAITING_HEARTBEAT_MS = 5000;
+  private static readonly TRANSCRIPT_SCAN_INTERVAL_MS = 100;
 
-  constructor(processHandle: RunnerProcess, dynamicToolExecutor: DynamicToolExecutor) {
+  constructor(processHandle: RunnerProcess, dynamicToolExecutor: DynamicToolExecutor, codexHome: string) {
     this.processHandle = processHandle;
     this.dynamicToolExecutor = dynamicToolExecutor;
+    this.codexHome = codexHome;
 
     this.processHandle.stdout.on('data', (chunk: Buffer | string) => {
       this.onStdout(chunk.toString('utf8'));
@@ -1473,6 +1573,7 @@ class ProtocolClient {
           emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'tool requestUserInput input_required_unanswerable' });
           return {
             terminal: 'turn/input_required',
+            terminal_source: 'app_server_protocol',
             usage: this.usageTracker.snapshot(),
             telemetry: this.usageTracker.telemetrySnapshot(),
             rate_limits: this.latestRateLimits,
@@ -1496,6 +1597,7 @@ class ProtocolClient {
           emit({ event: CANONICAL_EVENT.codex.turnInputRequired, detail: 'mcp elicitation request input_required_unanswerable' });
           return {
             terminal: 'turn/input_required',
+            terminal_source: 'app_server_protocol',
             usage: this.usageTracker.snapshot(),
             telemetry: this.usageTracker.telemetrySnapshot(),
             rate_limits: this.latestRateLimits,
@@ -1508,6 +1610,7 @@ class ProtocolClient {
         if (terminal) {
           return {
             terminal,
+            terminal_source: 'app_server_protocol',
             usage: this.usageTracker.snapshot(),
             telemetry: this.usageTracker.telemetrySnapshot(),
             rate_limits: this.latestRateLimits
@@ -1522,32 +1625,87 @@ class ProtocolClient {
         }
       }
 
+      const transcriptScanResult = this.consumeTranscriptTerminalEvidence(emit);
+      if (transcriptScanResult.observedProgress) {
+        markProgress();
+      }
+      if (transcriptScanResult.terminal) {
+        return {
+          ...transcriptScanResult.terminal,
+          terminal_source: 'session_transcript',
+          usage: this.usageTracker.snapshot(),
+          telemetry: this.usageTracker.telemetrySnapshot(),
+          rate_limits: this.latestRateLimits
+        };
+      }
+
       return null;
     };
 
+    let markProgress = (): void => {};
+
     return new Promise((resolve, reject) => {
       const waitStartedAtMs = Date.now();
+      let lastProgressAtMs = waitStartedAtMs;
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        clearInterval(transcriptScan);
+        if (timer) {
+          clearTimeout(timer);
+        }
+        this.messageEmitter.off('message', onMessageWrapper);
+        this.messageEmitter.off('exit', onExit);
+      };
+
+      const scheduleIdleTimeout = () => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        const delayMs = Math.max(1, timeoutMs - (Date.now() - lastProgressAtMs));
+        timer = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          const idleMs = Date.now() - lastProgressAtMs;
+          if (idleMs < timeoutMs) {
+            scheduleIdleTimeout();
+            return;
+          }
+          settled = true;
+          cleanup();
+          reject(new CodexRunnerError('turn_timeout', 'Timed out waiting for turn terminal event'));
+        }, delayMs);
+      };
+
+      markProgress = () => {
+        lastProgressAtMs = Date.now();
+        scheduleIdleTimeout();
+      };
+
       const heartbeat = setInterval(() => {
         const elapsedSeconds = Math.floor((Date.now() - waitStartedAtMs) / 1000);
         emit({ event: CANONICAL_EVENT.codex.phasePlanning, detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
         emit({ event: CANONICAL_EVENT.codex.turnWaiting, detail: `waiting_for_turn_completion elapsed_s=${elapsedSeconds}` });
       }, ProtocolClient.TURN_WAITING_HEARTBEAT_MS);
+      const transcriptScan = setInterval(() => {
+        void onMessage();
+      }, ProtocolClient.TRANSCRIPT_SCAN_INTERVAL_MS);
 
       const onMessageWrapper = () => {
         void onMessage();
       };
 
-      const timer = setTimeout(() => {
-        clearInterval(heartbeat);
-        this.messageEmitter.off('message', onMessageWrapper);
-        this.messageEmitter.off('exit', onExit);
-        reject(new CodexRunnerError('turn_timeout', 'Timed out waiting for turn terminal event'));
-      }, timeoutMs);
+      scheduleIdleTimeout();
 
       const onExit = () => {
-        clearInterval(heartbeat);
-        clearTimeout(timer);
-        this.messageEmitter.off('message', onMessageWrapper);
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
         reject(new CodexRunnerError('port_exit', 'Codex process exited before turn completed'));
       };
 
@@ -1557,16 +1715,21 @@ class ProtocolClient {
           return;
         }
         handlingMessage = true;
+        const beforeIndex = this.nextNotificationIndex;
         const terminal = await consume();
         handlingMessage = false;
+        if (this.nextNotificationIndex > beforeIndex) {
+          markProgress();
+        }
         if (!terminal) {
           return;
         }
 
-        clearInterval(heartbeat);
-        clearTimeout(timer);
-        this.messageEmitter.off('message', onMessageWrapper);
-        this.messageEmitter.off('exit', onExit);
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
         resolve(terminal);
       };
 
@@ -1574,6 +1737,209 @@ class ProtocolClient {
       this.messageEmitter.on('message', onMessageWrapper);
       this.messageEmitter.on('exit', onExit);
     });
+  }
+
+  private consumeTranscriptTerminalEvidence(
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): TranscriptScanResult {
+    const context = this.activeTurnContext;
+    if (!context) {
+      return { terminal: null, observedProgress: false };
+    }
+    let observedProgress = false;
+
+    for (const transcriptPath of this.findCandidateTranscriptPaths(context)) {
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(transcriptPath);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile()) {
+        continue;
+      }
+
+      const storedOffset = this.transcriptOffsets.get(transcriptPath) ?? 0;
+      const previousOffset = Math.min(storedOffset, stat.size);
+      if (stat.size < storedOffset) {
+        this.transcriptTails.delete(transcriptPath);
+      }
+      if (stat.size <= previousOffset) {
+        continue;
+      }
+      observedProgress = true;
+
+      let content = '';
+      try {
+        const fd = fs.openSync(transcriptPath, 'r');
+        try {
+          const buffer = Buffer.alloc(stat.size - previousOffset);
+          fs.readSync(fd, buffer, 0, buffer.length, previousOffset);
+          content = buffer.toString('utf8');
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        continue;
+      }
+      const previousTail = this.transcriptTails.get(transcriptPath) ?? '';
+      const combined = previousTail + content;
+      const endsWithNewline = combined.endsWith('\n');
+      const rawLines = combined.split('\n');
+      const completeLines = rawLines.slice(0, -1);
+      const nextTail = endsWithNewline ? '' : rawLines.at(-1) ?? '';
+      this.transcriptOffsets.set(transcriptPath, stat.size);
+      if (nextTail) {
+        this.transcriptTails.set(transcriptPath, nextTail);
+      } else {
+        this.transcriptTails.delete(transcriptPath);
+      }
+
+      for (const line of completeLines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const record = parseJsonRecord(trimmed);
+        if (!record) {
+          continue;
+        }
+
+        const payload = asRecord(record.payload) ?? record;
+        this.observeTranscriptUsage(payload);
+        const terminalEvidence = this.readTranscriptTerminalEvidence(record, transcriptPath, context, emit);
+        if (terminalEvidence) {
+          return { terminal: terminalEvidence, observedProgress };
+        }
+      }
+    }
+
+    return { terminal: null, observedProgress };
+  }
+
+  private findCandidateTranscriptPaths(context: TurnEventContext): string[] {
+    const sessionsRoot = path.join(this.codexHome, 'sessions');
+    const paths: string[] = [];
+    const visit = (directory: string, depth: number): void => {
+      if (depth > 5 || paths.length >= 200) {
+        return;
+      }
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          visit(entryPath, depth + 1);
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
+          continue;
+        }
+        if (entry.name.includes(context.thread_id) || this.transcriptOffsets.has(entryPath)) {
+          paths.push(entryPath);
+        }
+      }
+    };
+    visit(sessionsRoot, 0);
+    return paths;
+  }
+
+  private observeTranscriptUsage(payload: Record<string, unknown>): void {
+    const payloadType = readString(payload.type);
+    if (payloadType !== 'token_count') {
+      return;
+    }
+    const message: ProtocolMessage = {
+      method: 'token/count',
+      params: payload
+    };
+    this.usageTracker.observe(message);
+    const rateLimits = this.extractRateLimits(message);
+    if (rateLimits) {
+      this.latestRateLimits = rateLimits;
+    }
+  }
+
+  private readTranscriptTerminalEvidence(
+    record: Record<string, unknown>,
+    transcriptPath: string,
+    context: TurnEventContext,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): TranscriptTerminalEvidence | null {
+    const payload = asRecord(record.payload) ?? record;
+    const payloadType = readString(payload.type);
+    const terminal = this.mapTranscriptTerminalType(payloadType);
+    if (!terminal) {
+      return null;
+    }
+
+    const lineageMismatch = this.describeTranscriptLineageMismatch(payload, transcriptPath, context);
+    if (lineageMismatch) {
+      emit({
+        event: CANONICAL_EVENT.codex.sideOutput,
+        detail: this.detailExcerpt(`session_transcript_terminal_ignored ${lineageMismatch}`),
+        thread_id: context.thread_id,
+        turn_id: context.turn_id,
+        session_id: context.session_id,
+        terminal_source: 'session_transcript'
+      });
+      return null;
+    }
+
+    return {
+      terminal,
+      last_agent_message: readString(payload.last_agent_message) ?? readString(payload.lastAgentMessage),
+      completed_at_ms: normalizeEpochMs(payload.completed_at ?? payload.completedAt) ?? normalizeTimestampMs(record.timestamp),
+      duration_ms: readNumber(payload.duration_ms ?? payload.durationMs),
+      time_to_first_token_ms: readNumber(payload.time_to_first_token_ms ?? payload.timeToFirstTokenMs)
+    };
+  }
+
+  private describeTranscriptLineageMismatch(
+    payload: Record<string, unknown>,
+    transcriptPath: string,
+    context: TurnEventContext
+  ): string | null {
+    const eventThreadId = readString(payload.thread_id) ?? readString(payload.threadId);
+    const eventTurnId = readString(payload.turn_id) ?? readString(payload.turnId);
+    const eventSessionId = readString(payload.session_id) ?? readString(payload.sessionId);
+    const pathContainsThread = transcriptPath.includes(context.thread_id);
+
+    if (eventTurnId !== context.turn_id) {
+      return `reason=turn_mismatch active_turn_id=${context.turn_id} event_turn_id=${eventTurnId ?? 'missing'}`;
+    }
+    if (eventThreadId && eventThreadId !== context.thread_id) {
+      return `reason=thread_mismatch active_thread_id=${context.thread_id} event_thread_id=${eventThreadId}`;
+    }
+    if (!eventThreadId && !pathContainsThread) {
+      return `reason=thread_unattributed active_thread_id=${context.thread_id}`;
+    }
+    if (eventSessionId && eventSessionId !== context.session_id) {
+      return `reason=session_mismatch active_session_id=${context.session_id} event_session_id=${eventSessionId}`;
+    }
+    return null;
+  }
+
+  private mapTranscriptTerminalType(
+    type: string | undefined
+  ): 'turn/completed' | 'turn/failed' | 'turn/cancelled' | 'turn/input_required' | null {
+    if (type === 'task_complete') {
+      return 'turn/completed';
+    }
+    if (type === 'task_failed' || type === 'turn_failed' || type === 'turn/failed') {
+      return 'turn/failed';
+    }
+    if (type === 'task_cancelled' || type === 'turn_cancelled' || type === 'turn/cancelled') {
+      return 'turn/cancelled';
+    }
+    if (type === 'task_input_required' || type === REASON_CODES.turnInputRequired || type === 'turn/input_required') {
+      return 'turn/input_required';
+    }
+    return null;
   }
 
   private write(payload: ProtocolMessage): void {

@@ -12,6 +12,7 @@ import {
   UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE
 } from '../../src/observability/dynamic-tool-capability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
+import { REASON_CODES } from '../../src/observability/reason-codes';
 
 class FakeProcess {
   pid: number | null = 4242;
@@ -67,6 +68,18 @@ function parseWrittenMessages(fake: FakeProcess): Array<Record<string, unknown>>
   return fake.writes.map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+function writeTranscriptRecord(codexHome: string, filename: string, record: Record<string, unknown>): void {
+  const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.appendFileSync(path.join(sessionsDir, filename), `${JSON.stringify(record)}\n`, 'utf8');
+}
+
+function appendTranscriptText(codexHome: string, filename: string, text: string): void {
+  const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.appendFileSync(path.join(sessionsDir, filename), text, 'utf8');
+}
+
 describe('CodexRunner', () => {
   it('[SPEC-10.1-1][SPEC-17.5-1] launches with bash command/cwd and performs ordered startup handshake', async () => {
     const fake = new FakeProcess();
@@ -104,7 +117,8 @@ describe('CodexRunner', () => {
       token_telemetry_status: 'unavailable',
       token_telemetry_last_source: null,
       token_telemetry_last_at_ms: null,
-      rate_limits: null
+      rate_limits: null,
+      terminal_source: 'app_server_protocol'
     });
 
     const writtenMethods = parseWrittenMessages(fake)
@@ -529,6 +543,45 @@ describe('CodexRunner', () => {
 
     await expect(promise).rejects.toMatchObject({
       code: 'turn_timeout'
+    });
+  });
+
+  it('keeps waiting beyond the original turn timeout while real progress is still arriving', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 60
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-progress"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-progress"}}}\n');
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    fake.emitStdout('{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}}\n');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    writeTranscriptRecord(codexHome, 'rollout-thread-progress.jsonl', {
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-progress'
+      }
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-progress',
+      turn_id: 'turn-progress',
+      terminal_source: 'session_transcript'
     });
   });
 
@@ -1342,6 +1395,290 @@ describe('CodexRunner', () => {
       },
       token_telemetry_status: 'available',
       token_telemetry_last_source: 'terminal_turn_summary'
+    });
+  });
+
+  it('completes a turn from matching session transcript task_complete without protocol terminal notification', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const events: Array<{ event: string; terminal_source?: string; detail?: string }> = [];
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        onEvent: (event) => events.push(event),
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-transcript"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-transcript"}}}\n');
+    writeTranscriptRecord(codexHome, 'rollout-thread-transcript.jsonl', {
+      timestamp: '2026-05-07T19:45:20.168Z',
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 30,
+            output_tokens: 12,
+            total_tokens: 42
+          }
+        },
+        rate_limits: {
+          limit_id: 'codex'
+        }
+      }
+    });
+    writeTranscriptRecord(codexHome, 'rollout-thread-transcript.jsonl', {
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-transcript',
+        last_agent_message: 'done from transcript',
+        duration_ms: 111124,
+        time_to_first_token_ms: 6884
+      }
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-transcript',
+      turn_id: 'turn-transcript',
+      session_id: 'thread-transcript-turn-transcript',
+      terminal_source: 'session_transcript',
+      last_agent_message: 'done from transcript',
+      completed_at_ms: Date.parse('2026-05-07T19:45:20.171Z'),
+      duration_ms: 111124,
+      time_to_first_token_ms: 6884,
+      usage: {
+        input_tokens: 30,
+        output_tokens: 12,
+        total_tokens: 42
+      },
+      rate_limits: {
+        limit_id: 'codex'
+      }
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.turnCompleted,
+        terminal_source: 'session_transcript'
+      })
+    );
+  });
+
+  it('completes after a transcript task_complete JSONL record is split across scans', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const terminalRecord = JSON.stringify({
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-split',
+        last_agent_message: 'split complete'
+      }
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-split"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-split"}}}\n');
+    appendTranscriptText(codexHome, 'rollout-thread-split.jsonl', terminalRecord.slice(0, 70));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    appendTranscriptText(codexHome, 'rollout-thread-split.jsonl', `${terminalRecord.slice(70)}\n`);
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-split',
+      turn_id: 'turn-split',
+      terminal_source: 'session_transcript',
+      last_agent_message: 'split complete'
+    });
+  });
+
+  it('keeps scanning after a complete malformed transcript line', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-malformed"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-malformed"}}}\n');
+    appendTranscriptText(codexHome, 'rollout-thread-malformed.jsonl', '{"type":"event_msg"\n');
+    writeTranscriptRecord(codexHome, 'rollout-thread-malformed.jsonl', {
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-malformed'
+      }
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-malformed',
+      turn_id: 'turn-malformed',
+      terminal_source: 'session_transcript'
+    });
+  });
+
+  it('keeps wrong-lineage transcript task_complete diagnostic-only until protocol completion', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const events: Array<{ event: string; terminal_source?: string; detail?: string }> = [];
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        onEvent: (event) => events.push(event),
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-active"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-active"}}}\n');
+    writeTranscriptRecord(codexHome, 'rollout-thread-active.jsonl', {
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-other',
+        last_agent_message: 'wrong turn'
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-active',
+      turn_id: 'turn-active',
+      terminal_source: 'app_server_protocol'
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.sideOutput,
+        terminal_source: 'session_transcript',
+        detail: expect.stringContaining('reason=turn_mismatch')
+      })
+    );
+  });
+
+  it.each([
+    {
+      name: 'wrong thread',
+      payload: { type: 'task_complete', thread_id: 'thread-other', turn_id: 'turn-active' },
+      reason: 'reason=thread_mismatch'
+    },
+    {
+      name: 'wrong session',
+      payload: { type: 'task_complete', turn_id: 'turn-active', session_id: 'session-other' },
+      reason: 'reason=session_mismatch'
+    }
+  ])('keeps $name transcript task_complete diagnostic-only until protocol completion', async ({ payload, reason }) => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const events: Array<{ event: string; terminal_source?: string; detail?: string }> = [];
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        onEvent: (event) => events.push(event),
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-active"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-active"}}}\n');
+    writeTranscriptRecord(codexHome, 'rollout-thread-active.jsonl', {
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-active',
+      turn_id: 'turn-active',
+      terminal_source: 'app_server_protocol'
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.sideOutput,
+        terminal_source: 'session_transcript',
+        detail: expect.stringContaining(reason)
+      })
+    );
+  });
+
+  it.each([
+    { type: 'task_failed', expectedEvent: CANONICAL_EVENT.codex.turnFailed, expectedError: 'turn_failed' },
+    { type: 'task_cancelled', expectedEvent: CANONICAL_EVENT.codex.turnCancelled, expectedError: 'turn_cancelled' },
+    { type: 'task_input_required', expectedEvent: CANONICAL_EVENT.codex.turnInputRequired, expectedError: REASON_CODES.turnInputRequired }
+  ])('maps transcript-only $type terminal evidence through the runner result', async ({ type, expectedEvent, expectedError }) => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-terminal"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-terminal"}}}\n');
+    writeTranscriptRecord(codexHome, 'rollout-thread-terminal.jsonl', {
+      timestamp: '2026-05-07T19:45:20.171Z',
+      type: 'event_msg',
+      payload: {
+        type,
+        turn_id: 'turn-terminal'
+      }
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'failed',
+      thread_id: 'thread-terminal',
+      turn_id: 'turn-terminal',
+      last_event: expectedEvent,
+      error_code: expectedError,
+      terminal_source: 'session_transcript'
     });
   });
 

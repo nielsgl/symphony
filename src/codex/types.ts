@@ -91,6 +91,11 @@ export interface CodexTurnResult {
   turn_id: string;
   session_id: string;
   last_event: string;
+  terminal_source?: 'app_server_protocol' | 'session_transcript';
+  last_agent_message?: string;
+  completed_at_ms?: number;
+  duration_ms?: number;
+  time_to_first_token_ms?: number;
   error_code?: CodexTurnErrorCode;
   error_detail?: string;
   input_required_payload?: CodexInputRequestPayload;
@@ -118,4 +123,5 @@ export interface CodexRunnerEvent {
   tool_call_id?: string;
   tool_name?: string;
   tool_call_evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
+  terminal_source?: 'app_server_protocol' | 'session_transcript';
 }
