@@ -122,6 +122,7 @@ export interface RunningEntry {
   phase_detail?: string | null;
   outstanding_tool_calls?: Record<string, OutstandingToolCall>;
   codex_session_transcript_scan_offsets?: Record<string, number>;
+  recovery?: MissingToolOutputRecoveryState | null;
 }
 
 export type ToolCallEvidenceSource = 'worker_event' | 'app_server_protocol' | 'session_transcript';
@@ -136,6 +137,35 @@ export interface OutstandingToolCall {
   last_waiting_at_ms: number | null;
   last_agent_message: string | null;
   evidence_source: ToolCallEvidenceSource;
+}
+
+export type MissingToolOutputRecoveryMode = 'same_thread_guarded_continuation';
+export type MissingToolOutputRecoveryResult = 'started' | 'succeeded' | 'blocked' | 'failed';
+
+export interface MissingToolOutputRecoveryState {
+  attempt_count: number;
+  started_at_ms: number;
+  reason_code: typeof REASON_CODES.missingToolOutput;
+  mode: MissingToolOutputRecoveryMode;
+  previous_thread_id: string | null;
+  previous_turn_id: string | null;
+  previous_session_id: string | null;
+  previous_worker_handle_known: boolean;
+  previous_codex_app_server_pid: string | null;
+  last_tool_name: string;
+  last_call_id: string;
+  evidence_source: ToolCallEvidenceSource;
+  elapsed_wait_ms: number;
+  last_agent_message: string | null;
+  last_observed_phase: PhaseMarkerName | null;
+  last_observed_phase_detail: string | null;
+  recent_event_count: number;
+  quarantined_event_count: number;
+  prompt_hash: string;
+  prompt_summary: string;
+  last_result: MissingToolOutputRecoveryResult;
+  last_result_reason_code?: string | null;
+  last_result_detail?: string | null;
 }
 
 export interface ToolCallLedgerObservation {
@@ -329,6 +359,7 @@ export interface BlockedEntry {
     evidence_source?: ToolCallEvidenceSource;
     recommended_actions: string[];
   } | null;
+  recovery?: MissingToolOutputRecoveryState | null;
   quarantined_events?: Array<{
     at_ms: number;
     event: string;
@@ -456,6 +487,15 @@ export interface OrchestratorPorts {
     attempt: number | null;
     worker_host?: string | null;
     resume_context?: string | null;
+  }) => Promise<SpawnWorkerResult>;
+  recoverMissingToolOutput?: (params: {
+    issue: Issue;
+    attempt: number | null;
+    worker_host?: string | null;
+    previous_thread_id: string;
+    previous_turn_id: string;
+    previous_session_id: string | null;
+    recovery_prompt: string;
   }) => Promise<SpawnWorkerResult>;
   terminateWorker: (params: {
     issue_id: string;
@@ -651,6 +691,7 @@ export interface OrchestratorConfig {
   stall_timeout_ms: number;
   no_telemetry_warning_threshold_ms?: number;
   running_wait_stall_threshold_ms?: number;
+  missing_tool_output_max_recoveries_per_run?: number;
   progress_heartbeat_only_warn_ms?: number;
   progress_stalled_waiting_ms?: number;
   phase_markers_enabled?: boolean;

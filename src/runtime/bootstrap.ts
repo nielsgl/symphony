@@ -854,6 +854,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       tracker: trackerProxy,
       dispatchPreflight,
       spawnWorker: ({ issue, attempt, worker_host }) => bridge.spawnWorker({ issue, attempt, worker_host }),
+      recoverMissingToolOutput: (params) => bridge.recoverMissingToolOutput(params),
       terminateWorker: ({ issue_id, worker_handle, cleanup_workspace }) =>
         bridge.terminateWorker({ issue_id, worker_handle, cleanup_workspace }),
       scheduleRetryTimer: ({ issue_id, due_at_ms, callback }) => {

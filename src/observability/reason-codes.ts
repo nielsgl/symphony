@@ -46,6 +46,10 @@ export const REASON_CODES = {
   turnInputRequired: 'turn_input_required',
   turnWaitingThresholdExceeded: 'turn_waiting_threshold_exceeded',
   missingToolOutput: 'missing_tool_output',
+  missingToolOutputRecoveryInterrupted: 'missing_tool_output_recovery_interrupted',
+  missingToolOutputRecoveryExhausted: 'missing_tool_output_recovery_exhausted',
+  missingToolOutputRecoveryStartFailed: 'missing_tool_output_recovery_start_failed',
+  missingToolOutputRecoveryUnsafe: 'missing_tool_output_recovery_unsafe',
   operatorWorkspaceConflict: 'operator_action_required_workspace_conflict',
   operatorNoProgressRedispatchBlocked: 'operator_action_required_no_progress_redispatch_blocked',
   operatorBudgetLimitExceeded: 'operator_action_required_budget_limit_exceeded',
@@ -280,6 +284,46 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     label: 'Missing Tool Output',
     headline: 'Run is blocked on missing tool output',
     detail: 'Codex emitted a tool call but Symphony did not observe the matching tool output before the wait threshold.',
+    expected_transition: null
+  },
+  [REASON_CODES.missingToolOutputRecoveryInterrupted]: {
+    reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Monitor the guarded recovery turn'],
+    label: 'Missing Tool Output Recovery Interrupted',
+    headline: 'Run is starting guarded recovery',
+    detail: 'The stalled turn was interrupted so Symphony can resume the same Codex thread with a guarded recovery prompt.',
+    expected_transition: 'A same-thread guarded recovery turn starts'
+  },
+  [REASON_CODES.missingToolOutputRecoveryExhausted]: {
+    reason_code: REASON_CODES.missingToolOutputRecoveryExhausted,
+    classification: 'blocked_input',
+    actionability: 'required',
+    recommended_actions: ['Inspect external state for the last tool action', 'Manually resume the Codex thread with guarded continuation', 'Cancel or requeue after inspection'],
+    label: 'Missing Tool Output Recovery Exhausted',
+    headline: 'Run is blocked after recovery was exhausted',
+    detail: 'Automatic missing-tool-output recovery already reached its configured attempt limit.',
+    expected_transition: null
+  },
+  [REASON_CODES.missingToolOutputRecoveryStartFailed]: {
+    reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+    classification: 'blocked_input',
+    actionability: 'required',
+    recommended_actions: ['Inspect thread/turn/session ids', 'Manually resume the Codex thread with guarded continuation', 'Cancel or requeue after inspection'],
+    label: 'Missing Tool Output Recovery Start Failed',
+    headline: 'Run is blocked because recovery could not start',
+    detail: 'Symphony could not start a same-thread guarded recovery turn for the stalled tool call.',
+    expected_transition: null
+  },
+  [REASON_CODES.missingToolOutputRecoveryUnsafe]: {
+    reason_code: REASON_CODES.missingToolOutputRecoveryUnsafe,
+    classification: 'blocked_input',
+    actionability: 'required',
+    recommended_actions: ['Inspect external state for the last tool action', 'Decide whether the action applied before retrying', 'Manually resume, cancel, or requeue after inspection'],
+    label: 'Missing Tool Output Recovery Unsafe',
+    headline: 'Run is blocked on ambiguous recovery state',
+    detail: 'The recovering agent reported that the indeterminate tool action could not be verified safely.',
     expected_transition: null
   },
   [REASON_CODES.operatorWorkspaceConflict]: {

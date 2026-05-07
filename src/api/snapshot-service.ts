@@ -276,6 +276,7 @@ function toStateRunningRow(
         ? { model_context_window: entry.tokens.model_context_window }
         : {})
     },
+    recovery: entry.recovery ? { ...entry.recovery } : null,
     operator_explainer_hint: toOperatorExplainerHint(operatorExplainer)
   };
 }
@@ -400,6 +401,7 @@ export class SnapshotService {
         ...resolveBlockedTurnControl(entry),
         ...progressSignal,
         operator_actions: projectOperatorActions(state, entry.issue_id),
+        recovery: entry.recovery ? { ...entry.recovery } : null,
         operator_explainer_hint: toOperatorExplainerHint(
           explainOperatorRuntimeState({
             state_class: 'blocked',
@@ -613,7 +615,8 @@ export class SnapshotService {
             ...(typeof entry.tokens.model_context_window === 'number'
               ? { model_context_window: entry.tokens.model_context_window }
               : {})
-          }
+          },
+          recovery: entry.recovery ? { ...entry.recovery } : null
         },
         retry: retryEntry
           ? {
@@ -681,6 +684,7 @@ export class SnapshotService {
           ...resolveBlockedTurnControl(blockedEntry),
           ...(blockedProgressSignal ?? resolveBlockedProgressSignal(blockedEntry)),
           operator_actions: projectOperatorActions(state, blockedEntry.issue_id),
+          recovery: blockedEntry.recovery ? { ...blockedEntry.recovery } : null,
           breaker_active: breakerEntry?.breaker_active ?? false,
           breaker_hit_count: breakerEntry?.breaker_hit_count ?? 0,
           breaker_window_minutes: breakerEntry?.breaker_window_minutes ?? 0,

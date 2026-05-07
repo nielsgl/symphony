@@ -78,6 +78,7 @@ function writeSessionTranscript(codexHome: string, filename: string, records: un
 function createHarness(options: {
   configOverrides?: Partial<OrchestratorConfig>;
   spawnWorker?: OrchestratorPorts['spawnWorker'];
+  recoverMissingToolOutput?: OrchestratorPorts['recoverMissingToolOutput'];
   terminateWorker?: OrchestratorPorts['terminateWorker'];
   submitBlockedIssueInputNative?: OrchestratorPorts['submitBlockedIssueInputNative'];
   resolveProgressSignals?: OrchestratorPorts['resolveProgressSignals'];
@@ -119,6 +120,7 @@ function createHarness(options: {
       tracker,
       dispatchPreflight: () => ({ dispatch_allowed: true }),
       spawnWorker,
+      recoverMissingToolOutput: options.recoverMissingToolOutput,
       terminateWorker:
         options.terminateWorker ??
         (async ({ issue_id, cleanup_workspace, reason }) => {
@@ -1785,6 +1787,248 @@ describe('OrchestratorCore', () => {
     });
   });
 
+  it('classifies transcript missing-tool output by outstanding call age even when planning heartbeats reset generic progress', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-live-regression', identifier: 'NIE-87-LIVE' })]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-live-regression', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-live',
+        turn_id: 'turn-live',
+        session_id: 'session-live'
+      });
+      writeSessionTranscript(codexHome, 'session-live.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 10).toISOString(),
+          session_id: 'session-live',
+          thread_id: 'thread-live',
+          turn_id: 'turn-live',
+          response_item: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_live_linear'
+          }
+        }
+      ]);
+      harness.orchestrator.onWorkerEvent('i-live-regression', {
+        timestamp_ms: harness.now.value + 1_500,
+        event: CANONICAL_EVENT.codex.phasePlanning,
+        detail: 'waiting_for_turn_completion elapsed_s=1',
+        thread_id: 'thread-live',
+        turn_id: 'turn-live',
+        session_id: 'session-live'
+      });
+      harness.orchestrator.onWorkerEvent('i-live-regression', {
+        timestamp_ms: harness.now.value + 1_510,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting_for_turn_completion elapsed_s=1',
+        thread_id: 'thread-live',
+        turn_id: 'turn-live',
+        session_id: 'session-live'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-live-regression')?.tool_output_wait).toMatchObject({
+        tool_name: 'linear_graphql',
+        call_id: 'call_live_linear',
+        evidence_source: 'session_transcript'
+      });
+    });
+  });
+
+  it('starts guarded same-thread recovery for missing tool output and quarantines interrupted worker events', async () => {
+    const recoveries: Array<Parameters<NonNullable<OrchestratorPorts['recoverMissingToolOutput']>>[0]> = [];
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      recoverMissingToolOutput: async (params) => {
+        recoveries.push(params);
+        return {
+          ok: true,
+          worker_handle: { recovery: true },
+          monitor_handle: { recovery: true },
+          worker_host: params.worker_host
+        };
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-tool', identifier: 'ABC-RECOVER' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-recover-tool', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-recover',
+      turn_id: 'turn-old',
+      session_id: 'session-old',
+      codex_app_server_pid: 111
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-tool', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_graphql',
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_recover',
+      thread_id: 'thread-recover',
+      turn_id: 'turn-old',
+      session_id: 'session-old',
+      codex_app_server_pid: 111
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-tool', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for linear_graphql output',
+      thread_id: 'thread-recover',
+      turn_id: 'turn-old',
+      session_id: 'session-old',
+      codex_app_server_pid: 111
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-recover-tool', cleanup_workspace: false, reason: REASON_CODES.missingToolOutputRecoveryInterrupted }
+    ]);
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]).toMatchObject({
+      previous_thread_id: 'thread-recover',
+      previous_turn_id: 'turn-old',
+      previous_session_id: 'session-old'
+    });
+    expect(recoveries[0].recovery_prompt).toContain('Treat the last tool action outcome as indeterminate');
+    expect(recoveries[0].recovery_prompt).toContain('Before retrying anything, inspect current local and external state');
+    expect(recoveries[0].recovery_prompt).toContain('If the action already took effect, do not repeat it');
+    expect(recoveries[0].recovery_prompt).toContain('If the action did not take effect, retry it once');
+    expect(recoveries[0].recovery_prompt).toContain('cannot be verified safely');
+
+    harness.orchestrator.onWorkerEvent('i-recover-tool', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'late old heartbeat',
+      thread_id: 'thread-recover',
+      turn_id: 'turn-old',
+      session_id: 'session-old',
+      codex_app_server_pid: 111
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-tool', {
+      timestamp_ms: harness.now.value + 200,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      detail: 'recovery turn started',
+      thread_id: 'thread-recover',
+      turn_id: 'turn-recovery',
+      session_id: 'session-recovery',
+      codex_app_server_pid: 222
+    });
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-recover-tool');
+    expect(running?.recovery).toMatchObject({
+      attempt_count: 1,
+      mode: 'same_thread_guarded_continuation',
+      last_result: 'started',
+      previous_thread_id: 'thread-recover',
+      previous_turn_id: 'turn-old',
+      last_tool_name: 'linear_graphql',
+      last_call_id: 'call_recover'
+    });
+    expect(running?.quarantined_event_count).toBe(1);
+    expect(running?.quarantined_events?.[0]?.reason).toBe('inactive_worker_pid');
+    expect(running?.turn_id).toBe('turn-recovery');
+    expect(running?.codex_app_server_pid).toBe('222');
+  });
+
+  it('blocks missing tool output without a previous turn id instead of spawning unrelated recovery', async () => {
+    const recover = vi.fn<NonNullable<OrchestratorPorts['recoverMissingToolOutput']>>();
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      recoverMissingToolOutput: recover
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-no-turn', identifier: 'ABC-NO-TURN' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-recover-no-turn', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_graphql',
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_no_turn'
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-no-turn', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for linear_graphql output'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(recover).not.toHaveBeenCalled();
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-recover-no-turn')).toMatchObject({
+      stop_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+      recovery: {
+        last_result: 'failed',
+        last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed
+      }
+    });
+  });
+
+  it('blocks with recovery exhausted when the automatic recovery limit is reached', async () => {
+    const recover = vi.fn<NonNullable<OrchestratorPorts['recoverMissingToolOutput']>>();
+    const harness = createHarness({
+      configOverrides: {
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 60_000,
+        missing_tool_output_max_recoveries_per_run: 0
+      },
+      recoverMissingToolOutput: recover
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-exhausted', identifier: 'ABC-EXHAUST' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-recover-exhausted', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-exhaust',
+      turn_id: 'turn-exhaust',
+      session_id: 'session-exhaust'
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-exhausted', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_graphql',
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_exhaust',
+      thread_id: 'thread-exhaust',
+      turn_id: 'turn-exhaust',
+      session_id: 'session-exhaust'
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-exhausted', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for linear_graphql output',
+      thread_id: 'thread-exhaust',
+      turn_id: 'turn-exhaust',
+      session_id: 'session-exhaust'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(recover).not.toHaveBeenCalled();
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-recover-exhausted')).toMatchObject({
+      stop_reason_code: REASON_CODES.missingToolOutputRecoveryExhausted,
+      recovery: {
+        last_result: 'blocked',
+        last_result_reason_code: REASON_CODES.missingToolOutputRecoveryExhausted
+      }
+    });
+  });
+
   it('blocks a real Codex rollout transcript function_call without matching output', async () => {
     await withTemporaryCodexHome(async (codexHome) => {
       const workspacePath = path.join(codexHome, 'workspaces', 'NIE-79');
@@ -2303,15 +2547,28 @@ describe('OrchestratorCore', () => {
 
     harness.orchestrator.onWorkerEvent('i-tool-late', {
       timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-late',
+      turn_id: 'turn-late',
+      session_id: 'session-late'
+    });
+    harness.orchestrator.onWorkerEvent('i-tool-late', {
+      timestamp_ms: harness.now.value,
       event: CANONICAL_EVENT.codex.toolCallStarted,
       detail: 'dynamic_tool',
       tool_name: 'dynamic_tool',
-      tool_call_id: 'call_late'
+      tool_call_id: 'call_late',
+      thread_id: 'thread-late',
+      turn_id: 'turn-late',
+      session_id: 'session-late'
     });
     harness.orchestrator.onWorkerEvent('i-tool-late', {
       timestamp_ms: harness.now.value + 10,
       event: CANONICAL_EVENT.codex.turnWaiting,
-      detail: 'waiting for tool output'
+      detail: 'waiting for tool output',
+      thread_id: 'thread-late',
+      turn_id: 'turn-late',
+      session_id: 'session-late'
     });
     harness.now.value += 2_000;
     await harness.orchestrator.tick('interval');
@@ -2322,7 +2579,10 @@ describe('OrchestratorCore', () => {
       event: CANONICAL_EVENT.codex.toolCallCompleted,
       detail: 'dynamic_tool',
       tool_name: 'dynamic_tool',
-      tool_call_id: 'call_late'
+      tool_call_id: 'call_late',
+      thread_id: 'thread-late',
+      turn_id: 'turn-late',
+      session_id: 'session-late'
     });
 
     const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-tool-late');
@@ -2340,15 +2600,28 @@ describe('OrchestratorCore', () => {
 
     harness.orchestrator.onWorkerEvent('i-tool-terminal', {
       timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-terminal',
+      turn_id: 'turn-terminal',
+      session_id: 'session-terminal'
+    });
+    harness.orchestrator.onWorkerEvent('i-tool-terminal', {
+      timestamp_ms: harness.now.value,
       event: CANONICAL_EVENT.codex.toolCallStarted,
       detail: 'linear_graphql',
       tool_name: 'linear_graphql',
-      tool_call_id: 'call_terminal'
+      tool_call_id: 'call_terminal',
+      thread_id: 'thread-terminal',
+      turn_id: 'turn-terminal',
+      session_id: 'session-terminal'
     });
     harness.orchestrator.onWorkerEvent('i-tool-terminal', {
       timestamp_ms: harness.now.value + 10,
       event: CANONICAL_EVENT.codex.turnWaiting,
-      detail: 'waiting for tool output'
+      detail: 'waiting for tool output',
+      thread_id: 'thread-terminal',
+      turn_id: 'turn-terminal',
+      session_id: 'session-terminal'
     });
     harness.now.value += 2_000;
     await harness.orchestrator.tick('interval');
