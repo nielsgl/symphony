@@ -192,7 +192,16 @@ export class SqlitePersistenceStore {
         started_at TEXT NOT NULL,
         ended_at TEXT,
         terminal_status TEXT,
-        error_code TEXT
+        error_code TEXT,
+        terminal_reason_code TEXT,
+        terminal_reason_detail TEXT,
+        root_cause_status TEXT,
+        root_cause_reason_code TEXT,
+        root_cause_reason_detail TEXT,
+        root_cause_at TEXT,
+        session_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT
       );
       CREATE TABLE IF NOT EXISTS run_sessions (
         run_id TEXT NOT NULL,
@@ -236,6 +245,7 @@ export class SqlitePersistenceStore {
         updated_at TEXT NOT NULL
       );
     `);
+    this.ensureRunDiagnosticColumns();
   }
 
   close(): void {
@@ -571,17 +581,65 @@ export class SqlitePersistenceStore {
     return row ? this.reconstructThreadLineage(row.thread_id) : null;
   }
 
-  completeRun(params: { run_id: string; terminal_status: RunTerminalStatus; error_code?: string | null }): void {
+  completeRun(params: {
+    run_id: string;
+    terminal_status: RunTerminalStatus;
+    error_code?: string | null;
+    terminal_reason_code?: string | null;
+    terminal_reason_detail?: string | null;
+    root_cause_status?: ExecutionGraphEntityStatus | null;
+    root_cause_reason_code?: string | null;
+    root_cause_reason_detail?: string | null;
+    root_cause_at?: string | null;
+    session_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+  }): void {
     const redactedError = redactUnknown(params.error_code ?? null) as string | null;
+    const redactedTerminalDetail = redactUnknown(params.terminal_reason_detail ?? null) as string | null;
+    const redactedRootCauseDetail = redactUnknown(params.root_cause_reason_detail ?? null) as string | null;
+    const terminalReasonCode = params.terminal_reason_code ?? params.error_code ?? null;
     this.db
-      .prepare('UPDATE runs SET ended_at = ?, terminal_status = ?, error_code = ? WHERE run_id = ?')
-      .run(asIso(this.nowMs()), params.terminal_status, redactedError, params.run_id);
+      .prepare(
+        `UPDATE runs SET
+          ended_at = ?,
+          terminal_status = ?,
+          error_code = ?,
+          terminal_reason_code = ?,
+          terminal_reason_detail = ?,
+          root_cause_status = ?,
+          root_cause_reason_code = ?,
+          root_cause_reason_detail = ?,
+          root_cause_at = ?,
+          session_id = ?,
+          thread_id = ?,
+          turn_id = ?
+        WHERE run_id = ?`
+      )
+      .run(
+        asIso(this.nowMs()),
+        params.terminal_status,
+        redactedError,
+        terminalReasonCode,
+        redactedTerminalDetail,
+        params.root_cause_status ?? null,
+        params.root_cause_reason_code ?? null,
+        redactedRootCauseDetail,
+        params.root_cause_at ?? null,
+        params.session_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.run_id
+      );
   }
 
   listRunHistory(limit = 50): DurableRunHistoryRecord[] {
     const rows = this.db
       .prepare(
-        'SELECT run_id, issue_id, issue_identifier, started_at, ended_at, terminal_status, error_code FROM runs ORDER BY started_at DESC LIMIT ?'
+        `SELECT run_id, issue_id, issue_identifier, started_at, ended_at, terminal_status, error_code,
+          terminal_reason_code, terminal_reason_detail, root_cause_status, root_cause_reason_code,
+          root_cause_reason_detail, root_cause_at, session_id, thread_id, turn_id
+        FROM runs ORDER BY started_at DESC LIMIT ?`
       )
       .all(limit) as Array<{
       run_id: string;
@@ -591,6 +649,15 @@ export class SqlitePersistenceStore {
       ended_at: string | null;
       terminal_status: RunTerminalStatus | null;
       error_code: string | null;
+      terminal_reason_code: string | null;
+      terminal_reason_detail: string | null;
+      root_cause_status: ExecutionGraphEntityStatus | null;
+      root_cause_reason_code: string | null;
+      root_cause_reason_detail: string | null;
+      root_cause_at: string | null;
+      session_id: string | null;
+      thread_id: string | null;
+      turn_id: string | null;
     }>;
 
     const sessionStmt = this.db.prepare('SELECT session_id FROM run_sessions WHERE run_id = ? ORDER BY session_id ASC');
@@ -605,11 +672,42 @@ export class SqlitePersistenceStore {
         ended_at: row.ended_at,
         terminal_status: row.terminal_status,
         error_code: row.error_code,
+        terminal_reason_code: row.terminal_reason_code ?? row.error_code,
+        terminal_reason_detail: row.terminal_reason_detail,
+        root_cause_status: row.root_cause_status,
+        root_cause_reason_code: row.root_cause_reason_code,
+        root_cause_reason_detail: row.root_cause_reason_detail,
+        root_cause_at: row.root_cause_at,
+        session_id: row.session_id,
+        thread_id: row.thread_id,
+        turn_id: row.turn_id,
         session_ids: sessions.map((entry) => entry.session_id)
       };
 
       return redactUnknown(record) as DurableRunHistoryRecord;
     });
+  }
+
+  private ensureRunDiagnosticColumns(): void {
+    const columns = this.db.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>;
+    const existing = new Set(columns.map((column) => column.name));
+    const migrations: Array<[string, string]> = [
+      ['terminal_reason_code', 'ALTER TABLE runs ADD COLUMN terminal_reason_code TEXT'],
+      ['terminal_reason_detail', 'ALTER TABLE runs ADD COLUMN terminal_reason_detail TEXT'],
+      ['root_cause_status', 'ALTER TABLE runs ADD COLUMN root_cause_status TEXT'],
+      ['root_cause_reason_code', 'ALTER TABLE runs ADD COLUMN root_cause_reason_code TEXT'],
+      ['root_cause_reason_detail', 'ALTER TABLE runs ADD COLUMN root_cause_reason_detail TEXT'],
+      ['root_cause_at', 'ALTER TABLE runs ADD COLUMN root_cause_at TEXT'],
+      ['session_id', 'ALTER TABLE runs ADD COLUMN session_id TEXT'],
+      ['thread_id', 'ALTER TABLE runs ADD COLUMN thread_id TEXT'],
+      ['turn_id', 'ALTER TABLE runs ADD COLUMN turn_id TEXT']
+    ];
+    for (const [column, sql] of migrations) {
+      if (!existing.has(column)) {
+        this.db.exec(`${sql};`);
+      }
+    }
+    this.db.exec('UPDATE runs SET terminal_reason_code = error_code WHERE terminal_reason_code IS NULL AND error_code IS NOT NULL;');
   }
 
   saveUiState(state: UiContinuityState): void {

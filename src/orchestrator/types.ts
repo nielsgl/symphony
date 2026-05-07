@@ -541,7 +541,20 @@ export interface OrchestratorPersistencePort {
     event: string;
     message: string | null;
   }) => Promise<void>;
-  completeRun: (params: { run_id: string; terminal_status: RunTerminalStatus; error_code?: string | null }) => Promise<void>;
+  completeRun: (params: {
+    run_id: string;
+    terminal_status: RunTerminalStatus;
+    error_code?: string | null;
+    terminal_reason_code?: string | null;
+    terminal_reason_detail?: string | null;
+    root_cause_status?: ExecutionGraphEntityStatus | null;
+    root_cause_reason_code?: string | null;
+    root_cause_reason_detail?: string | null;
+    root_cause_at?: string | null;
+    session_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+  }) => Promise<void>;
   upsertBreaker?: (params: {
     issue_id: string;
     issue_identifier: string;
@@ -583,6 +596,7 @@ export interface OrchestratorConfig {
   respawn_max_attempts_without_progress?: number;
   active_states: string[];
   terminal_states: string[];
+  fresh_dispatch_states?: string[];
   github_linking_mode?: 'off' | 'warn' | 'required' | string;
   stall_timeout_ms: number;
   no_telemetry_warning_threshold_ms?: number;

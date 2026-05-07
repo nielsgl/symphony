@@ -272,6 +272,90 @@ describe('OrchestratorCore', () => {
     expect(harness.terminated).toEqual([]);
   });
 
+  it('dispatches Agent Review after handoff as a fresh run without implementation context', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-agent-review', state: 'In Progress' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-agent-review', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session'
+    });
+
+    await harness.orchestrator.onWorkerExit('i-agent-review', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review'
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-agent-review', state: 'Agent Review' })]);
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-agent-review', attempt: null, worker_host: null, resume_context: null },
+      { issue_id: 'i-agent-review', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-agent-review');
+    expect(running?.retry_attempt).toBe(0);
+    expect(running?.thread_id).toBeNull();
+    expect(running?.session_id).toBeNull();
+  });
+
+  it('claimed/running protection prevents duplicate Agent Review fresh runs', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-review-claimed', state: 'Agent Review' })]);
+
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-review-claimed', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    expect(harness.orchestrator.getStateSnapshot().claimed.has('i-review-claimed')).toBe(true);
+  });
+
+  it('dispatches stale retry state in Agent Review as fresh without prior thread lineage', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stale-review', state: 'In Progress' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-stale-review', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session'
+    });
+    await harness.orchestrator.onWorkerExit('i-stale-review', 'abnormal', 'transient implementation failure');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stale-review', state: 'Agent Review' })]);
+    await harness.orchestrator.onRetryTimer('i-stale-review');
+
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-stale-review', attempt: null, worker_host: null, resume_context: null },
+      { issue_id: 'i-stale-review', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-stale-review');
+    expect(running?.retry_attempt).toBe(0);
+    expect(running?.thread_id).toBeNull();
+    expect(running?.session_id).toBeNull();
+  });
+
   it('does not schedule continuation retry when normal exit left active states', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-paused' })]);
@@ -1746,6 +1830,65 @@ describe('OrchestratorCore', () => {
     expect(retryEntry?.stop_reason_code).toBe('slots_exhausted');
   });
 
+  it('requeues fresh-dispatch retry on slot exhaustion without implementation thread lineage', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        max_concurrent_agents: 1,
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-fresh-slots', state: 'In Progress' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-fresh-slots', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session'
+    });
+    await harness.orchestrator.onWorkerExit('i-fresh-slots', 'abnormal', 'transient implementation failure');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-occupying-slot', identifier: 'ABC-2', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-fresh-slots', state: 'Agent Review' })]);
+    await harness.orchestrator.onRetryTimer('i-fresh-slots');
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-fresh-slots');
+    expect(retryEntry?.attempt).toBe(2);
+    expect(retryEntry?.error).toBe('no available orchestrator slots');
+    expect(retryEntry?.stop_reason_code).toBe('slots_exhausted');
+    expect(retryEntry?.previous_thread_id).toBeNull();
+    expect(retryEntry?.previous_session_id).toBeNull();
+    expect(retryEntry?.issue_run_id).toBeNull();
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-fresh-slots', attempt: null, worker_host: null, resume_context: null },
+      { issue_id: 'i-occupying-slot', attempt: null, worker_host: null, resume_context: null }
+    ]);
+  });
+
+  it('preserves non-fresh active-state continuation retry metadata', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-normal-retry', state: 'In Progress' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-normal-retry', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session'
+    });
+    await harness.orchestrator.onWorkerExit('i-normal-retry', 'normal');
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-normal-retry');
+    expect(retryEntry?.attempt).toBe(1);
+    expect(retryEntry?.previous_thread_id).toBe('implementation-thread');
+    expect(retryEntry?.previous_session_id).toBe('implementation-session');
+  });
+
   it('releases claim if retry issue is no longer in candidate set', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-release' })]);
@@ -1792,6 +1935,63 @@ describe('OrchestratorCore', () => {
         reason: 'non_active_state_transition'
       }
     ]);
+  });
+
+  it('preserves stalled root-cause diagnostics when non-active reconciliation cancels a run', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-nonactive-stalled',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      persistence
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-nonactive-stalled', identifier: 'ABC-STOP' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-nonactive-stalled', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for tool output',
+      thread_id: 'thread-stop',
+      turn_id: 'turn-stop',
+      session_id: 'session-stop'
+    });
+    harness.now.value += 2_000;
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-nonactive-stalled', identifier: 'ABC-STOP', state: 'Agent Review' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-nonactive-stalled',
+        cleanup_workspace: false,
+        reason: 'non_active_state_transition'
+      }
+    ]);
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        run_id: 'run-nonactive-stalled',
+        terminal_status: 'cancelled',
+        error_code: 'non_active_state_transition',
+        terminal_reason_code: 'non_active_state_transition',
+        root_cause_status: 'blocked',
+        root_cause_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+        root_cause_reason_detail: 'codex turn waiting: waiting for tool output',
+        root_cause_at: new Date(1_001_000).toISOString(),
+        session_id: 'session-stop',
+        thread_id: 'thread-stop',
+        turn_id: 'turn-stop'
+      })
+    ]);
+    expect(harness.orchestrator.getStateSnapshot().running.has('i-nonactive-stalled')).toBe(false);
   });
 
   it('stops running worker with cleanup when state becomes terminal', async () => {

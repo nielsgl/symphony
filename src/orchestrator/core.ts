@@ -275,6 +275,10 @@ function asIso(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
 }
 
+function normalizeStateName(state: string): string {
+  return state.trim().toLowerCase();
+}
+
 function defaultBudgetProjection(windowMinutes = 1440): BudgetRuntimeProjection {
   return {
     budget_usage_tokens: null,
@@ -435,6 +439,7 @@ export class OrchestratorCore {
     respawn_max_attempts_without_progress: number;
     active_states: string[];
     terminal_states: string[];
+    fresh_dispatch_states?: string[];
     github_linking_mode?: 'off' | 'warn' | 'required' | string;
     stall_timeout_ms: number;
     no_telemetry_warning_threshold_ms?: number;
@@ -455,6 +460,7 @@ export class OrchestratorCore {
     this.config.respawn_max_attempts_without_progress = config.respawn_max_attempts_without_progress;
     this.config.active_states = [...config.active_states];
     this.config.terminal_states = [...config.terminal_states];
+    this.config.fresh_dispatch_states = [...(config.fresh_dispatch_states ?? [])];
     this.config.github_linking_mode = config.github_linking_mode ?? 'off';
     this.config.stall_timeout_ms = config.stall_timeout_ms;
     this.config.no_telemetry_warning_threshold_ms = config.no_telemetry_warning_threshold_ms ?? 120_000;
@@ -1629,6 +1635,7 @@ export class OrchestratorCore {
           normalStop.detail
         );
         this.state.completed.add(issue_id);
+        this.state.claimed.delete(issue_id);
         this.logger?.log({
           level: 'info',
           event: CANONICAL_EVENT.orchestration.workerExitHandled,
@@ -1956,6 +1963,7 @@ export class OrchestratorCore {
       return;
     }
 
+    const freshDispatch = this.isFreshDispatchState(issue.state);
     const eligibility = shouldDispatchIssue(issue, this.state, this.config, {
       skipClaimCheckForIssueId: issue_id
     });
@@ -1966,32 +1974,37 @@ export class OrchestratorCore {
           issue_id,
           identifier: issue.identifier,
           attempt: retryEntry.attempt + 1,
-          issue_run_id: retryEntry.issue_run_id,
-          previous_attempt_id: retryEntry.previous_attempt_id,
+          issue_run_id: freshDispatch ? null : retryEntry.issue_run_id,
+          previous_attempt_id: freshDispatch ? null : retryEntry.previous_attempt_id,
           delay_type: 'failure',
           error: 'no available orchestrator slots',
-          worker_host: retryEntry.worker_host ?? null,
-          workspace_path: retryEntry.workspace_path ?? null,
-          provisioner_type: retryEntry.provisioner_type ?? null,
-          branch_name: retryEntry.branch_name ?? null,
-          repo_root: retryEntry.repo_root ?? null,
-          workspace_exists: retryEntry.workspace_exists,
-          workspace_git_status: retryEntry.workspace_git_status,
-          workspace_provisioned: retryEntry.workspace_provisioned,
-          workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
-          copy_ignored_applied: retryEntry.copy_ignored_applied,
-          copy_ignored_status: retryEntry.copy_ignored_status,
-          copy_ignored_summary: retryEntry.copy_ignored_summary,
+          worker_host: freshDispatch ? null : retryEntry.worker_host ?? null,
+          workspace_path: freshDispatch ? null : retryEntry.workspace_path ?? null,
+          provisioner_type: freshDispatch ? null : retryEntry.provisioner_type ?? null,
+          branch_name: freshDispatch ? null : retryEntry.branch_name ?? null,
+          repo_root: freshDispatch ? null : retryEntry.repo_root ?? null,
+          workspace_exists: freshDispatch ? false : retryEntry.workspace_exists,
+          workspace_git_status: freshDispatch ? null : retryEntry.workspace_git_status,
+          workspace_provisioned: freshDispatch ? false : retryEntry.workspace_provisioned,
+          workspace_is_git_worktree: freshDispatch ? false : retryEntry.workspace_is_git_worktree,
+          copy_ignored_applied: freshDispatch ? false : retryEntry.copy_ignored_applied,
+          copy_ignored_status: freshDispatch ? null : retryEntry.copy_ignored_status,
+          copy_ignored_summary: freshDispatch ? null : retryEntry.copy_ignored_summary,
           stop_reason_code: REASON_CODES.slotsExhausted,
           stop_reason_detail: 'no available orchestrator slots',
-          previous_thread_id: retryEntry.previous_thread_id ?? null,
-          previous_session_id: retryEntry.previous_session_id ?? null,
+          previous_thread_id: freshDispatch ? null : retryEntry.previous_thread_id ?? null,
+          previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
           issue_snapshot: issue
         });
       } else {
         this.state.claimed.delete(issue_id);
       }
 
+      return;
+    }
+
+    if (freshDispatch) {
+      await this.dispatchIssue(issue, null);
       return;
     }
 
@@ -2166,6 +2179,11 @@ export class OrchestratorCore {
   private hasOpenPullRequest(issue: Issue): boolean {
     const links = issue.tracker_meta?.pr_links ?? [];
     return links.some((link) => !link.merged && String(link.state).toLowerCase() === 'open');
+  }
+
+  private isFreshDispatchState(issueState: string): boolean {
+    const normalizedState = normalizeStateName(issueState);
+    return (this.config.fresh_dispatch_states ?? []).some((state) => normalizeStateName(state) === normalizedState);
   }
 
   private async upsertCircuitBreaker(entry: CircuitBreakerEntry): Promise<void> {
@@ -4636,10 +4654,19 @@ export class OrchestratorCore {
     }
 
     try {
+      const rootCause = this.extractRootCauseDiagnostic(runningEntry, error_code);
       await this.persistence.completeRun({
         run_id: runningEntry.run_id,
         terminal_status,
-        error_code
+        error_code,
+        terminal_reason_code: error_code,
+        root_cause_status: rootCause.status,
+        root_cause_reason_code: rootCause.reason_code,
+        root_cause_reason_detail: rootCause.reason_detail,
+        root_cause_at: rootCause.at,
+        session_id: rootCause.session_id ?? runningEntry.session_id,
+        thread_id: rootCause.thread_id ?? runningEntry.thread_id ?? runningEntry.persisted_thread_id ?? null,
+        turn_id: rootCause.turn_id ?? runningEntry.turn_id ?? null
       });
     } catch {
       this.logger?.log({
@@ -4653,6 +4680,65 @@ export class OrchestratorCore {
         }
       });
     }
+  }
+
+  private extractRootCauseDiagnostic(
+    runningEntry: RunningEntry,
+    terminalReasonCode: string | null
+  ): {
+    status: 'blocked' | 'running' | null;
+    reason_code: string | null;
+    reason_detail: string | null;
+    at: string | null;
+    session_id: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+  } {
+    if (runningEntry.stalled_waiting_reason) {
+      return {
+        status: 'blocked',
+        reason_code: runningEntry.stalled_waiting_reason,
+        reason_detail: runningEntry.last_event_summary ?? runningEntry.last_message ?? null,
+        at:
+          typeof runningEntry.stalled_waiting_since_ms === 'number'
+            ? new Date(runningEntry.stalled_waiting_since_ms).toISOString()
+            : null,
+        session_id: runningEntry.session_id,
+        thread_id: runningEntry.thread_id ?? runningEntry.persisted_thread_id ?? null,
+        turn_id: runningEntry.turn_id
+      };
+    }
+
+    const outstandingToolCall = Object.values(runningEntry.outstanding_tool_calls ?? {}).sort(
+      (left, right) => left.started_at_ms - right.started_at_ms
+    )[0];
+    if (outstandingToolCall && terminalReasonCode !== REASON_CODES.missingToolOutput) {
+      return {
+        status: 'blocked',
+        reason_code: REASON_CODES.missingToolOutput,
+        reason_detail: [
+          `tool_name=${outstandingToolCall.tool_name}`,
+          `call_id=${outstandingToolCall.call_id}`,
+          `thread_id=${outstandingToolCall.thread_id ?? runningEntry.thread_id ?? 'unknown'}`,
+          `turn_id=${outstandingToolCall.turn_id ?? runningEntry.turn_id ?? 'unknown'}`,
+          `session_id=${outstandingToolCall.session_id ?? runningEntry.session_id ?? 'unknown'}`
+        ].join(' '),
+        at: new Date(outstandingToolCall.started_at_ms).toISOString(),
+        session_id: outstandingToolCall.session_id ?? runningEntry.session_id,
+        thread_id: outstandingToolCall.thread_id ?? runningEntry.thread_id ?? runningEntry.persisted_thread_id ?? null,
+        turn_id: outstandingToolCall.turn_id ?? runningEntry.turn_id
+      };
+    }
+
+    return {
+      status: null,
+      reason_code: null,
+      reason_detail: null,
+      at: null,
+      session_id: null,
+      thread_id: null,
+      turn_id: null
+    };
   }
 
 

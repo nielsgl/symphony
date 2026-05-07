@@ -80,6 +80,15 @@ export interface DurableRunHistoryRecord {
   ended_at: string | null;
   terminal_status: RunTerminalStatus | null;
   error_code: string | null;
+  terminal_reason_code: string | null;
+  terminal_reason_detail: string | null;
+  root_cause_status: ExecutionGraphEntityStatus | null;
+  root_cause_reason_code: string | null;
+  root_cause_reason_detail: string | null;
+  root_cause_at: string | null;
+  session_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
   session_ids: string[];
 }
 
