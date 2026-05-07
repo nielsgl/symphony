@@ -95,9 +95,35 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+## Prerequisite: Linear MCP is available
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+The agent should be able to talk to Linear through the configured Linear MCP
+server. If Linear MCP is missing, only fall back to the injected
+`linear_graphql` tool for a documented GraphQL-only operation that MCP cannot
+express. If neither a required Linear MCP path nor an appropriate GraphQL-only
+fallback is present, stop and ask the user to configure Linear.
+
+## Linear operation path
+
+Routine Linear workflow operations must use Linear MCP tools when those tools
+can express the operation:
+
+- Issue lookup: use `get_issue` and `list_issues`.
+- Comment listing and workpad discovery: use `list_comments`.
+- Workpad and normal comment create/update: use `save_comment`, including
+  updates by comment id.
+- State transitions, labels, statuses, projects, and issue metadata updates:
+  use `save_issue`.
+- Normal PR/link attachment: use MCP link support through `save_issue` links
+  when a plain Linear attachment is sufficient.
+
+Treat the dynamic `linear_graphql` tool as a low-level exceptional capability,
+not as the normal workflow progress path. Use it only for operations the MCP
+server does not expose, such as private upload flows, rich `bodyData` writes or
+verification, targeted schema introspection, or rare unsupported Linear API
+operations. Prefer narrow script-backed paths for those exceptions when the
+repository provides one, and keep any raw GraphQL operation small enough to make
+its purpose obvious in logs and diagnostics.
 
 ## Default posture
 
@@ -158,7 +184,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
    - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
 5. For `Todo` tickets, do startup sequencing in this exact order:
-   - `update_issue(..., state: "In Progress")`
+   - `save_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
    - only then begin analysis/planning/implementation work.
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
@@ -166,11 +192,16 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 ## Step 1: Start/continue execution (Todo or In Progress)
 
 1.  Find or create a single persistent scratchpad comment for the issue:
-    - Search existing comments for a marker header: `## Codex Workpad`.
+    - Search existing comments with Linear MCP `list_comments` for a marker
+      header: `## Codex Workpad`.
     - Ignore resolved comments while searching; only active/unresolved comments are eligible to be reused as the live workpad.
-    - If found, reuse that comment; do not create a new workpad comment.
-    - If not found, create one workpad comment and use it for all updates.
-    - Persist the workpad comment ID and only write progress updates to that ID.
+    - If found, reuse that comment; update it with Linear MCP `save_comment`
+      by comment id and do not create a new workpad comment.
+    - If not found, create one workpad comment with Linear MCP `save_comment`
+      and use it for all updates.
+    - Persist the workpad comment ID and only write progress updates to that ID
+      through `save_comment` unless a documented GraphQL-only payload is
+      required.
 2.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
 3.  Immediately reconcile the workpad before new edits:
     - Check off items that are already done.
@@ -256,6 +287,9 @@ Use this only when completion is blocked by missing required tools or missing au
     - Do not treat placeholder/stubbed production paths as complete.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
+    - Prefer Linear MCP link support through `save_issue` links for ordinary PR
+      attachments; use raw GraphQL only when richer Linear-specific attachment
+      metadata is required and MCP cannot express it.
     - Ensure the GitHub PR has label `symphony` (add it if missing).
     - If there is no PR URL, treat the run as incomplete and do not move state forward.
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
@@ -312,6 +346,10 @@ Use this only when completion is blocked by missing required tools or missing au
    - The evidence must be visible as Linear-rendered image/video media, not just local paths, attachments, markdown-only links, or text descriptions.
    - This is a reviewer responsibility in v1; programmatic rendering enforcement is a future improvement.
 6. Review code quality, workflow compliance, acceptance criteria, validation evidence, PR metadata, and PR check status.
+   - Treat avoidable raw `linear_graphql` use as suspicious when Linear MCP or
+     an existing narrow script-backed path could perform the same issue lookup,
+     comment/workpad, state transition, label/status/project, or normal link
+     operation.
 7. If findings are fixable within the current approach, including missing or non-rendering UI evidence:
    - Post a normal Linear review findings comment; do not edit the implementation workpad for reviewer findings.
    - Move issue from `Agent Review` to `In Progress`.
@@ -372,7 +410,9 @@ Use this only when completion is blocked by missing required tools or missing au
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
-- If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
+- If MCP `save_comment` editing is unavailable in-session, use the update
+  script. Only report blocked if both MCP editing and script-backed editing are
+  unavailable.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
 - If out-of-scope improvements are found, create a separate Backlog issue rather
   than expanding current scope, and include a clear
