@@ -12,6 +12,7 @@ type DashboardStatePayload = {
     running: number;
     retrying: number;
     blocked: number;
+    stopped: number;
     running_stalled_waiting_count: number;
     running_awaiting_input_count: number;
   };
@@ -29,6 +30,7 @@ type DashboardStatePayload = {
   running: Array<Record<string, unknown>>;
   retrying: Array<Record<string, unknown>>;
   blocked: Array<Record<string, unknown>>;
+  stopped_runs: Array<Record<string, unknown>>;
   recent_runtime_events: Array<Record<string, unknown>>;
   health: Record<string, unknown>;
 };
@@ -51,6 +53,7 @@ function baseState(overrides: Partial<DashboardStatePayload> = {}): DashboardSta
       running: 0,
       retrying: 0,
       blocked: 0,
+      stopped: 0,
       running_stalled_waiting_count: 0,
       running_awaiting_input_count: 0
     },
@@ -68,6 +71,7 @@ function baseState(overrides: Partial<DashboardStatePayload> = {}): DashboardSta
     running: [],
     retrying: [],
     blocked: [],
+    stopped_runs: [],
     recent_runtime_events: [],
     health: {
       dispatch_validation: 'ok',
@@ -221,6 +225,79 @@ async function installDashboardApiMocks(
 }
 
 test.describe('phase-marker dashboard e2e', () => {
+  test('stopped-run recovery card renders terminal and root-cause diagnostics without overlap', async ({ page }) => {
+    await installDashboardApiMocks(page, {
+      state: baseState({
+        counts: {
+          running: 0,
+          retrying: 0,
+          blocked: 0,
+          stopped: 1,
+          running_stalled_waiting_count: 0,
+          running_awaiting_input_count: 0
+        },
+        stopped_runs: [
+          {
+            run_id: 'run-nie-68',
+            issue_id: 'issue-nie-68',
+            issue_identifier: 'NIE-68',
+            terminal_status: 'cancelled',
+            terminal_reason_code: 'non_active_state_transition',
+            terminal_reason_detail: 'Issue left active states during reconciliation.',
+            root_cause_status: 'blocked',
+            root_cause_reason_code: 'missing_tool_output',
+            root_cause_reason_detail: 'missing Codex tool output for call_123',
+            root_cause_at: '2026-05-05T10:05:00.000Z',
+            thread_id: 'thread-nie-68',
+            turn_id: 'turn-nie-68',
+            session_id: 'session-nie-68',
+            last_relevant_at: '2026-05-05T10:05:00.000Z',
+            active_issue_present: false,
+            recovery_status: 'capability_mismatch',
+            resume_valid: false,
+            resume_disabled_reason: 'Dynamic-tool capability mismatch requires a native runtime recovery path; console-only continuation is disabled.',
+            capability_mismatch: true,
+            capability_warning: {
+              reason_code: 'unsupported_dynamic_tool_console_resume',
+              source_environment: 'console_tui',
+              attempted_tool_name: 'linear_graphql',
+              call_id: 'call_123',
+              thread_id: 'thread-nie-68',
+              turn_id: 'turn-nie-68',
+              unsupported_capability_message: 'Dynamic tools are unavailable in console TUI.',
+              recommended_recovery_action: 'Use a native runtime continuation.'
+            },
+            actions: {
+              inspect_forensics_url: '/api/v1/issues/NIE-68/forensics/export',
+              inspect_thread_url: '/api/v1/history/threads/thread-nie-68',
+              resume_url: null,
+              acknowledge_supported: true,
+              copy_thread_id_supported: true,
+              copy_session_id_supported: true
+            }
+          }
+        ]
+      })
+    });
+
+    await page.goto('/');
+
+    const panel = page.locator('#stopped-run-recovery-list');
+    await expect(panel).toContainText('NIE-68');
+    await expect(panel).toContainText('cancelled / non_active_state_transition');
+    await expect(panel).toContainText('missing Codex tool output');
+    await expect(panel).toContainText('Capability mismatch');
+    await expect(panel.getByRole('button', { name: 'Resume' })).toBeDisabled();
+    await expect(page.locator('#running-rows')).toContainText('No running issues');
+    await expect(page.locator('#blocked-rows')).toContainText('No issues are blocked on operator input.');
+
+    const box = await panel.boundingBox();
+    const blockedBox = await page.locator('#blocked-rows').boundingBox();
+    expect(box).not.toBeNull();
+    expect(blockedBox).not.toBeNull();
+    expect(box!.y).toBeGreaterThan(blockedBox!.y);
+  });
+
   test('running table shows current phase and stale warning metadata', async ({ page }) => {
     await installDashboardApiMocks(page, {
       state: baseState({

@@ -188,6 +188,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     running: number;
     retrying: number;
     blocked: number;
+    stopped: number;
     running_stalled_waiting_count: number;
     running_awaiting_input_count: number;
   };
@@ -411,6 +412,36 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_heartbeat_at_ms: number | null;
     operator_actions: OperatorActionProjection[];
     operator_explainer_hint: OperatorExplainerHint | null;
+  }>;
+  stopped_runs: Array<{
+    run_id: string;
+    issue_id: string;
+    issue_identifier: string;
+    terminal_status: string;
+    terminal_reason_code: string | null;
+    terminal_reason_detail: string | null;
+    root_cause_status: string | null;
+    root_cause_reason_code: string | null;
+    root_cause_reason_detail: string | null;
+    root_cause_at: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+    session_id: string | null;
+    last_relevant_at: string;
+    active_issue_present: boolean;
+    recovery_status: 'inspect_forensics' | 'resume_available' | 'resume_unavailable' | 'active_issue_present' | 'capability_mismatch';
+    resume_valid: boolean;
+    resume_disabled_reason: string | null;
+    capability_mismatch: boolean;
+    capability_warning: ThreadDiagnosticsCapabilityWarning | null;
+    actions: {
+      inspect_forensics_url: string;
+      inspect_thread_url: string | null;
+      resume_url: string | null;
+      acknowledge_supported: true;
+      copy_thread_id_supported: boolean;
+      copy_session_id_supported: boolean;
+    };
   }>;
   codex_totals: {
     input_tokens: number;

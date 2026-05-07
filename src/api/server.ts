@@ -9,6 +9,7 @@ import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { createApiDegradedDiagnostics } from './runtime-visibility';
 import { SnapshotService } from './snapshot-service';
+import { buildStoppedRunRecoveryEntries } from './dashboard-view-model';
 import { createForensicsBundle, type ForensicsTokenSnapshot } from './forensics';
 import {
   buildTelemetryQueryResponse,
@@ -16,7 +17,11 @@ import {
   parseTelemetryQuery,
   TelemetryQueryError
 } from './telemetry';
-import { buildThreadDiagnosticsByIssueIdentifier, buildThreadDiagnosticsByThreadId } from './thread-diagnostics';
+import {
+  buildThreadDiagnosticsByIssueIdentifier,
+  buildThreadDiagnosticsByThreadId,
+  buildThreadDiagnosticsFromLineage
+} from './thread-diagnostics';
 import type {
   ApiDiagnosticsResponse,
   ApiIssueResponse,
@@ -28,6 +33,7 @@ import type {
   LocalApiErrorEnvelope,
   LocalApiServerOptions
 } from './types';
+import type { OrchestratorState } from '../orchestrator';
 
 interface Route {
   method: 'GET' | 'POST';
@@ -370,11 +376,56 @@ export class LocalApiServer {
     }
   }
 
+  private buildCapabilityWarningsByThreadId(runs: ReturnType<NonNullable<LocalApiServerOptions['diagnosticsSource']>['listRunHistory']>) {
+    const warningsByThreadId = new Map<string, ReturnType<typeof buildThreadDiagnosticsFromLineage>['capability_warnings']>();
+    if (!this.diagnosticsSource?.reconstructThreadLineage) {
+      return warningsByThreadId;
+    }
+    for (const run of runs) {
+      if (!run.thread_id || warningsByThreadId.has(run.thread_id)) {
+        continue;
+      }
+      const lineage = this.diagnosticsSource.reconstructThreadLineage(run.thread_id);
+      if (!lineage) {
+        continue;
+      }
+      const diagnostics = buildThreadDiagnosticsFromLineage({ lineage });
+      if (diagnostics.capability_warnings.length > 0) {
+        warningsByThreadId.set(run.thread_id, diagnostics.capability_warnings);
+      }
+    }
+    return warningsByThreadId;
+  }
+
+  private enrichStoppedRunRecoveryState(payload: ApiStateResponse, state: OrchestratorState): void {
+    if (!this.diagnosticsSource) {
+      payload.stopped_runs = [];
+      payload.counts.stopped = 0;
+      return;
+    }
+    const runs = this.diagnosticsSource.listRunHistory(25);
+    const activeIssueIdentifiers = new Set<string>([
+      ...payload.running.map((entry) => entry.issue_identifier),
+      ...payload.retrying.map((entry) => entry.issue_identifier),
+      ...payload.blocked.map((entry) => entry.issue_identifier)
+    ]);
+    const blockedIssueIdentifiers = new Set<string>(payload.blocked.map((entry) => entry.issue_identifier));
+    payload.stopped_runs = buildStoppedRunRecoveryEntries({
+      runs,
+      activeIssueIdentifiers,
+      blockedIssueIdentifiers,
+      capabilityWarningsByThreadId: this.buildCapabilityWarningsByThreadId(runs)
+    });
+    payload.counts.stopped = payload.stopped_runs.filter((entry) => !entry.active_issue_present).length;
+    void state;
+  }
+
   private buildStateSnapshotResponse(): ApiStateSnapshotResponse {
     try {
       const state = this.snapshotSource.getStateSnapshot();
       const payload = this.snapshotService.projectState(state);
       this.enrichLiveTokenFallbackState(payload);
+      this.enrichStoppedRunRecoveryState(payload, state);
       return payload;
     } catch (error) {
       const code: ApiStateErrorResponse['error']['code'] =

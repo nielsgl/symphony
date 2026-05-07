@@ -8,6 +8,7 @@ import { LocalApiError } from '../../src/api/errors';
 import { replayForensicsBundle, type ForensicsBundle } from '../../src/api/forensics';
 import type { OrchestratorState } from '../../src/orchestrator';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../../src/observability/events';
+import { REASON_CODES } from '../../src/observability/reason-codes';
 import type { ExecutionGraphThreadLineage } from '../../src/persistence';
 import type { Issue } from '../../src/tracker';
 
@@ -432,6 +433,7 @@ describe('LocalApiServer', () => {
           running: number;
           retrying: number;
           blocked: number;
+          stopped: number;
           running_stalled_waiting_count: number;
           running_awaiting_input_count: number;
         }
@@ -439,6 +441,8 @@ describe('LocalApiServer', () => {
     ).toBe(1);
     expect((payload.counts as { retrying: number }).retrying).toBe(1);
     expect((payload.counts as { blocked: number }).blocked).toBe(0);
+    expect((payload.counts as { stopped: number }).stopped).toBe(0);
+    expect(payload).toHaveProperty('stopped_runs');
     expect((payload.counts as { running_stalled_waiting_count: number }).running_stalled_waiting_count).toBe(0);
     expect((payload.counts as { running_awaiting_input_count: number }).running_awaiting_input_count).toBe(0);
     expect(
@@ -478,6 +482,78 @@ describe('LocalApiServer', () => {
       provisioner_type: 'worktree',
       branch_name: 'feature/ABC-2',
       repo_root: '/tmp/source'
+    });
+  });
+
+  it('projects recent stopped terminal runs from durable history into state recovery view', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource({
+        listRunHistory: () => [
+          {
+            run_id: 'run-nie-68',
+            issue_id: 'issue-nie-68',
+            issue_identifier: 'NIE-68',
+            started_at: '2026-05-05T10:00:00.000Z',
+            ended_at: '2026-05-05T10:10:00.000Z',
+            terminal_status: 'cancelled',
+            error_code: 'non_active_state_transition',
+            terminal_reason_code: 'non_active_state_transition',
+            terminal_reason_detail: 'Issue left active states during reconciliation.',
+            root_cause_status: 'blocked',
+            root_cause_reason_code: REASON_CODES.missingToolOutput,
+            root_cause_reason_detail: 'missing Codex tool output for call_123',
+            root_cause_at: '2026-05-05T10:05:00.000Z',
+            session_id: 'session-nie-68',
+            thread_id: 'thread-nie-68',
+            turn_id: 'turn-nie-68',
+            session_ids: ['session-nie-68']
+          }
+        ],
+        reconstructThreadLineage: () => null
+      })
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const payload = (await response.json()) as {
+      counts: { running: number; blocked: number; stopped: number };
+      stopped_runs: Array<{
+        issue_identifier: string;
+        run_id: string;
+        terminal_status: string;
+        terminal_reason_code: string | null;
+        root_cause_reason_code: string | null;
+        root_cause_reason_detail: string | null;
+        recovery_status: string;
+        resume_valid: boolean;
+        thread_id: string | null;
+        session_id: string | null;
+      }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.counts.running).toBe(0);
+    expect(payload.counts.blocked).toBe(0);
+    expect(payload.counts.stopped).toBe(1);
+    expect(payload.stopped_runs[0]).toMatchObject({
+      issue_identifier: 'NIE-68',
+      run_id: 'run-nie-68',
+      terminal_status: 'cancelled',
+      terminal_reason_code: 'non_active_state_transition',
+      root_cause_reason_code: REASON_CODES.missingToolOutput,
+      root_cause_reason_detail: 'missing Codex tool output for call_123',
+      recovery_status: 'inspect_forensics',
+      resume_valid: false,
+      thread_id: 'thread-nie-68',
+      session_id: 'session-nie-68'
     });
   });
 
