@@ -275,6 +275,10 @@ function asIso(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
 }
 
+function normalizeStateName(state: string): string {
+  return state.trim().toLowerCase();
+}
+
 function defaultBudgetProjection(windowMinutes = 1440): BudgetRuntimeProjection {
   return {
     budget_usage_tokens: null,
@@ -435,6 +439,7 @@ export class OrchestratorCore {
     respawn_max_attempts_without_progress: number;
     active_states: string[];
     terminal_states: string[];
+    fresh_dispatch_states?: string[];
     github_linking_mode?: 'off' | 'warn' | 'required' | string;
     stall_timeout_ms: number;
     no_telemetry_warning_threshold_ms?: number;
@@ -455,6 +460,7 @@ export class OrchestratorCore {
     this.config.respawn_max_attempts_without_progress = config.respawn_max_attempts_without_progress;
     this.config.active_states = [...config.active_states];
     this.config.terminal_states = [...config.terminal_states];
+    this.config.fresh_dispatch_states = [...(config.fresh_dispatch_states ?? [])];
     this.config.github_linking_mode = config.github_linking_mode ?? 'off';
     this.config.stall_timeout_ms = config.stall_timeout_ms;
     this.config.no_telemetry_warning_threshold_ms = config.no_telemetry_warning_threshold_ms ?? 120_000;
@@ -1629,6 +1635,7 @@ export class OrchestratorCore {
           normalStop.detail
         );
         this.state.completed.add(issue_id);
+        this.state.claimed.delete(issue_id);
         this.logger?.log({
           level: 'info',
           event: CANONICAL_EVENT.orchestration.workerExitHandled,
@@ -1956,6 +1963,7 @@ export class OrchestratorCore {
       return;
     }
 
+    const freshDispatch = this.isFreshDispatchState(issue.state);
     const eligibility = shouldDispatchIssue(issue, this.state, this.config, {
       skipClaimCheckForIssueId: issue_id
     });
@@ -1966,32 +1974,37 @@ export class OrchestratorCore {
           issue_id,
           identifier: issue.identifier,
           attempt: retryEntry.attempt + 1,
-          issue_run_id: retryEntry.issue_run_id,
-          previous_attempt_id: retryEntry.previous_attempt_id,
+          issue_run_id: freshDispatch ? null : retryEntry.issue_run_id,
+          previous_attempt_id: freshDispatch ? null : retryEntry.previous_attempt_id,
           delay_type: 'failure',
           error: 'no available orchestrator slots',
-          worker_host: retryEntry.worker_host ?? null,
-          workspace_path: retryEntry.workspace_path ?? null,
-          provisioner_type: retryEntry.provisioner_type ?? null,
-          branch_name: retryEntry.branch_name ?? null,
-          repo_root: retryEntry.repo_root ?? null,
-          workspace_exists: retryEntry.workspace_exists,
-          workspace_git_status: retryEntry.workspace_git_status,
-          workspace_provisioned: retryEntry.workspace_provisioned,
-          workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
-          copy_ignored_applied: retryEntry.copy_ignored_applied,
-          copy_ignored_status: retryEntry.copy_ignored_status,
-          copy_ignored_summary: retryEntry.copy_ignored_summary,
+          worker_host: freshDispatch ? null : retryEntry.worker_host ?? null,
+          workspace_path: freshDispatch ? null : retryEntry.workspace_path ?? null,
+          provisioner_type: freshDispatch ? null : retryEntry.provisioner_type ?? null,
+          branch_name: freshDispatch ? null : retryEntry.branch_name ?? null,
+          repo_root: freshDispatch ? null : retryEntry.repo_root ?? null,
+          workspace_exists: freshDispatch ? false : retryEntry.workspace_exists,
+          workspace_git_status: freshDispatch ? null : retryEntry.workspace_git_status,
+          workspace_provisioned: freshDispatch ? false : retryEntry.workspace_provisioned,
+          workspace_is_git_worktree: freshDispatch ? false : retryEntry.workspace_is_git_worktree,
+          copy_ignored_applied: freshDispatch ? false : retryEntry.copy_ignored_applied,
+          copy_ignored_status: freshDispatch ? null : retryEntry.copy_ignored_status,
+          copy_ignored_summary: freshDispatch ? null : retryEntry.copy_ignored_summary,
           stop_reason_code: REASON_CODES.slotsExhausted,
           stop_reason_detail: 'no available orchestrator slots',
-          previous_thread_id: retryEntry.previous_thread_id ?? null,
-          previous_session_id: retryEntry.previous_session_id ?? null,
+          previous_thread_id: freshDispatch ? null : retryEntry.previous_thread_id ?? null,
+          previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
           issue_snapshot: issue
         });
       } else {
         this.state.claimed.delete(issue_id);
       }
 
+      return;
+    }
+
+    if (freshDispatch) {
+      await this.dispatchIssue(issue, null);
       return;
     }
 
@@ -2166,6 +2179,11 @@ export class OrchestratorCore {
   private hasOpenPullRequest(issue: Issue): boolean {
     const links = issue.tracker_meta?.pr_links ?? [];
     return links.some((link) => !link.merged && String(link.state).toLowerCase() === 'open');
+  }
+
+  private isFreshDispatchState(issueState: string): boolean {
+    const normalizedState = normalizeStateName(issueState);
+    return (this.config.fresh_dispatch_states ?? []).some((state) => normalizeStateName(state) === normalizedState);
   }
 
   private async upsertCircuitBreaker(entry: CircuitBreakerEntry): Promise<void> {

@@ -596,6 +596,7 @@ export interface OrchestratorConfig {
   respawn_max_attempts_without_progress?: number;
   active_states: string[];
   terminal_states: string[];
+  fresh_dispatch_states?: string[];
   github_linking_mode?: 'off' | 'warn' | 'required' | string;
   stall_timeout_ms: number;
   no_telemetry_warning_threshold_ms?: number;
