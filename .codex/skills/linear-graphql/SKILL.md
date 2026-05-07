@@ -18,6 +18,20 @@ cannot perform, such as private upload flows, rich `bodyData` writes or
 verification, targeted introspection, or narrowly scoped unsupported Linear API
 operations.
 
+Do not use this skill to hand-build screenshot or screencast uploads for UI
+evidence. UI evidence publication is the repository's intentional GraphQL-only
+exception and must go through the script-backed publisher:
+
+```sh
+node .codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js \
+  --issue ABC-123 \
+  --image output/playwright/screenshot.png::"Changed UI state"
+```
+
+That publisher owns private `fileUpload(makePublic:false)`, signed upload PUTs,
+rich `bodyData` image/video comments, and verification by re-reading
+`comment.bodyData`.
+
 ## Primary tool
 
 Use the `linear_graphql` client tool exposed by Symphony's app-server session.
@@ -330,110 +344,6 @@ query IssueFieldArgs {
 }
 ```
 
-### Upload UI evidence media to a comment
-
-This is a GraphQL-only rich-media path. For UI evidence, prefer the dedicated
-publisher at `.codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js`
-instead of hand-rolling the upload sequence in a workflow run.
-
-Do this in three steps:
-
-1. Call `linear_graphql` with `fileUpload` to get `uploadUrl`, `assetUrl`, and
-   any required upload headers.
-2. Upload the local file bytes to `uploadUrl` with `curl -X PUT` and the exact
-   headers returned by `fileUpload`.
-3. Call `linear_graphql` again with `commentCreate` (or `commentUpdate`) and
-   include the resulting `assetUrl` in rich `bodyData`.
-
-For UI evidence, use private uploads for both screenshots and videos:
-`makePublic:false`. Do not use `attachmentCreate`, base64 payloads, raw HTML,
-or markdown-only video links.
-
-Useful mutations:
-
-```graphql
-mutation FileUpload(
-  $filename: String!
-  $contentType: String!
-  $size: Int!
-  $makePublic: Boolean
-) {
-  fileUpload(
-    filename: $filename
-    contentType: $contentType
-    size: $size
-    makePublic: $makePublic
-  ) {
-    success
-    uploadFile {
-      uploadUrl
-      assetUrl
-      headers {
-        key
-        value
-      }
-    }
-  }
-}
-```
-
-Rich comment bodyData pattern:
-
-```json
-{
-  "type": "doc",
-  "content": [
-    {
-      "type": "heading",
-      "attrs": { "level": 2 },
-      "content": [{ "type": "text", "text": "UI Evidence for Review" }]
-    },
-    {
-      "type": "paragraph",
-      "content": [{ "type": "text", "text": "Screenshot caption" }]
-    },
-    {
-      "type": "image",
-      "attrs": {
-        "uploadState": "finished",
-        "uploadId": null,
-        "src": "https://uploads.linear.app/...",
-        "alt": "screenshot.png",
-        "title": null,
-        "attribution": null,
-        "originalSrc": null,
-        "width": null,
-        "height": null,
-        "displayWidth": null
-      }
-    },
-    {
-      "type": "paragraph",
-      "content": [{ "type": "text", "text": "Screencast caption" }]
-    },
-    {
-      "type": "video",
-      "attrs": {
-        "uploadState": "finished",
-        "uploadId": null,
-        "src": "https://uploads.linear.app/...",
-        "title": "demo.webm",
-        "size": null,
-        "controls": true,
-        "height": null,
-        "width": null,
-        "metadataId": null,
-        "mimetype": "video/webm"
-      }
-    }
-  ]
-}
-```
-
-Use `commentCreate(input: { issueId, bodyData })` or
-`commentUpdate(id, input: { bodyData })`, then re-read the comment and verify
-the expected `image`/`video` nodes exist.
-
 ## Usage rules
 
 - Use Linear MCP for routine issue lookup, comment listing, workpad
@@ -442,6 +352,8 @@ the expected `image`/`video` nodes exist.
 - Use `linear_graphql` only for private upload flows, rich `bodyData` writes or
   verification, targeted introspection, and rare unsupported Linear API
   operations.
+- For Playwright screenshots or screencasts, use the `linear-ui-evidence`
+  publisher instead of writing upload/comment GraphQL in the conversation.
 - When raw issue lookup is unavoidable, prefer the narrowest query that matches
   what you already know: key -> identifier search -> internal id.
 - When raw state transitions are unavoidable, fetch team states first and use

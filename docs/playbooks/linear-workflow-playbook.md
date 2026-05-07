@@ -333,6 +333,13 @@ the Linear issue before moving from `In Progress` to `Agent Review`. Use the
 `linear-ui-evidence` skill so images and videos render as rich Linear media in
 a comment.
 
+This evidence path is the intentional exception to MCP-first Linear operations:
+routine issue, comment, and state work should use Linear MCP tools, while UI
+evidence must use the script-backed publisher. The publisher performs the direct
+GraphQL/HTTP operations that MCP does not expose for this flow: private
+`fileUpload(makePublic:false)`, signed upload PUTs, rich `bodyData` image/video
+nodes, and verification by re-reading `comment.bodyData`.
+
 Capture screenshots for changed visual states and screencasts for changed
 interactions. If one media type is not needed for a UI change, state why in the
 handoff.
@@ -366,6 +373,8 @@ Linear publication requirements:
   markdown-only video links, or local paths as reviewer evidence.
 - The script uploads private Linear files and creates/updates one rich `bodyData`
   comment.
+- Do not hand-author dynamic app-server `linear_graphql` calls for UI evidence
+  upload/comment publication; use the publisher script.
 
 Evidence quality:
 

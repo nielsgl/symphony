@@ -160,14 +160,19 @@ describe('linear ui evidence publisher', () => {
     let savedBodyData: unknown;
     const uploadUrls: string[] = [];
     const putPaths: string[] = [];
+    const uploadMakePublicValues: unknown[] = [];
+    const queryNames: string[] = [];
 
     const graphql = async (query: string, variables: Record<string, unknown>) => {
       if (query.includes('query IssueByIdOrKey')) {
+        queryNames.push('issue');
         return { issue: { id: 'issue-id', identifier: variables.id, url: 'https://linear.app/nielsgl/issue/NIE-57/demo' } };
       }
       if (query.includes('mutation FileUpload')) {
+        queryNames.push('fileUpload');
         const uploadUrl = `https://upload.test/${String(variables.filename)}`;
         uploadUrls.push(uploadUrl);
+        uploadMakePublicValues.push(variables.makePublic);
         return {
           fileUpload: {
             success: true,
@@ -180,10 +185,12 @@ describe('linear ui evidence publisher', () => {
         };
       }
       if (query.includes('mutation CreateComment')) {
+        queryNames.push('commentCreate');
         savedBodyData = variables.bodyData;
         return { commentCreate: { success: true, comment: { id: 'comment-id', url: 'https://linear.app/comment', bodyData: savedBodyData } } };
       }
       if (query.includes('query CommentById')) {
+        queryNames.push('commentReread');
         return { comment: { id: variables.id, url: 'https://linear.app/comment', bodyData: savedBodyData, issue: { id: 'issue-id', identifier: 'NIE-57' } } };
       }
       throw new Error(`unexpected query: ${query}`);
@@ -209,12 +216,34 @@ describe('linear ui evidence publisher', () => {
     );
 
     expect(uploadUrls).toEqual(['https://upload.test/demo.png', 'https://upload.test/demo.webm']);
+    expect(uploadMakePublicValues).toEqual([false, false]);
     expect(putPaths).toEqual(['output/playwright/demo.png', 'output/playwright/demo.webm']);
+    expect(queryNames).toEqual(['issue', 'fileUpload', 'fileUpload', 'commentCreate', 'commentReread']);
     expect(result.comment.mode).toBe('created');
     expect(result.node_counts).toEqual({ image: 1, video: 1 });
     expect(result.verification.status).toBe('passed');
     expect(result.artifacts[0].sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(savedBodyData)).not.toContain(result.artifacts[0].sha256);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('validates evidence inputs before any Linear network calls', async () => {
+    const root = tempRoot();
+    let graphqlCalled = false;
+
+    await expect(
+      publisher.publishEvidence(publisher.parseArgs(['--issue', 'NIE-57', '--image', 'output/playwright/missing.png::Missing']), {
+        cwd: root,
+        auth: { apiKey: 'test-key', source: 'test' },
+        graphql: async () => {
+          graphqlCalled = true;
+          return {};
+        },
+        putFile: async () => {}
+      })
+    ).rejects.toMatchObject({ code: 'ui_evidence_file_missing' });
+    expect(graphqlCalled).toBe(false);
 
     fs.rmSync(root, { recursive: true, force: true });
   });
