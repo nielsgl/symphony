@@ -79,6 +79,7 @@ interface ScheduleRetryParams {
     state_marker: string | null;
   };
   budget?: BudgetRuntimeProjection;
+  recovery?: MissingToolOutputRecoveryState | null;
 }
 
 interface WorkspaceConflictContext {
@@ -222,7 +223,8 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     last_phase_detail: entry.last_phase_detail,
     timer_handle: entry.timer_handle,
     progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
-    budget: entry.budget ? { ...entry.budget } : undefined
+    budget: entry.budget ? { ...entry.budget } : undefined,
+    recovery: entry.recovery ? { ...entry.recovery } : null
   };
 }
 
@@ -867,7 +869,10 @@ export class OrchestratorCore {
     this.maybeEmitBudgetTelemetryUnavailable(runningEntry, workerEvent);
     this.maybeEnforceBudget(issue_id, runningEntry, workerEvent.timestamp_ms);
 
-    if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
+    if (
+      workerEvent.event === CANONICAL_EVENT.codex.turnWaiting ||
+      this.hasOutstandingToolCallEvidence(runningEntry)
+    ) {
       void this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
     }
 
@@ -1887,6 +1892,23 @@ export class OrchestratorCore {
 
     if (reason === 'normal') {
       const completionReason = details.completion_reason ?? null;
+      if (this.isMissingToolOutputRecoveryInProgress(running)) {
+        running.recovery = {
+          ...running.recovery,
+          last_result: 'succeeded',
+          last_result_reason_code: completionReason ?? REASON_CODES.normalCompletion,
+          last_result_detail: details.refreshed_state
+            ? `recovery turn completed after refreshed issue state: ${details.refreshed_state}`
+            : 'recovery turn completed'
+        };
+        this.recordRuntimeEvent({
+          event: CANONICAL_EVENT.orchestration.missingToolOutputRecoveryStarted,
+          severity: 'info',
+          issue_identifier: running.identifier,
+          session_id: running.session_id ?? undefined,
+          detail: `result=succeeded completion_reason=${completionReason ?? REASON_CODES.normalCompletion} refreshed_state=${details.refreshed_state ?? 'unknown'}`
+        });
+      }
       const normalStop = this.normalStopForWorkerCompletion(completionReason, details.refreshed_state ?? null);
       if (normalStop) {
         this.emitPhaseMarker(issue_id, {
@@ -1979,7 +2001,8 @@ export class OrchestratorCore {
         previous_thread_id: running.thread_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
-        budget: running.budget
+        budget: running.budget,
+        recovery: running.recovery ? { ...running.recovery } : null
       });
       this.logger?.log({
         level: 'info',
@@ -1998,6 +2021,11 @@ export class OrchestratorCore {
       await this.completeRunRecord(running, 'failed', error ?? `worker exited: ${reason}`);
       this.state.health.last_error = `worker exited for ${running.identifier}`;
       const stopReasonCode = this.inferStopReasonCode(error, REASON_CODES.workerExitAbnormal);
+      if (this.isMissingToolOutputRecoveryInProgress(running)) {
+        await this.scheduleRecoveryStartFailedBlock(issue_id, running, error ?? `worker exited: ${reason}`);
+        this.ports.notifyObservers?.();
+        return;
+      }
       if (stopReasonCode === REASON_CODES.turnInputRequired) {
         const inputDetail = this.inferInputRequiredDetail(error, reason);
         const stopReasonDetail = inputDetail.detail;
@@ -2137,7 +2165,8 @@ export class OrchestratorCore {
         previous_thread_id: running.thread_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
-        budget: running.budget
+        budget: running.budget,
+        recovery: running.recovery ? { ...running.recovery } : null
       });
       this.emitPhaseMarker(issue_id, {
         phase: 'failed',
@@ -2170,6 +2199,93 @@ export class OrchestratorCore {
     }
 
     this.ports.notifyObservers?.();
+  }
+
+  private isMissingToolOutputRecoveryInProgress(running: RunningEntry): running is RunningEntry & {
+    recovery: MissingToolOutputRecoveryState;
+  } {
+    return running.recovery?.reason_code === REASON_CODES.missingToolOutput && running.recovery.last_result === 'started';
+  }
+
+  private async scheduleRecoveryStartFailedBlock(issueId: string, running: RunningEntry, error: string): Promise<void> {
+    const recovery = running.recovery
+      ? {
+          ...running.recovery,
+          last_result: 'failed' as const,
+          last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+          last_result_detail: error
+        }
+      : null;
+    const diagnostic = recovery
+      ? {
+          tool_name: recovery.last_tool_name,
+          call_id: recovery.last_call_id,
+          thread_id: recovery.previous_thread_id ?? running.thread_id ?? null,
+          turn_id: recovery.previous_turn_id ?? running.turn_id ?? null,
+          session_id: recovery.previous_session_id ?? running.session_id ?? null,
+          elapsed_wait_ms: recovery.elapsed_wait_ms,
+          last_agent_message: recovery.last_agent_message ?? running.last_message ?? null,
+          evidence_source: recovery.evidence_source,
+          recommended_actions: [
+            'Inspect external state for the last tool action',
+            'Manually resume the Codex thread with guarded continuation',
+            'Cancel or requeue after inspection'
+          ]
+        }
+      : null;
+    const detail = [
+      'same-thread guarded recovery failed to start or complete',
+      `error=${error}`,
+      `tool_name=${diagnostic?.tool_name ?? 'unknown'}`,
+      `call_id=${diagnostic?.call_id ?? 'unknown'}`,
+      `thread_id=${diagnostic?.thread_id ?? 'unknown'}`,
+      `turn_id=${diagnostic?.turn_id ?? 'unknown'}`,
+      `session_id=${diagnostic?.session_id ?? 'unknown'}`
+    ].join(' ');
+
+    await this.scheduleBlockedInput({
+      issue_id: issueId,
+      issue_identifier: running.identifier,
+      attempt: running.retry_attempt + 1,
+      issue_run_id: running.issue_run_id ?? null,
+      previous_attempt_id: running.attempt_id ?? null,
+      worker_host: running.worker_host ?? null,
+      workspace_path: running.workspace_path ?? null,
+      provisioner_type: running.provisioner_type ?? null,
+      branch_name: running.branch_name ?? null,
+      repo_root: running.repo_root ?? null,
+      workspace_exists: running.workspace_exists,
+      workspace_git_status: running.workspace_git_status,
+      workspace_provisioned: running.workspace_provisioned,
+      workspace_is_git_worktree: running.workspace_is_git_worktree,
+      copy_ignored_applied: running.copy_ignored_applied,
+      copy_ignored_status: running.copy_ignored_status,
+      copy_ignored_summary: running.copy_ignored_summary,
+      stop_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+      stop_reason_detail: detail,
+      resolution_hints: diagnostic?.recommended_actions ?? [],
+      required_actions: diagnostic?.recommended_actions ?? [],
+      session_console: running.recent_events,
+      previous_thread_id: diagnostic?.thread_id ?? running.thread_id,
+      previous_session_id: diagnostic?.session_id ?? running.session_id,
+      last_progress_checkpoint_at: running.last_progress_transition_at_ms ?? running.started_at_ms,
+      tool_output_wait: diagnostic,
+      recovery
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.blockedInputScheduled,
+      severity: 'warn',
+      issue_identifier: running.identifier,
+      session_id: diagnostic?.session_id ?? running.session_id ?? undefined,
+      detail
+    });
+    await this.persistExecutionGraphStateTransition(
+      running,
+      'blocked',
+      'blocked',
+      REASON_CODES.missingToolOutputRecoveryStartFailed,
+      detail
+    );
   }
 
   async onRetryTimer(issue_id: string): Promise<void> {
@@ -2680,10 +2796,7 @@ export class OrchestratorCore {
 
     for (const [issueId, runningEntry] of Array.from(this.state.running.entries())) {
       const elapsedMs = now - (runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms);
-      if (
-        waitThresholdMs > 0 &&
-        runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting
-      ) {
+      if (waitThresholdMs > 0) {
         this.maybeEmitHeartbeatOnly(issueId, runningEntry, now);
         const handledAsBlocked = await this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
         if (handledAsBlocked) {
@@ -3172,6 +3285,7 @@ export class OrchestratorCore {
       last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
       progress_signals: resolvedProgressSignals,
       budget: params.budget ? { ...params.budget } : undefined,
+      recovery: params.recovery ? { ...params.recovery } : null,
       timer_handle: timerHandle
     });
 
@@ -4889,7 +5003,20 @@ export class OrchestratorCore {
     observedAtMs: number
   ): Promise<boolean> {
     const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
-    if (waitThresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
+    if (waitThresholdMs <= 0) {
+      return false;
+    }
+
+    this.scanCodexSessionTranscriptForToolCalls(runningEntry, observedAtMs);
+
+    const missingToolOutput = this.findMissingToolOutputCandidate(runningEntry, observedAtMs, waitThresholdMs);
+    if (missingToolOutput) {
+      runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
+      await this.recoverOrBlockMissingToolOutput(issueId, runningEntry, missingToolOutput, observedAtMs);
+      return true;
+    }
+
+    if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
       return false;
     }
 
@@ -4903,15 +5030,6 @@ export class OrchestratorCore {
         : waitingStartedAtMs;
     const thresholdCrossedAtMs = lastMeaningfulActivityAtMs + waitThresholdMs;
     runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
-
-    this.scanCodexSessionTranscriptForToolCalls(runningEntry, observedAtMs);
-
-    const missingToolOutput = this.findMissingToolOutputCandidate(runningEntry, observedAtMs, waitThresholdMs);
-    if (missingToolOutput) {
-      runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
-      await this.recoverOrBlockMissingToolOutput(issueId, runningEntry, missingToolOutput, observedAtMs);
-      return true;
-    }
 
     if (observedAtMs < thresholdCrossedAtMs) {
       runningEntry.stalled_waiting_reason = null;
@@ -4940,6 +5058,10 @@ export class OrchestratorCore {
       detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
     });
     return false;
+  }
+
+  private hasOutstandingToolCallEvidence(runningEntry: RunningEntry): boolean {
+    return Object.keys(runningEntry.outstanding_tool_calls ?? {}).length > 0;
   }
 
   private findMissingToolOutputCandidate(
@@ -5194,10 +5316,10 @@ export class OrchestratorCore {
     ) {
       return null;
     }
-    const explicitObservedAtMs = readTimestampMs(record) ?? readTimestampMs(item);
-    if (!hasMatchingLineage && (!explicitObservedAtMs || explicitObservedAtMs < runningEntry.started_at_ms)) {
+    if (!hasMatchingLineage) {
       return null;
     }
+    const explicitObservedAtMs = readTimestampMs(record) ?? readTimestampMs(item);
 
     return {
       kind: type,

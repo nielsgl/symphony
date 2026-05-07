@@ -324,6 +324,7 @@ export class SnapshotService {
       last_phase: entry.last_phase ?? null,
       last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
       last_phase_detail: entry.last_phase_detail ?? null,
+      recovery: entry.recovery ? { ...entry.recovery } : null,
       operator_explainer_hint: toOperatorExplainerHint(
         explainOperatorRuntimeState({
           state_class: 'retrying',

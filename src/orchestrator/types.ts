@@ -245,6 +245,7 @@ export interface RetryEntry {
     state_marker: string | null;
   };
   budget?: BudgetRuntimeProjection;
+  recovery?: MissingToolOutputRecoveryState | null;
 }
 
 export interface RedispatchProgressSample {

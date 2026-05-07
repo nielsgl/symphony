@@ -278,6 +278,66 @@ export async function runLocalWorkerRecoveryAttempt(
       };
     }
 
+    let refreshedIssues: Issue[];
+    try {
+      refreshedIssues = await input.issueStateFetcher([input.issue.id]);
+    } catch (error) {
+      return {
+        reason: 'abnormal',
+        session_id: turnResult.session_id,
+        error: `issue_state_refresh_failed: ${error instanceof Error ? error.message : 'unknown'}`
+      };
+    }
+
+    if (refreshedIssues.length === 0) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.issueStateMissing
+      };
+    }
+
+    const refreshedIssue = refreshedIssues.find((issue) => issue.id === input.issue.id) ?? refreshedIssues[0];
+    if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.terminal_states)) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.terminalStateReached,
+        refreshed_state: refreshedIssue.state
+      };
+    }
+
+    if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.handoff_states)) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.handoffStateReached,
+        refreshed_state: refreshedIssue.state
+      };
+    }
+
+    if (
+      refreshedIssue &&
+      isStateListed(input.issue.state, input.config.tracker.fresh_dispatch_states) &&
+      !isSameState(input.issue.state, refreshedIssue.state)
+    ) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.freshDispatchStateRouted,
+        refreshed_state: refreshedIssue.state
+      };
+    }
+
+    if (!refreshedIssue || !isActiveState(refreshedIssue.state, input.config.tracker.active_states)) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.issueLeftActiveStates,
+        refreshed_state: refreshedIssue?.state ?? null
+      };
+    }
+
     return {
       reason: 'normal',
       session_id: turnResult.session_id,

@@ -1823,14 +1823,6 @@ describe('OrchestratorCore', () => {
         turn_id: 'turn-live',
         session_id: 'session-live'
       });
-      harness.orchestrator.onWorkerEvent('i-live-regression', {
-        timestamp_ms: harness.now.value + 1_510,
-        event: CANONICAL_EVENT.codex.turnWaiting,
-        detail: 'waiting_for_turn_completion elapsed_s=1',
-        thread_id: 'thread-live',
-        turn_id: 'turn-live',
-        session_id: 'session-live'
-      });
       harness.now.value += 2_000;
       await harness.orchestrator.tick('interval');
       await new Promise((resolve) => setImmediate(resolve));
@@ -1940,6 +1932,115 @@ describe('OrchestratorCore', () => {
     expect(running?.quarantined_events?.[0]?.reason).toBe('inactive_worker_pid');
     expect(running?.turn_id).toBe('turn-recovery');
     expect(running?.codex_app_server_pid).toBe('222');
+  });
+
+  it.each([
+    ['thread/resume failed'],
+    ['turn/interrupt failed'],
+    ['turn/start failed']
+  ])('blocks typed recovery startup failure instead of scheduling a generic retry: %s', async (error) => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      recoverMissingToolOutput: async (params) => ({
+        ok: true,
+        worker_handle: { recovery: true, error },
+        monitor_handle: { recovery: true, error },
+        worker_host: params.worker_host
+      })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-start-fails', identifier: 'ABC-START-FAIL' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-recover-start-fails', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-start-fail',
+      turn_id: 'turn-start-fail',
+      session_id: 'session-start-fail'
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-start-fails', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_start_fail',
+      thread_id: 'thread-start-fail',
+      turn_id: 'turn-start-fail',
+      session_id: 'session-start-fail'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await harness.orchestrator.onWorkerExit('i-recover-start-fails', 'abnormal', error);
+
+    expect(harness.scheduled.has('i-recover-start-fails')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-recover-start-fails')).toMatchObject({
+      stop_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+      tool_output_wait: {
+        tool_name: 'linear_graphql',
+        call_id: 'call_start_fail',
+        thread_id: 'thread-start-fail',
+        turn_id: 'turn-start-fail',
+        session_id: 'session-start-fail'
+      },
+      recovery: {
+        last_result: 'failed',
+        last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+        previous_thread_id: 'thread-start-fail',
+        previous_turn_id: 'turn-start-fail',
+        previous_session_id: 'session-start-fail',
+        last_tool_name: 'linear_graphql',
+        last_call_id: 'call_start_fail'
+      }
+    });
+  });
+
+  it('records recovery success metadata before scheduling same-thread continuation', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      recoverMissingToolOutput: async (params) => ({
+        ok: true,
+        worker_handle: { recovery: true },
+        monitor_handle: { recovery: true },
+        worker_host: params.worker_host
+      })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-succeeds', identifier: 'ABC-RECOVER-SUCCESS' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-recover-succeeds', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-recover-success',
+      turn_id: 'turn-old-success',
+      session_id: 'session-old-success'
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-succeeds', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_recover_success',
+      thread_id: 'thread-recover-success',
+      turn_id: 'turn-old-success',
+      session_id: 'session-old-success'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await harness.orchestrator.onWorkerExit('i-recover-succeeds', 'normal', undefined, {
+      completion_reason: REASON_CODES.maxTurnsReached
+    });
+
+    expect(harness.orchestrator.getStateSnapshot().retry_attempts.get('i-recover-succeeds')).toMatchObject({
+      stop_reason_code: REASON_CODES.normalCompletion,
+      recovery: {
+        last_result: 'succeeded',
+        last_result_reason_code: REASON_CODES.maxTurnsReached,
+        last_tool_name: 'linear_graphql',
+        last_call_id: 'call_recover_success'
+      }
+    });
   });
 
   it('blocks missing tool output without a previous turn id instead of spawning unrelated recovery', async () => {
@@ -2066,6 +2167,9 @@ describe('OrchestratorCore', () => {
         },
         {
           timestamp: new Date(harness.now.value + 10).toISOString(),
+          session_id: 'session-rollout',
+          thread_id: 'thread-rollout',
+          turn_id: 'turn-rollout',
           type: 'response_item',
           payload: {
             type: 'function_call',
@@ -2340,6 +2444,56 @@ describe('OrchestratorCore', () => {
       expect(harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-transcript-stale-output')?.tool_output_wait).toMatchObject({
         tool_name: 'linear_graphql',
         call_id: 'call_still_missing',
+        evidence_source: 'session_transcript'
+      });
+    });
+  });
+
+  it('does not clear active missing-tool evidence from an unlineaged external transcript output', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-unlineaged-output', identifier: 'ABC-TRANSCRIPT-UNLINEAGED-OUTPUT' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-unlineaged-output', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-owned-output',
+        turn_id: 'turn-owned-output',
+        session_id: 'session-owned-output'
+      });
+      writeSessionTranscript(codexHome, 'session-owned-output.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 10).toISOString(),
+          session_id: 'session-owned-output',
+          thread_id: 'thread-owned-output',
+          turn_id: 'turn-owned-output',
+          response_item: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_owned_missing'
+          }
+        },
+        {
+          timestamp: new Date(harness.now.value + 100).toISOString(),
+          response_item: {
+            type: 'function_call_output',
+            call_id: 'call_owned_missing',
+            output: '{}'
+          }
+        }
+      ]);
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-transcript-unlineaged-output')?.tool_output_wait).toMatchObject({
+        tool_name: 'linear_graphql',
+        call_id: 'call_owned_missing',
         evidence_source: 'session_transcript'
       });
     });
