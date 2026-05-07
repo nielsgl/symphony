@@ -439,6 +439,7 @@ export class OrchestratorCore {
     respawn_max_attempts_without_progress: number;
     active_states: string[];
     terminal_states: string[];
+    handoff_states?: string[];
     fresh_dispatch_states?: string[];
     github_linking_mode?: 'off' | 'warn' | 'required' | string;
     stall_timeout_ms: number;
@@ -460,6 +461,7 @@ export class OrchestratorCore {
     this.config.respawn_max_attempts_without_progress = config.respawn_max_attempts_without_progress;
     this.config.active_states = [...config.active_states];
     this.config.terminal_states = [...config.terminal_states];
+    this.config.handoff_states = [...(config.handoff_states ?? [])];
     this.config.fresh_dispatch_states = [...(config.fresh_dispatch_states ?? [])];
     this.config.github_linking_mode = config.github_linking_mode ?? 'off';
     this.config.stall_timeout_ms = config.stall_timeout_ms;
@@ -2195,6 +2197,27 @@ export class OrchestratorCore {
     return (this.config.fresh_dispatch_states ?? []).some((state) => normalizeStateName(state) === normalizedState);
   }
 
+  private isHandoffFreshDispatchState(issueState: string): boolean {
+    const normalizedState = normalizeStateName(issueState);
+    const isFreshDispatch = (this.config.fresh_dispatch_states ?? []).some(
+      (state) => normalizeStateName(state) === normalizedState
+    );
+    if (!isFreshDispatch) {
+      return false;
+    }
+
+    const handoffStates = this.config.handoff_states ?? [];
+    if (handoffStates.length === 0) {
+      return true;
+    }
+
+    return handoffStates.some((state) => normalizeStateName(state) === normalizedState);
+  }
+
+  private didRunStartInState(runningEntry: RunningEntry, issueState: string): boolean {
+    return normalizeStateName(runningEntry.started_issue_state ?? runningEntry.issue.state) === normalizeStateName(issueState);
+  }
+
   private async upsertCircuitBreaker(entry: CircuitBreakerEntry): Promise<void> {
     this.state.circuit_breakers.set(entry.issue_id, { ...entry });
     await this.persistence?.upsertBreaker?.({
@@ -2290,6 +2313,14 @@ export class OrchestratorCore {
 
       if (isTerminalState(refreshedIssue.state, this.config)) {
         await this.terminateRunningIssue(refreshedIssue.id, true, 'terminal_state_transition');
+        continue;
+      }
+
+      if (
+        this.isHandoffFreshDispatchState(refreshedIssue.state) &&
+        !this.didRunStartInState(runningEntry, refreshedIssue.state)
+      ) {
+        await this.terminateRunningIssue(refreshedIssue.id, false, REASON_CODES.handoffRelease);
         continue;
       }
 
@@ -2593,6 +2624,7 @@ export class OrchestratorCore {
     this.state.running.set(issue.id, {
       issue,
       identifier: issue.identifier,
+      started_issue_state: issue.state,
       run_id: null,
       issue_run_id: graphContext.issue_run_id ?? null,
       attempt_id: null,
@@ -2738,6 +2770,7 @@ export class OrchestratorCore {
 
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'cancelled', reason);
+    await this.persistExecutionGraphStateTransition(runningEntry, 'cancelled', 'cancelled', reason, `worker terminated: ${reason}`);
     this.state.running.delete(issue_id);
     this.state.claimed.delete(issue_id);
     this.logger?.log({

@@ -34,6 +34,7 @@ export interface BudgetRuntimeProjection {
 export interface RunningEntry {
   issue: Issue;
   identifier: string;
+  started_issue_state?: string;
   run_id: string | null;
   issue_run_id?: string | null;
   attempt_id?: string | null;
@@ -597,6 +598,7 @@ export interface OrchestratorConfig {
   respawn_max_attempts_without_progress?: number;
   active_states: string[];
   terminal_states: string[];
+  handoff_states?: string[];
   fresh_dispatch_states?: string[];
   github_linking_mode?: 'off' | 'warn' | 'required' | string;
   stall_timeout_ms: number;
