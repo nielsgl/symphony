@@ -8,7 +8,7 @@ import { TemplateEngine, type Template } from '../workflow';
 import type { EffectiveConfig } from '../workflow';
 import type { WorkspaceManager } from '../workspace';
 import type { SpawnWorkerResult, WorkerExitDetails } from './types';
-import { runLocalWorkerAttempt } from './local-worker-runner';
+import { runLocalWorkerAttempt, runLocalWorkerRecoveryAttempt } from './local-worker-runner';
 
 interface WorkerHandle {
   issue_id: string;
@@ -110,6 +110,52 @@ export class LocalRunnerBridge {
     };
   }
 
+  async recoverMissingToolOutput(params: {
+    issue: Issue;
+    attempt: number | null;
+    worker_host?: string | null;
+    previous_thread_id: string;
+    previous_turn_id: string;
+    previous_session_id: string | null;
+    recovery_prompt: string;
+  }): Promise<SpawnWorkerResult> {
+    const workerHost = params.worker_host ?? null;
+    let workspace;
+    try {
+      workspace = await this.workspaceManager.ensureWorkspace(params.issue.identifier);
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'workspace provisioning failed'
+      };
+    }
+    const workerPromise = this.startRecoveryWorker(params, workerHost);
+    const worker_handle: WorkerHandle = {
+      issue_id: params.issue.id,
+      issue_identifier: params.issue.identifier,
+      promise: workerPromise,
+      worker_host: workerHost
+    };
+
+    return {
+      ok: true,
+      worker_handle,
+      monitor_handle: worker_handle,
+      worker_host: workerHost,
+      workspace_path: workspace.path,
+      provisioner_type: workspace.provisioner_type ?? null,
+      branch_name: workspace.branch_name ?? null,
+      repo_root: workspace.repo_root ?? null,
+      workspace_exists: workspace.workspace_exists ?? true,
+      workspace_git_status: workspace.workspace_git_status ?? 'unknown',
+      workspace_provisioned: workspace.workspace_provisioned ?? false,
+      workspace_is_git_worktree: workspace.workspace_is_git_worktree ?? false,
+      copy_ignored_applied: workspace.copy_ignored_applied ?? false,
+      copy_ignored_status: workspace.copy_ignored_status ?? null,
+      copy_ignored_summary: workspace.copy_ignored_summary ?? null
+    };
+  }
+
   async terminateWorker(params: { issue_id: string; worker_handle: unknown; cleanup_workspace: boolean }): Promise<void> {
     if (!params.cleanup_workspace) {
       return;
@@ -183,6 +229,57 @@ export class LocalRunnerBridge {
 
     await this.onWorkerExit?.({
       issue_id: issue.id,
+      reason: result.reason,
+      error: result.error,
+      completion_reason: result.completion_reason,
+      refreshed_state: result.refreshed_state
+    });
+  }
+
+  private async startRecoveryWorker(
+    params: {
+      issue: Issue;
+      attempt: number | null;
+      previous_thread_id: string;
+      previous_turn_id: string;
+      previous_session_id: string | null;
+      recovery_prompt: string;
+    },
+    worker_host: string | null
+  ): Promise<void> {
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.agentRunner.attemptStarted,
+      message: 'agent runner guarded recovery attempt started',
+      context: {
+        issue_id: params.issue.id,
+        issue_identifier: params.issue.identifier,
+        worker_host,
+        attempt: params.attempt ?? 0,
+        previous_thread_id: params.previous_thread_id,
+        previous_turn_id: params.previous_turn_id
+      }
+    });
+    const result = await runLocalWorkerRecoveryAttempt({
+      issue: params.issue,
+      attempt: params.attempt,
+      worker_host: worker_host ?? undefined,
+      workspaceManager: this.workspaceManager,
+      codexRunner: this.codexRunner,
+      config: this.config,
+      renderPrompt: this.renderPrompt,
+      resumeContext: null,
+      issueStateFetcher: this.issueStateFetcher,
+      previousThreadId: params.previous_thread_id,
+      previousTurnId: params.previous_turn_id,
+      previousSessionId: params.previous_session_id,
+      recoveryPrompt: params.recovery_prompt,
+      onCodexEvent: (event) => {
+        this.onWorkerEvent?.({ issue_id: params.issue.id, event });
+      }
+    });
+    await this.onWorkerExit?.({
+      issue_id: params.issue.id,
       reason: result.reason,
       error: result.error,
       completion_reason: result.completion_reason,

@@ -15,6 +15,7 @@ import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type Dynami
 import { buildSshSpawnArgs } from './ssh-target';
 import type {
   CodexInputRequestPayload,
+  CodexRunnerRecoveryInput,
   CodexRunnerEvent,
   CodexRunnerStartInput,
   CodexTurnResult,
@@ -1008,6 +1009,192 @@ export class CodexRunner {
       if (shouldTerminateProcess) {
         processHandle.kill('SIGKILL');
       }
+    }
+  }
+
+  async resumeThreadInterruptAndRunTurn(input: CodexRunnerRecoveryInput): Promise<CodexTurnResult> {
+    if (input.workerHost) {
+      assertRemoteWorkspaceCwd(input.workspaceCwd);
+    } else {
+      assertWorkspaceCwd(input.workspaceCwd);
+    }
+
+    let processHandle: RunnerProcess;
+    try {
+      processHandle = this.spawnProcess({
+        command: input.command,
+        args: input.commandArgs,
+        env: input.commandEnv,
+        cwd: input.workspaceCwd,
+        workerHost: input.workerHost
+      });
+    } catch {
+      throw new CodexRunnerError('invalid_workspace_cwd', `Failed to launch codex process in cwd: ${input.workspaceCwd}`);
+    }
+
+    const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor);
+    const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
+    protocol.setEventEmitter(emit);
+
+    try {
+      await protocol.request(
+        'initialize',
+        {
+          clientInfo: { name: 'symphony', version: '0.1.0' },
+          capabilities: {
+            experimentalApi: true
+          }
+        },
+        input.readTimeoutMs
+      );
+      protocol.notify('initialized', {});
+
+      const threadResponse = await protocol.request(
+        'thread/resume',
+        {
+          threadId: input.previousThreadId,
+          cwd: input.workspaceCwd,
+          approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
+          sandbox: input.threadSandbox ?? 'workspace-write',
+          persistExtendedHistory: true
+        },
+        input.readTimeoutMs
+      );
+      const thread_id =
+        readNestedString(threadResponse, [
+          ['thread', 'id'],
+          ['thread', 'threadId'],
+          ['threadId'],
+          ['thread_id'],
+          ['id']
+        ]) ?? input.previousThreadId;
+
+      emit({ event: CANONICAL_EVENT.codex.sessionStarted, thread_id });
+
+      await protocol.request(
+        'turn/interrupt',
+        {
+          threadId: thread_id,
+          turnId: input.previousTurnId
+        },
+        input.readTimeoutMs
+      );
+      emit({
+        event: CANONICAL_EVENT.codex.turnCancelled,
+        thread_id,
+        turn_id: input.previousTurnId,
+        session_id: input.previousSessionId ?? `${thread_id}-${input.previousTurnId}`,
+        detail: REASON_CODES.missingToolOutputRecoveryInterrupted
+      });
+
+      emit({
+        event: CANONICAL_EVENT.codex.promptSent,
+        thread_id,
+        detail: 'guarded_recovery_prompt'
+      });
+      const turnResponse = await protocol.request(
+        'turn/start',
+        {
+          threadId: thread_id,
+          input: [{ type: 'text', text: input.prompt }],
+          cwd: input.workspaceCwd,
+          title: input.title,
+          approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
+          sandboxPolicy: normalizeTurnSandboxPolicy(input.turnSandboxPolicy)
+        },
+        input.readTimeoutMs
+      );
+      const turn_id = readNestedString(turnResponse, [
+        ['turn', 'id'],
+        ['turn', 'turnId'],
+        ['turnId'],
+        ['turn_id'],
+        ['id']
+      ]);
+      if (!turn_id) {
+        throw new CodexRunnerError('response_error', 'Missing turn id in recovery turn/start response');
+      }
+
+      const session_id = `${thread_id}-${turn_id}`;
+      emit({ event: CANONICAL_EVENT.codex.turnStarted, thread_id, turn_id, session_id });
+      protocol.setTurnContext({ thread_id, turn_id, session_id });
+
+      const waitResult = await protocol.waitForTurnTerminal(input.turnTimeoutMs, emit);
+      const usage = waitResult.usage;
+      const telemetry = waitResult.telemetry;
+      const rate_limits = waitResult.rate_limits;
+      if (waitResult.terminal === 'turn/completed') {
+        emit({ event: CANONICAL_EVENT.codex.phaseValidation, thread_id, turn_id, session_id });
+        emit({ event: CANONICAL_EVENT.codex.turnCompleted, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+        return {
+          status: 'completed',
+          thread_id,
+          turn_id,
+          session_id,
+          last_event: CANONICAL_EVENT.codex.turnCompleted,
+          turns_completed: 1,
+          usage,
+          ...telemetry,
+          rate_limits
+        };
+      }
+      if (waitResult.terminal === 'turn/failed') {
+        emit({ event: CANONICAL_EVENT.codex.turnFailed, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+        return {
+          status: 'failed',
+          thread_id,
+          turn_id,
+          session_id,
+          last_event: CANONICAL_EVENT.codex.turnFailed,
+          error_code: 'turn_failed',
+          turns_completed: 0,
+          usage,
+          ...telemetry,
+          rate_limits
+        };
+      }
+      if (waitResult.terminal === 'turn/cancelled') {
+        emit({ event: CANONICAL_EVENT.codex.turnCancelled, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+        return {
+          status: 'failed',
+          thread_id,
+          turn_id,
+          session_id,
+          last_event: CANONICAL_EVENT.codex.turnCancelled,
+          error_code: 'turn_cancelled',
+          turns_completed: 0,
+          usage,
+          ...telemetry,
+          rate_limits
+        };
+      }
+
+      emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+      return {
+        status: 'failed',
+        thread_id,
+        turn_id,
+        session_id,
+        last_event: CANONICAL_EVENT.codex.turnInputRequired,
+        error_code: REASON_CODES.turnInputRequired,
+        error_detail: waitResult.input_required_detail ?? 'input_required_unanswerable',
+        input_required_payload: waitResult.input_required_payload,
+        turns_completed: 0,
+        usage,
+        ...telemetry,
+        rate_limits
+      };
+    } catch (error) {
+      if (error instanceof CodexRunnerError) {
+        if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
+          throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
+        }
+        emit({ event: CANONICAL_EVENT.codex.startupFailed, detail: error.message });
+        throw error;
+      }
+      throw error;
+    } finally {
+      processHandle.kill('SIGKILL');
     }
   }
 

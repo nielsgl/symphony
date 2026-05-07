@@ -26,6 +26,12 @@ export interface CodexRunnerStartInput {
   turnTimeoutMs: number;
 }
 
+export interface CodexRunnerRecoveryInput extends CodexRunnerStartInput {
+  previousThreadId: string;
+  previousTurnId: string;
+  previousSessionId?: string | null;
+}
+
 export type CodexTurnStatus = 'completed' | 'failed';
 
 export type CodexTurnErrorCode =

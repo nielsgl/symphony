@@ -305,6 +305,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       reasoning_output_tokens?: number;
       model_context_window?: number;
     };
+    recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
     operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   retrying: Array<ApiBudgetProjection & {
@@ -455,6 +456,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_progress_transition_at_ms: number | null;
     last_heartbeat_at_ms: number | null;
     operator_actions: OperatorActionProjection[];
+    recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
     operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   stopped_runs: Array<{
@@ -614,6 +616,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       reasoning_output_tokens?: number;
       model_context_window?: number;
     };
+    recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
   }) | null;
   retry: (ApiBudgetProjection & {
     attempt: number;
@@ -758,6 +761,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_progress_transition_at_ms: number | null;
     last_heartbeat_at_ms: number | null;
     operator_actions: OperatorActionProjection[];
+    recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
   }) | null;
   phase_timeline: Array<{
     at: string;

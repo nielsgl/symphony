@@ -316,6 +316,69 @@ describe('CodexRunner', () => {
     expect(settled).toBe(true);
   });
 
+  it('resumes an existing thread, interrupts the previous turn, and starts a guarded recovery turn', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const events: string[] = [];
+
+    const promise = runner.resumeThreadInterruptAndRunTurn(
+      {
+        ...makeStartInput(workspaceCwd, {
+          prompt: 'Recover from an interrupted/stalled turn.',
+          onEvent: (event) => events.push(event.event)
+        }),
+        previousThreadId: 'thread-recover',
+        previousTurnId: 'turn-old',
+        previousSessionId: 'session-old'
+      }
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-recover"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":4,"result":{"turn":{"id":"turn-recovery"}}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-recover',
+      turn_id: 'turn-recovery',
+      session_id: 'thread-recover-turn-recovery'
+    });
+
+    const messages = parseWrittenMessages(fake);
+    expect(messages.map((message) => message.method).filter(Boolean)).toEqual([
+      'initialize',
+      'initialized',
+      'thread/resume',
+      'turn/interrupt',
+      'turn/start'
+    ]);
+    expect(messages.find((message) => message.method === 'thread/resume')?.params).toMatchObject({
+      threadId: 'thread-recover',
+      cwd: workspaceCwd,
+      persistExtendedHistory: true
+    });
+    expect(messages.find((message) => message.method === 'turn/interrupt')?.params).toEqual({
+      threadId: 'thread-recover',
+      turnId: 'turn-old'
+    });
+    expect(messages.find((message) => message.method === 'turn/start')?.params).toMatchObject({
+      threadId: 'thread-recover',
+      cwd: workspaceCwd
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        CANONICAL_EVENT.codex.sessionStarted,
+        CANONICAL_EVENT.codex.turnCancelled,
+        CANONICAL_EVENT.codex.promptSent,
+        CANONICAL_EVENT.codex.turnStarted,
+        CANONICAL_EVENT.codex.turnCompleted
+      ])
+    );
+  });
+
   it('accepts compatible payload variants for nested ids', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

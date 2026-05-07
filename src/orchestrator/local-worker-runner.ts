@@ -219,6 +219,144 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
   }
 }
 
+export async function runLocalWorkerRecoveryAttempt(
+  input: LocalWorkerRunInput & {
+    previousThreadId: string;
+    previousTurnId: string;
+    previousSessionId: string | null;
+    recoveryPrompt: string;
+  }
+): Promise<LocalWorkerRunResult> {
+  let workspacePath: string | null = null;
+
+  try {
+    const workspace = await input.workspaceManager.ensureWorkspace(input.issue.identifier);
+    workspacePath = workspace.path;
+    const normalizedWorkspace = path.resolve(workspace.path);
+    const normalizedRoot = path.resolve(input.config.workspace.root);
+    if (normalizedWorkspace === normalizedRoot) {
+      input.onCodexEvent?.({
+        event: CANONICAL_EVENT.codex.startupFailed,
+        timestamp: new Date().toISOString(),
+        codex_app_server_pid: null,
+        detail: REASON_CODES.unsafeWorkspaceRoot
+      });
+      return {
+        reason: 'abnormal',
+        session_id: null,
+        error: REASON_CODES.unsafeWorkspaceRoot
+      };
+    }
+    await input.workspaceManager.prepareAttempt(workspace.path);
+    const codexSpawnCommand = buildCodexSpawnCommand(input.config.codex);
+    const turnResult = await input.codexRunner.resumeThreadInterruptAndRunTurn({
+      command: codexSpawnCommand.command,
+      commandArgs: codexSpawnCommand.args,
+      commandEnv: codexSpawnCommand.env,
+      workspaceCwd: workspace.path,
+      workerHost: input.worker_host,
+      prompt: input.recoveryPrompt,
+      previousThreadId: input.previousThreadId,
+      previousTurnId: input.previousTurnId,
+      previousSessionId: input.previousSessionId,
+      title: `${input.issue.identifier}: ${input.issue.title}`,
+      maxTurns: 1,
+      approvalPolicy: input.config.codex.approval_policy,
+      threadSandbox: input.config.codex.thread_sandbox,
+      turnSandboxPolicy: input.config.codex.turn_sandbox_policy ? { type: input.config.codex.turn_sandbox_policy } : undefined,
+      onEvent: input.onCodexEvent,
+      readTimeoutMs: input.config.codex.read_timeout_ms,
+      turnTimeoutMs: input.config.codex.turn_timeout_ms
+    });
+
+    if (turnResult.status !== 'completed') {
+      return {
+        reason: 'abnormal',
+        session_id: turnResult.session_id,
+        error: turnResult.error_code ?? turnResult.last_event,
+        input_required_payload: turnResult.input_required_payload
+      };
+    }
+
+    let refreshedIssues: Issue[];
+    try {
+      refreshedIssues = await input.issueStateFetcher([input.issue.id]);
+    } catch (error) {
+      return {
+        reason: 'abnormal',
+        session_id: turnResult.session_id,
+        error: `issue_state_refresh_failed: ${error instanceof Error ? error.message : 'unknown'}`
+      };
+    }
+
+    if (refreshedIssues.length === 0) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.issueStateMissing
+      };
+    }
+
+    const refreshedIssue = refreshedIssues.find((issue) => issue.id === input.issue.id) ?? refreshedIssues[0];
+    if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.terminal_states)) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.terminalStateReached,
+        refreshed_state: refreshedIssue.state
+      };
+    }
+
+    if (refreshedIssue && isStateListed(refreshedIssue.state, input.config.tracker.handoff_states)) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.handoffStateReached,
+        refreshed_state: refreshedIssue.state
+      };
+    }
+
+    if (
+      refreshedIssue &&
+      isStateListed(input.issue.state, input.config.tracker.fresh_dispatch_states) &&
+      !isSameState(input.issue.state, refreshedIssue.state)
+    ) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.freshDispatchStateRouted,
+        refreshed_state: refreshedIssue.state
+      };
+    }
+
+    if (!refreshedIssue || !isActiveState(refreshedIssue.state, input.config.tracker.active_states)) {
+      return {
+        reason: 'normal',
+        session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.issueLeftActiveStates,
+        refreshed_state: refreshedIssue?.state ?? null
+      };
+    }
+
+    return {
+      reason: 'normal',
+      session_id: turnResult.session_id,
+      completion_reason: REASON_CODES.maxTurnsReached
+    };
+  } catch (error) {
+    const workspaceConflictError = await renderWorkspaceConflictError(error, workspacePath);
+    return {
+      reason: 'abnormal',
+      session_id: null,
+      error: workspaceConflictError ?? (error instanceof Error ? error.message : 'unknown recovery worker error')
+    };
+  } finally {
+    if (workspacePath) {
+      await input.workspaceManager.finalizeAttempt(workspacePath);
+    }
+  }
+}
+
 async function renderWorkspaceConflictError(error: unknown, workspacePath: string | null): Promise<string | null> {
   const typed = parseWorkspaceConflictError(error);
   if (!typed) {
