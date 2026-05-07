@@ -125,7 +125,29 @@ describe('SnapshotService', () => {
         [
           'issue-1',
           makeRunningEntry({
-            last_codex_timestamp_ms: null
+            last_codex_timestamp_ms: null,
+            tool_call_ledger: {
+              'call-api-1': {
+                call_id: 'call-api-1',
+                tool_name: 'linear_graphql',
+                thread_id: 'thread-1',
+                turn_id: 'turn-3',
+                session_id: 'thread-1-turn-3',
+                issue_id: 'issue-1',
+                issue_identifier: 'ABC-1',
+                run_id: 'run-1',
+                issue_run_id: 'issue-run-1',
+                attempt_id: 'attempt-1',
+                first_seen_at_ms: Date.parse('2026-04-10T10:01:05.000Z'),
+                last_seen_at_ms: Date.parse('2026-04-10T10:01:07.000Z'),
+                completed_at_ms: Date.parse('2026-04-10T10:01:07.000Z'),
+                completion_status: 'completed',
+                evidence_sources: ['app_server_protocol', 'worker_event'],
+                start_evidence_source: 'app_server_protocol',
+                completion_evidence_source: 'worker_event',
+                last_agent_message: 'waiting for linear_graphql output'
+              }
+            }
           })
         ]
       ]),
@@ -191,6 +213,31 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.token_telemetry_confidence).toBe('observed_live');
     expect(projected.running[0]?.budget_status).toBe('ok');
     expect(projected.running[0]?.budget_usage_tokens).toBeNull();
+    expect(projected.running[0]?.tool_call_ledger).toEqual([
+      {
+        call_id: 'call-api-1',
+        tool_name: 'linear_graphql',
+        thread_id: 'thread-1',
+        turn_id: 'turn-3',
+        session_id: 'thread-1-turn-3',
+        issue_id: 'issue-1',
+        issue_identifier: 'ABC-1',
+        run_id: 'run-1',
+        issue_run_id: 'issue-run-1',
+        attempt_id: 'attempt-1',
+        first_seen_at: '2026-04-10T10:01:05.000Z',
+        first_seen_at_ms: Date.parse('2026-04-10T10:01:05.000Z'),
+        last_seen_at: '2026-04-10T10:01:07.000Z',
+        last_seen_at_ms: Date.parse('2026-04-10T10:01:07.000Z'),
+        completed_at: '2026-04-10T10:01:07.000Z',
+        completed_at_ms: Date.parse('2026-04-10T10:01:07.000Z'),
+        completion_status: 'completed',
+        evidence_sources: ['app_server_protocol', 'worker_event'],
+        start_evidence_source: 'app_server_protocol',
+        completion_evidence_source: 'worker_event',
+        last_agent_message: 'waiting for linear_graphql output'
+      }
+    ]);
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');

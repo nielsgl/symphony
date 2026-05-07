@@ -1768,7 +1768,21 @@ describe('OrchestratorCore', () => {
         turn_id: 'turn-transcript',
         session_id: 'session-transcript'
       });
-      harness.now.value += 2_000;
+      harness.now.value += 500;
+      await harness.orchestrator.tick('interval');
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-linear')?.tool_call_ledger?.call_transcript_linear).toMatchObject({
+        tool_name: 'linear_graphql',
+        call_id: 'call_transcript_linear',
+        thread_id: 'thread-transcript',
+        turn_id: 'turn-transcript',
+        session_id: 'session-transcript',
+        completion_status: 'pending',
+        evidence_sources: ['session_transcript'],
+        start_evidence_source: 'session_transcript',
+        completion_evidence_source: null
+      });
+
+      harness.now.value += 1_500;
       await harness.orchestrator.tick('interval');
       await new Promise((resolve) => setImmediate(resolve));
 
@@ -2331,6 +2345,15 @@ describe('OrchestratorCore', () => {
       expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-output')?.stalled_waiting_reason).toBe(
         REASON_CODES.turnWaitingThresholdExceeded
       );
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-output')?.tool_call_ledger?.call_transcript_output).toMatchObject({
+        tool_name: 'linear_graphql',
+        call_id: 'call_transcript_output',
+        session_id: 'session-output',
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript'],
+        start_evidence_source: 'session_transcript',
+        completion_evidence_source: 'session_transcript'
+      });
     });
   });
 
@@ -2705,6 +2728,116 @@ describe('OrchestratorCore', () => {
     expect(harness.orchestrator.getStateSnapshot().running.get('i-tool-ok')?.stalled_waiting_reason).toBe(
       REASON_CODES.turnWaitingThresholdExceeded
     );
+    expect(harness.orchestrator.getStateSnapshot().running.get('i-tool-ok')?.tool_call_ledger?.call_ok).toMatchObject({
+      call_id: 'call_ok',
+      tool_name: 'dynamic_tool',
+      issue_id: 'i-tool-ok',
+      issue_identifier: 'ABC-TOOL-OK',
+      completion_status: 'completed',
+      first_seen_at_ms: harness.now.value - 2_000,
+      last_seen_at_ms: harness.now.value - 1_900,
+      completed_at_ms: harness.now.value - 1_900,
+      evidence_sources: ['worker_event'],
+      start_evidence_source: 'worker_event',
+      completion_evidence_source: 'worker_event'
+    });
+    expect(harness.orchestrator.getStateSnapshot().running.get('i-tool-ok')?.outstanding_tool_calls ?? {}).toEqual({});
+  });
+
+  it('preserves app-server protocol evidence for completed function calls', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-protocol-tool', identifier: 'ABC-PROTOCOL-TOOL' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-protocol-tool', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-protocol',
+      turn_id: 'turn-protocol',
+      session_id: 'session-protocol'
+    });
+    harness.orchestrator.onWorkerEvent('i-protocol-tool', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_graphql',
+      thread_id: 'thread-protocol',
+      turn_id: 'turn-protocol',
+      session_id: 'session-protocol',
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_protocol_ledger',
+      tool_call_evidence_source: 'app_server_protocol'
+    });
+    harness.orchestrator.onWorkerEvent('i-protocol-tool', {
+      timestamp_ms: harness.now.value + 120,
+      event: CANONICAL_EVENT.codex.toolCallCompleted,
+      detail: 'function_call_output',
+      thread_id: 'thread-protocol',
+      turn_id: 'turn-protocol',
+      session_id: 'session-protocol',
+      tool_call_id: 'call_protocol_ledger',
+      tool_call_evidence_source: 'app_server_protocol'
+    });
+
+    expect(harness.orchestrator.getStateSnapshot().running.get('i-protocol-tool')?.tool_call_ledger?.call_protocol_ledger).toMatchObject({
+      call_id: 'call_protocol_ledger',
+      tool_name: 'linear_graphql',
+      thread_id: 'thread-protocol',
+      turn_id: 'turn-protocol',
+      session_id: 'session-protocol',
+      completion_status: 'completed',
+      first_seen_at_ms: harness.now.value + 10,
+      last_seen_at_ms: harness.now.value + 120,
+      completed_at_ms: harness.now.value + 120,
+      evidence_sources: ['app_server_protocol'],
+      start_evidence_source: 'app_server_protocol',
+      completion_evidence_source: 'app_server_protocol'
+    });
+    expect(harness.orchestrator.getStateSnapshot().running.get('i-protocol-tool')?.outstanding_tool_calls ?? {}).toEqual({});
+  });
+
+  it('does not classify healthy MCP tool events as missing dynamic GraphQL output', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-mcp-healthy', identifier: 'ABC-MCP-HEALTHY' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-mcp-healthy', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'linear_mcp',
+      tool_name: 'linear_mcp',
+      tool_call_id: 'call_mcp_healthy'
+    });
+    harness.orchestrator.onWorkerEvent('i-mcp-healthy', {
+      timestamp_ms: harness.now.value + 50,
+      event: CANONICAL_EVENT.codex.toolCallCompleted,
+      detail: 'linear_mcp',
+      tool_name: 'linear_mcp',
+      tool_call_id: 'call_mcp_healthy'
+    });
+    harness.orchestrator.onWorkerEvent('i-mcp-healthy', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting after healthy MCP operation'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-mcp-healthy');
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-mcp-healthy')).toBe(false);
+    expect(running?.tool_call_ledger?.call_mcp_healthy).toMatchObject({
+      tool_name: 'linear_mcp',
+      completion_status: 'completed',
+      evidence_sources: ['worker_event']
+    });
+    expect(
+      Object.values(running?.tool_call_ledger ?? {}).some(
+        (call) => call.tool_name === 'linear_graphql' && call.completion_status === 'pending'
+      )
+    ).toBe(false);
   });
 
   it('quarantines duplicate or late tool output after missing-output blocked classification', async () => {

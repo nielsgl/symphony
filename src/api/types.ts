@@ -1,4 +1,4 @@
-import type { OrchestratorState, TickReason } from '../orchestrator';
+import type { OrchestratorState, TickReason, ToolCallEvidenceSource, ToolCallCompletionStatus } from '../orchestrator';
 import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { StructuredLogger } from '../observability';
@@ -196,6 +196,30 @@ export interface ApiCurrentOperatorBlockProjection {
   detail: string | null;
 }
 
+export interface ApiToolCallLedgerEntry {
+  call_id: string;
+  tool_name: string;
+  thread_id: string | null;
+  turn_id: string | null;
+  session_id: string | null;
+  issue_id: string;
+  issue_identifier: string;
+  run_id: string | null;
+  issue_run_id: string | null;
+  attempt_id: string | null;
+  first_seen_at: string;
+  first_seen_at_ms: number;
+  last_seen_at: string;
+  last_seen_at_ms: number;
+  completed_at: string | null;
+  completed_at_ms: number | null;
+  completion_status: ToolCallCompletionStatus;
+  evidence_sources: ToolCallEvidenceSource[];
+  start_evidence_source: ToolCallEvidenceSource | null;
+  completion_evidence_source: ToolCallEvidenceSource | null;
+  last_agent_message: string | null;
+}
+
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
   counts: {
@@ -269,6 +293,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     current_blocker_class: string | null;
     time_since_progress: number | null;
     last_successful_step: string | null;
+    tool_call_ledger: ApiToolCallLedgerEntry[];
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
@@ -582,6 +607,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
+    tool_call_ledger: ApiToolCallLedgerEntry[];
     tokens: {
       input_tokens: number;
       output_tokens: number;

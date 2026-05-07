@@ -31,6 +31,7 @@ import type {
   RetryEntry,
   RunningEntry,
   TickReason,
+  ToolCallLedgerEntry,
   ToolCallLedgerObservation,
   WorkerCompletionReason,
   WorkerExitDetails,
@@ -171,6 +172,15 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     current_phase: entry.current_phase,
     current_phase_at_ms: entry.current_phase_at_ms,
     phase_detail: entry.phase_detail,
+    tool_call_ledger: Object.fromEntries(
+      Object.entries(entry.tool_call_ledger ?? {}).map(([callId, call]) => [
+        callId,
+        {
+          ...call,
+          evidence_sources: [...call.evidence_sources]
+        }
+      ])
+    ),
     outstanding_tool_calls: Object.fromEntries(
       Object.entries(entry.outstanding_tool_calls ?? {}).map(([callId, call]) => [callId, { ...call }])
     ),
@@ -3143,6 +3153,7 @@ export class OrchestratorCore {
       current_phase: null,
       current_phase_at_ms: null,
       phase_detail: null,
+      tool_call_ledger: {},
       outstanding_tool_calls: {},
       codex_session_transcript_scan_offsets: {},
       recovery: null
@@ -4980,6 +4991,7 @@ export class OrchestratorCore {
       return;
     }
 
+    const ledgerEntry = this.upsertToolCallLedgerEntry(runningEntry, observation, callId);
     if (observation.kind === 'function_call_output') {
       if (runningEntry.outstanding_tool_calls) {
         delete runningEntry.outstanding_tool_calls[callId];
@@ -4988,18 +5000,79 @@ export class OrchestratorCore {
     }
 
     const calls = runningEntry.outstanding_tool_calls ?? {};
+    const existing = calls[callId];
+    if (!existing && ledgerEntry.completion_status === 'completed') {
+      return;
+    }
     calls[callId] = {
       call_id: callId,
-      tool_name: observation.tool_name?.trim() || calls[callId]?.tool_name || 'unknown_tool',
-      thread_id: observation.thread_id ?? runningEntry.thread_id ?? null,
-      turn_id: observation.turn_id ?? runningEntry.turn_id ?? null,
-      session_id: observation.session_id ?? runningEntry.session_id ?? null,
-      started_at_ms: observation.observed_at_ms,
-      last_waiting_at_ms: calls[callId]?.last_waiting_at_ms ?? null,
-      last_agent_message: observation.last_agent_message ?? runningEntry.last_message ?? calls[callId]?.last_agent_message ?? null,
-      evidence_source: observation.evidence_source
+      tool_name: ledgerEntry.tool_name,
+      thread_id: ledgerEntry.thread_id,
+      turn_id: ledgerEntry.turn_id,
+      session_id: ledgerEntry.session_id,
+      started_at_ms: existing?.started_at_ms ?? ledgerEntry.first_seen_at_ms,
+      last_waiting_at_ms: existing?.last_waiting_at_ms ?? null,
+      last_agent_message: observation.last_agent_message ?? runningEntry.last_message ?? existing?.last_agent_message ?? null,
+      evidence_source: existing?.evidence_source ?? ledgerEntry.start_evidence_source ?? observation.evidence_source
     };
     runningEntry.outstanding_tool_calls = calls;
+  }
+
+  private upsertToolCallLedgerEntry(
+    runningEntry: RunningEntry,
+    observation: ToolCallLedgerObservation,
+    callId: string
+  ): ToolCallLedgerEntry {
+    const ledger = (runningEntry.tool_call_ledger ??= {});
+    const existing = ledger[callId];
+    const toolName =
+      observation.tool_name?.trim() ||
+      existing?.tool_name ||
+      runningEntry.outstanding_tool_calls?.[callId]?.tool_name ||
+      'unknown_tool';
+    const evidenceSources = existing?.evidence_sources ? [...existing.evidence_sources] : [];
+    if (!evidenceSources.includes(observation.evidence_source)) {
+      evidenceSources.push(observation.evidence_source);
+    }
+
+    const firstSeenAtMs = existing ? Math.min(existing.first_seen_at_ms, observation.observed_at_ms) : observation.observed_at_ms;
+    const lastSeenAtMs = existing ? Math.max(existing.last_seen_at_ms, observation.observed_at_ms) : observation.observed_at_ms;
+    const completionStatus =
+      observation.kind === 'function_call_output' || existing?.completion_status === 'completed' ? 'completed' : 'pending';
+    const completedAtMs =
+      observation.kind === 'function_call_output'
+        ? existing?.completed_at_ms
+          ? Math.min(existing.completed_at_ms, observation.observed_at_ms)
+          : observation.observed_at_ms
+        : existing?.completed_at_ms ?? null;
+
+    const entry: ToolCallLedgerEntry = {
+      call_id: callId,
+      tool_name: toolName,
+      thread_id: existing?.thread_id ?? observation.thread_id ?? runningEntry.thread_id ?? null,
+      turn_id: existing?.turn_id ?? observation.turn_id ?? runningEntry.turn_id ?? null,
+      session_id: existing?.session_id ?? observation.session_id ?? runningEntry.session_id ?? null,
+      issue_id: runningEntry.issue.id,
+      issue_identifier: runningEntry.identifier,
+      run_id: runningEntry.run_id ?? null,
+      issue_run_id: runningEntry.issue_run_id ?? null,
+      attempt_id: runningEntry.attempt_id ?? null,
+      first_seen_at_ms: firstSeenAtMs,
+      last_seen_at_ms: lastSeenAtMs,
+      completed_at_ms: completedAtMs,
+      completion_status: completionStatus,
+      evidence_sources: evidenceSources,
+      start_evidence_source:
+        existing?.start_evidence_source ?? (observation.kind === 'function_call' ? observation.evidence_source : null),
+      completion_evidence_source:
+        observation.kind === 'function_call_output'
+          ? observation.evidence_source
+          : existing?.completion_evidence_source ?? null,
+      last_agent_message:
+        observation.last_agent_message ?? runningEntry.last_message ?? existing?.last_agent_message ?? null
+    };
+    ledger[callId] = entry;
+    return entry;
   }
 
   private resolveToolCallId(workerEvent: WorkerObservabilityEvent): string | null {

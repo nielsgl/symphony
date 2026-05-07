@@ -120,6 +120,7 @@ export interface RunningEntry {
   current_phase?: PhaseMarkerName | null;
   current_phase_at_ms?: number | null;
   phase_detail?: string | null;
+  tool_call_ledger?: Record<string, ToolCallLedgerEntry>;
   outstanding_tool_calls?: Record<string, OutstandingToolCall>;
   codex_session_transcript_scan_offsets?: Record<string, number>;
   recovery?: MissingToolOutputRecoveryState | null;
@@ -137,6 +138,29 @@ export interface OutstandingToolCall {
   last_waiting_at_ms: number | null;
   last_agent_message: string | null;
   evidence_source: ToolCallEvidenceSource;
+}
+
+export type ToolCallCompletionStatus = 'pending' | 'completed';
+
+export interface ToolCallLedgerEntry {
+  call_id: string;
+  tool_name: string;
+  thread_id: string | null;
+  turn_id: string | null;
+  session_id: string | null;
+  issue_id: string;
+  issue_identifier: string;
+  run_id: string | null;
+  issue_run_id: string | null;
+  attempt_id: string | null;
+  first_seen_at_ms: number;
+  last_seen_at_ms: number;
+  completed_at_ms: number | null;
+  completion_status: ToolCallCompletionStatus;
+  evidence_sources: ToolCallEvidenceSource[];
+  start_evidence_source: ToolCallEvidenceSource | null;
+  completion_evidence_source: ToolCallEvidenceSource | null;
+  last_agent_message: string | null;
 }
 
 export type MissingToolOutputRecoveryMode = 'same_thread_guarded_continuation';
