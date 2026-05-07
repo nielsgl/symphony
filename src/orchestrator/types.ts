@@ -99,6 +99,20 @@ export interface RunningEntry {
     event: string;
     message: string | null;
   }>;
+  quarantined_events?: Array<{
+    at_ms: number;
+    event: string;
+    message: string | null;
+    session_id: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+    active_session_id: string | null;
+    active_thread_id: string | null;
+    active_turn_id: string | null;
+    reason: 'lineage_mismatch';
+  }>;
+  quarantined_event_count?: number;
+  last_quarantined_event_at_ms?: number | null;
   started_at_ms: number;
   last_codex_timestamp_ms: number | null;
   current_phase?: PhaseMarkerName | null;

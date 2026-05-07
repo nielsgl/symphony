@@ -74,6 +74,21 @@ function projectMissingToolOutput(
     : null;
 }
 
+function projectQuarantinedRunningEvents(entry: RunningEntry) {
+  return (entry.quarantined_events ?? []).map((event) => ({
+    at: asIsoDate(event.at_ms),
+    event: event.event,
+    message: event.message,
+    session_id: event.session_id,
+    thread_id: event.thread_id,
+    turn_id: event.turn_id,
+    active_session_id: event.active_session_id,
+    active_thread_id: event.active_thread_id,
+    active_turn_id: event.active_turn_id,
+    reason: event.reason
+  }));
+}
+
 function normalizeReasonDetail(detail: string): string {
   return detail.trim().replace(/\s+/g, ' ');
 }
@@ -238,6 +253,8 @@ function toStateRunningRow(
     ...turnControl,
     ...progressSignal,
     ...resolveTokenTelemetryQuality(entry),
+    quarantined_event_count: entry.quarantined_event_count ?? 0,
+    last_quarantined_event_at: entry.last_quarantined_event_at_ms ? asIsoDate(entry.last_quarantined_event_at_ms) : null,
     current_blocker_class: operatorExplainer.actionability === 'none' ? null : operatorExplainer.classification,
     time_since_progress: timeSinceProgress,
     last_successful_step: resolveLastSuccessfulStep(entry),
@@ -568,6 +585,10 @@ export class SnapshotService {
           ...turnControl,
           ...progressSignal,
           ...resolveTokenTelemetryQuality(entry),
+          quarantined_event_count: entry.quarantined_event_count ?? 0,
+          last_quarantined_event_at: entry.last_quarantined_event_at_ms
+            ? asIsoDate(entry.last_quarantined_event_at_ms)
+            : null,
           ...resolveNotBlockedExplainer({
             blocked: false,
             progress_signal_state: progressSignal.progress_signal_state,
@@ -713,6 +734,7 @@ export class SnapshotService {
           event: event.event,
           message: event.message
         })),
+        stale_events: projectQuarantinedRunningEvents(entry),
         last_error: retryEntry?.error ?? state.health.last_error,
         logs: {
           codex_session_logs: []
@@ -861,6 +883,7 @@ export class SnapshotService {
           session_id: event.session_id ?? null
         })),
         recent_events: [],
+        stale_events: [],
         last_error: retryOnlyEntry.error,
         logs: {
           codex_session_logs: []
@@ -991,6 +1014,7 @@ export class SnapshotService {
         event: event.event,
         message: event.message
       })),
+      stale_events: [],
       last_error: blockedEntry.stop_reason_detail ?? blockedEntry.stop_reason_code,
       logs: {
         codex_session_logs: []

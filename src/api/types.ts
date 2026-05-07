@@ -264,6 +264,8 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     progress_signal_state: ProgressSignalState;
     last_progress_transition_at_ms: number | null;
     last_heartbeat_at_ms: number | null;
+    quarantined_event_count: number;
+    last_quarantined_event_at: string | null;
     current_blocker_class: string | null;
     time_since_progress: number | null;
     last_successful_step: string | null;
@@ -572,6 +574,8 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     progress_signal_state: ProgressSignalState;
     last_progress_transition_at_ms: number | null;
     last_heartbeat_at_ms: number | null;
+    quarantined_event_count: number;
+    last_quarantined_event_at: string | null;
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
@@ -739,6 +743,18 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     at: string;
     event: string;
     message: string | null;
+  }>;
+  stale_events: Array<{
+    at: string;
+    event: string;
+    message: string | null;
+    session_id: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+    active_session_id: string | null;
+    active_thread_id: string | null;
+    active_turn_id: string | null;
+    reason: 'lineage_mismatch';
   }>;
   last_error: string | null;
   logs: {
