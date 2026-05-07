@@ -168,6 +168,19 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
         };
       }
 
+      if (
+        refreshedIssue &&
+        isStateListed(currentIssue.state, input.config.tracker.fresh_dispatch_states) &&
+        !isSameState(currentIssue.state, refreshedIssue.state)
+      ) {
+        return {
+          reason: 'normal',
+          session_id: lastSessionId,
+          completion_reason: REASON_CODES.freshDispatchStateRouted,
+          refreshed_state: refreshedIssue.state
+        };
+      }
+
       if (!refreshedIssue || !isActiveState(refreshedIssue.state, input.config.tracker.active_states)) {
         return {
           reason: 'normal',
@@ -397,4 +410,8 @@ function isStateListed(state: string | null | undefined, stateNames: string[]): 
   }
   const normalized = state.trim().toLowerCase();
   return stateNames.some((stateName) => stateName.trim().toLowerCase() === normalized);
+}
+
+function isSameState(left: string | null | undefined, right: string | null | undefined): boolean {
+  return left?.trim().toLowerCase() === right?.trim().toLowerCase();
 }

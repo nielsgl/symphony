@@ -11,6 +11,7 @@ export type WorkerCompletionReason =
   | typeof REASON_CODES.maxTurnsReached
   | typeof REASON_CODES.issueStateMissing
   | typeof REASON_CODES.handoffStateReached
+  | typeof REASON_CODES.freshDispatchStateRouted
   | typeof REASON_CODES.issueLeftActiveStates
   | typeof REASON_CODES.terminalStateReached;
 export interface WorkerExitDetails {

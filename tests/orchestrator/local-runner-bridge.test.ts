@@ -5,6 +5,7 @@ import { LocalRunnerBridge } from '../../src/orchestrator/local-runner-bridge';
 import type { OrchestratorConfig, OrchestratorPorts } from '../../src/orchestrator/types';
 import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
+import { REASON_CODES } from '../../src/observability/reason-codes';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 import type { EffectiveConfig } from '../../src/workflow/types';
 import type { CodexRunner, CodexRunnerEvent } from '../../src/codex';
@@ -233,6 +234,75 @@ describe('LocalRunnerBridge integration', () => {
       completion_reason: 'handoff_state_reached',
       refreshed_state: 'Agent Review'
     });
+  });
+
+  it('stops fresh Agent Review runs after routing to the next workflow state', async () => {
+    const routeCases = [
+      { targetState: 'In Progress', expectedReason: REASON_CODES.freshDispatchStateRouted },
+      { targetState: 'Rework', expectedReason: REASON_CODES.freshDispatchStateRouted },
+      { targetState: 'Merging', expectedReason: REASON_CODES.freshDispatchStateRouted },
+      { targetState: 'Human Review', expectedReason: REASON_CODES.handoffStateReached }
+    ];
+
+    for (const routeCase of routeCases) {
+      const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+      const prepareAttempt = vi.fn(async () => {});
+      const finalizeAttempt = vi.fn(async () => {});
+      const cleanupWorkspace = vi.fn(async () => true);
+      const startSessionAndRunTurn = vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 'completed' as const,
+          thread_id: 'review-thread',
+          turn_id: 'review-turn',
+          session_id: 'review-thread-turn',
+          last_event: CANONICAL_EVENT.codex.turnCompleted
+        })
+        .mockResolvedValueOnce({
+          status: 'completed' as const,
+          thread_id: 'unexpected-continuation-thread',
+          turn_id: 'unexpected-continuation-turn',
+          session_id: 'unexpected-continuation-session',
+          last_event: CANONICAL_EVENT.codex.turnCompleted
+        });
+      const issueStateFetcher = vi.fn().mockResolvedValueOnce([
+        makeIssue({ id: 'i-1', identifier: 'ABC-1', state: routeCase.targetState })
+      ]);
+      const config = makeConfig();
+      config.agent.max_turns = 5;
+      config.tracker.active_states = ['Todo', 'In Progress', 'Agent Review', 'Merging', 'Rework'];
+      config.tracker.handoff_states = ['Agent Review', 'Human Review'];
+      config.tracker.fresh_dispatch_states = ['Agent Review'];
+      const exits: Array<{ completion_reason?: string; refreshed_state?: string | null }> = [];
+
+      const bridge = new LocalRunnerBridge({
+        workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+        codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
+        config,
+        issueStateFetcher,
+        promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+        onWorkerExit: ({ completion_reason, refreshed_state }) => {
+          exits.push({ completion_reason, refreshed_state });
+        }
+      });
+
+      const spawned = await bridge.spawnWorker({ issue: makeIssue({ state: 'Agent Review' }), attempt: null });
+      expect(spawned.ok).toBe(true);
+      if (!spawned.ok) {
+        throw new Error('expected spawn success');
+      }
+      await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+      expect(startSessionAndRunTurn, routeCase.targetState).toHaveBeenCalledTimes(1);
+      expect(startSessionAndRunTurn.mock.calls[0][0].prompt, routeCase.targetState).toContain('Issue ABC-1 attempt');
+      expect(startSessionAndRunTurn.mock.calls[0][0].prompt, routeCase.targetState).not.toContain('Continue on the same thread');
+      expect(issueStateFetcher, routeCase.targetState).toHaveBeenCalledTimes(1);
+      expect(cleanupWorkspace, routeCase.targetState).not.toHaveBeenCalled();
+      expect(finalizeAttempt, routeCase.targetState).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
+      expect(exits, routeCase.targetState).toEqual([
+        { completion_reason: routeCase.expectedReason, refreshed_state: routeCase.targetState }
+      ]);
+    }
   });
 
   it('refreshes issue state on the final turn before stopping at a handoff state', async () => {
