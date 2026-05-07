@@ -459,6 +459,11 @@ describe('thread diagnostics blocker classification', () => {
             quarantined_event_count: 1,
             prompt_hash: 'abc123',
             prompt_summary: 'guarded recovery prompt: inspect state before retrying indeterminate tool action',
+            interrupt_cancel_result: {
+              status: 'succeeded',
+              reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+              detail: 'interrupted previous turn turn-1 on thread thread-1'
+            },
             last_result: 'started'
           }
         })
@@ -489,6 +494,10 @@ describe('thread diagnostics blocker classification', () => {
           turn_id: 'turn-recovery',
           session_id: 'session-recovery'
         },
+        interrupt_cancel_result: {
+          status: 'succeeded',
+          reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted
+        },
         guarded_prompt_dispatch: {
           status: 'sent',
           prompt_hash: 'abc123'
@@ -496,6 +505,67 @@ describe('thread diagnostics blocker classification', () => {
         final_outcome: {
           result: 'started'
         }
+      }
+    });
+  });
+
+  it('does not report interrupt success for pre-interrupt recovery blocks', () => {
+    const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
+      state: makeState(
+        null,
+        makeBlockedEntry({
+          stop_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+          stop_reason_detail: 'missing previous thread or turn id for same-thread guarded recovery',
+          previous_thread_id: 'thread-1',
+          previous_session_id: null,
+          recovery: {
+            attempt_count: 1,
+            started_at_ms: Date.parse('2026-04-10T10:02:00.000Z'),
+            reason_code: REASON_CODES.missingToolOutput,
+            mode: 'same_thread_guarded_continuation',
+            previous_thread_id: 'thread-1',
+            previous_turn_id: null,
+            previous_session_id: null,
+            previous_worker_handle_known: true,
+            previous_codex_app_server_pid: '12345',
+            last_tool_name: 'linear_graphql',
+            last_call_id: 'call-1',
+            evidence_source: 'session_transcript',
+            elapsed_wait_ms: 120_000,
+            last_agent_message: 'waiting_for_turn_completion elapsed_s=120',
+            last_observed_phase: null,
+            last_observed_phase_detail: null,
+            recent_event_count: 4,
+            quarantined_event_count: 0,
+            prompt_hash: 'abc123',
+            prompt_summary: 'guarded recovery prompt: inspect state before retrying indeterminate tool action',
+            interrupt_cancel_result: {
+              status: 'not_started',
+              reason_code: null,
+              detail: null
+            },
+            last_result: 'failed',
+            last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed
+          }
+        })
+      ),
+      issue_identifier: 'ABC-1',
+      now_ms: Date.parse('2026-04-10T10:03:00.000Z')
+    });
+
+    expect(diagnostics?.current_blocker?.missing_tool_output_recovery).toMatchObject({
+      status: 'failed',
+      interrupt_cancel_result: {
+        status: 'not_started',
+        reason_code: null,
+        detail: null
+      },
+      guarded_prompt_dispatch: {
+        status: 'not_started'
+      },
+      final_outcome: {
+        result: 'failed',
+        reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed
       }
     });
   });

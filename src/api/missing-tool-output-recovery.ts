@@ -180,6 +180,44 @@ function nextAction(status: MissingToolOutputRecoveryOutcomeStatus): string {
   }
 }
 
+function interruptCancelResult(recovery: MissingToolOutputRecoveryState | null): MissingToolOutputRecoveryEvidence['interrupt_cancel_result'] {
+  if (!recovery) {
+    return {
+      status: 'not_started',
+      reason_code: null,
+      detail: null
+    };
+  }
+  const result = recovery.interrupt_cancel_result ?? null;
+  if (result) {
+    return {
+      status: result.status,
+      reason_code: result.reason_code ?? null,
+      detail: result.detail ?? null
+    };
+  }
+  return {
+    status: 'not_started',
+    reason_code: null,
+    detail: null
+  };
+}
+
+function guardedPromptDispatchStatus(
+  recovery: MissingToolOutputRecoveryState | null
+): MissingToolOutputRecoveryEvidence['guarded_prompt_dispatch']['status'] {
+  if (!recovery) {
+    return 'not_started';
+  }
+  if (recovery.last_result === 'failed' && recovery.last_result_reason_code === REASON_CODES.missingToolOutputRecoveryStartFailed) {
+    return recovery.interrupt_cancel_result?.status === 'succeeded' ? 'failed' : 'not_started';
+  }
+  if (recovery.last_result === 'blocked') {
+    return 'not_started';
+  }
+  return 'sent';
+}
+
 export function projectMissingToolOutputRecovery(
   entry: RecoveryProjectionEntry
 ): MissingToolOutputRecoveryEvidence | null {
@@ -220,24 +258,14 @@ export function projectMissingToolOutputRecovery(
       codex_app_server_pid: hasIssue(entry) ? entry.codex_app_server_pid ?? null : null,
       app_server_owned: hasIssue(entry) ? Boolean(entry.codex_app_server_pid || entry.run_id || entry.issue_run_id) : false
     },
-    interrupt_cancel_result: {
-      status: recovery ? 'succeeded' : 'not_started',
-      reason_code: recovery ? REASON_CODES.missingToolOutputRecoveryInterrupted : null,
-      detail: recovery
-        ? `interrupted previous turn ${previousTurnId ?? 'unknown'} on thread ${previousThreadId ?? 'unknown'}`
-        : null
-    },
+    interrupt_cancel_result: interruptCancelResult(recovery),
     replacement_turn: {
       thread_id: recovery ? threadId : null,
       turn_id: recovery && turnId !== previousTurnId ? turnId : null,
       session_id: recovery && sessionId !== previousSessionId ? sessionId : null
     },
     guarded_prompt_dispatch: {
-      status: recovery
-        ? recovery.last_result === 'failed' && recovery.last_result_reason_code === REASON_CODES.missingToolOutputRecoveryStartFailed
-          ? 'failed'
-          : 'sent'
-        : 'not_started',
+      status: guardedPromptDispatchStatus(recovery),
       prompt_hash: recovery?.prompt_hash ?? null,
       prompt_summary: recovery?.prompt_summary ?? null
     },

@@ -5715,6 +5715,14 @@ export class OrchestratorCore {
       session_id: previousSessionId ?? undefined,
       detail: `thread_id=${previousThreadId} turn_id=${previousTurnId} tool_name=${missingToolOutput.tool_name} call_id=${missingToolOutput.call_id}`
     });
+    const interruptedRecovery: MissingToolOutputRecoveryState = {
+      ...recovery,
+      interrupt_cancel_result: {
+        status: 'succeeded',
+        reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+        detail: `interrupted previous turn ${previousTurnId ?? 'unknown'} on thread ${previousThreadId ?? 'unknown'}`
+      }
+    };
 
     const recovered = await this.ports.recoverMissingToolOutput({
       issue: runningEntry.issue,
@@ -5737,7 +5745,7 @@ export class OrchestratorCore {
         observedAtMs,
         REASON_CODES.missingToolOutputRecoveryStartFailed,
         recovered.error,
-        { ...recovery, last_result: 'failed', last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed }
+        { ...interruptedRecovery, last_result: 'failed', last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed }
       );
       return;
     }
@@ -5747,7 +5755,7 @@ export class OrchestratorCore {
       runningEntry,
       'cancelled',
       REASON_CODES.missingToolOutputRecoveryInterrupted,
-      { ...recovery, last_result: 'started' }
+      { ...interruptedRecovery, last_result: 'started' }
     );
     await this.persistExecutionGraphStateTransition(
       runningEntry,
@@ -5801,7 +5809,7 @@ export class OrchestratorCore {
       running_wait_stall_event_emitted: false,
       outstanding_tool_calls: {},
       codex_session_transcript_scan_offsets: {},
-      recovery: { ...recovery, last_result: 'started' }
+      recovery: { ...interruptedRecovery, last_result: 'started' }
     });
 
     this.recordRuntimeEvent({
@@ -5848,6 +5856,11 @@ export class OrchestratorCore {
       quarantined_event_count: runningEntry.quarantined_event_count ?? 0,
       prompt_hash: createHash('sha256').update(params.recoveryPrompt).digest('hex').slice(0, 16),
       prompt_summary: 'guarded recovery prompt: inspect state before retrying indeterminate tool action',
+      interrupt_cancel_result: {
+        status: 'not_started',
+        reason_code: null,
+        detail: null
+      },
       last_result: 'started'
     };
   }
@@ -6078,9 +6091,9 @@ export class OrchestratorCore {
         app_server_owned: Boolean(runningEntry.codex_app_server_pid || runningEntry.run_id || runningEntry.issue_run_id)
       },
       interrupt_cancel_result: {
-        status: 'succeeded',
-        reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
-        detail: `interrupted previous turn ${recovery.previous_turn_id ?? 'unknown'} on thread ${recovery.previous_thread_id ?? 'unknown'}`
+        status: recovery.interrupt_cancel_result?.status ?? 'not_started',
+        reason_code: recovery.interrupt_cancel_result?.reason_code ?? null,
+        detail: recovery.interrupt_cancel_result?.detail ?? null
       },
       replacement_turn: {
         thread_id: runningEntry.thread_id ?? recovery.previous_thread_id ?? null,
@@ -6090,7 +6103,11 @@ export class OrchestratorCore {
       guarded_prompt_dispatch: {
         status:
           recovery.last_result === 'failed' && recovery.last_result_reason_code === REASON_CODES.missingToolOutputRecoveryStartFailed
-            ? 'failed'
+            ? recovery.interrupt_cancel_result?.status === 'succeeded'
+              ? 'failed'
+              : 'not_started'
+            : recovery.last_result === 'blocked'
+              ? 'not_started'
             : 'sent',
         prompt_hash: recovery.prompt_hash,
         prompt_summary: recovery.prompt_summary

@@ -1963,7 +1963,12 @@ describe('OrchestratorCore', () => {
       previous_thread_id: 'thread-recover',
       previous_turn_id: 'turn-old',
       last_tool_name: 'linear_graphql',
-      last_call_id: 'call_recover'
+      last_call_id: 'call_recover',
+      interrupt_cancel_result: {
+        status: 'succeeded',
+        reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+        detail: 'interrupted previous turn turn-old on thread thread-recover'
+      }
     });
     expect(running?.quarantined_event_count).toBe(1);
     expect(running?.quarantined_events?.[0]?.reason).toBe('lineage_mismatch');
@@ -2247,7 +2252,12 @@ describe('OrchestratorCore', () => {
       stop_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
       recovery: {
         last_result: 'failed',
-        last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed
+        last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+        interrupt_cancel_result: {
+          status: 'not_started',
+          reason_code: null,
+          detail: null
+        }
       }
     });
   });

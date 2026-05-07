@@ -199,7 +199,12 @@ export function classifyThreadBlocker(params: {
   const reasonDetail = params.reason_detail;
   const normalized = `${reasonCode ?? ''} ${reasonDetail ?? ''} ${params.status ?? ''}`.toLowerCase();
 
-  if (reasonCode === REASON_CODES.missingToolOutput) {
+  if (
+    reasonCode === REASON_CODES.missingToolOutput ||
+    reasonCode === REASON_CODES.missingToolOutputRecoveryExhausted ||
+    reasonCode === REASON_CODES.missingToolOutputRecoveryStartFailed ||
+    reasonCode === REASON_CODES.missingToolOutputRecoveryUnsafe
+  ) {
     return buildBlocker(
       REASON_CODES.missingToolOutput,
       reasonCode,
