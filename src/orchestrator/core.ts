@@ -619,6 +619,11 @@ export class OrchestratorCore {
       return;
     }
 
+    if (this.isStaleWorkerEventForRunningEntry(runningEntry, workerEvent)) {
+      this.recordStaleRunningWorkerEvent(issue_id, runningEntry, workerEvent);
+      return;
+    }
+
     runningEntry.last_codex_timestamp_ms = workerEvent.timestamp_ms;
     runningEntry.last_event = workerEvent.event;
     runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
@@ -845,11 +850,93 @@ export class OrchestratorCore {
     }
   }
 
+  private isStaleWorkerEventForRunningEntry(
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): boolean {
+    if (runningEntry.thread_id && workerEvent.thread_id && workerEvent.thread_id !== runningEntry.thread_id) {
+      return true;
+    }
+
+    if (this.isSameThreadContinuationTurnStart(runningEntry, workerEvent)) {
+      return false;
+    }
+
+    if (runningEntry.turn_id && workerEvent.turn_id && workerEvent.turn_id !== runningEntry.turn_id) {
+      return true;
+    }
+
+    return Boolean(runningEntry.session_id && workerEvent.session_id && workerEvent.session_id !== runningEntry.session_id);
+  }
+
+  private isSameThreadContinuationTurnStart(
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): boolean {
+    const turnId = workerEvent.turn_id;
+    return (
+      workerEvent.event === CANONICAL_EVENT.codex.turnStarted &&
+      runningEntry.last_event === CANONICAL_EVENT.codex.turnCompleted &&
+      Boolean(runningEntry.thread_id) &&
+      workerEvent.thread_id === runningEntry.thread_id &&
+      typeof turnId === 'string' &&
+      !(runningEntry.persisted_turn_ids ?? []).includes(turnId)
+    );
+  }
+
+  private recordStaleRunningWorkerEvent(
+    issueId: string,
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): void {
+    const detail = [
+      `issue_id=${issueId}`,
+      `active_thread_id=${runningEntry.thread_id ?? 'unknown'}`,
+      `event_thread_id=${workerEvent.thread_id ?? 'unknown'}`,
+      `active_turn_id=${runningEntry.turn_id ?? 'unknown'}`,
+      `event_turn_id=${workerEvent.turn_id ?? 'unknown'}`,
+      `active_session_id=${runningEntry.session_id ?? 'unknown'}`,
+      `event_session_id=${workerEvent.session_id ?? 'unknown'}`,
+      `event=${workerEvent.event}`
+    ].join(' ');
+
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.staleWorkerEventIgnored,
+      message: 'stale worker event ignored for active run',
+      context: {
+        issue_id: issueId,
+        issue_identifier: runningEntry.identifier,
+        active_thread_id: runningEntry.thread_id,
+        event_thread_id: workerEvent.thread_id ?? null,
+        active_turn_id: runningEntry.turn_id,
+        event_turn_id: workerEvent.turn_id ?? null,
+        active_session_id: runningEntry.session_id,
+        event_session_id: workerEvent.session_id ?? null,
+        event: workerEvent.event
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.staleWorkerEventIgnored,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail
+    });
+  }
+
   private async persistExecutionGraphWorkerEvent(
     issueId: string,
     runningEntry: RunningEntry,
     workerEvent: WorkerObservabilityEvent
   ): Promise<void> {
+    const observedTurnId = workerEvent.turn_id ?? runningEntry.turn_id;
+    const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
+    const turnAlreadyObserved = Boolean(observedTurnId && persistedTurnIds.includes(observedTurnId));
+    if (observedTurnId && !turnAlreadyObserved) {
+      persistedTurnIds.push(observedTurnId);
+    }
+
     if (!this.persistence || !runningEntry.issue_run_id || !runningEntry.attempt_id) {
       return;
     }
@@ -871,9 +958,7 @@ export class OrchestratorCore {
         });
       }
 
-      const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
-      if (threadId && turnId && !persistedTurnIds.includes(turnId)) {
-        persistedTurnIds.push(turnId);
+      if (threadId && turnId && !turnAlreadyObserved) {
         await this.persistence.appendTurn?.({
           thread_id: threadId,
           turn_id: turnId,

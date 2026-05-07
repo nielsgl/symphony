@@ -3319,6 +3319,270 @@ describe('OrchestratorCore', () => {
     expect(snapshot.codex_totals.total_tokens).toBe(0);
   });
 
+  it('ignores stale worker events that mismatch the active running thread lineage', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stale-thread', identifier: 'ABC-STALE' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-stale-thread', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-current',
+      session_id: 'session-current'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-thread', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'late stale waiting heartbeat',
+      thread_id: 'thread-stale',
+      turn_id: 'turn-stale',
+      session_id: 'session-stale'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-stale-thread');
+    expect(running).toMatchObject({
+      last_event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-current',
+      session_id: 'session-current',
+      stalled_waiting_reason: null,
+      running_waiting_started_at_ms: null
+    });
+    expect(snapshot.phase_timeline?.get('i-stale-thread')?.map((marker) => marker.phase)).toEqual([
+      'dispatch_started',
+      'workspace_ready',
+      'codex_turn_started'
+    ]);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (event) =>
+          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
+          event.issue_identifier === 'ABC-STALE' &&
+          event.detail?.includes('event_thread_id=thread-stale')
+      )
+    ).toBe(true);
+  });
+
+  it('ignores stale turn started events from an old turn on the active thread', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stale-turn', identifier: 'ABC-STALE-TURN' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-stale-turn', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-turn', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-turn', {
+      timestamp_ms: harness.now.value + 200,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'late stale waiting heartbeat',
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-stale-turn');
+    expect(running).toMatchObject({
+      last_event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2',
+      stalled_waiting_reason: null,
+      running_waiting_started_at_ms: null
+    });
+    expect(snapshot.phase_timeline?.get('i-stale-turn')?.map((marker) => marker.phase)).toEqual([
+      'dispatch_started',
+      'workspace_ready',
+      'codex_turn_started'
+    ]);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (event) =>
+          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
+          event.issue_identifier === 'ABC-STALE-TURN' &&
+          event.detail?.includes('event_turn_id=turn-1')
+      )
+    ).toBe(true);
+  });
+
+  it('accepts continuation turn starts on the active thread after the prior turn completed', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-continuation-turn', identifier: 'ABC-CONTINUE' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-continuation-turn', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-continuation-turn', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-continuation-turn', {
+      timestamp_ms: harness.now.value + 200,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-continuation-turn');
+    expect(running).toMatchObject({
+      last_event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2',
+      turn_count: 2
+    });
+    expect(snapshot.phase_timeline?.get('i-continuation-turn')?.map((marker) => marker.phase)).toEqual([
+      'dispatch_started',
+      'workspace_ready',
+      'codex_turn_started',
+      'validation'
+    ]);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (event) =>
+          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
+          event.issue_identifier === 'ABC-CONTINUE'
+      )
+    ).toBe(false);
+  });
+
+  it('ignores stale turn started events from an old turn after a newer turn completed', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-after-complete', identifier: 'ABC-STALE-COMPLETE' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value + 200,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value + 300,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value + 400,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-stale-after-complete');
+    expect(running).toMatchObject({
+      last_event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2',
+      turn_count: 2
+    });
+    expect(snapshot.phase_timeline?.get('i-stale-after-complete')?.map((marker) => marker.phase)).toEqual([
+      'dispatch_started',
+      'workspace_ready',
+      'codex_turn_started',
+      'validation'
+    ]);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (event) =>
+          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
+          event.issue_identifier === 'ABC-STALE-COMPLETE' &&
+          event.detail?.includes('event_turn_id=turn-1')
+      )
+    ).toBe(true);
+  });
+
+  it('ignores stale turn started events with old session lineage even when thread lineage is omitted', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-start-session', identifier: 'ABC-STALE-SESSION' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-stale-start-session', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-current',
+      session_id: 'session-current'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-start-session', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      turn_id: 'turn-stale',
+      session_id: 'session-stale'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-stale-start-session');
+    expect(running).toMatchObject({
+      last_event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-current',
+      session_id: 'session-current'
+    });
+    expect(snapshot.phase_timeline?.get('i-stale-start-session')?.map((marker) => marker.phase)).toEqual([
+      'dispatch_started',
+      'workspace_ready',
+      'codex_turn_started'
+    ]);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (event) =>
+          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
+          event.issue_identifier === 'ABC-STALE-SESSION' &&
+          event.detail?.includes('event_session_id=session-stale')
+      )
+    ).toBe(true);
+  });
+
   it('emits phase markers from explicit lifecycle events', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-explicit-phase' })]);
