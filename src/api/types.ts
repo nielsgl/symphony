@@ -182,6 +182,20 @@ export interface ApiBudgetProjection {
   budget_message?: string | null;
 }
 
+export interface ApiBlockedRootCauseProjection {
+  phase: PhaseMarkerName;
+  reason_code: string;
+  summary: string;
+  detail: string;
+  remediation_hint: string | null;
+  differs_from_current_operator_block: boolean;
+}
+
+export interface ApiCurrentOperatorBlockProjection {
+  reason_code: string;
+  detail: string | null;
+}
+
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
   counts: {
@@ -340,6 +354,8 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
+    root_cause: ApiBlockedRootCauseProjection | null;
+    current_operator_block: ApiCurrentOperatorBlockProjection;
     pending_input: {
       request_id: string | null;
       request_method: string | null;
@@ -637,6 +653,8 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
+    root_cause: ApiBlockedRootCauseProjection | null;
+    current_operator_block: ApiCurrentOperatorBlockProjection;
     pending_input: {
       request_id: string | null;
       request_method: string | null;

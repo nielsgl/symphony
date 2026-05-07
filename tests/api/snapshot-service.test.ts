@@ -605,6 +605,68 @@ describe('SnapshotService', () => {
     expect(projected.blocked?.last_progress_transition_at_ms).toBeNull();
   });
 
+  it('projects failed last-phase detail as root cause separate from current operator latch', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      blocked_inputs: new Map([
+        [
+          'issue-dirty',
+          {
+            issue_id: 'issue-dirty',
+            issue_identifier: 'ABC-DIRTY',
+            attempt: 2,
+            worker_host: null,
+            workspace_path: null,
+            provisioner_type: 'worktree',
+            branch_name: 'feature/ABC-DIRTY',
+            repo_root: '/repo/root',
+            workspace_exists: false,
+            workspace_git_status: 'dirty',
+            workspace_provisioned: false,
+            workspace_is_git_worktree: false,
+            stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+            stop_reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+            conflict_files: [],
+            resolution_hints: [],
+            previous_thread_id: null,
+            previous_session_id: null,
+            blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            requires_manual_resume: true,
+            last_phase: 'failed',
+            last_phase_detail: 'workspace_provision_failed: worktree_dirty_repo',
+            pending_input: null,
+            session_console: []
+          }
+        ]
+      ])
+    });
+
+    const stateProjection = service.projectState(state);
+    expect(stateProjection.blocked[0]).toMatchObject({
+      stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+      current_operator_block: {
+        reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+        detail: 'completion gate blocked redispatch because no progress signal was detected'
+      },
+      root_cause: {
+        phase: 'failed',
+        reason_code: 'worktree_dirty_repo',
+        summary: 'Workspace provisioning failed: repo root has uncommitted or untracked files.',
+        detail: 'workspace_provision_failed: worktree_dirty_repo',
+        remediation_hint: 'Clean, commit, or ignore the dirty repo files, then requeue or resume.',
+        differs_from_current_operator_block: true
+      }
+    });
+
+    const issueProjection = service.projectIssue(state, 'ABC-DIRTY');
+    expect(issueProjection.blocked?.root_cause?.reason_code).toBe('worktree_dirty_repo');
+    expect(issueProjection.blocked?.current_operator_block.reason_code).toBe(
+      'operator_action_required_no_progress_redispatch_blocked'
+    );
+  });
+
   it('projects breaker metadata on state and issue blocked payloads', () => {
     const service = new SnapshotService({
       nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')

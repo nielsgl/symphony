@@ -12,7 +12,13 @@ import {
   resolveSnapshotFreshness,
   resolveTokenTelemetryQuality
 } from './runtime-visibility';
-import type { ApiBudgetProjection, ApiIssueResponse, ApiStateResponse } from './types';
+import type {
+  ApiBlockedRootCauseProjection,
+  ApiBudgetProjection,
+  ApiCurrentOperatorBlockProjection,
+  ApiIssueResponse,
+  ApiStateResponse
+} from './types';
 
 function asIsoDate(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
@@ -66,6 +72,61 @@ function projectMissingToolOutput(
         recommended_actions: [...entry.tool_output_wait.recommended_actions]
       }
     : null;
+}
+
+function normalizeReasonDetail(detail: string): string {
+  return detail.trim().replace(/\s+/g, ' ');
+}
+
+function resolveFailedPhaseReasonCode(detail: string): string {
+  const normalized = normalizeReasonDetail(detail);
+  if (normalized.includes('worktree_dirty_repo')) {
+    return 'worktree_dirty_repo';
+  }
+  const match = normalized.match(/(?:^|[:\s])([a-z][a-z0-9_]+)(?:[:\s]|$)/);
+  return match?.[1] ?? 'failed_phase';
+}
+
+function summarizeRootCause(reasonCode: string, detail: string): Pick<ApiBlockedRootCauseProjection, 'summary' | 'remediation_hint'> {
+  if (reasonCode === 'worktree_dirty_repo') {
+    return {
+      summary: 'Workspace provisioning failed: repo root has uncommitted or untracked files.',
+      remediation_hint: 'Clean, commit, or ignore the dirty repo files, then requeue or resume.'
+    };
+  }
+  return {
+    summary: `Original failure: ${normalizeReasonDetail(detail)}`,
+    remediation_hint: null
+  };
+}
+
+function projectCurrentOperatorBlock(entry: { stop_reason_code: string; stop_reason_detail?: string | null }): ApiCurrentOperatorBlockProjection {
+  return {
+    reason_code: entry.stop_reason_code,
+    detail: entry.stop_reason_detail ?? null
+  };
+}
+
+function projectBlockedRootCause(entry: {
+  last_phase?: import('../observability').PhaseMarkerName | null;
+  last_phase_detail?: string | null;
+  stop_reason_code: string;
+  stop_reason_detail?: string | null;
+}): ApiBlockedRootCauseProjection | null {
+  if (entry.last_phase !== 'failed' || !entry.last_phase_detail?.trim()) {
+    return null;
+  }
+  const detail = normalizeReasonDetail(entry.last_phase_detail);
+  const reasonCode = resolveFailedPhaseReasonCode(detail);
+  const summary = summarizeRootCause(reasonCode, detail);
+  return {
+    phase: entry.last_phase,
+    reason_code: reasonCode,
+    detail,
+    ...summary,
+    differs_from_current_operator_block:
+      reasonCode !== entry.stop_reason_code && detail !== normalizeReasonDetail(entry.stop_reason_detail ?? '')
+  };
 }
 
 function explainRunningEntry(entry: RunningEntry) {
@@ -301,6 +362,8 @@ export class SnapshotService {
         last_phase: entry.last_phase ?? null,
         last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
         last_phase_detail: entry.last_phase_detail ?? null,
+        root_cause: projectBlockedRootCause(entry),
+        current_operator_block: projectCurrentOperatorBlock(entry),
         requires_manual_resume: true as const,
         awaiting_operator: true as const,
         awaiting_operator_reason_code: entry.awaiting_operator_reason_code ?? entry.stop_reason_code,
@@ -583,6 +646,8 @@ export class SnapshotService {
               last_phase: blockedEntry.last_phase ?? null,
               last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
               last_phase_detail: blockedEntry.last_phase_detail ?? null,
+              root_cause: projectBlockedRootCause(blockedEntry),
+              current_operator_block: projectCurrentOperatorBlock(blockedEntry),
           requires_manual_resume: true as const,
       awaiting_operator: true as const,
       awaiting_operator_reason_code: blockedEntry.awaiting_operator_reason_code ?? blockedEntry.stop_reason_code,
@@ -734,6 +799,8 @@ export class SnapshotService {
               last_phase: blockedEntry.last_phase ?? null,
               last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
               last_phase_detail: blockedEntry.last_phase_detail ?? null,
+              root_cause: projectBlockedRootCause(blockedEntry),
+              current_operator_block: projectCurrentOperatorBlock(blockedEntry),
               requires_manual_resume: true as const,
               awaiting_operator: true as const,
               awaiting_operator_reason_code: blockedEntry.awaiting_operator_reason_code ?? blockedEntry.stop_reason_code,
@@ -859,6 +926,8 @@ export class SnapshotService {
         last_phase: blockedEntry.last_phase ?? null,
         last_phase_at: blockedEntry.last_phase_at_ms ? asIsoDate(blockedEntry.last_phase_at_ms) : null,
         last_phase_detail: blockedEntry.last_phase_detail ?? null,
+        root_cause: projectBlockedRootCause(blockedEntry),
+        current_operator_block: projectCurrentOperatorBlock(blockedEntry),
         requires_manual_resume: true as const,
         awaiting_operator: true as const,
         awaiting_operator_reason_code: blockedEntry.awaiting_operator_reason_code ?? blockedEntry.stop_reason_code,
