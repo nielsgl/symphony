@@ -42,5 +42,9 @@ describe('workflow command examples', () => {
     expect(workflow).toContain(
       'If this run authored the implementation being reviewed, stop and leave the issue in `Agent Review`'
     );
+    expect(workflow).toContain('Move issue from `Agent Review` to `In Progress`');
+    expect(workflow).toContain('Move issue from `Agent Review` to `Rework`');
+    expect(workflow).toContain('Routing: Human Review');
+    expect(workflow).toContain('Routing: Merging');
   });
 });

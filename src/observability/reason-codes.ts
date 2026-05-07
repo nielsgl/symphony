@@ -27,6 +27,7 @@ export const REASON_CODES = {
   normalCompletion: 'normal_completion',
   maxTurnsReached: 'max_turns_reached',
   handoffStateReached: 'handoff_state_reached',
+  freshDispatchStateRouted: 'fresh_dispatch_state_routed',
   issueLeftActiveStates: 'issue_left_active_states',
   issueStateMissing: 'issue_state_missing',
   terminalStateReached: 'terminal_state_reached',
@@ -88,6 +89,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Run stopped at handoff',
     detail: 'The worker completed normally and stopped because the refreshed issue state is configured as a handoff point.',
     expected_transition: 'Separate handoff automation may dispatch the next workflow'
+  },
+  [REASON_CODES.freshDispatchStateRouted]: {
+    reason_code: REASON_CODES.freshDispatchStateRouted,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Fresh Dispatch State Routed',
+    headline: 'Fresh run routed issue',
+    detail: 'The worker completed normally and stopped because a fresh-dispatch run moved the issue to its next workflow state.',
+    expected_transition: 'The dispatcher for the routed state may pick up the issue next'
   },
   [REASON_CODES.issueLeftActiveStates]: {
     reason_code: REASON_CODES.issueLeftActiveStates,

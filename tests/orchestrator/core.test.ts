@@ -356,6 +356,78 @@ describe('OrchestratorCore', () => {
     expect(running?.session_id).toBeNull();
   });
 
+  it('records Agent Review handoff and routed fresh review completion as healthy non-cleanup exits', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review', 'Merging', 'Rework'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-review-lifecycle', state: 'In Progress' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-review-lifecycle', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session'
+    });
+
+    await harness.orchestrator.onWorkerExit('i-review-lifecycle', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review'
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-review-lifecycle', state: 'Agent Review' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-review-lifecycle', 'normal', undefined, {
+      completion_reason: REASON_CODES.freshDispatchStateRouted,
+      refreshed_state: 'In Progress'
+    });
+
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-review-lifecycle', attempt: null, worker_host: null, resume_context: null },
+      { issue_id: 'i-review-lifecycle', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    expect(harness.terminated).toEqual([]);
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.retry_attempts.has('i-review-lifecycle')).toBe(false);
+    expect(snapshot.completed.has('i-review-lifecycle')).toBe(true);
+    expect(logs.filter((entry) => entry.event === CANONICAL_EVENT.orchestration.workerExitHandled).map((entry) => entry.context)).toEqual([
+      expect.objectContaining({
+        issue_id: 'i-review-lifecycle',
+        outcome: 'completed',
+        completion_reason: REASON_CODES.handoffStateReached,
+        stop_reason_code: REASON_CODES.handoffStateReached,
+        cleanup_workspace: false
+      }),
+      expect.objectContaining({
+        issue_id: 'i-review-lifecycle',
+        outcome: 'completed',
+        completion_reason: REASON_CODES.freshDispatchStateRouted,
+        stop_reason_code: REASON_CODES.freshDispatchStateRouted,
+        refreshed_state: 'In Progress',
+        cleanup_workspace: false
+      })
+    ]);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.workerStalled)).toBe(false);
+    expect(
+      logs.some(
+        (entry) =>
+          entry.context.stop_reason_code === REASON_CODES.workerExitAbnormal ||
+          entry.context.stop_reason_code === REASON_CODES.workerStalled
+      )
+    ).toBe(false);
+  });
+
   it('does not schedule continuation retry when normal exit left active states', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-paused' })]);

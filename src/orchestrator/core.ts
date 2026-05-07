@@ -1048,6 +1048,15 @@ export class OrchestratorCore {
           message: 'worker exit handled: completed at handoff state',
           cleanup_workspace: false
         };
+      case REASON_CODES.freshDispatchStateRouted:
+        return {
+          reason_code: REASON_CODES.freshDispatchStateRouted,
+          detail: refreshedState
+            ? `worker completed after fresh-dispatch state routed issue to: ${refreshedState}`
+            : 'worker completed after fresh-dispatch state routed issue',
+          message: 'worker exit handled: fresh-dispatch state routed',
+          cleanup_workspace: false
+        };
       case REASON_CODES.issueLeftActiveStates:
         return {
           reason_code: REASON_CODES.issueLeftActiveStates,
