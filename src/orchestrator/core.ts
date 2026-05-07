@@ -858,10 +858,6 @@ export class OrchestratorCore {
       return true;
     }
 
-    if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
-      return false;
-    }
-
     if (runningEntry.turn_id && workerEvent.turn_id && workerEvent.turn_id !== runningEntry.turn_id) {
       return true;
     }
