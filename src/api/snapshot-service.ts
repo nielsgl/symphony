@@ -74,6 +74,34 @@ function projectMissingToolOutput(
     : null;
 }
 
+function projectToolCallLedger(entry: RunningEntry) {
+  return Object.values(entry.tool_call_ledger ?? {})
+    .sort((left, right) => left.first_seen_at_ms - right.first_seen_at_ms || left.call_id.localeCompare(right.call_id))
+    .map((call) => ({
+      call_id: call.call_id,
+      tool_name: call.tool_name,
+      thread_id: call.thread_id,
+      turn_id: call.turn_id,
+      session_id: call.session_id,
+      issue_id: call.issue_id,
+      issue_identifier: call.issue_identifier,
+      run_id: call.run_id,
+      issue_run_id: call.issue_run_id,
+      attempt_id: call.attempt_id,
+      first_seen_at: asIsoDate(call.first_seen_at_ms),
+      first_seen_at_ms: call.first_seen_at_ms,
+      last_seen_at: asIsoDate(call.last_seen_at_ms),
+      last_seen_at_ms: call.last_seen_at_ms,
+      completed_at: call.completed_at_ms === null ? null : asIsoDate(call.completed_at_ms),
+      completed_at_ms: call.completed_at_ms,
+      completion_status: call.completion_status,
+      evidence_sources: [...call.evidence_sources],
+      start_evidence_source: call.start_evidence_source,
+      completion_evidence_source: call.completion_evidence_source,
+      last_agent_message: call.last_agent_message
+    }));
+}
+
 function projectQuarantinedRunningEvents(entry: RunningEntry) {
   return (entry.quarantined_events ?? []).map((event) => ({
     at: asIsoDate(event.at_ms),
@@ -260,6 +288,7 @@ function toStateRunningRow(
     current_blocker_class: operatorExplainer.actionability === 'none' ? null : operatorExplainer.classification,
     time_since_progress: timeSinceProgress,
     last_successful_step: resolveLastSuccessfulStep(entry),
+    tool_call_ledger: projectToolCallLedger(entry),
     ...notBlockedExplainer,
     operator_actions: (operatorActions?.get(issueId) ?? []).map((action) => ({ ...action })),
     tokens: {
@@ -600,6 +629,7 @@ export class SnapshotService {
             stalled_waiting_ms: 300_000
           }),
           operator_actions: projectOperatorActions(state, issueId),
+          tool_call_ledger: projectToolCallLedger(entry),
           tokens: {
             input_tokens: entry.tokens.input_tokens,
             output_tokens: entry.tokens.output_tokens,
