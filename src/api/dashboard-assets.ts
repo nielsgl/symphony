@@ -526,6 +526,43 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return ACTION_REQUIRED_CODES[code] || code || 'unknown';
   }
 
+  function createBlockedRootCauseBlock(entry) {
+    if (!entry || !entry.root_cause) {
+      return null;
+    }
+    const block = document.createElement('div');
+    block.className = 'root-cause-block';
+    const label = document.createElement('div');
+    label.className = 'root-cause-label';
+    label.textContent = 'Root cause';
+    const summary = document.createElement('div');
+    summary.className = 'root-cause-summary';
+    const rootCauseSummary =
+      entry.root_cause.reason_code === 'worktree_dirty_repo'
+        ? 'Workspace provisioning failed: repo root has uncommitted or untracked files.'
+        : entry.root_cause.summary || entry.root_cause.detail || entry.root_cause.reason_code || 'n/a';
+    summary.textContent = rootCauseSummary;
+    block.append(label, summary);
+    if (entry.root_cause.detail) {
+      const detail = document.createElement('div');
+      detail.className = 'muted';
+      detail.textContent = 'Failed phase detail: ' + entry.root_cause.detail;
+      block.append(detail);
+    }
+    const remediationHint =
+      entry.root_cause.remediation_hint ||
+      (entry.root_cause.reason_code === 'worktree_dirty_repo'
+        ? 'Clean, commit, or ignore the dirty repo files, then requeue or resume.'
+        : null);
+    if (remediationHint) {
+      const remediation = document.createElement('div');
+      remediation.className = 'status-pill pending';
+      remediation.textContent = 'Remediation: ' + remediationHint;
+      block.append(remediation);
+    }
+    return block;
+  }
+
   function isActionRequiredCode(code) {
     return Boolean(code && ACTION_REQUIRED_CODES[code]);
   }
@@ -1696,11 +1733,21 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       workspaceCell.append(provisioningFlags);
 
       const stopReasonCell = document.createElement('td');
+      const rootCauseBlock = createBlockedRootCauseBlock(entry);
+      if (rootCauseBlock) {
+        stopReasonCell.append(rootCauseBlock);
+      }
       const stopReasonCode = document.createElement('div');
-      stopReasonCode.textContent = entry.stop_reason_code || 'n/a';
+      stopReasonCode.textContent =
+        rootCauseBlock
+          ? 'Current operator block: ' + (entry.current_operator_block?.reason_code || entry.stop_reason_code || 'n/a')
+          : entry.stop_reason_code || 'n/a';
       const stopReasonDetail = document.createElement('div');
       stopReasonDetail.className = 'muted';
-      stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
+      stopReasonDetail.textContent =
+        rootCauseBlock
+          ? 'Current block detail: ' + (entry.current_operator_block?.detail || entry.stop_reason_detail || 'n/a')
+          : entry.stop_reason_detail || 'n/a';
       stopReasonCell.append(stopReasonCode, stopReasonDetail);
       stopReasonCell.append(createBudgetBlock(entry));
       if (entry.stop_reason_code) {
@@ -3031,6 +3078,23 @@ td {
 .mini-badge-bad {
   background: #f8e8e8;
   color: #8a2f2f;
+}
+
+.root-cause-block {
+  border-left: 3px solid var(--danger);
+  margin-bottom: 8px;
+  padding-left: 8px;
+}
+
+.root-cause-label {
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.root-cause-summary {
+  font-weight: 700;
 }
 
 .status-pill {

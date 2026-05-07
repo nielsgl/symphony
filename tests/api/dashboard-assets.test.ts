@@ -70,4 +70,17 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('Resume skipped: reason note is required');
     expect(clientJs).toContain('Input submit skipped: reason note is required');
   });
+
+  it('renders blocked root cause before the current operator latch reason', () => {
+    const clientJs = renderDashboardClientJs();
+    const rootCauseIndex = clientJs.indexOf('function createBlockedRootCauseBlock(entry)');
+    const currentBlockIndex = clientJs.indexOf('Current operator block: ');
+
+    expect(clientJs).toContain('Workspace provisioning failed: repo root has uncommitted or untracked files.');
+    expect(clientJs).toContain('Remediation: ');
+    expect(clientJs).toContain('Current block detail: ');
+    expect(clientJs).toContain('root-cause-block');
+    expect(rootCauseIndex).toBeGreaterThanOrEqual(0);
+    expect(currentBlockIndex).toBeGreaterThan(rootCauseIndex);
+  });
 });

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
 
 type DashboardStatePayload = {
   generated_at: string;
@@ -656,6 +657,75 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#retry-rows')).toContainText('tool call failed');
     await expect(page.locator('#blocked-rows')).toContainText('Last phase: validation');
     await expect(page.locator('#blocked-rows')).toContainText('awaiting operator response');
+  });
+
+  test('blocked rows show failed phase root cause above current operator latch', async ({ page }) => {
+    await installDashboardApiMocks(page, {
+      state: baseState({
+        counts: {
+          running: 0,
+          retrying: 0,
+          blocked: 1,
+          stopped: 0,
+          running_stalled_waiting_count: 0,
+          running_awaiting_input_count: 0
+        },
+        blocked: [
+          {
+            issue_identifier: 'NIE-78',
+            attempt: 2,
+            blocked_at: ISO_NOW,
+            worker_host: 'hessian',
+            workspace_path: '/tmp/workspaces/NIE-78',
+            workspace_provisioned: false,
+            workspace_is_git_worktree: false,
+            workspace_git_status: 'dirty',
+            stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+            stop_reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+            current_operator_block: {
+              reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+              detail: 'completion gate blocked redispatch because no progress signal was detected'
+            },
+            root_cause: {
+              phase: 'failed',
+              reason_code: 'worktree_dirty_repo',
+              summary: 'Workspace provisioning failed: repo root has uncommitted or untracked files.',
+              detail: 'workspace_provision_failed: worktree_dirty_repo',
+              remediation_hint: 'Clean, commit, or ignore the dirty repo files, then requeue or resume.',
+              differs_from_current_operator_block: true
+            },
+            previous_session_id: 'session-prev-dirty',
+            previous_thread_id: 'thread-prev-dirty',
+            last_phase: 'failed',
+            last_phase_at: ISO_OLD,
+            last_phase_detail: 'workspace_provision_failed: worktree_dirty_repo',
+            turn_control_state: 'blocked_manual_resume',
+            progress_signal_state: 'stalled_waiting',
+            required_actions: [],
+            pending_input: null,
+            last_input_submit: null
+          }
+        ]
+      })
+    });
+
+    await page.goto('/');
+
+    const row = page.locator('#blocked-rows tr').filter({ hasText: 'NIE-78' });
+    await expect(row).toContainText('Root cause');
+    await expect(row).toContainText('Workspace provisioning failed: repo root has uncommitted or untracked files.');
+    await expect(row).toContainText('Clean, commit, or ignore the dirty repo files, then requeue or resume.');
+    await expect(row).toContainText(
+      'Current operator block: operator_action_required_no_progress_redispatch_blocked'
+    );
+    await expect(row).toContainText(
+      'Current block detail: completion gate blocked redispatch because no progress signal was detected'
+    );
+
+    const rowText = (await row.textContent()) ?? '';
+    expect(rowText.indexOf('Root cause')).toBeLessThan(rowText.indexOf('Current operator block:'));
+    mkdirSync('output/playwright', { recursive: true });
+    await row.screenshot({ path: 'output/playwright/nie-79-blocked-root-cause-row.png' });
   });
 
   test('blocked manual-resume rows hide Reply while preserving manual actions', async ({ page, context }) => {
