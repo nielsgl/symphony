@@ -1,4 +1,6 @@
 import type { Issue } from '../tracker';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
@@ -27,6 +29,7 @@ import type {
   RetryEntry,
   RunningEntry,
   TickReason,
+  ToolCallLedgerObservation,
   WorkerCompletionReason,
   WorkerExitDetails,
   WorkerObservabilityEvent,
@@ -94,6 +97,37 @@ interface DispatchGraphContext {
   previous_attempt_id?: string | null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readTimestampMs(value: Record<string, unknown> | null): number | null {
+  if (!value) {
+    return null;
+  }
+  for (const key of ['timestamp_ms', 'timestampMs', 'created_at_ms', 'createdAtMs', 'at_ms', 'atMs']) {
+    const numeric = value[key];
+    if (typeof numeric === 'number' && Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  for (const key of ['timestamp', 'created_at', 'createdAt', 'time']) {
+    const text = readString(value[key]);
+    if (!text) {
+      continue;
+    }
+    const parsed = Date.parse(text);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
 function cloneIssue(issue: Issue): Issue {
   return {
     ...issue,
@@ -135,6 +169,7 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     outstanding_tool_calls: Object.fromEntries(
       Object.entries(entry.outstanding_tool_calls ?? {}).map(([callId, call]) => [callId, { ...call }])
     ),
+    codex_session_transcript_scan_offsets: { ...(entry.codex_session_transcript_scan_offsets ?? {}) },
     budget: entry.budget ? { ...entry.budget } : undefined
   };
 }
@@ -2803,7 +2838,9 @@ export class OrchestratorCore {
       last_codex_timestamp_ms: null,
       current_phase: null,
       current_phase_at_ms: null,
-      phase_detail: null
+      phase_detail: null,
+      outstanding_tool_calls: {},
+      codex_session_transcript_scan_offsets: {}
     });
     this.emitPhaseMarker(issue.id, {
       phase: 'workspace_ready',
@@ -4579,18 +4616,17 @@ export class OrchestratorCore {
       if (!callId) {
         return;
       }
-      const calls = runningEntry.outstanding_tool_calls ?? {};
-      calls[callId] = {
+      this.applyToolCallLedgerObservation(runningEntry, {
+        kind: 'function_call',
         call_id: callId,
         tool_name: this.resolveToolName(workerEvent),
         thread_id: workerEvent.thread_id ?? runningEntry.thread_id ?? null,
         turn_id: workerEvent.turn_id ?? runningEntry.turn_id ?? null,
         session_id: workerEvent.session_id ?? runningEntry.session_id ?? null,
-        started_at_ms: workerEvent.timestamp_ms,
-        last_waiting_at_ms: null,
-        last_agent_message: runningEntry.last_message ?? null
-      };
-      runningEntry.outstanding_tool_calls = calls;
+        observed_at_ms: workerEvent.timestamp_ms,
+        last_agent_message: runningEntry.last_message ?? null,
+        evidence_source: workerEvent.tool_call_evidence_source ?? 'worker_event'
+      });
       return;
     }
 
@@ -4601,10 +4637,19 @@ export class OrchestratorCore {
       workerEvent.event === CANONICAL_EVENT.codex.unsupportedToolCall
     ) {
       const callId = this.resolveToolCallId(workerEvent);
-      if (!callId || !runningEntry.outstanding_tool_calls) {
+      if (!callId) {
         return;
       }
-      delete runningEntry.outstanding_tool_calls[callId];
+      this.applyToolCallLedgerObservation(runningEntry, {
+        kind: 'function_call_output',
+        call_id: callId,
+        tool_name: workerEvent.tool_name ?? null,
+        thread_id: workerEvent.thread_id ?? runningEntry.thread_id ?? null,
+        turn_id: workerEvent.turn_id ?? runningEntry.turn_id ?? null,
+        session_id: workerEvent.session_id ?? runningEntry.session_id ?? null,
+        observed_at_ms: workerEvent.timestamp_ms,
+        evidence_source: workerEvent.tool_call_evidence_source ?? 'worker_event'
+      });
       return;
     }
 
@@ -4614,6 +4659,34 @@ export class OrchestratorCore {
         call.last_agent_message = workerEvent.detail ?? runningEntry.last_message ?? call.last_agent_message;
       }
     }
+  }
+
+  private applyToolCallLedgerObservation(runningEntry: RunningEntry, observation: ToolCallLedgerObservation): void {
+    const callId = observation.call_id.trim();
+    if (!callId) {
+      return;
+    }
+
+    if (observation.kind === 'function_call_output') {
+      if (runningEntry.outstanding_tool_calls) {
+        delete runningEntry.outstanding_tool_calls[callId];
+      }
+      return;
+    }
+
+    const calls = runningEntry.outstanding_tool_calls ?? {};
+    calls[callId] = {
+      call_id: callId,
+      tool_name: observation.tool_name?.trim() || calls[callId]?.tool_name || 'unknown_tool',
+      thread_id: observation.thread_id ?? runningEntry.thread_id ?? null,
+      turn_id: observation.turn_id ?? runningEntry.turn_id ?? null,
+      session_id: observation.session_id ?? runningEntry.session_id ?? null,
+      started_at_ms: observation.observed_at_ms,
+      last_waiting_at_ms: calls[callId]?.last_waiting_at_ms ?? null,
+      last_agent_message: observation.last_agent_message ?? runningEntry.last_message ?? calls[callId]?.last_agent_message ?? null,
+      evidence_source: observation.evidence_source
+    };
+    runningEntry.outstanding_tool_calls = calls;
   }
 
   private resolveToolCallId(workerEvent: WorkerObservabilityEvent): string | null {
@@ -4685,6 +4758,8 @@ export class OrchestratorCore {
     const thresholdCrossedAtMs = lastMeaningfulActivityAtMs + waitThresholdMs;
     runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
 
+    this.scanCodexSessionTranscriptForToolCalls(runningEntry, observedAtMs);
+
     if (observedAtMs < thresholdCrossedAtMs) {
       runningEntry.stalled_waiting_reason = null;
       return false;
@@ -4733,6 +4808,165 @@ export class OrchestratorCore {
     return eligible[0] ?? null;
   }
 
+  private scanCodexSessionTranscriptForToolCalls(runningEntry: RunningEntry, observedAtMs: number): void {
+    if (!runningEntry.session_id && !runningEntry.thread_id && !runningEntry.turn_id) {
+      return;
+    }
+
+    const transcriptPaths = this.findCodexSessionTranscriptPaths(runningEntry);
+    if (transcriptPaths.length === 0) {
+      return;
+    }
+
+    const offsets = (runningEntry.codex_session_transcript_scan_offsets ??= {});
+    for (const transcriptPath of transcriptPaths) {
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(transcriptPath);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile()) {
+        continue;
+      }
+
+      const previousOffset = Math.min(offsets[transcriptPath] ?? 0, stat.size);
+      let content = '';
+      try {
+        const fd = fs.openSync(transcriptPath, 'r');
+        try {
+          const buffer = Buffer.alloc(Math.max(0, stat.size - previousOffset));
+          fs.readSync(fd, buffer, 0, buffer.length, previousOffset);
+          content = buffer.toString('utf8');
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        continue;
+      }
+
+      offsets[transcriptPath] = stat.size;
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        const observation = this.readToolCallObservationFromTranscriptRecord(parsed, runningEntry, observedAtMs);
+        if (observation) {
+          this.applyToolCallLedgerObservation(runningEntry, observation);
+        }
+      }
+    }
+  }
+
+  private findCodexSessionTranscriptPaths(runningEntry: RunningEntry): string[] {
+    const codexHome = (process.env.SYMPHONY_CODEX_HOME || path.join(process.env.HOME || '', '.codex')).trim();
+    if (!codexHome) {
+      return [];
+    }
+    const sessionsRoot = path.join(codexHome, 'sessions');
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(sessionsRoot);
+    } catch {
+      return [];
+    }
+    if (!stat.isDirectory()) {
+      return [];
+    }
+
+    const candidates: string[] = [];
+    const stack = [sessionsRoot];
+    while (stack.length > 0 && candidates.length < 200) {
+      const current = stack.pop();
+      if (!current) {
+        continue;
+      }
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const entryPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(entryPath);
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl') && this.transcriptPathMayMatch(entryPath, runningEntry)) {
+          candidates.push(entryPath);
+        }
+      }
+    }
+    return candidates;
+  }
+
+  private transcriptPathMayMatch(transcriptPath: string, runningEntry: RunningEntry): boolean {
+    const normalized = transcriptPath.toLowerCase();
+    return Boolean(
+      (runningEntry.session_id && normalized.includes(runningEntry.session_id.toLowerCase())) ||
+        (runningEntry.thread_id && normalized.includes(runningEntry.thread_id.toLowerCase())) ||
+        (runningEntry.turn_id && normalized.includes(runningEntry.turn_id.toLowerCase())) ||
+        runningEntry.session_id ||
+        runningEntry.thread_id ||
+        runningEntry.turn_id
+    );
+  }
+
+  private readToolCallObservationFromTranscriptRecord(
+    value: unknown,
+    runningEntry: RunningEntry,
+    observedAtMs: number
+  ): ToolCallLedgerObservation | null {
+    const record = asRecord(value);
+    if (!record) {
+      return null;
+    }
+    const item =
+      asRecord(record.response_item) ??
+      asRecord(record.responseItem) ??
+      asRecord(record.rawResponseItem) ??
+      asRecord(record.raw_response_item) ??
+      asRecord(record.item) ??
+      record;
+    const type = readString(item.type);
+    if (type !== 'function_call' && type !== 'function_call_output') {
+      return null;
+    }
+    const callId = readString(item.call_id) ?? readString(item.callId) ?? readString(item.id);
+    if (!callId) {
+      return null;
+    }
+    const threadId = readString(record.thread_id) ?? readString(record.threadId) ?? readString(item.thread_id) ?? readString(item.threadId);
+    const turnId = readString(record.turn_id) ?? readString(record.turnId) ?? readString(item.turn_id) ?? readString(item.turnId);
+    const sessionId =
+      readString(record.session_id) ?? readString(record.sessionId) ?? readString(item.session_id) ?? readString(item.sessionId);
+    if (
+      (runningEntry.thread_id && threadId && threadId !== runningEntry.thread_id) ||
+      (runningEntry.turn_id && turnId && turnId !== runningEntry.turn_id) ||
+      (runningEntry.session_id && sessionId && sessionId !== runningEntry.session_id)
+    ) {
+      return null;
+    }
+
+    return {
+      kind: type,
+      call_id: callId,
+      tool_name: readString(item.name) ?? readString(item.tool_name) ?? readString(item.toolName) ?? null,
+      thread_id: threadId ?? runningEntry.thread_id ?? null,
+      turn_id: turnId ?? runningEntry.turn_id ?? null,
+      session_id: sessionId ?? runningEntry.session_id ?? null,
+      observed_at_ms: readTimestampMs(record) ?? readTimestampMs(item) ?? observedAtMs,
+      last_agent_message: type === 'function_call' ? runningEntry.last_message ?? null : null,
+      evidence_source: 'session_transcript'
+    };
+  }
+
   private async blockMissingToolOutput(
     issueId: string,
     runningEntry: RunningEntry,
@@ -4753,6 +4987,7 @@ export class OrchestratorCore {
       session_id: missingToolOutput.session_id ?? runningEntry.session_id ?? null,
       elapsed_wait_ms: elapsedWaitMs,
       last_agent_message: missingToolOutput.last_agent_message ?? runningEntry.last_message ?? null,
+      evidence_source: missingToolOutput.evidence_source,
       recommended_actions: recommendedActions
     };
     const detail = [
@@ -4761,6 +4996,7 @@ export class OrchestratorCore {
       `thread_id=${diagnostic.thread_id ?? 'unknown'}`,
       `turn_id=${diagnostic.turn_id ?? 'unknown'}`,
       `session_id=${diagnostic.session_id ?? 'unknown'}`,
+      `evidence_source=${diagnostic.evidence_source}`,
       `elapsed_wait_ms=${diagnostic.elapsed_wait_ms}`
     ].join(' ');
 

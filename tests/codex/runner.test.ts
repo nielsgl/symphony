@@ -629,6 +629,55 @@ describe('CodexRunner', () => {
     );
   });
 
+  it('emits app-server response item function_call and function_call_output ledger events', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: Array<{
+      event: string;
+      detail?: string;
+      tool_call_id?: string;
+      tool_name?: string;
+      tool_call_evidence_source?: string;
+    }> = [];
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd, { onEvent: (event) => events.push(event) }));
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"item/started","params":{"item":{"type":"function_call","name":"linear_graphql","call_id":"call_protocol_1"}}}\n'
+    );
+    fake.emitStdout(
+      '{"method":"rawResponseItem/completed","params":{"rawResponseItem":{"type":"function_call_output","call_id":"call_protocol_1","output":"{}"}}}\n'
+    );
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.toolCallStarted,
+          detail: 'linear_graphql',
+          tool_call_id: 'call_protocol_1',
+          tool_name: 'linear_graphql',
+          tool_call_evidence_source: 'app_server_protocol',
+          thread_id: 'thread-1',
+          turn_id: 'turn-1',
+          session_id: 'thread-1-turn-1'
+        }),
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.toolCallCompleted,
+          tool_call_id: 'call_protocol_1',
+          tool_call_evidence_source: 'app_server_protocol',
+          thread_id: 'thread-1',
+          turn_id: 'turn-1',
+          session_id: 'thread-1-turn-1'
+        })
+      ])
+    );
+  });
+
   it('emits failed dynamic tool response without stalling when supported tool execution fails', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

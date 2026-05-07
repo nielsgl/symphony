@@ -182,7 +182,13 @@ function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObservabil
     codex_app_server_pid: event.codex_app_server_pid,
     detail: event.detail,
     usage: event.usage,
-    rate_limits: event.rate_limits
+    rate_limits: event.rate_limits,
+    token_telemetry_status: event.token_telemetry_status,
+    token_telemetry_last_source: event.token_telemetry_last_source,
+    token_telemetry_last_at_ms: event.token_telemetry_last_at_ms,
+    tool_call_id: event.tool_call_id,
+    tool_name: event.tool_name,
+    tool_call_evidence_source: event.tool_call_evidence_source
   };
 }
 
