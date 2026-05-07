@@ -2,17 +2,35 @@
 name: linear-graphql
 description: |
   Use Symphony's `linear_graphql` client tool for raw Linear GraphQL
-  operations such as comment editing and upload flows.
+  operations such as private upload flows, rich `bodyData`, targeted
+  introspection, and rare unsupported Linear API operations.
 ---
 
 # Linear GraphQL
 
 Use this skill for raw Linear GraphQL work during Symphony app-server sessions.
 
-Prefer the Linear MCP issue/comment tools for routine issue lookup, comment
-listing, and workpad discovery. Reserve `linear_graphql` for operations the MCP
-tools cannot perform, such as comment edits, upload flows, targeted
-introspection, or narrowly scoped ad-hoc API operations.
+Use Linear MCP tools for routine issue-management work: issue lookup, comment
+listing, workpad discovery, plain comment/workpad create or update, issue state
+transitions, labels/statuses/projects, and normal link attachment when MCP can
+express the operation. Reserve `linear_graphql` for operations the MCP tools
+cannot perform, such as private upload flows, rich `bodyData` writes or
+verification, targeted introspection, or narrowly scoped unsupported Linear API
+operations.
+
+Do not use this skill to hand-build screenshot or screencast uploads for UI
+evidence. UI evidence publication is the repository's intentional GraphQL-only
+exception and must go through the script-backed publisher:
+
+```sh
+node .codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js \
+  --issue ABC-123 \
+  --image output/playwright/screenshot.png::"Changed UI state"
+```
+
+That publisher owns private `fileUpload(makePublic:false)`, signed upload PUTs,
+rich `bodyData` image/video comments, and verification by re-reading
+`comment.bodyData`.
 
 ## Primary tool
 
@@ -78,9 +96,9 @@ query CommentCreateInputShape {
 
 ### Query an issue by key, identifier, or id
 
-Use Linear MCP issue tools for this routine read path when they are available.
-Only use the raw GraphQL queries below when MCP access is unavailable or the
-workflow needs fields that the MCP tools do not expose.
+Use Linear MCP `get_issue` or `list_issues` for this routine read path when they
+are available. Only use the raw GraphQL queries below when MCP access is
+unavailable or the workflow needs fields that the MCP tools do not expose.
 
 Use these progressively:
 
@@ -214,41 +232,21 @@ query IssueTeamStates($id: String!) {
 }
 ```
 
-### Edit an existing comment
+### Create or edit a plain comment/workpad
 
-Use `commentUpdate` through `linear_graphql`:
+Use Linear MCP `save_comment` for this routine write path. `save_comment` can
+create a new comment with `issueId` and update an existing comment by comment
+id. Do not use raw GraphQL for ordinary workpad progress, handoff notes, or
+plain Markdown comment edits when `save_comment` is available.
 
-```graphql
-mutation UpdateComment($id: String!, $body: String!) {
-  commentUpdate(id: $id, input: { body: $body }) {
-    success
-    comment {
-      id
-      body
-    }
-  }
-}
-```
-
-### Create a comment
-
-Use `commentCreate` through `linear_graphql`:
-
-```graphql
-mutation CreateComment($issueId: String!, $body: String!) {
-  commentCreate(input: { issueId: $issueId, body: $body }) {
-    success
-    comment {
-      id
-      url
-    }
-  }
-}
-```
+Only use `commentCreate` or `commentUpdate` through `linear_graphql` when the
+operation requires GraphQL-only fields such as rich `bodyData`.
 
 ### Move an issue to a different state
 
-Use `issueUpdate` with the destination `stateId`:
+Use Linear MCP `save_issue` for routine state transitions. Only use
+`issueUpdate` with the destination `stateId` when MCP cannot express the
+required operation:
 
 ```graphql
 mutation MoveIssueToState($id: String!, $stateId: String!) {
@@ -268,7 +266,10 @@ mutation MoveIssueToState($id: String!, $stateId: String!) {
 
 ### Attach a GitHub PR to an issue
 
-Use the GitHub-specific attachment mutation when linking a PR:
+Use Linear MCP `save_issue` links for ordinary PR URL attachment when a plain
+Linear attachment is sufficient. Use the GitHub-specific attachment mutation
+only when richer GitHub-specific Linear attachment metadata is required and MCP
+cannot express it:
 
 ```graphql
 mutation AttachGitHubPR($issueId: String!, $url: String!, $title: String) {
@@ -343,116 +344,25 @@ query IssueFieldArgs {
 }
 ```
 
-### Upload UI evidence media to a comment
-
-Do this in three steps:
-
-1. Call `linear_graphql` with `fileUpload` to get `uploadUrl`, `assetUrl`, and
-   any required upload headers.
-2. Upload the local file bytes to `uploadUrl` with `curl -X PUT` and the exact
-   headers returned by `fileUpload`.
-3. Call `linear_graphql` again with `commentCreate` (or `commentUpdate`) and
-   include the resulting `assetUrl` in rich `bodyData`.
-
-For UI evidence, use private uploads for both screenshots and videos:
-`makePublic:false`. Do not use `attachmentCreate`, base64 payloads, raw HTML,
-or markdown-only video links.
-
-Useful mutations:
-
-```graphql
-mutation FileUpload(
-  $filename: String!
-  $contentType: String!
-  $size: Int!
-  $makePublic: Boolean
-) {
-  fileUpload(
-    filename: $filename
-    contentType: $contentType
-    size: $size
-    makePublic: $makePublic
-  ) {
-    success
-    uploadFile {
-      uploadUrl
-      assetUrl
-      headers {
-        key
-        value
-      }
-    }
-  }
-}
-```
-
-Rich comment bodyData pattern:
-
-```json
-{
-  "type": "doc",
-  "content": [
-    {
-      "type": "heading",
-      "attrs": { "level": 2 },
-      "content": [{ "type": "text", "text": "UI Evidence for Review" }]
-    },
-    {
-      "type": "paragraph",
-      "content": [{ "type": "text", "text": "Screenshot caption" }]
-    },
-    {
-      "type": "image",
-      "attrs": {
-        "uploadState": "finished",
-        "uploadId": null,
-        "src": "https://uploads.linear.app/...",
-        "alt": "screenshot.png",
-        "title": null,
-        "attribution": null,
-        "originalSrc": null,
-        "width": null,
-        "height": null,
-        "displayWidth": null
-      }
-    },
-    {
-      "type": "paragraph",
-      "content": [{ "type": "text", "text": "Screencast caption" }]
-    },
-    {
-      "type": "video",
-      "attrs": {
-        "uploadState": "finished",
-        "uploadId": null,
-        "src": "https://uploads.linear.app/...",
-        "title": "demo.webm",
-        "size": null,
-        "controls": true,
-        "height": null,
-        "width": null,
-        "metadataId": null,
-        "mimetype": "video/webm"
-      }
-    }
-  ]
-}
-```
-
-Use `commentCreate(input: { issueId, bodyData })` or
-`commentUpdate(id, input: { bodyData })`, then re-read the comment and verify
-the expected `image`/`video` nodes exist.
-
 ## Usage rules
 
-- Use `linear_graphql` for comment edits, uploads, and ad-hoc Linear API
-  queries.
-- Prefer the narrowest issue lookup that matches what you already know:
-  key -> identifier search -> internal id.
-- For state transitions, fetch team states first and use the exact `stateId`
-  instead of hardcoding names inside mutations.
-- Prefer `attachmentLinkGitHubPR` over a generic URL attachment when linking a
-  GitHub PR to a Linear issue.
+- Use Linear MCP for routine issue lookup, comment listing, workpad
+  create/update, plain comment create/update, state transitions,
+  labels/statuses/projects, and normal link attachment.
+- Use `linear_graphql` only for private upload flows, rich `bodyData` writes or
+  verification, targeted introspection, and rare unsupported Linear API
+  operations.
+- For Playwright screenshots or screencasts, use the `linear-ui-evidence`
+  publisher instead of writing upload/comment GraphQL in the conversation.
+- When raw issue lookup is unavoidable, prefer the narrowest query that matches
+  what you already know: key -> identifier search -> internal id.
+- When raw state transitions are unavoidable, fetch team states first and use
+  the exact `stateId` instead of hardcoding names inside mutations.
+- When raw PR attachment is unavoidable, prefer `attachmentLinkGitHubPR` over a
+  generic URL attachment only when the richer GitHub-specific metadata is
+  required.
+- Keep raw GraphQL operations narrow and obvious in logs/diagnostics; do not
+  build broad ad-hoc Linear clients inside workflow runs.
 - Do not introduce new raw-token shell helpers for GraphQL access.
 - If you need shell work for uploads, only use it for signed upload URLs
   returned by `fileUpload`; those URLs already carry the needed authorization.

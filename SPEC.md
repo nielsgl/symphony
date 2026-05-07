@@ -1063,6 +1063,11 @@ Optional client-side tool extension:
 
 - An implementation may expose a limited set of client-side tools to the app-server session.
 - Current optional standardized tool: `linear_graphql`.
+- `linear_graphql` is a low-level escape hatch for unsupported Linear API
+  operations. Workflow prompts should direct routine issue-management work
+  through Linear MCP tools when available rather than presenting raw GraphQL as
+  an equivalent default path for issue lookup, comments, workpads, states,
+  labels/statuses/projects, or normal links.
 - If implemented, supported tools should be advertised to the app-server session during startup
   using the protocol mechanism supported by the targeted Codex app-server version.
 - Unsupported tool names should still return a failure result and continue the session.
@@ -1072,6 +1077,9 @@ Optional client-side tool extension:
 - Purpose: execute a raw GraphQL query or mutation against Linear using Symphony's configured
   tracker auth for the current session.
 - Availability: only meaningful when `tracker.kind == "linear"` and valid Linear auth is configured.
+- Intended scope: private upload flows, rich `bodyData` writes or verification,
+  targeted schema introspection, and rare unsupported Linear API operations that
+  the configured Linear MCP server cannot perform.
 - Preferred input shape:
 
   ```json
@@ -1099,6 +1107,9 @@ Optional client-side tool extension:
   - invalid input, missing auth, or transport failure -> `success=false` with an error payload
 - Return the GraphQL response or error payload as structured tool output that the model can inspect
   in-session.
+- Record enough tool metadata in logs and diagnostics to identify that
+  `linear_graphql` was used and which run/thread/tool call attempted it,
+  without exposing Linear credentials or sensitive payloads.
 
 Illustrative responses (equivalent payload shapes are acceptable if they preserve the same outcome):
 
@@ -1223,11 +1234,18 @@ Symphony does not require first-class tracker write APIs in the orchestrator.
 
 - Ticket mutations (state transitions, comments, PR metadata) are typically handled by the coding
   agent using tools defined by the workflow prompt.
+- For Linear workflows, routine issue writes should use Linear MCP tools when
+  available: issue lookup through `get_issue`/`list_issues`, comment discovery
+  through `list_comments`, workpad/comment create and update through
+  `save_comment`, state/label/status/project updates through `save_issue`, and
+  ordinary PR/link attachment through MCP link support.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
 - If the optional `linear_graphql` client-side tool extension is implemented, it is still part of
-  the agent toolchain rather than orchestrator business logic.
+  the agent toolchain rather than orchestrator business logic, and should be
+  treated as exceptional for GraphQL-only Linear operations rather than the
+  normal progress path.
 
 ## 12. Prompt Construction and Context Assembly
 
