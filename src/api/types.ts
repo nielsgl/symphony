@@ -838,6 +838,7 @@ export interface ApiRefreshAcceptedResponse {
 export type ThreadDiagnosticsStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'stalled';
 
 export type ThreadDiagnosticsBlockerClassification =
+  | typeof REASON_CODES.missingToolOutput
   | 'tool_waiting_long'
   | 'tracker_transition_pending'
   | 'input_required_pending'
@@ -893,6 +894,7 @@ export interface ThreadDiagnosticsBlocker {
   actionability: 'none' | 'recommended' | 'required';
   recommended_actions: string[];
   expected_auto_transition: string | null;
+  tool_output_wait?: import('../orchestrator').BlockedEntry['tool_output_wait'];
 }
 
 export interface ThreadDiagnosticsCapabilityWarning {
