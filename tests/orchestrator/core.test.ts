@@ -4171,6 +4171,169 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
+  it('accepts a fresh worker reusing an inactive PID after the TTL expires', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review'],
+        inactive_worker_pid_ttl_ms: 1_000
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-reused-pid-after-ttl', identifier: 'NIE-86', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-reused-pid-after-ttl', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'old-thread',
+      turn_id: 'old-turn',
+      session_id: 'old-session',
+      codex_app_server_pid: 46181
+    });
+    await harness.orchestrator.onWorkerExit('i-reused-pid-after-ttl', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review'
+    });
+
+    harness.now.value += 1_001;
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-reused-pid-after-ttl', identifier: 'NIE-86', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-reused-pid-after-ttl', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'fresh-thread',
+      turn_id: 'fresh-turn',
+      session_id: 'fresh-session',
+      codex_app_server_pid: 46181
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-reused-pid-after-ttl');
+    expect(running).toMatchObject({
+      thread_id: 'fresh-thread',
+      turn_id: 'fresh-turn',
+      session_id: 'fresh-session',
+      codex_app_server_pid: '46181',
+      quarantined_event_count: 0
+    });
+    expect(snapshot.inactive_worker_pids?.has('i-reused-pid-after-ttl')).toBe(false);
+  });
+
+  it('keeps reused inactive PID events quarantined before the TTL expires', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review'],
+        inactive_worker_pid_ttl_ms: 1_000
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-reused-pid-before-ttl', identifier: 'NIE-86', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-reused-pid-before-ttl', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'old-thread',
+      turn_id: 'old-turn',
+      session_id: 'old-session',
+      codex_app_server_pid: 46181
+    });
+    await harness.orchestrator.onWorkerExit('i-reused-pid-before-ttl', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review'
+    });
+
+    harness.now.value += 999;
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-reused-pid-before-ttl', identifier: 'NIE-86', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-reused-pid-before-ttl', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'fresh-thread',
+      turn_id: 'fresh-turn',
+      session_id: 'fresh-session',
+      codex_app_server_pid: 46181
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-reused-pid-before-ttl');
+    expect(running).toMatchObject({
+      thread_id: null,
+      turn_id: null,
+      session_id: null,
+      codex_app_server_pid: null,
+      quarantined_event_count: 1
+    });
+    expect(running?.quarantined_events?.[0]).toEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.turnStarted,
+        codex_app_server_pid: '46181',
+        reason: 'inactive_worker_pid'
+      })
+    );
+    expect(snapshot.inactive_worker_pids?.get('i-reused-pid-before-ttl')).toEqual([
+      expect.objectContaining({ pid: '46181' })
+    ]);
+  });
+
+  it('prunes expired inactive PID entries before matching stale events', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review'],
+        inactive_worker_pid_ttl_ms: 1_000
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-prune-expired-pid', identifier: 'NIE-86', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-prune-expired-pid', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'old-thread',
+      turn_id: 'old-turn',
+      session_id: 'old-session',
+      codex_app_server_pid: 46181
+    });
+    await harness.orchestrator.onWorkerExit('i-prune-expired-pid', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review'
+    });
+
+    harness.now.value += 1_000;
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-prune-expired-pid', identifier: 'NIE-86', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-prune-expired-pid', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      thread_id: 'fresh-thread',
+      turn_id: 'fresh-turn',
+      session_id: 'fresh-session',
+      codex_app_server_pid: 46181
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.inactive_worker_pids?.has('i-prune-expired-pid')).toBe(false);
+    expect(snapshot.running.get('i-prune-expired-pid')?.quarantined_event_count).toBe(0);
+  });
+
   it('quarantines old implementation and canceled review PID events after Cancel Turn retry', async () => {
     const harness = createHarness({
       configOverrides: {
