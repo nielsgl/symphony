@@ -103,13 +103,15 @@ export interface RunningEntry {
     at_ms: number;
     event: string;
     message: string | null;
+    codex_app_server_pid: string | null;
     session_id: string | null;
     thread_id: string | null;
     turn_id: string | null;
+    active_codex_app_server_pid: string | null;
     active_session_id: string | null;
     active_thread_id: string | null;
     active_turn_id: string | null;
-    reason: 'lineage_mismatch';
+    reason: 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid';
   }>;
   quarantined_event_count?: number;
   last_quarantined_event_at_ms?: number | null;
@@ -331,10 +333,12 @@ export interface BlockedEntry {
     at_ms: number;
     event: string;
     message: string | null;
+    codex_app_server_pid: string | null;
     session_id: string | null;
     thread_id: string | null;
     turn_id: string | null;
-    reason: 'awaiting_operator_latch' | 'lineage_mismatch';
+    active_codex_app_server_pid?: string | null;
+    reason: 'awaiting_operator_latch' | 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid';
   }>;
   quarantined_event_count?: number;
   last_quarantined_event_at_ms?: number | null;
@@ -363,6 +367,17 @@ export interface OrchestratorState {
   redispatch_progress?: Map<string, RedispatchProgressSample[]>;
   phase_timeline?: Map<string, PhaseMarker[]>;
   budget_usage_samples?: Map<string, Array<{ at_ms: number; total_tokens: number }>>;
+  inactive_worker_pids?: Map<
+    string,
+    Array<{
+      pid: string;
+      recorded_at_ms: number;
+      reason: string;
+      thread_id: string | null;
+      turn_id: string | null;
+      session_id: string | null;
+    }>
+  >;
   completed: Set<string>;
   codex_totals: {
     input_tokens: number;
