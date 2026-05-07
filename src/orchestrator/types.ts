@@ -694,6 +694,7 @@ export interface OrchestratorConfig {
   missing_tool_output_max_recoveries_per_run?: number;
   progress_heartbeat_only_warn_ms?: number;
   progress_stalled_waiting_ms?: number;
+  inactive_worker_pid_ttl_ms?: number;
   phase_markers_enabled?: boolean;
   phase_timeline_limit?: number;
   budget?: {

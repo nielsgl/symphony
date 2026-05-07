@@ -38,6 +38,8 @@ import type {
   WorkerExitReason
 } from './types';
 
+const DEFAULT_INACTIVE_WORKER_PID_TTL_MS = 60 * 60 * 1000;
+
 interface ScheduleRetryParams {
   issue_id: string;
   identifier: string;
@@ -380,6 +382,7 @@ export class OrchestratorCore {
     this.config.progress_heartbeat_only_warn_ms = this.config.progress_heartbeat_only_warn_ms ?? 120_000;
     this.config.progress_stalled_waiting_ms = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
     this.config.running_wait_stall_threshold_ms = this.config.progress_stalled_waiting_ms;
+    this.config.inactive_worker_pid_ttl_ms = this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS;
     this.ports = options.ports;
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.logger = options.logger;
@@ -514,6 +517,7 @@ export class OrchestratorCore {
     running_wait_stall_threshold_ms?: number;
     progress_heartbeat_only_warn_ms?: number;
     progress_stalled_waiting_ms?: number;
+    inactive_worker_pid_ttl_ms?: number;
     worker_hosts?: string[];
     max_concurrent_agents_per_host?: number | null;
     phase_markers_enabled?: boolean;
@@ -536,6 +540,7 @@ export class OrchestratorCore {
     this.config.progress_heartbeat_only_warn_ms = config.progress_heartbeat_only_warn_ms ?? 120_000;
     this.config.progress_stalled_waiting_ms = config.progress_stalled_waiting_ms ?? config.running_wait_stall_threshold_ms ?? 300_000;
     this.config.running_wait_stall_threshold_ms = this.config.progress_stalled_waiting_ms;
+    this.config.inactive_worker_pid_ttl_ms = config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS;
     this.config.worker_hosts = config.worker_hosts ? [...config.worker_hosts] : [];
     this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
     this.config.phase_markers_enabled = config.phase_markers_enabled ?? true;
@@ -1040,7 +1045,7 @@ export class OrchestratorCore {
   }
 
   private isInactiveWorkerPidForIssue(issueId: string, pid: string): boolean {
-    return Boolean((this.state.inactive_worker_pids?.get(issueId) ?? []).some((entry) => entry.pid === pid));
+    return this.pruneInactiveWorkerPidsForIssue(issueId).some((entry) => entry.pid === pid);
   }
 
   private rememberInactiveWorkerPid(runningEntry: RunningEntry, reason: string): void {
@@ -1049,7 +1054,7 @@ export class OrchestratorCore {
       return;
     }
     const issueId = runningEntry.issue.id;
-    const existing = this.state.inactive_worker_pids?.get(issueId) ?? [];
+    const existing = this.pruneInactiveWorkerPidsForIssue(issueId);
     const next = [
       ...existing.filter((entry) => entry.pid !== pid),
       {
@@ -1065,6 +1070,39 @@ export class OrchestratorCore {
       this.state.inactive_worker_pids = new Map();
     }
     this.state.inactive_worker_pids.set(issueId, next);
+  }
+
+  private pruneInactiveWorkerPidsForIssue(issueId: string): Array<{
+    pid: string;
+    recorded_at_ms: number;
+    reason: string;
+    thread_id: string | null;
+    turn_id: string | null;
+    session_id: string | null;
+  }> {
+    const entries = this.state.inactive_worker_pids?.get(issueId) ?? [];
+    if (entries.length === 0) {
+      return [];
+    }
+
+    const nowMs = this.nowMs();
+    const ttlMs = Math.max(0, this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS);
+    const activeEntries = entries.filter(
+      (entry) => Number.isFinite(entry.recorded_at_ms) && nowMs - entry.recorded_at_ms < ttlMs
+    );
+    if (activeEntries.length === entries.length) {
+      return entries;
+    }
+
+    if (!this.state.inactive_worker_pids) {
+      this.state.inactive_worker_pids = new Map();
+    }
+    if (activeEntries.length > 0) {
+      this.state.inactive_worker_pids.set(issueId, activeEntries);
+    } else {
+      this.state.inactive_worker_pids.delete(issueId);
+    }
+    return activeEntries;
   }
 
   private async persistExecutionGraphWorkerEvent(
