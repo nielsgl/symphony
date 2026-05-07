@@ -299,6 +299,10 @@ function humanizeWorkerEvent(event: WorkerObservabilityEvent): string {
   return base;
 }
 
+function normalizeCodexAppServerPid(pid: number | string | null | undefined): string | null {
+  return pid === undefined || pid === null ? null : String(pid);
+}
+
 function severityForRuntimeEvent(eventName: string): 'info' | 'warn' | 'error' {
   if (eventName.includes('failed') || eventName.includes('error')) {
     return 'error';
@@ -394,6 +398,7 @@ export class OrchestratorCore {
       redispatch_progress: new Map(),
       phase_timeline: new Map(),
       budget_usage_samples: new Map(),
+      inactive_worker_pids: new Map(),
       completed: new Set(),
       codex_totals: {
         input_tokens: 0,
@@ -460,6 +465,24 @@ export class OrchestratorCore {
           issueId,
           samples.map((sample) => ({ ...sample }))
         ])
+      ),
+      inactive_worker_pids: new Map(
+        Array.from(
+          (
+            this.state.inactive_worker_pids ??
+            new Map<
+              string,
+              Array<{
+                pid: string;
+                recorded_at_ms: number;
+                reason: string;
+                thread_id: string | null;
+                turn_id: string | null;
+                session_id: string | null;
+              }>
+            >()
+          ).entries()
+        ).map(([issueId, entries]) => [issueId, entries.map((entry) => ({ ...entry }))])
       ),
       completed: new Set(this.state.completed.values()),
       codex_totals: { ...this.state.codex_totals },
@@ -672,8 +695,9 @@ export class OrchestratorCore {
       return;
     }
 
-    if (this.isStaleWorkerEventForRunningEntry(runningEntry, workerEvent)) {
-      this.recordStaleRunningWorkerEvent(issue_id, runningEntry, workerEvent);
+    const staleReason = this.staleWorkerEventReasonForRunningEntry(issue_id, runningEntry, workerEvent);
+    if (staleReason) {
+      this.recordStaleRunningWorkerEvent(issue_id, runningEntry, workerEvent, staleReason);
       return;
     }
 
@@ -903,23 +927,35 @@ export class OrchestratorCore {
     }
   }
 
-  private isStaleWorkerEventForRunningEntry(
+  private staleWorkerEventReasonForRunningEntry(
+    issueId: string,
     runningEntry: RunningEntry,
     workerEvent: WorkerObservabilityEvent
-  ): boolean {
+  ): 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid' | null {
+    const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
+    if (eventPid && this.isInactiveWorkerPidForIssue(issueId, eventPid)) {
+      return 'inactive_worker_pid';
+    }
+
+    if (eventPid && runningEntry.codex_app_server_pid && eventPid !== runningEntry.codex_app_server_pid) {
+      return 'worker_identity_mismatch';
+    }
+
     if (runningEntry.thread_id && workerEvent.thread_id && workerEvent.thread_id !== runningEntry.thread_id) {
-      return true;
+      return 'lineage_mismatch';
     }
 
     if (this.isSameThreadContinuationTurnStart(runningEntry, workerEvent)) {
-      return false;
+      return null;
     }
 
     if (runningEntry.turn_id && workerEvent.turn_id && workerEvent.turn_id !== runningEntry.turn_id) {
-      return true;
+      return 'lineage_mismatch';
     }
 
-    return Boolean(runningEntry.session_id && workerEvent.session_id && workerEvent.session_id !== runningEntry.session_id);
+    return runningEntry.session_id && workerEvent.session_id && workerEvent.session_id !== runningEntry.session_id
+      ? 'lineage_mismatch'
+      : null;
   }
 
   private isSameThreadContinuationTurnStart(
@@ -940,19 +976,22 @@ export class OrchestratorCore {
   private recordStaleRunningWorkerEvent(
     issueId: string,
     runningEntry: RunningEntry,
-    workerEvent: WorkerObservabilityEvent
+    workerEvent: WorkerObservabilityEvent,
+    reason: 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid'
   ): void {
     const quarantinedEvent = {
       at_ms: workerEvent.timestamp_ms,
       event: workerEvent.event,
       message: workerEvent.detail ?? null,
+      codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
       session_id: workerEvent.session_id ?? null,
       thread_id: workerEvent.thread_id ?? null,
       turn_id: workerEvent.turn_id ?? null,
+      active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
       active_session_id: runningEntry.session_id ?? null,
       active_thread_id: runningEntry.thread_id ?? null,
       active_turn_id: runningEntry.turn_id ?? null,
-      reason: 'lineage_mismatch' as const
+      reason
     };
     runningEntry.quarantined_events = [...(runningEntry.quarantined_events ?? []), quarantinedEvent].slice(-40);
     runningEntry.quarantined_event_count = (runningEntry.quarantined_event_count ?? 0) + 1;
@@ -971,11 +1010,41 @@ export class OrchestratorCore {
         event_turn_id: workerEvent.turn_id ?? null,
         active_session_id: runningEntry.session_id,
         event_session_id: workerEvent.session_id ?? null,
+        active_codex_app_server_pid: runningEntry.codex_app_server_pid,
+        event_codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
         event: workerEvent.event,
         reason: quarantinedEvent.reason
       }
     });
     this.ports.notifyObservers?.();
+  }
+
+  private isInactiveWorkerPidForIssue(issueId: string, pid: string): boolean {
+    return Boolean((this.state.inactive_worker_pids?.get(issueId) ?? []).some((entry) => entry.pid === pid));
+  }
+
+  private rememberInactiveWorkerPid(runningEntry: RunningEntry, reason: string): void {
+    const pid = runningEntry.codex_app_server_pid;
+    if (!pid) {
+      return;
+    }
+    const issueId = runningEntry.issue.id;
+    const existing = this.state.inactive_worker_pids?.get(issueId) ?? [];
+    const next = [
+      ...existing.filter((entry) => entry.pid !== pid),
+      {
+        pid,
+        recorded_at_ms: this.nowMs(),
+        reason,
+        thread_id: runningEntry.thread_id ?? null,
+        turn_id: runningEntry.turn_id ?? null,
+        session_id: runningEntry.session_id ?? null
+      }
+    ].slice(-20);
+    if (!this.state.inactive_worker_pids) {
+      this.state.inactive_worker_pids = new Map();
+    }
+    this.state.inactive_worker_pids.set(issueId, next);
   }
 
   private async persistExecutionGraphWorkerEvent(
@@ -1708,6 +1777,7 @@ export class OrchestratorCore {
       at_ms: workerEvent.timestamp_ms,
       event: workerEvent.event,
       message: workerEvent.detail ?? null,
+      codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
       session_id: workerEvent.session_id ?? null,
       thread_id: workerEvent.thread_id ?? null,
       turn_id: workerEvent.turn_id ?? null,
@@ -1752,6 +1822,7 @@ export class OrchestratorCore {
       return;
     }
 
+    this.rememberInactiveWorkerPid(running, details.completion_reason ?? reason);
     this.state.running.delete(issue_id);
     this.addRuntimeSecondsFromEntry(running);
     this.recordBudgetUsageSample(issue_id, running.tokens.total_tokens, this.nowMs());
@@ -1798,7 +1869,11 @@ export class OrchestratorCore {
             completion_reason: completionReason,
             refreshed_state: details.refreshed_state ?? null,
             stop_reason_code: normalStop.reason_code,
-            cleanup_workspace: normalStop.cleanup_workspace
+            cleanup_workspace: normalStop.cleanup_workspace,
+            worker_termination_requested: normalStop.cleanup_workspace,
+            worker_process_identity_known: Boolean(running.codex_app_server_pid),
+            codex_app_server_pid: running.codex_app_server_pid,
+            same_issue_process_cleanup_verified: false
           }
         });
         this.ports.notifyObservers?.();
@@ -2943,6 +3018,7 @@ export class OrchestratorCore {
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'cancelled', reason);
     await this.persistExecutionGraphStateTransition(runningEntry, 'cancelled', 'cancelled', reason, `worker terminated: ${reason}`);
+    this.rememberInactiveWorkerPid(runningEntry, reason);
     this.state.running.delete(issue_id);
     this.state.claimed.delete(issue_id);
     this.logger?.log({
@@ -2954,7 +3030,11 @@ export class OrchestratorCore {
         issue_identifier: runningEntry.identifier,
         session_id: runningEntry.session_id,
         cleanup_workspace,
-        reason
+        reason,
+        worker_termination_requested: true,
+        worker_process_identity_known: Boolean(runningEntry.codex_app_server_pid),
+        codex_app_server_pid: runningEntry.codex_app_server_pid,
+        same_issue_process_cleanup_verified: false
       }
     });
 

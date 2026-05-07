@@ -627,7 +627,7 @@ describe('OrchestratorCore', () => {
         active_thread_id: 'fix-thread',
         active_turn_id: 'fix-turn',
         active_session_id: 'fix-session',
-        reason: 'lineage_mismatch'
+        reason: 'inactive_worker_pid'
       }),
       expect.objectContaining({
         event: CANONICAL_EVENT.codex.turnCompleted,
@@ -638,7 +638,7 @@ describe('OrchestratorCore', () => {
         active_thread_id: 'fix-thread',
         active_turn_id: 'fix-turn',
         active_session_id: 'fix-session',
-        reason: 'lineage_mismatch'
+        reason: 'inactive_worker_pid'
       })
     ]);
     expect(
@@ -4078,6 +4078,196 @@ describe('OrchestratorCore', () => {
     expect(snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored)).toBe(
       false
     );
+  });
+
+  it('quarantines old implementation PID events after fresh Agent Review handoff even when they echo the fresh lineage', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-handoff-pid', identifier: 'NIE-84', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-handoff-pid', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session',
+      codex_app_server_pid: 46181
+    });
+    await harness.orchestrator.onWorkerExit('i-handoff-pid', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review'
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-handoff-pid', identifier: 'NIE-84', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-handoff-pid', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'old implementation heartbeat elapsed_s=1151',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 46181
+    });
+    harness.orchestrator.onWorkerEvent('i-handoff-pid', {
+      timestamp_ms: harness.now.value + 30,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'fresh review heartbeat elapsed_s=110',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 94799
+    });
+    harness.orchestrator.onWorkerEvent('i-handoff-pid', {
+      timestamp_ms: harness.now.value + 40,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'old implementation planning elapsed_s=1160',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 46181
+    });
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-handoff-pid');
+    expect(running).toMatchObject({
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: '94799',
+      last_event: CANONICAL_EVENT.codex.turnWaiting,
+      last_message: 'fresh review heartbeat elapsed_s=110'
+    });
+    expect(running?.quarantined_event_count).toBe(2);
+    expect(running?.quarantined_events).toEqual([
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        codex_app_server_pid: '46181',
+        active_codex_app_server_pid: null,
+        active_thread_id: null,
+        active_turn_id: null,
+        active_session_id: null,
+        reason: 'inactive_worker_pid'
+      }),
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.phasePlanning,
+        codex_app_server_pid: '46181',
+        active_codex_app_server_pid: '94799',
+        active_thread_id: 'review-thread',
+        active_turn_id: 'review-turn',
+        active_session_id: 'review-session',
+        reason: 'inactive_worker_pid'
+      })
+    ]);
+  });
+
+  it('quarantines old implementation and canceled review PID events after Cancel Turn retry', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-cancel-retry-pid', identifier: 'NIE-84', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-cancel-retry-pid', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session',
+      codex_app_server_pid: 46181
+    });
+    await harness.orchestrator.onWorkerExit('i-cancel-retry-pid', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review'
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-cancel-retry-pid', identifier: 'NIE-84', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-cancel-retry-pid', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'first-review-thread',
+      turn_id: 'first-review-turn',
+      session_id: 'first-review-session',
+      codex_app_server_pid: 94799
+    });
+
+    const cancelled = await harness.orchestrator.cancelCurrentTurn('NIE-84', {
+      confirmed: true,
+      reason_note: 'linear bug'
+    });
+    expect(cancelled).toEqual({ ok: true, issue_id: 'i-cancel-retry-pid' });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-cancel-retry-pid', identifier: 'NIE-84', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    for (const [pid, elapsed] of [
+      [94799, 601],
+      [46181, 1643]
+    ] as const) {
+      harness.orchestrator.onWorkerEvent('i-cancel-retry-pid', {
+        timestamp_ms: harness.now.value + elapsed,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: `stale heartbeat elapsed_s=${elapsed}`,
+        thread_id: 'retry-thread',
+        turn_id: 'retry-turn',
+        session_id: 'retry-session',
+        codex_app_server_pid: pid
+      });
+    }
+    harness.orchestrator.onWorkerEvent('i-cancel-retry-pid', {
+      timestamp_ms: harness.now.value + 5,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'fresh retry heartbeat elapsed_s=5',
+      thread_id: 'retry-thread',
+      turn_id: 'retry-turn',
+      session_id: 'retry-session',
+      codex_app_server_pid: 5737
+    });
+    harness.orchestrator.onWorkerEvent('i-cancel-retry-pid', {
+      timestamp_ms: harness.now.value + 700,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'canceled worker planning elapsed_s=700',
+      thread_id: 'retry-thread',
+      turn_id: 'retry-turn',
+      session_id: 'retry-session',
+      codex_app_server_pid: 94799
+    });
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-cancel-retry-pid');
+    expect(running).toMatchObject({
+      thread_id: 'retry-thread',
+      turn_id: 'retry-turn',
+      session_id: 'retry-session',
+      codex_app_server_pid: '5737',
+      last_event: CANONICAL_EVENT.codex.turnWaiting,
+      last_message: 'fresh retry heartbeat elapsed_s=5'
+    });
+    expect(running?.quarantined_event_count).toBe(3);
+    expect(running?.quarantined_events?.map((event) => [event.codex_app_server_pid, event.reason])).toEqual([
+      ['94799', 'inactive_worker_pid'],
+      ['46181', 'inactive_worker_pid'],
+      ['94799', 'inactive_worker_pid']
+    ]);
   });
 
   it('ignores stale turn started events from an old turn on the active thread', async () => {

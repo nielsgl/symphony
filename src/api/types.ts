@@ -750,13 +750,15 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     at: string;
     event: string;
     message: string | null;
+    codex_app_server_pid: string | null;
     session_id: string | null;
     thread_id: string | null;
     turn_id: string | null;
+    active_codex_app_server_pid: string | null;
     active_session_id: string | null;
     active_thread_id: string | null;
     active_turn_id: string | null;
-    reason: 'lineage_mismatch';
+    reason: 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid';
   }>;
   last_error: string | null;
   logs: {
