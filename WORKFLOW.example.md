@@ -148,11 +148,20 @@ Return a concise summary with changed files and verification output.
 | `tracker.repo` | string | `""` | GitHub repo name | Required for `github` |
 | `tracker.github_linking.mode` | string | `off` | `off`, `warn`, `required`; `required` skips dispatch when issue has no linked GitHub issue | No |
 | `tracker.active_states` | string[] | by kind | `linear`: `Todo`, `In Progress`; `github`: `Open` | No, but see github rule |
+| `tracker.handoff_states` | string[] | `[]` | role-boundary states where the current run must stop after moving the issue there | No |
+| `tracker.fresh_dispatch_states` | string[] | `[]` | handoff states that must start the next automation role in a fresh run context; each entry must also be active | No |
 | `tracker.terminal_states` | string[] | by kind | `linear`: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`; `github`: `Closed` | No |
 
 GitHub-specific active state rule:
 - For `tracker.kind: github`, `active_states` must include at least one state that maps to `Open` or `Closed`.
 - If none map, validation fails (`invalid_tracker_active_states_for_github`).
+
+Handoff and fresh-dispatch rule:
+- A fresh-dispatch state must also be listed in `tracker.handoff_states` and
+  `tracker.active_states`.
+- Use this for automation-owned review states such as `Agent Review`: the
+  implementation run stops at handoff, then review automation starts from that
+  state in a fresh context.
 
 Memory tracker note:
 - `tracker.kind: memory` is for local/dev deterministic testing.

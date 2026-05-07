@@ -15,16 +15,32 @@ describe('workflow command examples', () => {
     expect(workflow).toMatch(/  reasoning_effort: medium\n/);
   });
 
-  it('keeps review handoff states out of implementation active states', () => {
+  it('keeps Agent Review active only through handoff and fresh-dispatch config', () => {
     const workflowPath = path.join(process.cwd(), 'WORKFLOW.md');
     const workflow = readFileSync(workflowPath, 'utf8');
     const parsed = parseWorkflowFrontMatter(workflow);
 
-    const tracker = parsed.config.tracker as { active_states?: unknown };
+    const tracker = parsed.config.tracker as {
+      active_states?: unknown;
+      handoff_states?: unknown;
+      fresh_dispatch_states?: unknown;
+    };
 
-    expect(tracker.active_states).toEqual(['Todo', 'In Progress', 'Merging', 'Rework']);
-    expect(tracker.active_states).not.toContain('Agent Review');
+    expect(tracker.active_states).toEqual(['Todo', 'In Progress', 'Agent Review', 'Merging', 'Rework']);
+    expect(tracker.handoff_states).toEqual(['Agent Review', 'Human Review']);
+    expect(tracker.fresh_dispatch_states).toEqual(['Agent Review']);
     expect(tracker.active_states).not.toContain('Human Review');
-    expect(workflow).toContain('`Agent Review` is intentionally not in `active_states`');
+    expect(workflow).toContain(
+      '`Agent Review` is in `active_states` only with the paired `handoff_states` and `fresh_dispatch_states` entries'
+    );
+    expect(workflow).toContain(
+      'The implementation worker must stop after moving the issue to `Agent Review`'
+    );
+    expect(workflow).toContain(
+      '`Agent Review` -> run Step 3 Agent Review flow in this fresh review context'
+    );
+    expect(workflow).toContain(
+      'If this run authored the implementation being reviewed, stop and leave the issue in `Agent Review`'
+    );
   });
 });
