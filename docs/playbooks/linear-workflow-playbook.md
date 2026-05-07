@@ -93,6 +93,14 @@ Important:
 
 - Symphony does not create issues directly; issue creation is tracker-side.
 - Tracker writes are performed via your workflow tooling and agent behavior.
+- Routine workflow writes should use Linear MCP tools when available:
+  `get_issue`/`list_issues` for lookup, `list_comments` for workpad discovery,
+  `save_comment` for workpad/comment create or update, `save_issue` for state
+  transitions and issue metadata, and MCP link support for ordinary PR links.
+- Treat the injected `linear_graphql` tool as an exceptional low-level
+  capability for private upload flows, rich `bodyData`, targeted introspection,
+  and rare unsupported Linear API operations. Do not present it as an
+  equivalent default for normal workflow progress.
 
 ## 5. Configure WORKFLOW.md
 
@@ -171,6 +179,9 @@ context and routes the issue:
 
 Reviewer findings should be posted as separate Linear comments. Passing reviews
 should also leave a short Linear decision comment for auditability.
+Agent Review should treat avoidable raw `linear_graphql` usage skeptically when
+Linear MCP or a dedicated script-backed path can perform the same routine
+workflow operation.
 
 ## 6. Start Symphony (CLI and Desktop)
 
