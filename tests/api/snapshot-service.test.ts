@@ -790,6 +790,84 @@ describe('SnapshotService', () => {
     expect(issue.tracked).toEqual({});
   });
 
+  it('projects active recent events separately from stale same-issue diagnostics', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:02:00.000Z')
+    });
+
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            thread_id: 'fresh-thread',
+            turn_id: 'fresh-turn',
+            session_id: 'fresh-session',
+            codex_app_server_pid: '2002',
+            last_event: CANONICAL_EVENT.codex.turnStarted,
+            last_event_summary: 'codex turn started',
+            last_message: null,
+            last_codex_timestamp_ms: Date.parse('2026-04-10T10:01:30.000Z'),
+            recent_events: [
+              {
+                at_ms: Date.parse('2026-04-10T10:01:30.000Z'),
+                event: CANONICAL_EVENT.codex.turnStarted,
+                message: null
+              }
+            ],
+            quarantined_event_count: 1,
+            last_quarantined_event_at_ms: Date.parse('2026-04-10T10:01:45.000Z'),
+            quarantined_events: [
+              {
+                at_ms: Date.parse('2026-04-10T10:01:45.000Z'),
+                event: CANONICAL_EVENT.codex.turnWaiting,
+                message: 'late prior-review heartbeat',
+                thread_id: 'review-thread',
+                turn_id: 'review-turn',
+                session_id: 'review-session',
+                active_thread_id: 'fresh-thread',
+                active_turn_id: 'fresh-turn',
+                active_session_id: 'fresh-session',
+                reason: 'lineage_mismatch'
+              }
+            ]
+          })
+        ]
+      ])
+    });
+
+    const issue = service.projectIssue(state, 'ABC-1');
+    expect(issue.running?.thread_id).toBe('fresh-thread');
+    expect(issue.running?.codex_app_server_pid).toBe('2002');
+    expect(issue.running?.quarantined_event_count).toBe(1);
+    expect(issue.recent_events).toEqual([
+      {
+        at: '2026-04-10T10:01:30.000Z',
+        event: CANONICAL_EVENT.codex.turnStarted,
+        message: null
+      }
+    ]);
+    expect(issue.stale_events).toEqual([
+      {
+        at: '2026-04-10T10:01:45.000Z',
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        message: 'late prior-review heartbeat',
+        thread_id: 'review-thread',
+        turn_id: 'review-turn',
+        session_id: 'review-session',
+        active_thread_id: 'fresh-thread',
+        active_turn_id: 'fresh-turn',
+        active_session_id: 'fresh-session',
+        reason: 'lineage_mismatch'
+      }
+    ]);
+
+    const projectedState = service.projectState(state);
+    expect(projectedState.running[0]?.thread_id).toBe('fresh-thread');
+    expect(projectedState.running[0]?.codex_app_server_pid).toBe('2002');
+    expect(projectedState.running[0]?.quarantined_event_count).toBe(1);
+  });
+
   it('projects running issue retry metadata with worker and workspace context when queued', () => {
     const service = new SnapshotService();
     const state = makeState({

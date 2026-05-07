@@ -116,6 +116,9 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     last_reported_tokens: { ...entry.last_reported_tokens },
     persisted_turn_ids: [...(entry.persisted_turn_ids ?? [])],
     recent_events: entry.recent_events.map((event) => ({ ...event })),
+    quarantined_events: (entry.quarantined_events ?? []).map((event) => ({ ...event })),
+    quarantined_event_count: entry.quarantined_event_count ?? 0,
+    last_quarantined_event_at_ms: entry.last_quarantined_event_at_ms ?? null,
     copy_ignored_summary: entry.copy_ignored_summary ? { ...entry.copy_ignored_summary } : null,
     awaiting_input_since_ms: entry.awaiting_input_since_ms ?? null,
     pending_input_preview: entry.pending_input_preview ? { ...entry.pending_input_preview } : null,
@@ -889,16 +892,21 @@ export class OrchestratorCore {
     runningEntry: RunningEntry,
     workerEvent: WorkerObservabilityEvent
   ): void {
-    const detail = [
-      `issue_id=${issueId}`,
-      `active_thread_id=${runningEntry.thread_id ?? 'unknown'}`,
-      `event_thread_id=${workerEvent.thread_id ?? 'unknown'}`,
-      `active_turn_id=${runningEntry.turn_id ?? 'unknown'}`,
-      `event_turn_id=${workerEvent.turn_id ?? 'unknown'}`,
-      `active_session_id=${runningEntry.session_id ?? 'unknown'}`,
-      `event_session_id=${workerEvent.session_id ?? 'unknown'}`,
-      `event=${workerEvent.event}`
-    ].join(' ');
+    const quarantinedEvent = {
+      at_ms: workerEvent.timestamp_ms,
+      event: workerEvent.event,
+      message: workerEvent.detail ?? null,
+      session_id: workerEvent.session_id ?? null,
+      thread_id: workerEvent.thread_id ?? null,
+      turn_id: workerEvent.turn_id ?? null,
+      active_session_id: runningEntry.session_id ?? null,
+      active_thread_id: runningEntry.thread_id ?? null,
+      active_turn_id: runningEntry.turn_id ?? null,
+      reason: 'lineage_mismatch' as const
+    };
+    runningEntry.quarantined_events = [...(runningEntry.quarantined_events ?? []), quarantinedEvent].slice(-40);
+    runningEntry.quarantined_event_count = (runningEntry.quarantined_event_count ?? 0) + 1;
+    runningEntry.last_quarantined_event_at_ms = workerEvent.timestamp_ms;
 
     this.logger?.log({
       level: 'warn',
@@ -913,16 +921,11 @@ export class OrchestratorCore {
         event_turn_id: workerEvent.turn_id ?? null,
         active_session_id: runningEntry.session_id,
         event_session_id: workerEvent.session_id ?? null,
-        event: workerEvent.event
+        event: workerEvent.event,
+        reason: quarantinedEvent.reason
       }
     });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.orchestration.staleWorkerEventIgnored,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail
-    });
+    this.ports.notifyObservers?.();
   }
 
   private async persistExecutionGraphWorkerEvent(
@@ -2766,6 +2769,9 @@ export class OrchestratorCore {
       budget_hard_limit_enforced: false,
       budget: this.computeBudgetProjection(issue.id, 0, 'unavailable'),
       recent_events: [],
+      quarantined_events: [],
+      quarantined_event_count: 0,
+      last_quarantined_event_at_ms: null,
       started_at_ms: startedAtMs,
       last_codex_timestamp_ms: null,
       current_phase: null,

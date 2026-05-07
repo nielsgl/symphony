@@ -428,6 +428,139 @@ describe('OrchestratorCore', () => {
     ).toBe(false);
   });
 
+  it('quarantines late prior-review events after a fresh same-issue fix dispatch without polluting active run activity', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        fresh_dispatch_states: ['Agent Review', 'In Progress']
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-review-to-fix', identifier: 'NIE-79', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-review-to-fix', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 1001
+    });
+    await harness.orchestrator.onWorkerExit('i-review-to-fix', 'normal', undefined, {
+      completion_reason: REASON_CODES.freshDispatchStateRouted,
+      refreshed_state: 'In Progress'
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-review-to-fix', identifier: 'NIE-79', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-review-to-fix', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'fix-thread',
+      turn_id: 'fix-turn',
+      session_id: 'fix-session',
+      codex_app_server_pid: 2002
+    });
+
+    harness.orchestrator.onWorkerEvent('i-review-to-fix', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'late review heartbeat',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 1001
+    });
+    harness.orchestrator.onWorkerEvent('i-review-to-fix', {
+      timestamp_ms: harness.now.value + 30,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      detail: 'late review completion',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 1001
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-review-to-fix');
+    expect(running?.thread_id).toBe('fix-thread');
+    expect(running?.turn_id).toBe('fix-turn');
+    expect(running?.session_id).toBe('fix-session');
+    expect(running?.codex_app_server_pid).toBe('2002');
+    expect(running?.last_event).toBe(CANONICAL_EVENT.codex.turnStarted);
+    expect(running?.last_codex_timestamp_ms).toBe(harness.now.value + 10);
+    expect(running?.recent_events).toEqual([
+      {
+        at_ms: harness.now.value + 10,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        message: null
+      }
+    ]);
+    expect(running?.quarantined_event_count).toBe(2);
+    expect(running?.quarantined_events).toEqual([
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        message: 'late review heartbeat',
+        thread_id: 'review-thread',
+        turn_id: 'review-turn',
+        session_id: 'review-session',
+        active_thread_id: 'fix-thread',
+        active_turn_id: 'fix-turn',
+        active_session_id: 'fix-session',
+        reason: 'lineage_mismatch'
+      }),
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.turnCompleted,
+        message: 'late review completion',
+        thread_id: 'review-thread',
+        turn_id: 'review-turn',
+        session_id: 'review-session',
+        active_thread_id: 'fix-thread',
+        active_turn_id: 'fix-turn',
+        active_session_id: 'fix-session',
+        reason: 'lineage_mismatch'
+      })
+    ]);
+    expect(
+      snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored)
+    ).toBe(false);
+    expect(logs.filter((entry) => entry.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored)).toEqual([
+      expect.objectContaining({
+        context: expect.objectContaining({
+          active_thread_id: 'fix-thread',
+          event_thread_id: 'review-thread',
+          active_turn_id: 'fix-turn',
+          event_turn_id: 'review-turn',
+          active_session_id: 'fix-session',
+          event_session_id: 'review-session',
+          event: CANONICAL_EVENT.codex.turnWaiting
+        })
+      }),
+      expect.objectContaining({
+        context: expect.objectContaining({
+          active_thread_id: 'fix-thread',
+          event_thread_id: 'review-thread',
+          active_turn_id: 'fix-turn',
+          event_turn_id: 'review-turn',
+          active_session_id: 'fix-session',
+          event_session_id: 'review-session',
+          event: CANONICAL_EVENT.codex.turnCompleted
+        })
+      })
+    ]);
+  });
+
   it('does not schedule continuation retry when normal exit left active states', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-paused' })]);
@@ -3355,14 +3488,22 @@ describe('OrchestratorCore', () => {
       'workspace_ready',
       'codex_turn_started'
     ]);
-    expect(
-      snapshot.recent_runtime_events.some(
-        (event) =>
-          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
-          event.issue_identifier === 'ABC-STALE' &&
-          event.detail?.includes('event_thread_id=thread-stale')
-      )
-    ).toBe(true);
+    expect(running?.quarantined_event_count).toBe(1);
+    expect(running?.quarantined_events?.[0]).toEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        thread_id: 'thread-stale',
+        turn_id: 'turn-stale',
+        session_id: 'session-stale',
+        active_thread_id: 'thread-current',
+        active_turn_id: 'turn-current',
+        active_session_id: 'session-current',
+        reason: 'lineage_mismatch'
+      })
+    );
+    expect(snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored)).toBe(
+      false
+    );
   });
 
   it('ignores stale turn started events from an old turn on the active thread', async () => {
@@ -3408,14 +3549,15 @@ describe('OrchestratorCore', () => {
       'workspace_ready',
       'codex_turn_started'
     ]);
-    expect(
-      snapshot.recent_runtime_events.some(
-        (event) =>
-          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
-          event.issue_identifier === 'ABC-STALE-TURN' &&
-          event.detail?.includes('event_turn_id=turn-1')
-      )
-    ).toBe(true);
+    expect(running?.quarantined_event_count).toBe(2);
+    expect(running?.quarantined_events?.map((event) => event.event)).toEqual([
+      CANONICAL_EVENT.codex.turnStarted,
+      CANONICAL_EVENT.codex.turnWaiting
+    ]);
+    expect(running?.quarantined_events?.every((event) => event.turn_id === 'turn-1')).toBe(true);
+    expect(snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored)).toBe(
+      false
+    );
   });
 
   it('accepts continuation turn starts on the active thread after the prior turn completed', async () => {
@@ -3529,14 +3671,22 @@ describe('OrchestratorCore', () => {
       'codex_turn_started',
       'validation'
     ]);
-    expect(
-      snapshot.recent_runtime_events.some(
-        (event) =>
-          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
-          event.issue_identifier === 'ABC-STALE-COMPLETE' &&
-          event.detail?.includes('event_turn_id=turn-1')
-      )
-    ).toBe(true);
+    expect(running?.quarantined_event_count).toBe(1);
+    expect(running?.quarantined_events?.[0]).toEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-current',
+        turn_id: 'turn-1',
+        session_id: 'session-turn-1',
+        active_thread_id: 'thread-current',
+        active_turn_id: 'turn-2',
+        active_session_id: 'session-turn-2',
+        reason: 'lineage_mismatch'
+      })
+    );
+    expect(snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored)).toBe(
+      false
+    );
   });
 
   it('ignores stale turn started events with old session lineage even when thread lineage is omitted', async () => {
@@ -3573,14 +3723,22 @@ describe('OrchestratorCore', () => {
       'workspace_ready',
       'codex_turn_started'
     ]);
-    expect(
-      snapshot.recent_runtime_events.some(
-        (event) =>
-          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
-          event.issue_identifier === 'ABC-STALE-SESSION' &&
-          event.detail?.includes('event_session_id=session-stale')
-      )
-    ).toBe(true);
+    expect(running?.quarantined_event_count).toBe(1);
+    expect(running?.quarantined_events?.[0]).toEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: null,
+        turn_id: 'turn-stale',
+        session_id: 'session-stale',
+        active_thread_id: 'thread-current',
+        active_turn_id: 'turn-current',
+        active_session_id: 'session-current',
+        reason: 'lineage_mismatch'
+      })
+    );
+    expect(snapshot.recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored)).toBe(
+      false
+    );
   });
 
   it('emits phase markers from explicit lifecycle events', async () => {
