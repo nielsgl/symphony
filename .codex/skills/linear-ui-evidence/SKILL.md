@@ -8,6 +8,16 @@ description: Publish Playwright screenshots and screencasts for UI-affecting Sym
 Use this skill when a Symphony issue has user-visible UI changes and Playwright
 screenshots or screencasts need to be published for review.
 
+This workflow is the intentional GraphQL-only exception to routine Linear MCP
+operations. Routine issue lookup, comments, and state changes should use Linear
+MCP tools when available. UI evidence publication must use this bundled
+publisher because it needs private `fileUpload(makePublic:false)`, signed upload
+PUTs, rich `bodyData` image/video nodes, and a verification re-read of
+`comment.bodyData`.
+
+Do not hand-author dynamic app-server `linear_graphql` calls for screenshots or
+screencasts. Capture media locally, then run the publisher script below.
+
 ## Required flow
 
 1. Capture local evidence with the `playwright` skill:
@@ -56,6 +66,12 @@ The script uploads media with private Linear `fileUpload(makePublic:false)` and
 creates rich `bodyData` `image`/`video` nodes. It must not use Linear
 attachments, base64 payloads, raw HTML, public URLs, or local paths as reviewer
 evidence.
+
+The script validates inputs before network calls, performs the direct
+GraphQL/HTTP upload and comment operations, and fails with typed errors when
+upload, comment save, or verification fails. A successful run re-reads
+`comment.bodyData` and reports `verification.status: "passed"` only after the
+rendered media node counts and sources match the uploaded assets.
 
 ## Evidence quality
 
