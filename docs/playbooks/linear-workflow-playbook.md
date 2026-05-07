@@ -108,8 +108,14 @@ tracker:
   active_states:
     - Todo
     - In Progress
+    - Agent Review
     - Merging
     - Rework
+  handoff_states:
+    - Agent Review
+    - Human Review
+  fresh_dispatch_states:
+    - Agent Review
   terminal_states:
     - Done
     - Canceled
@@ -150,9 +156,11 @@ Todo -> In Progress -> Agent Review -> Merging -> Done
 Todo -> In Progress -> Agent Review -> Human Review -> Merging -> Done
 ```
 
-`Agent Review` is automation-owned, but it is intentionally omitted from this
-workflow's `active_states` so implementation runs stop after handoff. A separate
-review automation watches that state and routes the issue:
+`Agent Review` is automation-owned. It is present in `active_states` only because
+the same workflow also declares it in `handoff_states` and
+`fresh_dispatch_states`. Implementation runs stop after moving an issue to
+`Agent Review`; a separate review automation starts from that state in a fresh
+context and routes the issue:
 
 - `Agent Review -> In Progress` for fixable review findings.
 - `Agent Review -> Rework` when the implementation needs a fresh approach.
@@ -215,6 +223,8 @@ Eligibility gates:
 
 - Required fields present.
 - State is in active_states and not in terminal_states.
+- Fresh review dispatch from `Agent Review` is valid only when the state is also
+  listed in handoff_states and fresh_dispatch_states.
 - Not already running or claimed.
 - Global and per-state concurrency limits allow dispatch.
 - For Todo state, blockers must be terminal.
