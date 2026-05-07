@@ -27,6 +27,7 @@ export const REASON_CODES = {
   normalCompletion: 'normal_completion',
   maxTurnsReached: 'max_turns_reached',
   handoffStateReached: 'handoff_state_reached',
+  handoffRelease: 'handoff_release',
   freshDispatchStateRouted: 'fresh_dispatch_state_routed',
   issueLeftActiveStates: 'issue_left_active_states',
   issueStateMissing: 'issue_state_missing',
@@ -89,6 +90,17 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Run stopped at handoff',
     detail: 'The worker completed normally and stopped because the refreshed issue state is configured as a handoff point.',
     expected_transition: 'Separate handoff automation may dispatch the next workflow'
+  },
+  [REASON_CODES.handoffRelease]: {
+    reason_code: REASON_CODES.handoffRelease,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Handoff Release',
+    headline: 'Run released at handoff',
+    detail:
+      'A running worker was cancelled without workspace cleanup because the issue crossed into a fresh-dispatch handoff state started by another workflow role.',
+    expected_transition: 'Fresh-dispatch automation may start a new run without inherited implementation context'
   },
   [REASON_CODES.freshDispatchStateRouted]: {
     reason_code: REASON_CODES.freshDispatchStateRouted,

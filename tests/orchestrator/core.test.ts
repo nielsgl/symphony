@@ -1989,6 +1989,103 @@ describe('OrchestratorCore', () => {
     expect(updated?.identifier).toBe('ABC-99');
   });
 
+  it('releases stale implementation worker when refreshed into Agent Review fresh-dispatch handoff', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-handoff-release',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      },
+      persistence
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-handoff', identifier: 'ABC-HANDOFF', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-stale-handoff', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session'
+    });
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-stale-handoff', identifier: 'ABC-HANDOFF', state: 'Agent Review' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-stale-handoff',
+        cleanup_workspace: false,
+        reason: REASON_CODES.handoffRelease
+      }
+    ]);
+    expect(snapshot.running.has('i-stale-handoff')).toBe(false);
+    expect(snapshot.claimed.has('i-stale-handoff')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-stale-handoff')).toBe(false);
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        terminal_status: 'cancelled',
+        error_code: REASON_CODES.handoffRelease,
+        terminal_reason_code: REASON_CODES.handoffRelease,
+        session_id: 'implementation-session',
+        thread_id: 'implementation-thread',
+        turn_id: 'implementation-turn'
+      })
+    ]);
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-handoff', identifier: 'ABC-HANDOFF', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    const freshReview = harness.orchestrator.getStateSnapshot().running.get('i-stale-handoff');
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-stale-handoff', attempt: null, worker_host: null, resume_context: null },
+      { issue_id: 'i-stale-handoff', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    expect(freshReview?.retry_attempt).toBe(0);
+    expect(freshReview?.thread_id).toBeNull();
+    expect(freshReview?.session_id).toBeNull();
+  });
+
+  it('keeps fresh review worker running while Agent Review remains active', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-review-running', identifier: 'ABC-REVIEW', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-review-running', identifier: 'ABC-REVIEW', state: 'Agent Review' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-review-running');
+    expect(running?.issue.state).toBe('Agent Review');
+    expect(harness.terminated).toEqual([]);
+  });
+
   it('stops running worker without cleanup when state becomes non-active and non-terminal', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-nonactive' })]);
