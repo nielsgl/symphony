@@ -36,5 +36,11 @@ describe('workflow command examples', () => {
     expect(workflow).toContain(
       'The implementation worker must stop after moving the issue to `Agent Review`'
     );
+    expect(workflow).toContain(
+      '`Agent Review` -> run Step 3 Agent Review flow in this fresh review context'
+    );
+    expect(workflow).toContain(
+      'If this run authored the implementation being reviewed, stop and leave the issue in `Agent Review`'
+    );
   });
 });

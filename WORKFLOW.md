@@ -149,7 +149,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `In Progress` -> continue execution flow from current scratchpad comment.
-   - `Agent Review` -> do not continue the implementation run; this handoff/fresh-dispatch state is picked up by separate review automation in a fresh context.
+   - `Agent Review` -> run Step 3 Agent Review flow in this fresh review context; do not perform implementation work. If this run authored the implementation being reviewed, stop and leave the issue in `Agent Review` for another automation run.
    - `Human Review` -> wait and poll for decision/review updates.
    - `Merging` -> on entry, open and follow `.codex/skills/land/SKILL.md`; do not call `gh pr merge` directly.
    - `Rework` -> run rework flow.
@@ -299,7 +299,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Step 3: Agent Review
 
-1. Treat `Agent Review` as an automation-owned review state handled by a separate review automation, not by this implementation dispatcher.
+1. Treat `Agent Review` as an automation-owned review state handled by a fresh review run through this workflow's `handoff_states` and `fresh_dispatch_states` config.
 2. Perform Agent Review in a separate run/context from the implementation run.
    - Implementation agents may self-check before handoff, but they must not perform the formal Agent Review for their own run.
    - If this run authored the implementation being reviewed, stop and leave the issue in `Agent Review` for another automation run.
