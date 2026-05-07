@@ -1905,9 +1905,24 @@ describe('OrchestratorCore', () => {
       detail: 'late old heartbeat',
       thread_id: 'thread-recover',
       turn_id: 'turn-old',
-      session_id: 'session-old',
-      codex_app_server_pid: 111
+      session_id: 'session-old'
     });
+    const afterLateOldEvent = harness.orchestrator.getStateSnapshot().running.get('i-recover-tool');
+    expect(afterLateOldEvent?.last_event).toBe(CANONICAL_EVENT.orchestration.missingToolOutputRecoveryStarted);
+    expect(afterLateOldEvent?.last_message).not.toBe('late old heartbeat');
+    expect(afterLateOldEvent?.turn_id).toBe('turn-old');
+    expect(afterLateOldEvent?.session_id).toBe('session-old');
+    expect(afterLateOldEvent?.outstanding_tool_calls).toEqual({});
+    expect(afterLateOldEvent?.quarantined_event_count).toBe(1);
+    expect(afterLateOldEvent?.quarantined_events?.[0]).toMatchObject({
+      reason: 'lineage_mismatch',
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      thread_id: 'thread-recover',
+      turn_id: 'turn-old',
+      session_id: 'session-old',
+      codex_app_server_pid: null
+    });
+
     harness.orchestrator.onWorkerEvent('i-recover-tool', {
       timestamp_ms: harness.now.value + 200,
       event: CANONICAL_EVENT.codex.turnStarted,
@@ -1929,7 +1944,7 @@ describe('OrchestratorCore', () => {
       last_call_id: 'call_recover'
     });
     expect(running?.quarantined_event_count).toBe(1);
-    expect(running?.quarantined_events?.[0]?.reason).toBe('inactive_worker_pid');
+    expect(running?.quarantined_events?.[0]?.reason).toBe('lineage_mismatch');
     expect(running?.turn_id).toBe('turn-recovery');
     expect(running?.codex_app_server_pid).toBe('222');
   });

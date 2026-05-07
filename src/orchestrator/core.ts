@@ -967,6 +967,10 @@ export class OrchestratorCore {
       return null;
     }
 
+    if (this.isPreviousRecoveryTurnEvent(runningEntry, workerEvent)) {
+      return 'lineage_mismatch';
+    }
+
     if (runningEntry.turn_id && workerEvent.turn_id && workerEvent.turn_id !== runningEntry.turn_id) {
       return 'lineage_mismatch';
     }
@@ -1001,6 +1005,26 @@ export class OrchestratorCore {
       typeof turnId === 'string' &&
       turnId !== runningEntry.turn_id
     );
+  }
+
+  private isPreviousRecoveryTurnEvent(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
+    const recovery = runningEntry.recovery;
+    if (!recovery || recovery.last_result !== 'started') {
+      return false;
+    }
+
+    const matchesPreviousTurn = Boolean(recovery.previous_turn_id) && workerEvent.turn_id === recovery.previous_turn_id;
+    const matchesPreviousSession =
+      Boolean(recovery.previous_session_id) && workerEvent.session_id === recovery.previous_session_id;
+    if (!matchesPreviousTurn && !matchesPreviousSession) {
+      return false;
+    }
+
+    if (recovery.previous_thread_id && workerEvent.thread_id && workerEvent.thread_id !== recovery.previous_thread_id) {
+      return false;
+    }
+
+    return true;
   }
 
   private recordStaleRunningWorkerEvent(
