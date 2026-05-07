@@ -1971,6 +1971,55 @@ describe('OrchestratorCore', () => {
     expect(running?.codex_app_server_pid).toBe('222');
   });
 
+  it('uses a guarded tool-agnostic recovery prompt for non-Linear tool stalls', async () => {
+    const recoveries: Array<Parameters<NonNullable<OrchestratorPorts['recoverMissingToolOutput']>>[0]> = [];
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      recoverMissingToolOutput: async (params) => {
+        recoveries.push(params);
+        return {
+          ok: true,
+          worker_handle: { recovery: true },
+          monitor_handle: { recovery: true },
+          worker_host: params.worker_host
+        };
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-generic', identifier: 'ABC-GENERIC' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-recover-generic', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-generic',
+      turn_id: 'turn-generic-old',
+      session_id: 'session-generic-old'
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-generic', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      detail: 'publish_artifact',
+      tool_name: 'publish_artifact',
+      tool_call_id: 'call_publish_artifact',
+      thread_id: 'thread-generic',
+      turn_id: 'turn-generic-old',
+      session_id: 'session-generic-old'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0].recovery_prompt).toContain('Treat the last tool action outcome as indeterminate');
+    expect(recoveries[0].recovery_prompt).toContain('inspect current local and external state');
+    expect(recoveries[0].recovery_prompt).toContain('If the action already took effect, do not repeat it');
+    expect(recoveries[0].recovery_prompt).toContain('If the action did not take effect, retry it once');
+    expect(recoveries[0].recovery_prompt).toContain('retrying could duplicate an external side effect');
+    expect(recoveries[0].recovery_prompt).toContain('- last tool: publish_artifact');
+    expect(recoveries[0].recovery_prompt).not.toContain('Linear');
+    expect(recoveries[0].recovery_prompt).not.toContain('linear_graphql');
+  });
+
   it.each([
     ['thread/resume failed'],
     ['turn/interrupt failed'],
