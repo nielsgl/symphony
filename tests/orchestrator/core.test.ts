@@ -3211,6 +3211,121 @@ describe('OrchestratorCore', () => {
     expect(freshReview?.session_id).toBeNull();
   });
 
+  it('releases completed Agent Review ownership when issue routes back to In Progress for fresh dispatch', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-review-terminal-release',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review', 'In Progress']
+      },
+      logger: {
+        log: ({ event, context }) => {
+          logs.push({ event, context: context ?? {} });
+        }
+      },
+      persistence
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-review-terminal-release', identifier: 'NIE-87', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-review-terminal-release', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 7931
+    });
+    harness.orchestrator.onWorkerEvent('i-review-terminal-release', {
+      timestamp_ms: harness.now.value + 2,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      detail: 'task_complete',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 7931
+    });
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-review-terminal-release', identifier: 'NIE-87', state: 'In Progress' })
+    ]);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-review-terminal-release', identifier: 'NIE-87', state: 'In Progress' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-review-terminal-release',
+        cleanup_workspace: false,
+        reason: REASON_CODES.handoffRelease
+      }
+    ]);
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        terminal_status: 'cancelled',
+        error_code: REASON_CODES.handoffRelease,
+        terminal_reason_code: REASON_CODES.handoffRelease,
+        session_id: 'review-session',
+        thread_id: 'review-thread',
+        turn_id: 'review-turn'
+      })
+    ]);
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-review-terminal-release', attempt: null, worker_host: null, resume_context: null },
+      { issue_id: 'i-review-terminal-release', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    harness.orchestrator.onWorkerEvent('i-review-terminal-release', {
+      timestamp_ms: harness.now.value + 3,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'late waiting after task_complete',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+    harness.orchestrator.onWorkerEvent('i-review-terminal-release', {
+      timestamp_ms: harness.now.value + 4,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'late planning after task_complete',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-review-terminal-release');
+    expect(running?.started_issue_state).toBe('In Progress');
+    expect(running?.thread_id).toBeNull();
+    expect(running?.last_event).toBeNull();
+    expect(running?.last_codex_timestamp_ms).toBeNull();
+    expect(running?.recent_events).toEqual([]);
+    expect(running?.quarantined_event_count).toBe(2);
+    expect(running?.quarantined_events?.map((event) => event.event)).toEqual([
+      CANONICAL_EVENT.codex.turnWaiting,
+      CANONICAL_EVENT.codex.phasePlanning
+    ]);
+    expect(running?.quarantined_events?.every((event) => event.reason === 'lineage_mismatch')).toBe(true);
+    expect(
+      logs.some(
+        (entry) =>
+          entry.event === CANONICAL_EVENT.orchestration.dispatchDuplicateSkipped &&
+          entry.context.issue_id === 'i-review-terminal-release'
+      )
+    ).toBe(false);
+  });
+
   it('keeps fresh review worker running while Agent Review remains active', async () => {
     const harness = createHarness({
       configOverrides: {

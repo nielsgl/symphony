@@ -951,6 +951,10 @@ export class OrchestratorCore {
       return 'inactive_worker_pid';
     }
 
+    if (!eventPid && this.isInactiveWorkerLineageForIssue(issueId, workerEvent)) {
+      return 'lineage_mismatch';
+    }
+
     if (eventPid && runningEntry.codex_app_server_pid && eventPid !== runningEntry.codex_app_server_pid) {
       return 'worker_identity_mismatch';
     }
@@ -1077,17 +1081,33 @@ export class OrchestratorCore {
     return this.pruneInactiveWorkerPidsForIssue(issueId).some((entry) => entry.pid === pid);
   }
 
+  private isInactiveWorkerLineageForIssue(issueId: string, workerEvent: WorkerObservabilityEvent): boolean {
+    const inactiveEntries = this.pruneInactiveWorkerPidsForIssue(issueId);
+    if (inactiveEntries.length === 0) {
+      return false;
+    }
+
+    return inactiveEntries.some((entry) => {
+      const turnMatches = Boolean(entry.turn_id) && workerEvent.turn_id === entry.turn_id;
+      const sessionMatches = Boolean(entry.session_id) && workerEvent.session_id === entry.session_id;
+      if (!turnMatches && !sessionMatches) {
+        return false;
+      }
+      return !entry.thread_id || !workerEvent.thread_id || workerEvent.thread_id === entry.thread_id;
+    });
+  }
+
   private rememberInactiveWorkerPid(runningEntry: RunningEntry, reason: string): void {
     const pid = runningEntry.codex_app_server_pid;
-    if (!pid) {
+    if (!pid && !runningEntry.thread_id && !runningEntry.turn_id && !runningEntry.session_id) {
       return;
     }
     const issueId = runningEntry.issue.id;
     const existing = this.pruneInactiveWorkerPidsForIssue(issueId);
     const next = [
-      ...existing.filter((entry) => entry.pid !== pid),
+      ...existing.filter((entry) => !(entry.pid === (pid ?? '') && entry.turn_id === (runningEntry.turn_id ?? null))),
       {
-        pid,
+        pid: pid ?? '',
         recorded_at_ms: this.nowMs(),
         reason,
         thread_id: runningEntry.thread_id ?? null,
@@ -2735,6 +2755,15 @@ export class OrchestratorCore {
 
       if (
         this.isHandoffFreshDispatchState(refreshedIssue.state) &&
+        !this.didRunStartInState(runningEntry, refreshedIssue.state)
+      ) {
+        await this.terminateRunningIssue(refreshedIssue.id, false, REASON_CODES.handoffRelease);
+        continue;
+      }
+
+      if (
+        runningEntry.last_event === CANONICAL_EVENT.codex.turnCompleted &&
+        this.isFreshDispatchState(refreshedIssue.state) &&
         !this.didRunStartInState(runningEntry, refreshedIssue.state)
       ) {
         await this.terminateRunningIssue(refreshedIssue.id, false, REASON_CODES.handoffRelease);
