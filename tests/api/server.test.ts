@@ -2813,6 +2813,25 @@ describe('LocalApiServer', () => {
       diagnosticsSource: makeDiagnosticsSource({
         listRunHistory: () => [
           {
+            run_id: 'run-unfinished',
+            issue_id: 'issue-stop',
+            issue_identifier: 'ABC-STOP',
+            started_at: '2026-04-10T10:04:00.000Z',
+            ended_at: null,
+            terminal_status: null,
+            error_code: null,
+            terminal_reason_code: null,
+            terminal_reason_detail: null,
+            root_cause_status: null,
+            root_cause_reason_code: null,
+            root_cause_reason_detail: null,
+            root_cause_at: null,
+            session_id: 'session-unfinished',
+            thread_id: 'thread-unfinished',
+            turn_id: 'turn-unfinished',
+            session_ids: ['session-unfinished']
+          },
+          {
             run_id: 'run-stop',
             issue_id: 'issue-stop',
             issue_identifier: 'ABC-STOP',
@@ -2862,7 +2881,7 @@ describe('LocalApiServer', () => {
       expect(statePayload.running).toEqual([]);
       expect(statePayload.blocked).toEqual([]);
       expect(historyResponse.status).toBe(200);
-      expect(historyPayload.runs[0]).toMatchObject({
+      expect(historyPayload.runs.find((run) => run.run_id === 'run-stop')).toMatchObject({
         run_id: 'run-stop',
         terminal_reason_code: 'non_active_state_transition',
         root_cause_reason_code: 'missing_tool_output',
@@ -2893,6 +2912,51 @@ describe('LocalApiServer', () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+
+  it('returns typed not-found instead of terminal forensics when durable history only has an unfinished matching run', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource({
+        listRunHistory: () => [
+          {
+            run_id: 'run-unfinished-only',
+            issue_id: 'issue-unfinished',
+            issue_identifier: 'ABC-UNFINISHED',
+            started_at: '2026-04-10T10:04:00.000Z',
+            ended_at: null,
+            terminal_status: null,
+            error_code: null,
+            terminal_reason_code: null,
+            terminal_reason_detail: null,
+            root_cause_status: null,
+            root_cause_reason_code: null,
+            root_cause_reason_detail: null,
+            root_cause_at: null,
+            session_id: 'session-unfinished',
+            thread_id: 'thread-unfinished',
+            turn_id: 'turn-unfinished',
+            session_ids: ['session-unfinished']
+          }
+        ],
+        reconstructLatestThreadLineageByIssueIdentifier: () => null,
+        reconstructThreadLineage: () => null
+      })
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-UNFINISHED/forensics/export`);
+    const payload = (await response.json()) as { error: { code: string } };
+
+    expect(response.status).toBe(404);
+    expect(payload.error.code).toBe('forensics_bundle_not_found');
   });
 
   it('keeps persisted phase and tool spans when active runtime diagnostics also exist', async () => {

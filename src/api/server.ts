@@ -118,6 +118,10 @@ function diagnosticsFromTerminalRun(run: DurableRunHistoryRecord): ThreadDiagnos
   };
 }
 
+function isCompletedTerminalRun(run: DurableRunHistoryRecord): boolean {
+  return run.ended_at !== null && run.terminal_status !== null;
+}
+
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode;
   res.setHeader('content-type', 'application/json; charset=utf-8');
@@ -998,7 +1002,10 @@ export class LocalApiServer {
                 terminalRun =
                   this.diagnosticsSource
                     .listRunHistory(10_000)
-                    .find((run) => run.issue_identifier === issueIdentifier || run.issue_id === issueIdentifier) ?? null;
+                    .find((run) =>
+                      isCompletedTerminalRun(run) &&
+                      (run.issue_identifier === issueIdentifier || run.issue_id === issueIdentifier)
+                    ) ?? null;
                 payload = terminalRun ? diagnosticsFromTerminalRun(terminalRun) : null;
               }
               if (!payload) {
