@@ -369,6 +369,7 @@ export class SnapshotService {
         running: running.length,
         retrying: retrying.length,
         blocked: blocked.length,
+        stopped: 0,
         running_stalled_waiting_count: running.filter((entry) => entry.operator_explainer_hint?.classification === 'stalled_waiting')
           .length,
         running_awaiting_input_count: running.filter((entry) => entry.operator_explainer_hint?.classification === 'awaiting_input')
@@ -377,6 +378,7 @@ export class SnapshotService {
       running,
       retrying,
       blocked,
+      stopped_runs: [],
       codex_totals: {
         input_tokens: state.codex_totals.input_tokens,
         output_tokens: state.codex_totals.output_tokens,

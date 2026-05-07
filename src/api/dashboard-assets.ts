@@ -183,6 +183,16 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     </section>
 
     <section class="panel panel-wide">
+      <div class="panel-head">
+        <h2>Stopped Run Recovery</h2>
+      </div>
+      <p class="muted">Use these cards when a run has already stopped and no longer appears in running, retrying, or blocked state. Inspect forensics first, then resume only when the API marks resume valid.</p>
+      <div id="stopped-run-recovery-list" class="recovery-list">
+        <p class="muted">No recent stopped runs need recovery.</p>
+      </div>
+    </section>
+
+    <section class="panel panel-wide">
       <details id="issue-panel" open>
         <summary>Issue Detail</summary>
         <div class="issue-detail">
@@ -364,6 +374,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     runningRows: document.getElementById('running-rows'),
     retryRows: document.getElementById('retry-rows'),
     blockedRows: document.getElementById('blocked-rows'),
+    stoppedRunRecoveryList: document.getElementById('stopped-run-recovery-list'),
     statusFilter: document.getElementById('status-filter'),
     runningFilter: document.getElementById('running-filter'),
     issuePanel: document.getElementById('issue-panel'),
@@ -652,6 +663,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       createMetricCard('Running', formatNumber(payload.counts.running)),
       createMetricCard('Retrying', formatNumber(payload.counts.retrying)),
       createMetricCard('Blocked', formatNumber(payload.counts.blocked)),
+      createMetricCard('Stopped', formatNumber(payload.counts.stopped || 0)),
       createMetricCard('Stalled Waiting', formatNumber(payload.counts.running_stalled_waiting_count || 0)),
       createMetricCard('Awaiting Input', formatNumber(payload.counts.running_awaiting_input_count || 0)),
       createMetricCard('Total Tokens', formatNumber(payload.codex_totals.total_tokens)),
@@ -902,6 +914,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       blockedCell.textContent = 'No blocked-input data while snapshot is unavailable.';
       emptyBlockedRow.appendChild(blockedCell);
       elements.blockedRows.replaceChildren(emptyBlockedRow);
+      const emptyStopped = document.createElement('p');
+      emptyStopped.className = 'muted';
+      emptyStopped.textContent = 'No stopped-run recovery data while snapshot is unavailable.';
+      elements.stoppedRunRecoveryList.replaceChildren(emptyStopped);
       return;
     }
 
@@ -911,6 +927,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     renderRunning(state.lastGoodPayload);
     renderRetry(state.lastGoodPayload);
     renderBlocked(state.lastGoodPayload);
+    renderStoppedRunRecovery(state.lastGoodPayload);
     renderRuntimeEvents(state.lastGoodPayload);
   }
 
@@ -1834,6 +1851,121 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.blockedRows.replaceChildren(...nodes);
   }
 
+  function recoveryStatusLabel(status) {
+    switch (status) {
+      case 'resume_available':
+        return 'Resume available';
+      case 'active_issue_present':
+        return 'Active issue present';
+      case 'capability_mismatch':
+        return 'Capability mismatch';
+      case 'resume_unavailable':
+        return 'Resume unavailable';
+      case 'inspect_forensics':
+      default:
+        return 'Inspect forensics';
+    }
+  }
+
+  function renderStoppedRunRecovery(payload) {
+    const acknowledged = new Set(JSON.parse(window.localStorage.getItem('symphony.stoppedRunAcknowledged') || '[]'));
+    const entries = (payload.stopped_runs || []).filter(function (entry) {
+      return !acknowledged.has(entry.run_id);
+    });
+    if (!entries.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No recent stopped runs need recovery.';
+      elements.stoppedRunRecoveryList.replaceChildren(empty);
+      return;
+    }
+
+    const cards = entries.map((entry) => {
+      const card = document.createElement('article');
+      card.className = 'recovery-card' + (entry.capability_mismatch ? ' recovery-card-warning' : '');
+
+      const header = document.createElement('div');
+      header.className = 'recovery-card-head';
+      const title = document.createElement('h3');
+      title.textContent = entry.issue_identifier;
+      const status = document.createElement('span');
+      status.className = 'status-pill ' + (entry.resume_valid ? 'pending' : entry.capability_mismatch ? 'failed' : 'actionability-recommended');
+      status.textContent = recoveryStatusLabel(entry.recovery_status);
+      header.append(title, status);
+
+      const meta = document.createElement('dl');
+      meta.className = 'recovery-grid';
+      const addMeta = function (label, value) {
+        const group = document.createElement('div');
+        const term = document.createElement('dt');
+        term.textContent = label;
+        const description = document.createElement('dd');
+        description.textContent = value || 'n/a';
+        group.append(term, description);
+        meta.append(group);
+      };
+      addMeta('Run', entry.run_id);
+      addMeta('Thread', entry.thread_id);
+      addMeta('Session', entry.session_id);
+      addMeta('Turn', entry.turn_id);
+      addMeta('Last relevant', formatDate(entry.last_relevant_at));
+      addMeta('Terminal', entry.terminal_status + (entry.terminal_reason_code ? ' / ' + entry.terminal_reason_code : ''));
+      addMeta('Root cause', (entry.root_cause_status || 'unknown') + (entry.root_cause_reason_code ? ' / ' + getActionRequiredLabel(entry.root_cause_reason_code) : ''));
+      addMeta('Current recovery', recoveryStatusLabel(entry.recovery_status));
+
+      const detail = document.createElement('p');
+      detail.className = 'muted';
+      detail.textContent =
+        'Terminal detail: ' +
+        (entry.terminal_reason_detail || 'n/a') +
+        ' | Root-cause detail: ' +
+        (entry.root_cause_reason_detail || 'n/a');
+
+      const capability = document.createElement('p');
+      capability.className = entry.capability_mismatch ? 'capability-warning-text' : 'muted';
+      capability.textContent = entry.capability_mismatch && entry.capability_warning
+        ? 'Resume disabled: ' + entry.capability_warning.unsupported_capability_message + ' Recovery: ' + entry.capability_warning.recommended_recovery_action
+        : (entry.resume_disabled_reason || 'Resume is available from API recovery metadata.');
+
+      const actions = document.createElement('div');
+      actions.className = 'action-cell recovery-actions';
+      const inspect = createActionButton('Inspect Forensics', 'ghost-button', function () {
+        window.open(entry.actions.inspect_forensics_url, '_blank', 'noopener');
+      });
+      const inspectThread = createActionButton('Inspect Thread', 'ghost-button', function () {
+        if (entry.actions.inspect_thread_url) {
+          window.open(entry.actions.inspect_thread_url, '_blank', 'noopener');
+        }
+      });
+      inspectThread.disabled = !entry.actions.inspect_thread_url;
+      const copyThread = createActionButton('Copy Thread', 'ghost-button', function () {
+        copyText(entry.thread_id || '');
+      });
+      copyThread.disabled = !entry.actions.copy_thread_id_supported;
+      const copySession = createActionButton('Copy Session', 'ghost-button', function () {
+        copyText(entry.session_id || '');
+      });
+      copySession.disabled = !entry.actions.copy_session_id_supported;
+      const resume = createActionButton('Resume', 'ghost-button', function () {
+        if (entry.resume_valid) {
+          void resumeBlockedIssue(entry.issue_identifier);
+        }
+      });
+      resume.disabled = !entry.resume_valid;
+      const acknowledge = createActionButton('Acknowledge Cancellation', 'ghost-button', function () {
+        acknowledged.add(entry.run_id);
+        window.localStorage.setItem('symphony.stoppedRunAcknowledged', JSON.stringify(Array.from(acknowledged)));
+        renderStoppedRunRecovery(payload);
+      });
+      actions.append(inspect, inspectThread, copyThread, copySession, resume, acknowledge);
+
+      card.append(header, meta, detail, capability, actions);
+      return card;
+    });
+
+    elements.stoppedRunRecoveryList.replaceChildren(...cards);
+  }
+
   function applyPayload(payload, source) {
     if (payload && payload.error) {
       renderSnapshotError(payload.error);
@@ -1851,6 +1983,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     renderRunning(payload);
     renderRetry(payload);
     renderBlocked(payload);
+    renderStoppedRunRecovery(payload);
     renderRuntimeEvents(payload);
     setLastUpdated(payload.generated_at || new Date().toISOString());
     if (source === 'stream') {
@@ -2764,6 +2897,69 @@ h3 {
 
 .table-wrap {
   overflow: auto;
+}
+
+.recovery-list {
+  display: grid;
+  gap: 10px;
+}
+
+.recovery-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfdf9;
+}
+
+.recovery-card-warning {
+  border-color: #d58a44;
+  background: #fff7f5;
+}
+
+.recovery-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.recovery-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.recovery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.recovery-grid div {
+  min-width: 0;
+}
+
+.recovery-grid dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.recovery-grid dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.capability-warning-text {
+  color: var(--danger);
 }
 
 table {

@@ -1,5 +1,7 @@
 import { CANONICAL_EVENT } from '../observability/events';
 import { listActionRequiredReasonCodes, requireReasonCodeDefinition, REASON_CODES } from '../observability/reason-codes';
+import type { DurableRunHistoryRecord } from '../persistence';
+import type { ApiStateResponse, ThreadDiagnosticsCapabilityWarning } from './types';
 
 export const ACTION_REQUIRED_REASON_LABELS: Record<string, string> = Object.fromEntries(
   listActionRequiredReasonCodes().map((code) => [code, requireReasonCodeDefinition(code).label])
@@ -22,6 +24,15 @@ export interface DashboardBudgetEntry {
   budget_status?: 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable' | null;
   budget_policy?: 'block_requires_resume' | 'terminate_attempt' | null;
   budget_message?: string | null;
+}
+
+export type StoppedRunRecoveryEntry = ApiStateResponse['stopped_runs'][number];
+
+export interface StoppedRunRecoveryProjectionParams {
+  runs: DurableRunHistoryRecord[];
+  activeIssueIdentifiers?: Set<string>;
+  blockedIssueIdentifiers?: Set<string>;
+  capabilityWarningsByThreadId?: Map<string, ThreadDiagnosticsCapabilityWarning[]>;
 }
 
 export function getActionRequiredLabel(code: string | null | undefined): string {
@@ -83,6 +94,86 @@ export function formatBudgetSummary(entry: DashboardBudgetEntry | null | undefin
     parts.push(entry.budget_message);
   }
   return parts.join(' | ');
+}
+
+function isStoppedTerminalRun(run: DurableRunHistoryRecord): boolean {
+  return Boolean(run.terminal_status && run.terminal_status !== 'succeeded' && run.ended_at);
+}
+
+function resolveLastRelevantAt(run: DurableRunHistoryRecord): string {
+  return run.root_cause_at ?? run.ended_at ?? run.started_at;
+}
+
+function firstCapabilityWarning(
+  run: DurableRunHistoryRecord,
+  warningsByThreadId: Map<string, ThreadDiagnosticsCapabilityWarning[]>
+): ThreadDiagnosticsCapabilityWarning | null {
+  if (!run.thread_id) {
+    return null;
+  }
+  return warningsByThreadId.get(run.thread_id)?.[0] ?? null;
+}
+
+export function buildStoppedRunRecoveryEntries(params: StoppedRunRecoveryProjectionParams): StoppedRunRecoveryEntry[] {
+  const activeIssueIdentifiers = params.activeIssueIdentifiers ?? new Set<string>();
+  const blockedIssueIdentifiers = params.blockedIssueIdentifiers ?? new Set<string>();
+  const warningsByThreadId = params.capabilityWarningsByThreadId ?? new Map<string, ThreadDiagnosticsCapabilityWarning[]>();
+
+  return params.runs
+    .filter(isStoppedTerminalRun)
+    .map((run) => {
+      const activeIssuePresent = activeIssueIdentifiers.has(run.issue_identifier);
+      const blockedIssuePresent = blockedIssueIdentifiers.has(run.issue_identifier);
+      const capabilityWarning = firstCapabilityWarning(run, warningsByThreadId);
+      const capabilityMismatch = Boolean(capabilityWarning);
+      const resumeValid = blockedIssuePresent && !capabilityMismatch;
+      const recoveryStatus: StoppedRunRecoveryEntry['recovery_status'] = capabilityMismatch
+        ? 'capability_mismatch'
+        : resumeValid
+          ? 'resume_available'
+          : activeIssuePresent
+            ? 'active_issue_present'
+            : 'inspect_forensics';
+      const resumeDisabledReason = resumeValid
+        ? null
+        : capabilityMismatch
+          ? 'Dynamic-tool capability mismatch requires a native runtime recovery path; console-only continuation is disabled.'
+          : activeIssuePresent
+            ? 'The issue has current active state; use the active panel controls unless blocked resume becomes available.'
+            : 'No active blocked run is present, so resume is not available from the state API.';
+
+      return {
+        run_id: run.run_id,
+        issue_id: run.issue_id,
+        issue_identifier: run.issue_identifier,
+        terminal_status: run.terminal_status!,
+        terminal_reason_code: run.terminal_reason_code ?? run.error_code ?? null,
+        terminal_reason_detail: run.terminal_reason_detail ?? null,
+        root_cause_status: run.root_cause_status ?? null,
+        root_cause_reason_code: run.root_cause_reason_code ?? null,
+        root_cause_reason_detail: run.root_cause_reason_detail ?? null,
+        root_cause_at: run.root_cause_at ?? null,
+        thread_id: run.thread_id ?? null,
+        turn_id: run.turn_id ?? null,
+        session_id: run.session_id ?? run.session_ids[0] ?? null,
+        last_relevant_at: resolveLastRelevantAt(run),
+        active_issue_present: activeIssuePresent,
+        recovery_status: recoveryStatus,
+        resume_valid: resumeValid,
+        resume_disabled_reason: resumeDisabledReason,
+        capability_mismatch: capabilityMismatch,
+        capability_warning: capabilityWarning,
+        actions: {
+          inspect_forensics_url: `/api/v1/issues/${encodeURIComponent(run.issue_identifier)}/forensics/export`,
+          inspect_thread_url: run.thread_id ? `/api/v1/history/threads/${encodeURIComponent(run.thread_id)}` : null,
+          resume_url: resumeValid ? `/api/v1/issues/${encodeURIComponent(run.issue_identifier)}/resume` : null,
+          acknowledge_supported: true as const,
+          copy_thread_id_supported: Boolean(run.thread_id),
+          copy_session_id_supported: Boolean(run.session_id ?? run.session_ids[0])
+        }
+      };
+    })
+    .sort((left, right) => Date.parse(right.last_relevant_at) - Date.parse(left.last_relevant_at));
 }
 
 export type OperatorTransitionType =
