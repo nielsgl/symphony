@@ -33,6 +33,8 @@ import type {
   TickReason,
   ToolCallLedgerEntry,
   ToolCallLedgerObservation,
+  TranscriptToolCallDiagnostic,
+  TranscriptToolCallLineage,
   WorkerCompletionReason,
   WorkerExitDetails,
   WorkerObservabilityEvent,
@@ -184,6 +186,9 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     outstanding_tool_calls: Object.fromEntries(
       Object.entries(entry.outstanding_tool_calls ?? {}).map(([callId, call]) => [callId, { ...call }])
     ),
+    transcript_tool_call_diagnostics: (entry.transcript_tool_call_diagnostics ?? []).map((diagnostic) => ({
+      ...diagnostic
+    })),
     codex_session_transcript_scan_offsets: { ...(entry.codex_session_transcript_scan_offsets ?? {}) },
     recovery: entry.recovery ? { ...entry.recovery } : null,
     budget: entry.budget ? { ...entry.budget } : undefined
@@ -296,6 +301,7 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
           recommended_actions: [...entry.tool_output_wait.recommended_actions]
         }
       : null,
+    transcript_tool_call_diagnostics: (entry.transcript_tool_call_diagnostics ?? []).map((diagnostic) => ({ ...diagnostic })),
     session_console: (entry.session_console ?? []).map((event) => ({ ...event })),
     quarantined_events: (entry.quarantined_events ?? []).map((event) => ({ ...event })),
     quarantined_event_count: entry.quarantined_event_count ?? 0,
@@ -3155,6 +3161,7 @@ export class OrchestratorCore {
       phase_detail: null,
       tool_call_ledger: {},
       outstanding_tool_calls: {},
+      transcript_tool_call_diagnostics: [],
       codex_session_transcript_scan_offsets: {},
       recovery: null
     });
@@ -3417,6 +3424,7 @@ export class OrchestratorCore {
       questions: Array<{ id: string; prompt?: string; options?: Array<{ label: string; value?: string }> }>;
     } | null;
     tool_output_wait?: BlockedEntry['tool_output_wait'];
+    transcript_tool_call_diagnostics?: BlockedEntry['transcript_tool_call_diagnostics'];
     recovery?: BlockedEntry['recovery'];
     session_console?: Array<{ at_ms: number; event: string; message: string | null }>;
     previous_thread_id: string | null;
@@ -3511,6 +3519,7 @@ export class OrchestratorCore {
             recommended_actions: [...params.tool_output_wait.recommended_actions]
           }
         : null,
+      transcript_tool_call_diagnostics: (params.transcript_tool_call_diagnostics ?? []).map((diagnostic) => ({ ...diagnostic })),
       recovery: params.recovery ? { ...params.recovery } : null,
       session_console: (params.session_console ?? []).slice(-40),
       quarantined_events: [],
@@ -5431,21 +5440,54 @@ export class OrchestratorCore {
     const threadId = this.readTranscriptString(['thread_id', 'threadId'], record, payload, item);
     const turnId = this.readTranscriptString(['turn_id', 'turnId'], record, payload, item);
     const sessionId = this.readTranscriptString(['session_id', 'sessionId'], record, payload, item);
-    const hasMatchingLineage =
-      (runningEntry.thread_id && threadId === runningEntry.thread_id) ||
-      (runningEntry.turn_id && turnId === runningEntry.turn_id) ||
-      (runningEntry.session_id && sessionId === runningEntry.session_id);
-    if (
-      (runningEntry.thread_id && threadId && threadId !== runningEntry.thread_id) ||
-      (runningEntry.turn_id && turnId && turnId !== runningEntry.turn_id) ||
-      (runningEntry.session_id && sessionId && sessionId !== runningEntry.session_id)
-    ) {
-      return null;
-    }
-    if (!hasMatchingLineage) {
-      return null;
-    }
     const explicitObservedAtMs = readTimestampMs(record) ?? readTimestampMs(item);
+    const observedAt = explicitObservedAtMs ?? observedAtMs;
+    const classification = this.classifyTranscriptToolCallRecord(
+      {
+        issue_id: this.readTranscriptString(['issue_id', 'issueId'], record, payload, item),
+        issue_identifier: this.readTranscriptString(['issue_identifier', 'issueIdentifier', 'identifier'], record, payload, item),
+        run_id: this.readTranscriptString(['run_id', 'runId'], record, payload, item),
+        issue_run_id: this.readTranscriptString(['issue_run_id', 'issueRunId'], record, payload, item),
+        attempt_id: this.readTranscriptString(['attempt_id', 'attemptId'], record, payload, item),
+        codex_app_server_pid: this.readTranscriptPid(record, payload, item),
+        thread_id: threadId,
+        turn_id: turnId,
+        session_id: sessionId,
+        observed_at_ms: observedAt
+      },
+      runningEntry
+    );
+
+    this.recordTranscriptToolCallDiagnostic(runningEntry, {
+      kind: type,
+      call_id: callId,
+      tool_name: readString(item.name) ?? readString(item.tool_name) ?? readString(item.toolName) ?? null,
+      thread_id: threadId ?? null,
+      turn_id: turnId ?? null,
+      session_id: sessionId ?? null,
+      issue_id: classification.record.issue_id,
+      issue_identifier: classification.record.issue_identifier,
+      run_id: classification.record.run_id,
+      issue_run_id: classification.record.issue_run_id,
+      attempt_id: classification.record.attempt_id,
+      codex_app_server_pid: classification.record.codex_app_server_pid,
+      observed_at_ms: observedAt,
+      lineage: classification.lineage,
+      reason: classification.reason,
+      active_issue_id: runningEntry.issue.id,
+      active_issue_identifier: runningEntry.identifier,
+      active_run_id: runningEntry.run_id ?? null,
+      active_issue_run_id: runningEntry.issue_run_id ?? null,
+      active_attempt_id: runningEntry.attempt_id ?? null,
+      active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+      active_thread_id: runningEntry.thread_id ?? null,
+      active_turn_id: runningEntry.turn_id ?? null,
+      active_session_id: runningEntry.session_id ?? null
+    });
+
+    if (classification.lineage !== 'active_owned') {
+      return null;
+    }
 
     return {
       kind: type,
@@ -5458,6 +5500,138 @@ export class OrchestratorCore {
       last_agent_message: type === 'function_call' ? runningEntry.last_message ?? null : null,
       evidence_source: 'session_transcript'
     };
+  }
+
+  private readTranscriptPid(...records: Array<Record<string, unknown> | null | undefined>): string | null {
+    for (const record of records) {
+      if (!record) {
+        continue;
+      }
+      for (const key of ['codex_app_server_pid', 'codexAppServerPid', 'app_server_pid', 'appServerPid', 'pid']) {
+        const value = record[key];
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return String(value);
+        }
+        const text = readString(value)?.trim();
+        if (text) {
+          return text;
+        }
+      }
+    }
+    return null;
+  }
+
+  private classifyTranscriptToolCallRecord(
+    record: {
+      issue_id?: string | null;
+      issue_identifier?: string | null;
+      run_id?: string | null;
+      issue_run_id?: string | null;
+      attempt_id?: string | null;
+      codex_app_server_pid?: string | null;
+      thread_id?: string | null;
+      turn_id?: string | null;
+      session_id?: string | null;
+      observed_at_ms: number;
+    },
+    runningEntry: RunningEntry
+  ): {
+    lineage: TranscriptToolCallLineage;
+    reason: string;
+    record: {
+      issue_id: string | null;
+      issue_identifier: string | null;
+      run_id: string | null;
+      issue_run_id: string | null;
+      attempt_id: string | null;
+      codex_app_server_pid: string | null;
+    };
+  } {
+    const normalized = {
+      issue_id: record.issue_id?.trim() || null,
+      issue_identifier: record.issue_identifier?.trim() || null,
+      run_id: record.run_id?.trim() || null,
+      issue_run_id: record.issue_run_id?.trim() || null,
+      attempt_id: record.attempt_id?.trim() || null,
+      codex_app_server_pid: record.codex_app_server_pid?.trim() || null,
+      thread_id: record.thread_id?.trim() || null,
+      turn_id: record.turn_id?.trim() || null,
+      session_id: record.session_id?.trim() || null
+    };
+    const active = {
+      issue_id: runningEntry.issue.id,
+      issue_identifier: runningEntry.identifier,
+      run_id: runningEntry.run_id ?? null,
+      issue_run_id: runningEntry.issue_run_id ?? null,
+      attempt_id: runningEntry.attempt_id ?? null,
+      codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+      thread_id: runningEntry.thread_id ?? null,
+      turn_id: runningEntry.turn_id ?? null,
+      session_id: runningEntry.session_id ?? null
+    };
+    const identifiers: Array<keyof typeof normalized> = [
+      'issue_id',
+      'issue_identifier',
+      'run_id',
+      'issue_run_id',
+      'attempt_id',
+      'codex_app_server_pid',
+      'thread_id',
+      'turn_id',
+      'session_id'
+    ];
+    const mismatches = identifiers.filter((key) => Boolean(normalized[key] && active[key] && normalized[key] !== active[key]));
+    const matches = identifiers.filter((key) => Boolean(normalized[key] && active[key] && normalized[key] === active[key]));
+    const hasPidMatch = matches.includes('codex_app_server_pid');
+    const hasThreadMatch = matches.includes('thread_id');
+    const hasTurnMatch = matches.includes('turn_id');
+    const hasSessionMatch = matches.includes('session_id');
+    const hasRunMatch = matches.includes('run_id') || matches.includes('issue_run_id') || matches.includes('attempt_id');
+    const isPrior = record.observed_at_ms < runningEntry.started_at_ms;
+    const lineageRecord = {
+      issue_id: normalized.issue_id,
+      issue_identifier: normalized.issue_identifier,
+      run_id: normalized.run_id,
+      issue_run_id: normalized.issue_run_id,
+      attempt_id: normalized.attempt_id,
+      codex_app_server_pid: normalized.codex_app_server_pid
+    };
+
+    if (mismatches.length > 0) {
+      return {
+        lineage: isPrior ? 'prior_stale' : 'external_manual',
+        reason: `mismatched active lineage: ${mismatches.join(',')}`,
+        record: lineageRecord
+      };
+    }
+
+    const ownsKnownTurn = hasThreadMatch && hasTurnMatch;
+    const ownsThreadBeforeTurnKnown = hasThreadMatch && !active.turn_id;
+    const ownsSessionBeforeThreadKnown = hasSessionMatch && !active.thread_id && !active.turn_id;
+    const ownsRunLineage = hasRunMatch && (hasThreadMatch || hasTurnMatch || hasSessionMatch || hasPidMatch);
+    if (hasPidMatch || ownsKnownTurn || ownsThreadBeforeTurnKnown || ownsSessionBeforeThreadKnown || ownsRunLineage) {
+      return { lineage: 'active_owned', reason: 'matches active runtime lineage', record: lineageRecord };
+    }
+
+    if (isPrior) {
+      return { lineage: 'prior_stale', reason: 'transcript record predates active run start', record: lineageRecord };
+    }
+    if (matches.length > 0) {
+      return {
+        lineage: 'external_manual',
+        reason: `partial active lineage is insufficient for ownership: ${matches.join(',')}`,
+        record: lineageRecord
+      };
+    }
+    return { lineage: 'unattributed', reason: 'no active runtime lineage identifiers matched', record: lineageRecord };
+  }
+
+  private recordTranscriptToolCallDiagnostic(runningEntry: RunningEntry, diagnostic: TranscriptToolCallDiagnostic): void {
+    const diagnostics = (runningEntry.transcript_tool_call_diagnostics ??= []);
+    diagnostics.push(diagnostic);
+    if (diagnostics.length > 200) {
+      diagnostics.splice(0, diagnostics.length - 200);
+    }
   }
 
   private async recoverOrBlockMissingToolOutput(
@@ -5793,6 +5967,7 @@ export class OrchestratorCore {
       previous_session_id: diagnostic.session_id,
       last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
       tool_output_wait: diagnostic,
+      transcript_tool_call_diagnostics: runningEntry.transcript_tool_call_diagnostics,
       recovery
     });
 

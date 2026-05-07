@@ -220,6 +220,34 @@ export interface ApiToolCallLedgerEntry {
   last_agent_message: string | null;
 }
 
+export interface ApiTranscriptToolCallDiagnostic {
+  kind: 'function_call' | 'function_call_output';
+  call_id: string;
+  tool_name: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  session_id: string | null;
+  issue_id: string | null;
+  issue_identifier: string | null;
+  run_id: string | null;
+  issue_run_id: string | null;
+  attempt_id: string | null;
+  codex_app_server_pid: string | null;
+  observed_at: string;
+  observed_at_ms: number;
+  lineage: import('../orchestrator').TranscriptToolCallLineage;
+  reason: string;
+  active_issue_id: string;
+  active_issue_identifier: string;
+  active_run_id: string | null;
+  active_issue_run_id: string | null;
+  active_attempt_id: string | null;
+  active_codex_app_server_pid: string | null;
+  active_thread_id: string | null;
+  active_turn_id: string | null;
+  active_session_id: string | null;
+}
+
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
   counts: {
@@ -294,6 +322,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     time_since_progress: number | null;
     last_successful_step: string | null;
     tool_call_ledger: ApiToolCallLedgerEntry[];
+    transcript_tool_call_diagnostics: ApiTranscriptToolCallDiagnostic[];
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
@@ -407,6 +436,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
       recommended_actions: string[];
     } | null;
+    transcript_tool_call_diagnostics: ApiTranscriptToolCallDiagnostic[];
     last_input_submit: {
       submitted_at: string;
       request_id: string;
@@ -712,6 +742,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
       recommended_actions: string[];
     } | null;
+    transcript_tool_call_diagnostics: ApiTranscriptToolCallDiagnostic[];
     last_input_submit: {
       submitted_at: string;
       request_id: string;

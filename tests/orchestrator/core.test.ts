@@ -1781,6 +1781,14 @@ describe('OrchestratorCore', () => {
         start_evidence_source: 'session_transcript',
         completion_evidence_source: null
       });
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-linear')?.transcript_tool_call_diagnostics).toContainEqual(
+        expect.objectContaining({
+          kind: 'function_call',
+          call_id: 'call_transcript_linear',
+          lineage: 'active_owned',
+          reason: 'matches active runtime lineage'
+        })
+      );
 
       harness.now.value += 1_500;
       await harness.orchestrator.tick('interval');
@@ -2021,6 +2029,94 @@ describe('OrchestratorCore', () => {
         last_tool_name: 'linear_graphql',
         last_call_id: 'call_start_fail'
       }
+    });
+  });
+
+  it('treats an intentional replacement recovery turn as the active-owned transcript lineage', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+        recoverMissingToolOutput: async (params) => ({
+          ok: true,
+          worker_handle: { recovery: true },
+          monitor_handle: { recovery: true },
+          worker_host: params.worker_host
+        })
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-owned-transcript', identifier: 'ABC-RECOVER-OWNED' })]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-recover-owned-transcript', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-replacement',
+        turn_id: 'turn-original',
+        session_id: 'session-original'
+      });
+      harness.orchestrator.onWorkerEvent('i-recover-owned-transcript', {
+        timestamp_ms: harness.now.value + 10,
+        event: CANONICAL_EVENT.codex.toolCallStarted,
+        tool_name: 'linear_graphql',
+        tool_call_id: 'call_original_missing',
+        thread_id: 'thread-replacement',
+        turn_id: 'turn-original',
+        session_id: 'session-original'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+      harness.orchestrator.onWorkerEvent('i-recover-owned-transcript', {
+        timestamp_ms: harness.now.value + 100,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-replacement',
+        turn_id: 'turn-replacement',
+        session_id: 'session-replacement',
+        codex_app_server_pid: 222
+      });
+      writeSessionTranscript(codexHome, 'session-replacement.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 150).toISOString(),
+          thread_id: 'thread-replacement',
+          turn_id: 'turn-replacement',
+          session_id: 'session-replacement',
+          codex_app_server_pid: 222,
+          response_item: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_replacement_owned'
+          }
+        }
+      ]);
+      harness.orchestrator.onWorkerEvent('i-recover-owned-transcript', {
+        timestamp_ms: harness.now.value + 200,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting after replacement turn transcript',
+        thread_id: 'thread-replacement',
+        turn_id: 'turn-replacement',
+        session_id: 'session-replacement',
+        codex_app_server_pid: 222
+      });
+      await harness.orchestrator.tick('interval');
+
+      const running = harness.orchestrator.getStateSnapshot().running.get('i-recover-owned-transcript');
+      expect(running?.turn_id).toBe('turn-replacement');
+      expect(running?.session_id).toBe('session-replacement');
+      expect(running?.tool_call_ledger?.call_replacement_owned).toMatchObject({
+        completion_status: 'pending',
+        thread_id: 'thread-replacement',
+        turn_id: 'turn-replacement',
+        session_id: 'session-replacement',
+        start_evidence_source: 'session_transcript'
+      });
+      expect(running?.transcript_tool_call_diagnostics).toContainEqual(
+        expect.objectContaining({
+          call_id: 'call_replacement_owned',
+          lineage: 'active_owned',
+          active_turn_id: 'turn-replacement',
+          active_session_id: 'session-replacement',
+          active_codex_app_server_pid: '222'
+        })
+      );
     });
   });
 
@@ -2288,7 +2384,17 @@ describe('OrchestratorCore', () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-transcript-rollout-stale')).toBe(false);
-      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-rollout-stale')?.outstanding_tool_calls ?? {}).toEqual({});
+      const running = harness.orchestrator.getStateSnapshot().running.get('i-transcript-rollout-stale');
+      expect(running?.outstanding_tool_calls ?? {}).toEqual({});
+      expect(running?.tool_call_ledger ?? {}).toEqual({});
+      expect(running?.transcript_tool_call_diagnostics).toContainEqual(
+        expect.objectContaining({
+          kind: 'function_call',
+          call_id: 'call_prior_rollout_same_workspace',
+          lineage: 'prior_stale',
+          reason: 'transcript record predates active run start'
+        })
+      );
     });
   });
 
@@ -2313,6 +2419,8 @@ describe('OrchestratorCore', () => {
         {
           timestamp: new Date(harness.now.value + 10).toISOString(),
           session_id: 'session-output',
+          thread_id: 'thread-output',
+          turn_id: 'turn-output',
           response_item: {
             type: 'function_call',
             name: 'linear_graphql',
@@ -2322,6 +2430,8 @@ describe('OrchestratorCore', () => {
         {
           timestamp: new Date(harness.now.value + 100).toISOString(),
           session_id: 'session-output',
+          thread_id: 'thread-output',
+          turn_id: 'turn-output',
           response_item: {
             type: 'function_call_output',
             call_id: 'call_transcript_output',
@@ -2395,6 +2505,9 @@ describe('OrchestratorCore', () => {
         {
           timestamp: new Date(harness.now.value + 10).toISOString(),
           type: 'response_item',
+          thread_id: 'thread-rollout-output',
+          turn_id: 'turn-rollout-output',
+          session_id: 'session-rollout-output',
           payload: {
             type: 'function_call',
             name: 'linear_graphql',
@@ -2404,6 +2517,9 @@ describe('OrchestratorCore', () => {
         {
           timestamp: new Date(harness.now.value + 100).toISOString(),
           type: 'response_item',
+          thread_id: 'thread-rollout-output',
+          turn_id: 'turn-rollout-output',
+          session_id: 'session-rollout-output',
           payload: {
             type: 'function_call_output',
             call_id: 'call_rollout_output',
@@ -2451,6 +2567,8 @@ describe('OrchestratorCore', () => {
         {
           timestamp: new Date(harness.now.value + 10).toISOString(),
           session_id: 'session-stale-output',
+          thread_id: 'thread-stale-output',
+          turn_id: 'turn-stale-output',
           response_item: {
             type: 'function_call',
             name: 'linear_graphql',
@@ -2534,6 +2652,86 @@ describe('OrchestratorCore', () => {
         call_id: 'call_owned_missing',
         evidence_source: 'session_transcript'
       });
+      expect(
+        harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-transcript-unlineaged-output')?.transcript_tool_call_diagnostics
+      ).toContainEqual(
+        expect.objectContaining({
+          kind: 'function_call_output',
+          call_id: 'call_owned_missing',
+          lineage: 'unattributed',
+          reason: 'no active runtime lineage identifiers matched'
+        })
+      );
+    });
+  });
+
+  it('keeps manual resume transcript output diagnostic-only when it only shares the active session', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-manual-resume', identifier: 'ABC-TRANSCRIPT-MANUAL' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-manual-resume', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-owned-manual',
+        turn_id: 'turn-owned-manual',
+        session_id: 'session-owned-manual'
+      });
+      harness.orchestrator.onWorkerEvent('i-transcript-manual-resume', {
+        timestamp_ms: harness.now.value + 10,
+        event: CANONICAL_EVENT.codex.toolCallStarted,
+        tool_name: 'linear_graphql',
+        tool_call_id: 'call_manual_resume_overlap',
+        thread_id: 'thread-owned-manual',
+        turn_id: 'turn-owned-manual',
+        session_id: 'session-owned-manual'
+      });
+      writeSessionTranscript(codexHome, 'session-owned-manual.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 100).toISOString(),
+          session_id: 'session-owned-manual',
+          response_item: {
+            type: 'function_call_output',
+            call_id: 'call_manual_resume_overlap',
+            output: '{}'
+          }
+        }
+      ]);
+      harness.orchestrator.onWorkerEvent('i-transcript-manual-resume', {
+        timestamp_ms: harness.now.value + 200,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting after external manual resume transcript append',
+        thread_id: 'thread-owned-manual',
+        turn_id: 'turn-owned-manual',
+        session_id: 'session-owned-manual'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-transcript-manual-resume');
+      expect(blocked?.transcript_tool_call_diagnostics).toContainEqual(
+        expect.objectContaining({
+          kind: 'function_call_output',
+          call_id: 'call_manual_resume_overlap',
+          session_id: 'session-owned-manual',
+          lineage: 'external_manual',
+          reason: 'partial active lineage is insufficient for ownership: session_id',
+          active_thread_id: 'thread-owned-manual',
+          active_turn_id: 'turn-owned-manual',
+          active_session_id: 'session-owned-manual'
+        })
+      );
+      expect(blocked?.tool_output_wait).toMatchObject({
+        tool_name: 'linear_graphql',
+        call_id: 'call_manual_resume_overlap',
+        evidence_source: 'worker_event'
+      });
     });
   });
 
@@ -2558,6 +2756,8 @@ describe('OrchestratorCore', () => {
         {
           timestamp: new Date(harness.now.value + 10).toISOString(),
           session_id: 'session-nonlinear',
+          thread_id: 'thread-nonlinear',
+          turn_id: 'turn-nonlinear',
           response_item: {
             type: 'function_call',
             name: 'github_graphql',

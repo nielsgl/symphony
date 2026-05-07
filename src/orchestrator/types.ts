@@ -122,11 +122,13 @@ export interface RunningEntry {
   phase_detail?: string | null;
   tool_call_ledger?: Record<string, ToolCallLedgerEntry>;
   outstanding_tool_calls?: Record<string, OutstandingToolCall>;
+  transcript_tool_call_diagnostics?: TranscriptToolCallDiagnostic[];
   codex_session_transcript_scan_offsets?: Record<string, number>;
   recovery?: MissingToolOutputRecoveryState | null;
 }
 
 export type ToolCallEvidenceSource = 'worker_event' | 'app_server_protocol' | 'session_transcript';
+export type TranscriptToolCallLineage = 'active_owned' | 'prior_stale' | 'external_manual' | 'unattributed';
 
 export interface OutstandingToolCall {
   call_id: string;
@@ -202,6 +204,33 @@ export interface ToolCallLedgerObservation {
   observed_at_ms: number;
   last_agent_message?: string | null;
   evidence_source: ToolCallEvidenceSource;
+}
+
+export interface TranscriptToolCallDiagnostic {
+  kind: 'function_call' | 'function_call_output';
+  call_id: string;
+  tool_name: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  session_id: string | null;
+  issue_id: string | null;
+  issue_identifier: string | null;
+  run_id: string | null;
+  issue_run_id: string | null;
+  attempt_id: string | null;
+  codex_app_server_pid: string | null;
+  observed_at_ms: number;
+  lineage: TranscriptToolCallLineage;
+  reason: string;
+  active_issue_id: string;
+  active_issue_identifier: string;
+  active_run_id: string | null;
+  active_issue_run_id: string | null;
+  active_attempt_id: string | null;
+  active_codex_app_server_pid: string | null;
+  active_thread_id: string | null;
+  active_turn_id: string | null;
+  active_session_id: string | null;
 }
 
 export type OperatorActionType = 'cancel' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
@@ -384,6 +413,7 @@ export interface BlockedEntry {
     evidence_source?: ToolCallEvidenceSource;
     recommended_actions: string[];
   } | null;
+  transcript_tool_call_diagnostics?: TranscriptToolCallDiagnostic[];
   recovery?: MissingToolOutputRecoveryState | null;
   quarantined_events?: Array<{
     at_ms: number;
