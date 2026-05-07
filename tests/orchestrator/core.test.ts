@@ -2175,8 +2175,18 @@ describe('OrchestratorCore', () => {
   });
 
   it('records recovery success metadata before scheduling same-thread continuation', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-recover-success',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      persistence,
       recoverMissingToolOutput: async (params) => ({
         ok: true,
         worker_handle: { recovery: true },
@@ -2207,6 +2217,14 @@ describe('OrchestratorCore', () => {
     await harness.orchestrator.tick('interval');
     await new Promise((resolve) => setImmediate(resolve));
 
+    harness.orchestrator.onWorkerEvent('i-recover-succeeds', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-recover-success',
+      turn_id: 'turn-replacement-success',
+      session_id: 'session-replacement-success'
+    });
+
     await harness.orchestrator.onWorkerExit('i-recover-succeeds', 'normal', undefined, {
       completion_reason: REASON_CODES.maxTurnsReached
     });
@@ -2220,6 +2238,38 @@ describe('OrchestratorCore', () => {
         last_call_id: 'call_recover_success'
       }
     });
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        run_id: 'run-recover-success',
+        terminal_status: 'cancelled',
+        error_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+        missing_tool_output_recovery: expect.objectContaining({
+          status: 'in_progress',
+          final_outcome: expect.objectContaining({ result: 'started' })
+        })
+      }),
+      expect.objectContaining({
+        run_id: 'run-recover-success',
+        terminal_status: 'succeeded',
+        thread_id: 'thread-recover-success',
+        turn_id: 'turn-replacement-success',
+        session_id: 'session-replacement-success',
+        missing_tool_output_recovery: expect.objectContaining({
+          status: 'succeeded',
+          original_tool_name: 'linear_graphql',
+          original_call_id: 'call_recover_success',
+          replacement_turn: expect.objectContaining({
+            thread_id: 'thread-recover-success',
+            turn_id: 'turn-replacement-success',
+            session_id: 'session-replacement-success'
+          }),
+          final_outcome: expect.objectContaining({
+            result: 'succeeded',
+            reason_code: REASON_CODES.maxTurnsReached
+          })
+        })
+      })
+    ]);
   });
 
   it('blocks missing tool output without a previous turn id instead of spawning unrelated recovery', async () => {
