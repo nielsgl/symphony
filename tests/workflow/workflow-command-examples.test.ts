@@ -47,4 +47,20 @@ describe('workflow command examples', () => {
     expect(workflow).toContain('Routing: Human Review');
     expect(workflow).toContain('Routing: Merging');
   });
+
+  it('keeps SPEC.ext.md aligned with implemented handoff runtime semantics', () => {
+    const specPath = path.join(process.cwd(), 'SPEC.ext.md');
+    const spec = readFileSync(specPath, 'utf8');
+
+    expect(spec).toContain('Status: v1 reference extension');
+    expect(spec).toContain('## 5. Dispatch and Reconciliation Implications');
+    expect(spec).toContain('### 5.1 Local Worker State-Refresh Order');
+    expect(spec).toContain('### 5.2 Orchestrator Dispatch and Retry Semantics');
+    expect(spec).toContain('### 5.3 Reconciliation and Cleanup Separation');
+    expect(spec).toContain('## 9. Implementation and Test Evidence');
+    expect(spec).toContain('src/orchestrator/local-worker-runner.ts');
+    expect(spec).toContain('tests/orchestrator/core.test.ts');
+    expect(spec).not.toContain('Runtime stop, resume, and fresh-dispatch behavior is implemented by later slices');
+    expect(spec).not.toContain('The following runtime behaviors are intentionally deferred');
+  });
 });

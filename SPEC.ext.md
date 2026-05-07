@@ -1,6 +1,6 @@
 # Symphony Extension Specification
 
-Status: Draft v1 extension
+Status: v1 reference extension
 
 Purpose: Define Symphony-local extensions to the base service contract in
 `SPEC.md`.
@@ -25,10 +25,11 @@ Conflict rules:
 - Extension fields must not silently change runtime behavior outside the
   lifecycle semantics documented here.
 
-This extension currently defines workflow-config metadata for role-aware
-handoff states and fresh-dispatch states. The current slice parses and
-validates the typed config only. Runtime stop, resume, and fresh-dispatch
-behavior is implemented by later slices.
+This extension defines workflow-config metadata and runtime semantics for
+role-aware handoff states and fresh-dispatch states. The v1 reference
+implementation covers typed config resolution, validation, local-worker
+state-refresh handling, orchestrator retry/dispatch behavior, and terminal
+cleanup separation.
 
 ## 2. Domain Model Extensions
 
@@ -97,8 +98,12 @@ Lifecycle semantics:
 
 - When an issue reaches a handoff state, the current role must not treat that
   state as terminal completion.
+- A local worker that refreshes its issue into a handoff state after a turn
+  must stop continuation turns and report `handoff_state_reached`.
 - Handoff preserves the workspace and surrounding review artifacts for the next
   role.
+- Handoff must not schedule same-context continuation retries for the role that
+  just handed off.
 - Handoff does not require a fresh agent context unless the same state is also
   listed in `tracker.fresh_dispatch_states`.
 - Handoff does not alter the base candidate-selection rule by itself. Dispatch
@@ -137,6 +142,12 @@ Lifecycle semantics:
   state, not from private continuation context of the prior agent session.
 - Fresh dispatch exists to make review or merge automation independent from the
   implementation run that handed off the issue.
+- If a stale retry entry exists when the issue is later found in a
+  fresh-dispatch state, the dispatcher must ignore inherited thread/session
+  lineage and dispatch attempt `0` with no resume context.
+- If a fresh-dispatch run routes the issue to a different workflow state, the
+  worker must stop and report `fresh_dispatch_state_routed` unless the target
+  state is itself a handoff state, in which case `handoff_state_reached` applies.
 
 ## 4. Invariants
 
@@ -157,8 +168,7 @@ workflow config:
    cleanup may remove workspaces before the next role can inspect or continue
    the work.
 
-These invariants are config-contract requirements even before runtime
-handoff/fresh-dispatch behavior is implemented.
+These invariants are config-contract requirements and runtime preconditions.
 
 ## 5. Dispatch and Reconciliation Implications
 
@@ -170,7 +180,7 @@ The base `SPEC.md` candidate-selection model remains authoritative:
   non-active.
 - Startup terminal cleanup may remove workspaces for terminal issues.
 
-The extension adds role-boundary metadata that later runtime slices may use:
+The extension adds role-boundary metadata that runtime components use:
 
 - A handoff state signals that current-role continuation should stop at that
   state.
@@ -185,6 +195,59 @@ The extension adds role-boundary metadata that later runtime slices may use:
 This extension does not make `Agent Review`, `Human Review`, or any other
 state active by default. Workflows opt into those states by listing them in
 `tracker.active_states` when runtime dispatch should consider them.
+
+### 5.1 Local Worker State-Refresh Order
+
+After each completed Codex turn, the local worker must refresh the issue state
+and apply the first matching rule in this order:
+
+1. Missing refreshed issue: stop normally with `issue_state_missing`; no
+   workspace cleanup.
+2. Refreshed state is in `tracker.terminal_states`: stop normally with
+   `terminal_state_reached`; orchestrator terminal cleanup applies.
+3. Refreshed state is in `tracker.handoff_states`: stop normally with
+   `handoff_state_reached`; no workspace cleanup and no same-context retry.
+4. Current state is in `tracker.fresh_dispatch_states` and refreshed state is a
+   different state: stop normally with `fresh_dispatch_state_routed`; no
+   workspace cleanup and no same-context retry.
+5. Refreshed state is not in `tracker.active_states`: stop normally with
+   `issue_left_active_states`; no workspace cleanup.
+6. Refreshed state remains active and none of the above applies: continue on
+   the same thread until normal max-turn behavior applies.
+
+This order is intentional. Terminal cleanup must win over handoff metadata,
+handoff states must stop the current role before same-thread continuation, and
+fresh-dispatch routing is only meaningful when a fresh-dispatch role moves the
+issue onward.
+
+### 5.2 Orchestrator Dispatch and Retry Semantics
+
+Candidate selection remains `tracker.active_states` plus existing eligibility
+checks. For a configured fresh-dispatch state:
+
+- A candidate in that state dispatches as a new attempt with no resume context.
+- A stale retry timer that observes the issue in that state dispatches as a
+  fresh attempt instead of applying no-progress redispatch gating.
+- Fresh dispatch clears inherited retry graph lineage, previous thread/session
+  IDs, worker host, and workspace metadata for the new role attempt.
+- Running/claimed protection still prevents duplicate fresh runs for the same
+  issue.
+- Slot exhaustion may reschedule the fresh-dispatch candidate, but the
+  rescheduled retry must retain the fresh boundary by keeping inherited
+  context cleared.
+
+### 5.3 Reconciliation and Cleanup Separation
+
+Runtime reconciliation keeps the base cleanup contract:
+
+- Terminal states stop active runs and clean the workspace.
+- Non-active, non-terminal states stop active runs without workspace cleanup.
+- Active states, including active handoff/fresh-dispatch states, remain
+  dispatch candidates and are not treated as terminal cleanup states.
+- Startup terminal cleanup only uses `tracker.terminal_states`.
+
+Handoff and fresh dispatch therefore preserve review evidence and workspaces.
+Only terminal transitions may invoke terminal cleanup.
 
 ## 6. Failure Behavior
 
@@ -220,25 +283,57 @@ did before this extension:
 This extension is additive. It must not require workflow authors to configure
 handoff states unless their workflow needs role-aware handoff behavior.
 
-## 8. Out of Scope for This Slice
+## 8. Implemented Lifecycle Contract
 
-The current implementation slice is limited to documentation, typed config
-resolution, and validation.
+The bundled `WORKFLOW.md` uses the following v1 lifecycle:
 
-The following runtime behaviors are intentionally deferred:
+- Implementation runs in `Todo` or `In Progress`.
+- Passing implementation work hands off by moving the issue to `Agent Review`.
+- `Agent Review` is active, a handoff state, and a fresh-dispatch state, so the
+  review role starts as an independent run.
+- UI work, product judgment, unclear human intent, or blocked external input
+  routes from `Agent Review` to `Human Review`.
+- Non-UI passing review routes from `Agent Review` to `Merging`.
+- Normal review findings route from `Agent Review` to `In Progress`.
+- Reset-level failures route from `Agent Review` to `Rework`.
+- `Merging` is active but not a handoff or fresh-dispatch state; merge handling
+  follows the workflow land loop.
+- `Done`, `Closed`, `Canceled`, and `Duplicate` are terminal cleanup states.
 
-- Stopping the current role when an issue reaches a handoff state.
-- Starting a separate review, human-review, or merge automation role from a
-  handoff state.
-- Clearing or replacing inherited agent context at a fresh-dispatch boundary.
-- Changing dispatcher ownership of `Agent Review`, `Human Review`, `Merging`,
-  or other role-specific states.
-- Changing terminal cleanup behavior.
+## 9. Implementation and Test Evidence
 
-Later runtime slices must implement those behaviors against the invariants in
-this document rather than inferring them from examples or prior discussion.
+The v1 reference implementation evidence is:
 
-## 9. Example
+- Config resolution: `src/workflow/resolver.ts` resolves
+  `tracker.handoff_states` and `tracker.fresh_dispatch_states`; covered by
+  `tests/workflow/resolver.test.ts`.
+- Config validation: `src/workflow/validator.ts` enforces terminal overlap,
+  handoff subset, and active subset invariants; covered by
+  `tests/workflow/validator.test.ts`.
+- Local worker stop/routing behavior: `src/orchestrator/local-worker-runner.ts`
+  applies the state-refresh order in Section 5.1; covered by
+  `tests/orchestrator/local-runner-bridge.test.ts`.
+- Fresh dispatch and stale retry behavior: `src/orchestrator/core.ts` dispatches
+  fresh-dispatch candidates without inherited context and bypasses no-progress
+  retry gating for stale fresh-dispatch retries; covered by
+  `tests/orchestrator/core.test.ts`.
+- Terminal cleanup separation: `src/orchestrator/core.ts` cleans workspaces for
+  terminal transitions and does not clean for handoff/fresh-dispatch exits;
+  covered by `tests/orchestrator/core.test.ts` and
+  `tests/orchestrator/local-runner-bridge.test.ts`.
+- Workflow lifecycle instructions: `WORKFLOW.md` defines Agent Review, Human
+  Review, Merging, and Rework routing; covered by
+  `tests/workflow/workflow-command-examples.test.ts`.
+
+Deferred or out-of-scope items:
+
+- Programmatic verification that Linear-rendered UI evidence media is visible
+  in review comments remains reviewer-enforced in `WORKFLOW.md`.
+- Human judgment in `Human Review` is explicitly outside automation dispatch.
+- This extension does not make `Human Review` active in the bundled workflow;
+  it is a human/product review holding state.
+
+## 10. Example
 
 Example workflow shape:
 
@@ -262,10 +357,11 @@ tracker:
 Interpretation:
 
 - `Agent Review` is a handoff state and a fresh-dispatch state.
-- `Agent Review` is listed in `active_states`, so later review automation may
-  discover it as a candidate.
+- `Agent Review` is listed in `active_states`, so review automation may
+  discover it as a candidate and start a fresh run.
 - `Human Review` is a handoff state but not a fresh-dispatch state in this
-  example.
+- example. Because it is not listed in `active_states`, automation does not
+  dispatch it in this workflow.
 - No terminal state is used for handoff.
 - If the two extension fields are omitted, both resolve to `[]` and existing
   workflow behavior is preserved.
