@@ -1853,6 +1853,68 @@ describe('OrchestratorCore', () => {
     });
   });
 
+  it('ignores stale same-workspace rollout function_call records from a prior run', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const workspacePath = path.join(codexHome, 'workspaces', 'NIE-79-reused');
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+        spawnWorker: async ({ issue, worker_host }) => {
+          return {
+            ok: true,
+            worker_handle: { issue_id: issue.id },
+            monitor_handle: { issue_id: issue.id },
+            worker_host,
+            workspace_path: workspacePath
+          };
+        }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-rollout-stale', identifier: 'ABC-TRANSCRIPT-ROLLOUT-STALE' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-rollout-stale', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-rollout-current',
+        turn_id: 'turn-rollout-current',
+        session_id: 'session-rollout-current'
+      });
+      writeSessionTranscript(codexHome, 'rollout-2026-05-07T12-30-00-000Z-prior.jsonl', [
+        {
+          timestamp: new Date(harness.now.value - 10_000).toISOString(),
+          type: 'turn_context',
+          payload: {
+            cwd: workspacePath
+          }
+        },
+        {
+          timestamp: new Date(harness.now.value - 9_000).toISOString(),
+          type: 'response_item',
+          payload: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_prior_rollout_same_workspace'
+          }
+        }
+      ]);
+      harness.orchestrator.onWorkerEvent('i-transcript-rollout-stale', {
+        timestamp_ms: harness.now.value + 20,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with prior same-workspace transcript present',
+        thread_id: 'thread-rollout-current',
+        turn_id: 'turn-rollout-current',
+        session_id: 'session-rollout-current'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-transcript-rollout-stale')).toBe(false);
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-rollout-stale')?.outstanding_tool_calls ?? {}).toEqual({});
+    });
+  });
+
   it('does not block when a transcript function_call_output matches the transcript function_call', async () => {
     await withTemporaryCodexHome(async (codexHome) => {
       const harness = createHarness({

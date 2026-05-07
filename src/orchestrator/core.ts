@@ -5034,11 +5034,19 @@ export class OrchestratorCore {
     const threadId = this.readTranscriptString(['thread_id', 'threadId'], record, payload, item);
     const turnId = this.readTranscriptString(['turn_id', 'turnId'], record, payload, item);
     const sessionId = this.readTranscriptString(['session_id', 'sessionId'], record, payload, item);
+    const hasMatchingLineage =
+      (runningEntry.thread_id && threadId === runningEntry.thread_id) ||
+      (runningEntry.turn_id && turnId === runningEntry.turn_id) ||
+      (runningEntry.session_id && sessionId === runningEntry.session_id);
     if (
       (runningEntry.thread_id && threadId && threadId !== runningEntry.thread_id) ||
       (runningEntry.turn_id && turnId && turnId !== runningEntry.turn_id) ||
       (runningEntry.session_id && sessionId && sessionId !== runningEntry.session_id)
     ) {
+      return null;
+    }
+    const explicitObservedAtMs = readTimestampMs(record) ?? readTimestampMs(item);
+    if (!hasMatchingLineage && (!explicitObservedAtMs || explicitObservedAtMs < runningEntry.started_at_ms)) {
       return null;
     }
 
@@ -5049,7 +5057,7 @@ export class OrchestratorCore {
       thread_id: threadId ?? runningEntry.thread_id ?? null,
       turn_id: turnId ?? runningEntry.turn_id ?? null,
       session_id: sessionId ?? runningEntry.session_id ?? null,
-      observed_at_ms: readTimestampMs(record) ?? readTimestampMs(item) ?? observedAtMs,
+      observed_at_ms: explicitObservedAtMs ?? observedAtMs,
       last_agent_message: type === 'function_call' ? runningEntry.last_message ?? null : null,
       evidence_source: 'session_transcript'
     };
