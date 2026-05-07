@@ -90,6 +90,11 @@ function blockerDetails(classification: ThreadDiagnosticsBlockerClassification):
   recommended_actions: string[];
 } {
   switch (classification) {
+    case REASON_CODES.missingToolOutput:
+      return {
+        actionability: 'required',
+        recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
+      };
     case 'tool_waiting_long':
       return {
         actionability: 'recommended',
@@ -127,16 +132,20 @@ function buildBlocker(
   classification: ThreadDiagnosticsBlockerClassification,
   reasonCode: string | null,
   reasonDetail: string | null,
-  timeSinceProgress: number | null = null
+  timeSinceProgress: number | null = null,
+  toolOutputWait: ThreadDiagnosticsBlocker['tool_output_wait'] = null
 ): ThreadDiagnosticsBlocker {
   const reasonDefinition = reasonCode ? requireReasonCodeDefinition(reasonCode) : null;
+  const details = blockerDetails(classification);
   return {
     classification,
     reason_code: reasonCode,
     reason_detail: reasonDetail,
     time_since_progress: timeSinceProgress,
-    ...blockerDetails(classification),
-    expected_auto_transition: reasonDefinition?.expected_transition ?? null
+    ...details,
+    recommended_actions: toolOutputWait?.recommended_actions ?? details.recommended_actions,
+    expected_auto_transition: reasonDefinition?.expected_transition ?? null,
+    ...(toolOutputWait ? { tool_output_wait: { ...toolOutputWait, recommended_actions: [...toolOutputWait.recommended_actions] } } : {})
   };
 }
 
@@ -180,11 +189,15 @@ export function classifyThreadBlocker(params: {
   stalled_waiting?: boolean;
   retrying?: boolean;
   time_since_progress?: number | null;
+  tool_output_wait?: ThreadDiagnosticsBlocker['tool_output_wait'];
 }): ThreadDiagnosticsBlocker | null {
   const reasonCode = params.reason_code;
   const reasonDetail = params.reason_detail;
   const normalized = `${reasonCode ?? ''} ${reasonDetail ?? ''} ${params.status ?? ''}`.toLowerCase();
 
+  if (reasonCode === REASON_CODES.missingToolOutput) {
+    return buildBlocker(REASON_CODES.missingToolOutput, reasonCode, reasonDetail, params.time_since_progress ?? null, params.tool_output_wait ?? null);
+  }
   if (params.retrying || normalized.includes('retry')) {
     return buildBlocker('retry_backoff_wait', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
@@ -309,7 +322,8 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
         status: 'blocked',
         has_conflict_files: blocked.conflict_files.length > 0,
         has_pending_input: Boolean(blocked.pending_input),
-        time_since_progress: null
+        time_since_progress: null,
+        tool_output_wait: blocked.tool_output_wait ?? null
       })
     : retry
       ? classifyThreadBlocker({
