@@ -119,7 +119,10 @@ export interface RunningEntry {
   current_phase_at_ms?: number | null;
   phase_detail?: string | null;
   outstanding_tool_calls?: Record<string, OutstandingToolCall>;
+  codex_session_transcript_scan_offsets?: Record<string, number>;
 }
+
+export type ToolCallEvidenceSource = 'worker_event' | 'app_server_protocol' | 'session_transcript';
 
 export interface OutstandingToolCall {
   call_id: string;
@@ -130,6 +133,19 @@ export interface OutstandingToolCall {
   started_at_ms: number;
   last_waiting_at_ms: number | null;
   last_agent_message: string | null;
+  evidence_source: ToolCallEvidenceSource;
+}
+
+export interface ToolCallLedgerObservation {
+  kind: 'function_call' | 'function_call_output';
+  call_id: string;
+  tool_name?: string | null;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  session_id?: string | null;
+  observed_at_ms: number;
+  last_agent_message?: string | null;
+  evidence_source: ToolCallEvidenceSource;
 }
 
 export type OperatorActionType = 'cancel' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
@@ -308,6 +324,7 @@ export interface BlockedEntry {
     session_id: string | null;
     elapsed_wait_ms: number;
     last_agent_message: string | null;
+    evidence_source?: ToolCallEvidenceSource;
     recommended_actions: string[];
   } | null;
   quarantined_events?: Array<{
@@ -601,6 +618,7 @@ export interface WorkerObservabilityEvent {
   rate_limits?: Record<string, unknown> | null;
   tool_call_id?: string;
   tool_name?: string;
+  tool_call_evidence_source?: ToolCallEvidenceSource;
 }
 
 export interface OrchestratorConfig {

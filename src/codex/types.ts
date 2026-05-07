@@ -111,4 +111,5 @@ export interface CodexRunnerEvent {
   detail?: string;
   tool_call_id?: string;
   tool_name?: string;
+  tool_call_evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
 }

@@ -78,6 +78,29 @@ function readToolCallId(message: ProtocolMessage): string {
   return readString(params?.call_id) ?? readString(params?.callId) ?? readString(params?.id) ?? String(message.id);
 }
 
+function readOptionalToolCallId(value: Record<string, unknown> | null): string | null {
+  if (!value) {
+    return null;
+  }
+  return readString(value.call_id) ?? readString(value.callId) ?? readString(value.id) ?? null;
+}
+
+function readResponseItem(message: ProtocolMessage): Record<string, unknown> | null {
+  const params = asRecord(message.params);
+  if (!params) {
+    return null;
+  }
+
+  return (
+    asRecord(params.item) ??
+    asRecord(params.rawResponseItem) ??
+    asRecord(params.raw_response_item) ??
+    asRecord(params.responseItem) ??
+    asRecord(params.response_item) ??
+    params
+  );
+}
+
 function normalizeOptionText(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -1244,6 +1267,10 @@ class ProtocolClient {
           continue;
         }
 
+        if (this.emitFunctionCallLedgerEvent(message, emit)) {
+          continue;
+        }
+
         if (this.isToolRequestUserInput(message)) {
           const params = asRecord(message.params);
           const response = params ? buildNonInteractiveInputAnswers(params) : null;
@@ -1509,6 +1536,58 @@ class ProtocolClient {
 
     const method = (message.method ?? '').toLowerCase();
     return method.includes('tool') && method.includes('call');
+  }
+
+  private emitFunctionCallLedgerEvent(
+    message: ProtocolMessage,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): boolean {
+    const method = (message.method ?? '').toLowerCase();
+    const observesResponseItem =
+      method === 'item/started' ||
+      method === 'item/completed' ||
+      method === 'rawresponseitem/completed' ||
+      method === 'raw_response_item/completed' ||
+      method === 'responseitem/completed' ||
+      method === 'response_item/completed' ||
+      method === 'rawresponseitem.completed' ||
+      method === 'responseitem.completed';
+    if (!observesResponseItem) {
+      return false;
+    }
+
+    const item = readResponseItem(message);
+    const itemType = readString(item?.type);
+    const callId = readOptionalToolCallId(item);
+    if (!itemType || !callId) {
+      return false;
+    }
+
+    if (itemType === 'function_call') {
+      const toolName = readString(item?.name) ?? readString(item?.tool_name) ?? readString(item?.toolName) ?? 'unknown_tool';
+      emit({
+        event: CANONICAL_EVENT.codex.toolCallStarted,
+        detail: toolName,
+        tool_call_id: callId,
+        tool_name: toolName,
+        tool_call_evidence_source: 'app_server_protocol',
+        ...(this.activeTurnContext ? this.activeTurnContext : {})
+      });
+      return true;
+    }
+
+    if (itemType === 'function_call_output') {
+      emit({
+        event: CANONICAL_EVENT.codex.toolCallCompleted,
+        detail: 'function_call_output',
+        tool_call_id: callId,
+        tool_call_evidence_source: 'app_server_protocol',
+        ...(this.activeTurnContext ? this.activeTurnContext : {})
+      });
+      return true;
+    }
+
+    return false;
   }
 
   private isMcpElicitationRequest(message: ProtocolMessage): boolean {

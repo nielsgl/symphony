@@ -378,6 +378,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       session_id: string | null;
       elapsed_wait_ms: number;
       last_agent_message: string | null;
+      evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
       recommended_actions: string[];
     } | null;
     last_input_submit: {
@@ -679,6 +680,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       session_id: string | null;
       elapsed_wait_ms: number;
       last_agent_message: string | null;
+      evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
       recommended_actions: string[];
     } | null;
     last_input_submit: {
