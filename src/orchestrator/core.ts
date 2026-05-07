@@ -329,6 +329,7 @@ export class OrchestratorCore {
 
   private readonly state: OrchestratorState;
   private hostRoundRobinIndex: number;
+  private serializedOperation: Promise<void>;
 
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
@@ -381,6 +382,7 @@ export class OrchestratorCore {
     };
     this.hostRoundRobinIndex = 0;
     this.throughputTracker = new ThroughputTracker();
+    this.serializedOperation = Promise.resolve();
   }
 
   getStateSnapshot(): OrchestratorState {
@@ -485,6 +487,10 @@ export class OrchestratorCore {
   }
 
   async tick(reason: TickReason): Promise<void> {
+    await this.runSerializedOperation(() => this.tickOnce(reason));
+  }
+
+  private async tickOnce(reason: TickReason): Promise<void> {
     await this.reconcileRunningIssues();
     await this.reconcileBlockedInputs();
 
@@ -570,6 +576,9 @@ export class OrchestratorCore {
 
       const eligibility = shouldDispatchIssue(issue, this.state, this.config);
       if (!eligibility.eligible) {
+        if (eligibility.reason === 'already_running' || eligibility.reason === 'already_claimed') {
+          this.recordDuplicateDispatchSkipped(issue, 0);
+        }
         continue;
       }
 
@@ -610,6 +619,12 @@ export class OrchestratorCore {
     }
 
     this.ports.notifyObservers?.();
+  }
+
+  private async runSerializedOperation(operation: () => Promise<void>): Promise<void> {
+    const run = this.serializedOperation.then(operation, operation);
+    this.serializedOperation = run.catch(() => undefined);
+    await run;
   }
 
   onWorkerEvent(issue_id: string, workerEvent: WorkerObservabilityEvent): void {
@@ -1990,6 +2005,10 @@ export class OrchestratorCore {
   }
 
   async onRetryTimer(issue_id: string): Promise<void> {
+    await this.runSerializedOperation(() => this.onRetryTimerOnce(issue_id));
+  }
+
+  private async onRetryTimerOnce(issue_id: string): Promise<void> {
     if (this.state.blocked_inputs.has(issue_id)) {
       return;
     }
@@ -2103,6 +2122,7 @@ export class OrchestratorCore {
     }
 
     if (freshDispatch) {
+      this.state.claimed.delete(issue_id);
       await this.dispatchIssue(issue, null);
       return;
     }
@@ -2214,6 +2234,7 @@ export class OrchestratorCore {
       return;
     }
 
+    this.state.claimed.delete(issue_id);
     await this.dispatchIssue(issue, retryEntry.attempt, null, {
       issue_run_id: retryEntry.issue_run_id,
       previous_attempt_id: retryEntry.previous_attempt_id
@@ -2576,6 +2597,12 @@ export class OrchestratorCore {
     resume_context: string | null = null,
     graphContext: DispatchGraphContext = {}
   ): Promise<void> {
+    if (this.state.running.has(issue.id) || this.state.claimed.has(issue.id)) {
+      this.recordDuplicateDispatchSkipped(issue, attempt ?? 0);
+      return;
+    }
+
+    this.state.claimed.add(issue.id);
     this.emitPhaseMarker(issue.id, {
       phase: REASON_CODES.dispatchStarted,
       detail: 'dispatch attempt started',
@@ -2836,14 +2863,31 @@ export class OrchestratorCore {
         });
       }
     }
-
-    this.state.claimed.add(issue.id);
-
     const existingRetry = this.state.retry_attempts.get(issue.id);
     if (existingRetry) {
       this.ports.cancelRetryTimer(existingRetry.timer_handle);
       this.state.retry_attempts.delete(issue.id);
     }
+  }
+
+  private recordDuplicateDispatchSkipped(issue: Issue, retryAttempt: number): void {
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.dispatchDuplicateSkipped,
+      message: 'dispatch skipped: issue already has active runtime ownership',
+      context: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        retry_attempt: retryAttempt,
+        runtime_state: JSON.stringify(this.describeIssueRuntimeState(issue.id))
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.dispatchDuplicateSkipped,
+      severity: 'warn',
+      issue_identifier: issue.identifier,
+      detail: 'issue already has active runtime ownership'
+    });
   }
 
   private async terminateRunningIssue(issue_id: string, cleanup_workspace: boolean, reason: string): Promise<void> {
