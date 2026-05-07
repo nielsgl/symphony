@@ -348,7 +348,8 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
           reason_detail: retry.stop_reason_detail ?? retry.error,
           status: 'retrying',
           retrying: true,
-          time_since_progress: null
+          time_since_progress: null,
+          missing_tool_output_recovery: projectMissingToolOutputRecovery(retry)
         })
       : classifyThreadBlocker({
           reason_code: source?.recovery?.reason_code ?? source?.stalled_waiting_reason ?? null,

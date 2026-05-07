@@ -977,7 +977,36 @@ describe('SnapshotService', () => {
             conflict_files: [],
             resolution_hints: [],
             previous_thread_id: 'thread-prev',
+            previous_attempt_id: 'attempt-prev',
             previous_session_id: 'thread-prev-turn-prev',
+            recovery: {
+              attempt_count: 1,
+              started_at_ms: Date.parse('2026-04-10T10:01:30.000Z'),
+              reason_code: REASON_CODES.missingToolOutput,
+              mode: 'same_thread_guarded_continuation',
+              previous_thread_id: 'thread-prev',
+              previous_turn_id: 'turn-prev',
+              previous_session_id: 'thread-prev-turn-prev',
+              previous_worker_handle_known: true,
+              previous_codex_app_server_pid: '12345',
+              last_tool_name: 'linear_graphql',
+              last_call_id: 'call-retry-1',
+              evidence_source: 'session_transcript',
+              elapsed_wait_ms: 180_000,
+              last_agent_message: 'waiting_for_turn_completion elapsed_s=180',
+              last_observed_phase: null,
+              last_observed_phase_detail: null,
+              recent_event_count: 5,
+              quarantined_event_count: 0,
+              prompt_hash: 'hash-retry',
+              prompt_summary: 'guarded recovery prompt',
+              interrupt_cancel_result: {
+                status: 'succeeded',
+                reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+                detail: 'interrupted previous turn'
+              },
+              last_result: 'succeeded'
+            },
             timer_handle: {}
           }
         ]
@@ -1008,6 +1037,29 @@ describe('SnapshotService', () => {
       last_phase: null,
       last_phase_at: null,
       last_phase_detail: null
+    });
+    expect(issue.retry?.missing_tool_output_recovery).toMatchObject({
+      status: 'succeeded',
+      original_tool_name: 'linear_graphql',
+      original_call_id: 'call-retry-1',
+      evidence_source: 'session_transcript',
+      elapsed_wait_ms: 180_000,
+      active_ownership: {
+        issue_id: 'issue-1',
+        issue_identifier: 'ABC-1',
+        attempt_id: 'attempt-prev',
+        thread_id: 'thread-prev',
+        turn_id: 'turn-prev',
+        session_id: 'thread-prev-turn-prev',
+        app_server_owned: false
+      },
+      interrupt_cancel_result: {
+        status: 'succeeded',
+        reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted
+      },
+      final_outcome: {
+        result: 'succeeded'
+      }
     });
     expect(issue.operator_explainer).toMatchObject({
       classification: 'healthy',
@@ -1086,7 +1138,36 @@ describe('SnapshotService', () => {
             conflict_files: [],
             resolution_hints: [],
             previous_thread_id: 'thread-prev',
+            previous_attempt_id: 'attempt-prev',
             previous_session_id: 'thread-prev-turn-prev',
+            recovery: {
+              attempt_count: 1,
+              started_at_ms: Date.parse('2026-04-10T10:01:30.000Z'),
+              reason_code: REASON_CODES.missingToolOutput,
+              mode: 'same_thread_guarded_continuation',
+              previous_thread_id: 'thread-prev',
+              previous_turn_id: 'turn-prev',
+              previous_session_id: 'thread-prev-turn-prev',
+              previous_worker_handle_known: true,
+              previous_codex_app_server_pid: '12345',
+              last_tool_name: 'linear_graphql',
+              last_call_id: 'call-retry-2',
+              evidence_source: 'session_transcript',
+              elapsed_wait_ms: 180_000,
+              last_agent_message: 'waiting_for_turn_completion elapsed_s=180',
+              last_observed_phase: null,
+              last_observed_phase_detail: null,
+              recent_event_count: 5,
+              quarantined_event_count: 0,
+              prompt_hash: 'hash-retry',
+              prompt_summary: 'guarded recovery prompt',
+              interrupt_cancel_result: {
+                status: 'succeeded',
+                reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+                detail: 'interrupted previous turn'
+              },
+              last_result: 'succeeded'
+            },
             timer_handle: {}
           }
         ]
@@ -1122,6 +1203,23 @@ describe('SnapshotService', () => {
       last_phase: null,
       last_phase_at: null,
       last_phase_detail: null
+    });
+    expect(projected.retry?.missing_tool_output_recovery).toMatchObject({
+      status: 'succeeded',
+      original_tool_name: 'linear_graphql',
+      original_call_id: 'call-retry-2',
+      active_ownership: {
+        issue_id: 'issue-2',
+        issue_identifier: 'ABC-2',
+        attempt_id: 'attempt-prev',
+        thread_id: 'thread-prev',
+        turn_id: 'turn-prev',
+        session_id: 'thread-prev-turn-prev',
+        app_server_owned: false
+      },
+      final_outcome: {
+        result: 'succeeded'
+      }
     });
     expect(projected.operator_explainer).toMatchObject({
       classification: 'awaiting_input',

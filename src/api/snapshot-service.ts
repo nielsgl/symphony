@@ -713,7 +713,8 @@ export class SnapshotService {
               previous_session_id: retryEntry.previous_session_id ?? null,
               last_phase: retryEntry.last_phase ?? null,
               last_phase_at: retryEntry.last_phase_at_ms ? asIsoDate(retryEntry.last_phase_at_ms) : null,
-              last_phase_detail: retryEntry.last_phase_detail ?? null
+              last_phase_detail: retryEntry.last_phase_detail ?? null,
+              missing_tool_output_recovery: projectMissingToolOutputRecovery(retryEntry)
             }
           : null,
         blocked: blockedEntry
@@ -872,7 +873,8 @@ export class SnapshotService {
           previous_session_id: retryOnlyEntry.previous_session_id ?? null,
           last_phase: retryOnlyEntry.last_phase ?? null,
           last_phase_at: retryOnlyEntry.last_phase_at_ms ? asIsoDate(retryOnlyEntry.last_phase_at_ms) : null,
-          last_phase_detail: retryOnlyEntry.last_phase_detail ?? null
+          last_phase_detail: retryOnlyEntry.last_phase_detail ?? null,
+          missing_tool_output_recovery: projectMissingToolOutputRecovery(retryOnlyEntry)
         },
         blocked: blockedEntry
           ? {

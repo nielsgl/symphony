@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildThreadDiagnosticsByIssueIdentifier, classifyThreadBlocker } from '../../src/api';
-import type { BlockedEntry, OrchestratorState, RunningEntry } from '../../src/orchestrator';
+import type { BlockedEntry, OrchestratorState, RetryEntry, RunningEntry } from '../../src/orchestrator';
 import {
   createDynamicToolCapabilityMismatchDetail,
   DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION,
@@ -133,13 +133,72 @@ function makeBlockedEntry(overrides: Partial<BlockedEntry> = {}): BlockedEntry {
   };
 }
 
-function makeState(running: RunningEntry | null, blocked: BlockedEntry | null = null): OrchestratorState {
+function makeRetryEntry(overrides: Partial<RetryEntry> = {}): RetryEntry {
+  return {
+    issue_id: 'issue-1',
+    identifier: 'ABC-1',
+    attempt: 2,
+    issue_run_id: 'issue-run-1',
+    previous_attempt_id: 'attempt-prev',
+    due_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+    error: 'retry scheduled',
+    worker_host: null,
+    workspace_path: '/tmp/symphony/ABC-1',
+    provisioner_type: 'none',
+    branch_name: null,
+    repo_root: null,
+    workspace_exists: true,
+    workspace_git_status: 'unknown',
+    workspace_provisioned: false,
+    workspace_is_git_worktree: false,
+    stop_reason_code: REASON_CODES.missingToolOutput,
+    stop_reason_detail: 'retry scheduled after missing tool output recovery',
+    previous_thread_id: 'thread-prev',
+    previous_session_id: 'thread-prev-turn-prev',
+    recovery: {
+      attempt_count: 1,
+      started_at_ms: Date.parse('2026-04-10T10:01:30.000Z'),
+      reason_code: REASON_CODES.missingToolOutput,
+      mode: 'same_thread_guarded_continuation',
+      previous_thread_id: 'thread-prev',
+      previous_turn_id: 'turn-prev',
+      previous_session_id: 'thread-prev-turn-prev',
+      previous_worker_handle_known: true,
+      previous_codex_app_server_pid: '12345',
+      last_tool_name: 'linear_graphql',
+      last_call_id: 'call-retry-1',
+      evidence_source: 'session_transcript',
+      elapsed_wait_ms: 180_000,
+      last_agent_message: 'waiting_for_turn_completion elapsed_s=180',
+      last_observed_phase: null,
+      last_observed_phase_detail: null,
+      recent_event_count: 5,
+      quarantined_event_count: 0,
+      prompt_hash: 'hash-retry',
+      prompt_summary: 'guarded recovery prompt',
+      interrupt_cancel_result: {
+        status: 'succeeded',
+        reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
+        detail: 'interrupted previous turn'
+      },
+      last_result: 'succeeded'
+    },
+    timer_handle: {},
+    ...overrides
+  };
+}
+
+function makeState(
+  running: RunningEntry | null,
+  blocked: BlockedEntry | null = null,
+  retry: RetryEntry | null = null
+): OrchestratorState {
   return {
     poll_interval_ms: 30_000,
     max_concurrent_agents: 10,
     running: running ? new Map([[running.issue.id, running]]) : new Map(),
     claimed: new Set(),
-    retry_attempts: new Map(),
+    retry_attempts: retry ? new Map([[retry.issue_id, retry]]) : new Map(),
     blocked_inputs: blocked ? new Map([[blocked.issue_id, blocked]]) : new Map(),
     circuit_breakers: new Map(),
     budget_usage_samples: new Map(),
@@ -566,6 +625,45 @@ describe('thread diagnostics blocker classification', () => {
       final_outcome: {
         result: 'failed',
         reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed
+      }
+    });
+  });
+
+  it('preserves missing-output recovery evidence for retrying issue diagnostics', () => {
+    const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
+      state: makeState(null, null, makeRetryEntry()),
+      issue_identifier: 'ABC-1',
+      now_ms: Date.parse('2026-04-10T10:03:00.000Z')
+    });
+
+    expect(diagnostics?.status).toBe('stalled');
+    expect(diagnostics?.current_blocker).toMatchObject({
+      classification: 'missing_tool_output',
+      reason_code: REASON_CODES.missingToolOutput,
+      missing_tool_output_recovery: {
+        status: 'succeeded',
+        original_tool_name: 'linear_graphql',
+        original_call_id: 'call-retry-1',
+        active_ownership: {
+          issue_id: 'issue-1',
+          issue_identifier: 'ABC-1',
+          attempt_id: 'attempt-prev',
+          thread_id: 'thread-prev',
+          turn_id: 'turn-prev',
+          session_id: 'thread-prev-turn-prev',
+          app_server_owned: false
+        },
+        interrupt_cancel_result: {
+          status: 'succeeded',
+          reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted
+        },
+        guarded_prompt_dispatch: {
+          status: 'sent',
+          prompt_hash: 'hash-retry'
+        },
+        final_outcome: {
+          result: 'succeeded'
+        }
       }
     });
   });

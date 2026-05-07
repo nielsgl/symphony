@@ -680,6 +680,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_phase: PhaseMarkerName | null;
     last_phase_at: string | null;
     last_phase_detail: string | null;
+    missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
   }) | null;
   blocked: (ApiBudgetProjection & {
     attempt: number;
