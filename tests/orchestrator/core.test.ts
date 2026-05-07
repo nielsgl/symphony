@@ -3471,6 +3471,74 @@ describe('OrchestratorCore', () => {
     ).toBe(false);
   });
 
+  it('ignores stale turn started events from an old turn after a newer turn completed', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-after-complete', identifier: 'ABC-STALE-COMPLETE' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value + 200,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value + 300,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2'
+    });
+    harness.orchestrator.onWorkerEvent('i-stale-after-complete', {
+      timestamp_ms: harness.now.value + 400,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-1',
+      session_id: 'session-turn-1'
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-stale-after-complete');
+    expect(running).toMatchObject({
+      last_event: CANONICAL_EVENT.codex.turnCompleted,
+      thread_id: 'thread-current',
+      turn_id: 'turn-2',
+      session_id: 'session-turn-2',
+      turn_count: 2
+    });
+    expect(snapshot.phase_timeline?.get('i-stale-after-complete')?.map((marker) => marker.phase)).toEqual([
+      'dispatch_started',
+      'workspace_ready',
+      'codex_turn_started',
+      'validation'
+    ]);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (event) =>
+          event.event === CANONICAL_EVENT.orchestration.staleWorkerEventIgnored &&
+          event.issue_identifier === 'ABC-STALE-COMPLETE' &&
+          event.detail?.includes('event_turn_id=turn-1')
+      )
+    ).toBe(true);
+  });
+
   it('ignores stale turn started events with old session lineage even when thread lineage is omitted', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([

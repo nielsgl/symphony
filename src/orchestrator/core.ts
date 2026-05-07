@@ -873,11 +873,14 @@ export class OrchestratorCore {
     runningEntry: RunningEntry,
     workerEvent: WorkerObservabilityEvent
   ): boolean {
+    const turnId = workerEvent.turn_id;
     return (
       workerEvent.event === CANONICAL_EVENT.codex.turnStarted &&
       runningEntry.last_event === CANONICAL_EVENT.codex.turnCompleted &&
       Boolean(runningEntry.thread_id) &&
-      workerEvent.thread_id === runningEntry.thread_id
+      workerEvent.thread_id === runningEntry.thread_id &&
+      typeof turnId === 'string' &&
+      !(runningEntry.persisted_turn_ids ?? []).includes(turnId)
     );
   }
 
@@ -927,6 +930,13 @@ export class OrchestratorCore {
     runningEntry: RunningEntry,
     workerEvent: WorkerObservabilityEvent
   ): Promise<void> {
+    const observedTurnId = workerEvent.turn_id ?? runningEntry.turn_id;
+    const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
+    const turnAlreadyObserved = Boolean(observedTurnId && persistedTurnIds.includes(observedTurnId));
+    if (observedTurnId && !turnAlreadyObserved) {
+      persistedTurnIds.push(observedTurnId);
+    }
+
     if (!this.persistence || !runningEntry.issue_run_id || !runningEntry.attempt_id) {
       return;
     }
@@ -948,9 +958,7 @@ export class OrchestratorCore {
         });
       }
 
-      const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
-      if (threadId && turnId && !persistedTurnIds.includes(turnId)) {
-        persistedTurnIds.push(turnId);
+      if (threadId && turnId && !turnAlreadyObserved) {
         await this.persistence.appendTurn?.({
           thread_id: threadId,
           turn_id: turnId,
