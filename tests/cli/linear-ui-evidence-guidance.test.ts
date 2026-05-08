@@ -32,10 +32,15 @@ describe('linear ui evidence guidance', () => {
   it('documents the MCP-first boundary and Agent Review blocker in workflow guidance', () => {
     const workflow = readRepoFile('WORKFLOW.md');
     const playbook = readRepoFile('docs/playbooks/linear-workflow-playbook.md');
+    const reviewChecklist = readRepoFile('docs/playbooks/PR-REVIEW-CHECKLIST.md');
 
     expect(playbook).toContain('intentional exception to MCP-first Linear operations');
     expect(playbook).toContain('Do not hand-author dynamic app-server `linear_graphql` calls');
     expect(workflow).toContain('missing or non-rendering UI evidence');
     expect(workflow).toContain('The evidence must be visible as Linear-rendered image/video media');
+    expect(reviewChecklist).toContain('Linear workflow operations use MCP');
+    expect(reviewChecklist).toContain('Any raw `linear_graphql` use is justified');
+    expect(reviewChecklist).toContain('UI-affecting changes include rendered Linear rich media evidence');
+    expect(reviewChecklist).toContain('Local `output/playwright/*` paths');
   });
 });
