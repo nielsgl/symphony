@@ -22,6 +22,7 @@ export interface CodexRunnerStartInput {
   threadSandbox?: string;
   turnSandboxPolicy?: Record<string, unknown>;
   onEvent?: (event: CodexRunnerEvent) => void;
+  cancellationSignal?: AbortSignal;
   readTimeoutMs: number;
   turnTimeoutMs: number;
 }

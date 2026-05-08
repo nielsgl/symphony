@@ -25,6 +25,7 @@ export interface LocalWorkerRunInput {
   resumeContext?: string | null;
   issueStateFetcher: (issue_ids: string[]) => Promise<Issue[]>;
   onCodexEvent?: (event: CodexRunnerEvent) => void;
+  cancellationSignal?: AbortSignal;
 }
 
 export interface LocalWorkerRunResult {
@@ -105,6 +106,7 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
           ? { type: input.config.codex.turn_sandbox_policy }
           : undefined,
         onEvent: input.onCodexEvent,
+        cancellationSignal: input.cancellationSignal,
         readTimeoutMs: input.config.codex.read_timeout_ms,
         turnTimeoutMs: input.config.codex.turn_timeout_ms
       });
@@ -265,6 +267,7 @@ export async function runLocalWorkerRecoveryAttempt(
       threadSandbox: input.config.codex.thread_sandbox,
       turnSandboxPolicy: input.config.codex.turn_sandbox_policy ? { type: input.config.codex.turn_sandbox_policy } : undefined,
       onEvent: input.onCodexEvent,
+      cancellationSignal: input.cancellationSignal,
       readTimeoutMs: input.config.codex.read_timeout_ms,
       turnTimeoutMs: input.config.codex.turn_timeout_ms
     });

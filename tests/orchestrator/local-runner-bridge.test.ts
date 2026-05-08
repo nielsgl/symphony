@@ -1115,10 +1115,6 @@ describe('LocalRunnerBridge integration', () => {
 
   it('invokes workspace cleanup helper when terminateWorker requests cleanup', async () => {
     const issue = makeIssue();
-    const pending = new Promise<never>(() => {
-      return;
-    });
-
     const cleanupWorkspace = vi.fn(async () => true);
     const workspaceManager = {
       ensureWorkspace: vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true })),
@@ -1127,7 +1123,16 @@ describe('LocalRunnerBridge integration', () => {
       cleanupWorkspace
     } as unknown as WorkspaceManager;
     const codexRunner = {
-      startSessionAndRunTurn: vi.fn(() => pending)
+      startSessionAndRunTurn: vi.fn(
+        (input: { cancellationSignal?: AbortSignal }) =>
+          new Promise((resolve, reject) => {
+            const cancel = () => reject(new Error(`cancelled:${String(input.cancellationSignal?.reason)}`));
+            input.cancellationSignal?.addEventListener('abort', cancel);
+            if (input.cancellationSignal?.aborted) {
+              cancel();
+            }
+          })
+      )
     } as unknown as CodexRunner;
 
     const tracker: TrackerAdapter = {
@@ -1170,6 +1175,111 @@ describe('LocalRunnerBridge integration', () => {
     await orchestrator.tick('interval');
     await orchestrator.reconcileRunningIssues();
 
+    expect(cleanupWorkspace).toHaveBeenCalledWith('ABC-1');
+  });
+
+  it('cancels active worker process without workspace cleanup when terminateWorker cleanup is false', async () => {
+    const cleanupWorkspace = vi.fn(async () => true);
+    const workspaceManager = {
+      ensureWorkspace: vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true })),
+      prepareAttempt: vi.fn(async () => {}),
+      finalizeAttempt: vi.fn(async () => {}),
+      cleanupWorkspace
+    } as unknown as WorkspaceManager;
+    let observedSignal: AbortSignal | null = null;
+    const codexRunner = {
+      startSessionAndRunTurn: vi.fn(
+        (input: { cancellationSignal?: AbortSignal }) =>
+          new Promise((resolve, reject) => {
+            observedSignal = input.cancellationSignal ?? null;
+            const cancel = () => {
+              reject(new Error(`cancelled:${String(input.cancellationSignal?.reason)}`));
+            };
+            input.cancellationSignal?.addEventListener('abort', cancel);
+            if (input.cancellationSignal?.aborted) {
+              cancel();
+            }
+          })
+      )
+    } as unknown as CodexRunner;
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager,
+      codexRunner,
+      config: makeConfig(),
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+
+    await bridge.terminateWorker({
+      issue_id: 'i-1',
+      worker_handle: spawned.worker_handle,
+      cleanup_workspace: false,
+      reason: 'operator_cancel_turn'
+    });
+
+    const signal = observedSignal as AbortSignal | null;
+    expect(signal?.aborted).toBe(true);
+    expect(signal?.reason).toBe('operator_cancel_turn');
+    expect(cleanupWorkspace).not.toHaveBeenCalled();
+    await expect((spawned.worker_handle as { promise: Promise<void> }).promise).resolves.toBeUndefined();
+  });
+
+  it('keeps workspace cleanup idempotent across repeated termination calls', async () => {
+    const cleanupWorkspace = vi.fn(async () => true);
+    const workspaceManager = {
+      ensureWorkspace: vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true })),
+      prepareAttempt: vi.fn(async () => {}),
+      finalizeAttempt: vi.fn(async () => {}),
+      cleanupWorkspace
+    } as unknown as WorkspaceManager;
+    const codexRunner = {
+      startSessionAndRunTurn: vi.fn(
+        (input: { cancellationSignal?: AbortSignal }) =>
+          new Promise((resolve, reject) => {
+            const cancel = () => {
+              reject(new Error(`cancelled:${String(input.cancellationSignal?.reason)}`));
+            };
+            input.cancellationSignal?.addEventListener('abort', cancel);
+            if (input.cancellationSignal?.aborted) {
+              cancel();
+            }
+          })
+      )
+    } as unknown as CodexRunner;
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager,
+      codexRunner,
+      config: makeConfig(),
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
+    });
+
+    const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected spawn success');
+    }
+
+    await bridge.terminateWorker({
+      issue_id: 'i-1',
+      worker_handle: spawned.worker_handle,
+      cleanup_workspace: true,
+      reason: 'terminal_state_transition'
+    });
+    await bridge.terminateWorker({
+      issue_id: 'i-1',
+      worker_handle: spawned.worker_handle,
+      cleanup_workspace: true,
+      reason: 'terminal_state_transition'
+    });
+
+    expect(cleanupWorkspace).toHaveBeenCalledTimes(1);
     expect(cleanupWorkspace).toHaveBeenCalledWith('ABC-1');
   });
 
