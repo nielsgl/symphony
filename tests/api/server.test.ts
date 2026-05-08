@@ -1104,6 +1104,138 @@ describe('LocalApiServer', () => {
     );
   });
 
+  it('uses one state snapshot for mixed issue runtime and thread diagnostics', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            transcript_tool_call_diagnostics: [makeTranscriptDiagnostic(0, { issue_identifier: 'ABC-1' })],
+            tool_call_ledger: {
+              call_active: {
+                call_id: 'call_active',
+                tool_name: 'linear_graphql',
+                thread_id: 'thread-1',
+                turn_id: 'turn-1',
+                session_id: 'session-1',
+                issue_id: 'issue-1',
+                issue_identifier: 'ABC-1',
+                run_id: 'run-1',
+                issue_run_id: 'issue-run-1',
+                attempt_id: 'attempt-1',
+                first_seen_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+                last_seen_at_ms: Date.parse('2026-04-10T10:01:30.000Z'),
+                completed_at_ms: null,
+                completion_status: 'pending',
+                evidence_sources: ['session_transcript'],
+                start_evidence_source: 'session_transcript',
+                completion_evidence_source: null,
+                last_agent_message: 'waiting for linear_graphql output'
+              }
+            }
+          })
+        ]
+      ])
+    });
+    const getStateSnapshot = vi.fn(() => state);
+
+    server = new LocalApiServer({
+      snapshotSource: { getStateSnapshot },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        reconstructThreadLineage: (threadId: string) =>
+          threadId === 'thread-1' ? makeThreadLineage({ thread_id: 'thread-1', issue_identifier: 'ABC-1' }) : null
+      } as never
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/diagnostics?limit=1`);
+    const payload = (await response.json()) as {
+      thread_id: string;
+      runtime_diagnostics: {
+        status: string;
+        transcript_tool_call_diagnostics: { records: unknown[] };
+        tool_call_ledger: { records: unknown[] };
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.thread_id).toBe('thread-1');
+    expect(payload.runtime_diagnostics.status).toBe('running');
+    expect(payload.runtime_diagnostics.transcript_tool_call_diagnostics.records).toHaveLength(1);
+    expect(payload.runtime_diagnostics.tool_call_ledger.records).toHaveLength(1);
+    expect(getStateSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves runtime-only issue diagnostics when thread diagnostics are unavailable', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            thread_id: null,
+            persisted_thread_id: null,
+            transcript_tool_call_diagnostics: [makeTranscriptDiagnostic(0)]
+          })
+        ]
+      ])
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        reconstructThreadLineage: () => null,
+        reconstructLatestThreadLineageByIssueIdentifier: () => null
+      } as never
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/diagnostics`);
+    const payload = (await response.json()) as { issue_identifier: string; status: string; runtime_diagnostics?: unknown };
+
+    expect(response.status).toBe(200);
+    expect(payload.issue_identifier).toBe('ABC-1');
+    expect(payload.status).toBe('running');
+    expect(payload.runtime_diagnostics).toBeUndefined();
+  });
+
+  it('serves thread-only issue diagnostics when runtime diagnostics are unavailable', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: {
+        reconstructLatestThreadLineageByIssueIdentifier: (issueIdentifier: string) =>
+          issueIdentifier === 'ABC-1' ? makeThreadLineage({ thread_id: 'thread-complete', issue_identifier: 'ABC-1' }) : null
+      } as never
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/diagnostics`);
+    const payload = (await response.json()) as { thread_id: string; issue_identifier: string; runtime_diagnostics: unknown };
+
+    expect(response.status).toBe(200);
+    expect(payload.thread_id).toBe('thread-complete');
+    expect(payload.issue_identifier).toBe('ABC-1');
+    expect(payload.runtime_diagnostics).toBeNull();
+  });
+
   it('projects recent stopped terminal runs from durable history into state recovery view', async () => {
     server = new LocalApiServer({
       snapshotSource: {

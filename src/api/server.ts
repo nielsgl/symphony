@@ -1237,10 +1237,11 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (request, response, match) => {
               const issueIdentifier = decodeURIComponent(match[1]);
+              const stateSnapshot = this.snapshotSource.getStateSnapshot();
               let runtimeDiagnostics: ApiIssueRuntimeDiagnosticsResponse | null = null;
               try {
                 runtimeDiagnostics = this.snapshotService.projectIssueRuntimeDiagnostics(
-                  this.snapshotSource.getStateSnapshot(),
+                  stateSnapshot,
                   issueIdentifier,
                   parseRuntimeDiagnosticsPage(request)
                 );
@@ -1250,7 +1251,7 @@ export class LocalApiServer {
                 }
               }
               const payload = buildThreadDiagnosticsByIssueIdentifier({
-                state: this.snapshotSource.getStateSnapshot(),
+                state: stateSnapshot,
                 issue_identifier: issueIdentifier,
                 reconstructThreadLineage: this.diagnosticsSource?.reconstructThreadLineage,
                 reconstructLatestThreadLineageByIssueIdentifier:
