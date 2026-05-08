@@ -114,7 +114,7 @@ describe('LocalRunnerBridge integration', () => {
     });
     const issueStateFetcher = vi.fn().mockResolvedValueOnce([makeIssue({ id: 'i-1', identifier: 'ABC-1', state: 'In Progress' })]);
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
-    const exits: Array<{ reason: string; completion_reason?: string }> = [];
+    const exits: Array<{ reason: string; completion_reason?: string; session_id?: string | null }> = [];
     const logger: StructuredLogger = {
       log: ({ event, context }) => logs.push({ event, context: context ?? {} })
     };
@@ -126,8 +126,8 @@ describe('LocalRunnerBridge integration', () => {
       issueStateFetcher,
       promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
       logger,
-      onWorkerExit: ({ reason, completion_reason }) => {
-        exits.push({ reason, completion_reason });
+      onWorkerExit: ({ reason, completion_reason, session_id }) => {
+        exits.push({ reason, completion_reason, session_id });
       }
     });
 
@@ -148,8 +148,55 @@ describe('LocalRunnerBridge integration', () => {
         })
       })
     );
-    expect(exits).toEqual([{ reason: 'normal', completion_reason: REASON_CODES.maxTurnsReached }]);
+    expect(exits).toEqual([
+      { reason: 'normal', completion_reason: REASON_CODES.maxTurnsReached, session_id: 'thread-transcript-turn-transcript' }
+    ]);
     expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
+  });
+
+  it('passes guarded recovery session lineage through worker exit details', async () => {
+    const ensureWorkspace = vi.fn(async () => ({ path: '/tmp/symphony/ABC-1', workspace_key: 'ABC-1', created_now: true }));
+    const prepareAttempt = vi.fn(async () => {});
+    const finalizeAttempt = vi.fn(async () => {});
+    const cleanupWorkspace = vi.fn(async () => true);
+
+    const resumeThreadInterruptAndRunTurn = vi.fn().mockResolvedValueOnce({
+      status: 'completed' as const,
+      thread_id: 'recovery-thread',
+      turn_id: 'recovery-turn',
+      session_id: 'recovery-session',
+      last_event: CANONICAL_EVENT.codex.turnCompleted
+    });
+    const exits: Array<{ reason: string; completion_reason?: string; session_id?: string | null }> = [];
+
+    const bridge = new LocalRunnerBridge({
+      workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
+      codexRunner: { resumeThreadInterruptAndRunTurn } as unknown as CodexRunner,
+      config: makeConfig(),
+      issueStateFetcher: vi.fn(async () => [makeIssue({ id: 'i-1', identifier: 'ABC-1', state: 'In Progress' })]),
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      onWorkerExit: ({ reason, completion_reason, session_id }) => {
+        exits.push({ reason, completion_reason, session_id });
+      }
+    });
+
+    const spawned = await bridge.recoverMissingToolOutput({
+      issue: makeIssue(),
+      attempt: 1,
+      previous_thread_id: 'previous-thread',
+      previous_turn_id: 'previous-turn',
+      previous_session_id: 'previous-session',
+      recovery_prompt: 'Inspect guarded recovery state.'
+    });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) {
+      throw new Error('expected recovery spawn success');
+    }
+    await (spawned.worker_handle as { promise: Promise<void> }).promise;
+
+    expect(exits).toEqual([
+      { reason: 'normal', completion_reason: REASON_CODES.maxTurnsReached, session_id: 'recovery-session' }
+    ]);
   });
 
   it('stops continuation turns when tracker refresh leaves active states', async () => {

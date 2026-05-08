@@ -693,11 +693,23 @@ describe('OrchestratorCore', () => {
   });
 
   it('surfaces pre-session ownership conflicts and filters stale operator action state from fresh runs', async () => {
-    const harness = createHarness({
+    let harness: Harness;
+    harness = createHarness({
       configOverrides: {
         active_states: ['Todo', 'In Progress', 'Agent Review'],
         handoff_states: ['Agent Review'],
         fresh_dispatch_states: ['Agent Review', 'In Progress']
+      },
+      terminateWorker: async ({ issue_id, cleanup_workspace, reason }) => {
+        harness.terminated.push({ issue_id, cleanup_workspace, reason });
+        const releasing = harness.orchestrator.getStateSnapshot().running.get(issue_id);
+        await harness.orchestrator.onWorkerExit(issue_id, 'abnormal', 'operator cancellation settled', {
+          worker_instance_id: releasing?.worker_instance_id,
+          codex_app_server_pid: releasing?.codex_app_server_pid,
+          thread_id: releasing?.thread_id,
+          turn_id: releasing?.turn_id,
+          session_id: releasing?.session_id
+        });
       }
     });
 
@@ -752,6 +764,12 @@ describe('OrchestratorCore', () => {
         event_worker_instance_id: firstWorkerId
       })
     );
+    const issueProjection = new SnapshotService({ nowMs: () => harness.now.value + 3 }).projectIssue(
+      harness.orchestrator.getStateSnapshot(),
+      'NIE-ACTION'
+    );
+    expect(issueProjection.running?.operator_actions).toEqual([]);
+    expect(issueProjection.operator_actions).toEqual([]);
   });
 
   it('does not schedule continuation retry when normal exit has no refreshed issue', async () => {
@@ -3714,19 +3732,40 @@ describe('OrchestratorCore', () => {
 
   it('releases stale implementation worker when refreshed into Agent Review fresh-dispatch handoff', async () => {
     const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const stateTransitions: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendStateTransition']>>[0]> = [];
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    let harness: Harness;
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'run-handoff-release',
+      appendIssueRun: async () => 'issue-run-handoff-release',
+      appendAttempt: async () => 'attempt-handoff-release',
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
+      appendStateTransition: async (params) => {
+        stateTransitions.push(params);
+        return `transition-${stateTransitions.length}`;
+      },
       completeRun: async (params) => {
         completedRuns.push(params);
       }
     };
-    const harness = createHarness({
+    harness = createHarness({
       configOverrides: {
         active_states: ['Todo', 'In Progress', 'Agent Review'],
         handoff_states: ['Agent Review'],
         fresh_dispatch_states: ['Agent Review']
+      },
+      terminateWorker: async ({ issue_id, cleanup_workspace, reason }) => {
+        harness.terminated.push({ issue_id, cleanup_workspace, reason });
+        await harness.orchestrator.onWorkerExit(issue_id, 'normal', undefined, {
+          completion_reason: REASON_CODES.handoffStateReached,
+          refreshed_state: 'Agent Review',
+          worker_instance_id: harness.orchestrator.getStateSnapshot().running.get(issue_id)?.worker_instance_id,
+          session_id: 'implementation-session'
+        });
+      },
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
       },
       persistence
     });
@@ -3769,6 +3808,38 @@ describe('OrchestratorCore', () => {
         turn_id: 'implementation-turn'
       })
     ]);
+    expect(stateTransitions.filter((transition) => transition.to_status !== 'running')).toEqual([
+      expect.objectContaining({
+        to_status: 'cancelled',
+        status: 'cancelled',
+        reason_code: REASON_CODES.handoffRelease
+      })
+    ]);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.orchestration.workerExitHandled,
+        context: expect.objectContaining({
+          outcome: 'termination_exit_observed'
+        })
+      })
+    );
+    await harness.orchestrator.onWorkerExit('i-stale-handoff', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review',
+      worker_instance_id: 'i-stale-handoff-worker-1',
+      session_id: 'implementation-session'
+    });
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.orchestration.staleWorkerExitIgnored,
+        context: expect.objectContaining({
+          issue_id: 'i-stale-handoff',
+          stale_reason: 'ownership_already_released',
+          event_worker_instance_id: 'i-stale-handoff-worker-1',
+          event_session_id: 'implementation-session'
+        })
+      })
+    );
 
     harness.tracker.fetch_candidate_issues.mockResolvedValue([
       makeIssue({ id: 'i-stale-handoff', identifier: 'ABC-HANDOFF', state: 'Agent Review' })
@@ -3783,6 +3854,195 @@ describe('OrchestratorCore', () => {
     expect(freshReview?.retry_attempt).toBe(0);
     expect(freshReview?.thread_id).toBeNull();
     expect(freshReview?.session_id).toBeNull();
+  });
+
+  it('treats mismatched worker exits during release as stale without confirming the releasing worker', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    let releaseStateDuringMismatch: string | null = null;
+    let harness: Harness;
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-mismatch-release',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      },
+      terminateWorker: async ({ issue_id, cleanup_workspace, reason }) => {
+        harness.terminated.push({ issue_id, cleanup_workspace, reason });
+        releaseStateDuringMismatch =
+          harness.orchestrator.getStateSnapshot().running.get(issue_id)?.termination?.state ?? null;
+        await harness.orchestrator.onWorkerExit(issue_id, 'normal', undefined, {
+          completion_reason: REASON_CODES.handoffStateReached,
+          refreshed_state: 'Agent Review',
+          worker_instance_id: 'other-worker',
+          session_id: 'other-session'
+        });
+        expect(harness.orchestrator.getStateSnapshot().running.get(issue_id)?.termination?.state).toBe('requested');
+      },
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-release-mismatch', identifier: 'ABC-MISMATCH', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-release-mismatch', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session'
+    });
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-release-mismatch', identifier: 'ABC-MISMATCH', state: 'Agent Review' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    expect(releaseStateDuringMismatch).toBe('requested');
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        terminal_status: 'cancelled',
+        error_code: REASON_CODES.handoffRelease
+      })
+    ]);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.orchestration.staleWorkerExitIgnored,
+        context: expect.objectContaining({
+          issue_id: 'i-release-mismatch',
+          stale_reason: 'worker_instance_mismatch',
+          termination_state: 'requested',
+          event_worker_instance_id: 'other-worker',
+          event_session_id: 'other-session'
+        })
+      })
+    );
+    expect(
+      logs.some(
+        (entry) =>
+          entry.event === CANONICAL_EVENT.orchestration.workerExitHandled &&
+          entry.context.outcome === 'termination_exit_observed'
+      )
+    ).toBe(false);
+  });
+
+  it('keeps termination release active across cleanup and treats exit as confirmation-only', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    let releaseStateDuringCleanup: string | null = null;
+    let harness: Harness;
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-cleanup-release',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    harness = createHarness({
+      terminateWorker: async ({ issue_id, cleanup_workspace, reason }) => {
+        harness.terminated.push({ issue_id, cleanup_workspace, reason });
+        releaseStateDuringCleanup =
+          harness.orchestrator.getStateSnapshot().running.get(issue_id)?.termination?.state ?? null;
+        await harness.orchestrator.onWorkerExit(issue_id, 'abnormal', 'turn_input_required: choose next action', {
+          worker_instance_id: harness.orchestrator.getStateSnapshot().running.get(issue_id)?.worker_instance_id,
+          session_id: 'cleanup-session'
+        });
+      },
+      persistence
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-cleanup-release', identifier: 'ABC-CLEANUP', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-cleanup-release', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'cleanup-thread',
+      turn_id: 'cleanup-turn',
+      session_id: 'cleanup-session'
+    });
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-cleanup-release', identifier: 'ABC-CLEANUP', state: 'Done' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(releaseStateDuringCleanup).toBe('requested');
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-cleanup-release', cleanup_workspace: true, reason: 'terminal_state_transition' }
+    ]);
+    expect(snapshot.running.has('i-cleanup-release')).toBe(false);
+    expect(snapshot.blocked_inputs.has('i-cleanup-release')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-cleanup-release')).toBe(false);
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        terminal_status: 'cancelled',
+        error_code: 'terminal_state_transition'
+      })
+    ]);
+  });
+
+  it('records termination failure diagnostics without silently returning to healthy running', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      },
+      terminateWorker: async () => {
+        throw new Error('termination timed out');
+      },
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-termination-fails', identifier: 'ABC-TERMFAIL', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-termination-fails', identifier: 'ABC-TERMFAIL', state: 'Agent Review' })
+    ]);
+
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-termination-fails');
+    expect(running?.termination).toEqual(
+      expect.objectContaining({
+        state: 'failed',
+        reason: REASON_CODES.handoffRelease,
+        failure_detail: 'termination timed out'
+      })
+    );
+    expect(snapshot.claimed.has('i-termination-fails')).toBe(true);
+    expect(snapshot.health.last_error).toContain('worker termination failed for ABC-TERMFAIL');
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.orchestration.workerTerminated,
+        context: expect.objectContaining({
+          issue_id: 'i-termination-fails',
+          termination_state: 'failed',
+          error: 'termination timed out'
+        })
+      })
+    );
   });
 
   it('ignores late implementation worker exit after Agent Review fresh dispatch claims pre-session ownership', async () => {

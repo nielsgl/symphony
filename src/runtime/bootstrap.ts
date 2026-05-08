@@ -724,8 +724,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     logger,
     promptTemplate: workflowDefinition.prompt_template,
     issueStateFetcher: async (issue_ids) => tracker.fetch_issue_states_by_ids(issue_ids),
-    onWorkerExit: async ({ issue_id, reason, error, completion_reason, refreshed_state, worker_instance_id }) => {
-      await orchestrator.onWorkerExit(issue_id, reason, error, { completion_reason, refreshed_state, worker_instance_id });
+    onWorkerExit: async ({ issue_id, reason, error, completion_reason, refreshed_state, worker_instance_id, session_id }) => {
+      await orchestrator.onWorkerExit(issue_id, reason, error, { completion_reason, refreshed_state, worker_instance_id, session_id });
     },
     onWorkerEvent: ({ issue_id, event }) => {
       orchestrator.onWorkerEvent(issue_id, toWorkerEvent(event, nowMs()));
