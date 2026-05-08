@@ -2947,6 +2947,39 @@ export class OrchestratorCore {
     await this.runSerializedOperation(() => this.onRetryTimerOnce(issue_id));
   }
 
+  private recordRetryCleared(
+    retryEntry: RetryEntry,
+    params: {
+      cleanup_reason: 'active_candidate_missing' | 'tracker_state_terminal' | 'tracker_state_non_active';
+      observed_tracker_state: string | null;
+    }
+  ): void {
+    const context = {
+      issue_id: retryEntry.issue_id,
+      issue_identifier: retryEntry.identifier,
+      previous_retry_reason: retryEntry.stop_reason_code ?? retryEntry.error,
+      retry_attempt: retryEntry.attempt,
+      due_at_ms: retryEntry.due_at_ms,
+      observed_tracker_state: params.observed_tracker_state,
+      cleanup_reason: params.cleanup_reason
+    };
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.tracker.retryCleared,
+      message: 'retry cleared without redispatch',
+      context
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.tracker.retryCleared,
+      severity: 'info',
+      issue_identifier: retryEntry.identifier,
+      detail:
+        `cleanup_reason=${params.cleanup_reason} previous_retry_reason=${context.previous_retry_reason ?? 'unknown'} ` +
+        `retry_attempt=${retryEntry.attempt} due_at_ms=${retryEntry.due_at_ms} ` +
+        `observed_tracker_state=${params.observed_tracker_state ?? 'unknown'}`
+    });
+  }
+
   private async onRetryTimerOnce(issue_id: string): Promise<void> {
     if (this.state.blocked_inputs.has(issue_id)) {
       return;
@@ -3011,11 +3044,19 @@ export class OrchestratorCore {
 
     const issue = candidates.find((candidate) => candidate.id === issue_id);
     if (!issue) {
+      this.recordRetryCleared(retryEntry, {
+        cleanup_reason: 'active_candidate_missing',
+        observed_tracker_state: null
+      });
       this.state.claimed.delete(issue_id);
       return;
     }
 
     if (!isActiveState(issue.state, this.config)) {
+      this.recordRetryCleared(retryEntry, {
+        cleanup_reason: isTerminalState(issue.state, this.config) ? 'tracker_state_terminal' : 'tracker_state_non_active',
+        observed_tracker_state: issue.state
+      });
       this.state.claimed.delete(issue_id);
       return;
     }

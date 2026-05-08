@@ -4,6 +4,7 @@ import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../observability/events';
 import type { DurableRunHistoryRecord } from '../persistence';
 import { redactUnknown } from '../security/redaction';
+import { ControlPlaneHealthRecorder, type ControlPlaneHealthState, type ControlPlaneObservation } from './control-plane-health';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
 import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
@@ -43,6 +44,15 @@ interface Route {
 interface Endpoint {
   path: RegExp;
   routes: Route[];
+}
+
+interface TimedStateSnapshot {
+  payload: ApiStateSnapshotResponse;
+  projectionDurationMs: number | null;
+  enrichmentDurationMs: number | null;
+  snapshotAgeMs: number | null;
+  snapshotFreshnessState: ApiStateResponse['snapshot_freshness_state'] | null;
+  snapshotErrorCode: ApiStateErrorResponse['error']['code'] | null;
 }
 
 const ISSUE_DETAIL_ROUTES = ['/api/v1/:issue_identifier', '/api/v1/issues/:issue_identifier'];
@@ -128,10 +138,22 @@ function isCompletedTerminalRun(run: DurableRunHistoryRecord): boolean {
   return run.ended_at !== null && run.terminal_status !== null;
 }
 
-function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
+function serializeJsonPayload(payload: unknown): { body: string; bytes: number } {
+  const body = JSON.stringify(redactUnknown(payload));
+  return {
+    body,
+    bytes: Buffer.byteLength(body, 'utf8')
+  };
+}
+
+function sendJsonBody(res: ServerResponse, statusCode: number, body: string): void {
   res.statusCode = statusCode;
   res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.end(JSON.stringify(redactUnknown(payload)));
+  res.end(body);
+}
+
+function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
+  sendJsonBody(res, statusCode, serializeJsonPayload(payload).body);
 }
 
 function sendHtml(res: ServerResponse, statusCode: number, html: string): void {
@@ -238,6 +260,8 @@ export class LocalApiServer {
   private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
   private readonly logger?: StructuredLogger;
   private readonly codexStateDbPath: string;
+  private readonly nowMs: () => number;
+  private readonly controlPlaneHealth: ControlPlaneHealthRecorder;
 
   private readonly server: http.Server;
   private readonly eventClients: Map<number, ServerResponse>;
@@ -261,6 +285,8 @@ export class LocalApiServer {
       phase_stale_warn_ms: 45000
     };
     this.logger = options.logger;
+    this.nowMs = options.nowMs ?? (() => Date.now());
+    this.controlPlaneHealth = new ControlPlaneHealthRecorder(options.controlPlaneHealth);
     const codexHome = (process.env.SYMPHONY_CODEX_HOME || `${process.env.HOME || ''}/.codex`).trim();
     this.codexStateDbPath = options.codexStateDbPath ?? `${codexHome.replace(/\/+$/, '')}/state_5.sqlite`;
     this.refreshCoalescer = new RefreshCoalescer({
@@ -354,19 +380,21 @@ export class LocalApiServer {
     }, 15_000);
   }
 
-  private emitEvent(type: ApiEventEnvelope['type'], payload: unknown): void {
-    if (this.eventClients.size === 0) {
-      return;
-    }
-
+  private serializeEvent(type: ApiEventEnvelope['type'], payload: unknown): { message: string; bytes: number } {
     const envelope: ApiEventEnvelope = {
       event_id: this.nextEventId++,
-      generated_at: new Date().toISOString(),
+      generated_at: new Date(this.nowMs()).toISOString(),
       type,
       payload: redactUnknown(payload)
     };
     const message = `id: ${envelope.event_id}\nevent: symphony\ndata: ${JSON.stringify(envelope)}\n\n`;
+    return {
+      message,
+      bytes: Buffer.byteLength(message, 'utf8')
+    };
+  }
 
+  private writeEventMessage(message: string): void {
     for (const [clientId, response] of this.eventClients.entries()) {
       try {
         response.write(message);
@@ -374,6 +402,40 @@ export class LocalApiServer {
         this.eventClients.delete(clientId);
       }
     }
+  }
+
+  private emitEvent(type: ApiEventEnvelope['type'], payload: unknown): void {
+    if (this.eventClients.size === 0) {
+      return;
+    }
+
+    this.writeEventMessage(this.serializeEvent(type, payload).message);
+  }
+
+  private recordControlPlaneObservation(observation: ControlPlaneObservation): ControlPlaneHealthState {
+    const health = this.controlPlaneHealth.record(observation);
+    if (observation.endpoint === '/api/v1/state' && health !== 'ok') {
+      this.logger?.log({
+        level: health === 'degraded' ? 'warn' : 'info',
+        event: CANONICAL_EVENT.api.stateSnapshotDegraded,
+        message: 'state snapshot control-plane pressure observed',
+        context: {
+          endpoint: observation.endpoint,
+          transport: observation.transport,
+          duration_ms: Math.round(observation.duration_ms),
+          payload_bytes: Math.round(observation.payload_bytes),
+          projection_duration_ms: observation.projection_duration_ms,
+          enrichment_duration_ms: observation.enrichment_duration_ms,
+          serialization_duration_ms: observation.serialization_duration_ms,
+          broadcast_client_count: observation.broadcast_client_count ?? null,
+          snapshot_age_ms: observation.snapshot_age_ms ?? null,
+          snapshot_freshness_state: observation.snapshot_freshness_state ?? null,
+          snapshot_error_code: observation.snapshot_error_code ?? null,
+          health
+        }
+      });
+    }
+    return health;
   }
 
   private buildCapabilityWarningsByThreadId(runs: ReturnType<NonNullable<LocalApiServerOptions['diagnosticsSource']>['listRunHistory']>) {
@@ -420,13 +482,24 @@ export class LocalApiServer {
     void state;
   }
 
-  private buildStateSnapshotResponse(): ApiStateSnapshotResponse {
+  private buildStateSnapshotResponse(): TimedStateSnapshot {
+    const projectionStartedAtMs = this.nowMs();
     try {
       const state = this.snapshotSource.getStateSnapshot();
       const payload = this.snapshotService.projectState(state);
+      const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
+      const enrichmentStartedAtMs = this.nowMs();
       this.enrichLiveTokenFallbackState(payload);
       this.enrichStoppedRunRecoveryState(payload, state);
-      return payload;
+      const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
+      return {
+        payload,
+        projectionDurationMs,
+        enrichmentDurationMs,
+        snapshotAgeMs: payload.snapshot_age_ms,
+        snapshotFreshnessState: payload.snapshot_freshness_state,
+        snapshotErrorCode: null
+      };
     } catch (error) {
       const code: ApiStateErrorResponse['error']['code'] =
         error instanceof LocalApiError && error.code === 'snapshot_timeout'
@@ -443,21 +516,39 @@ export class LocalApiServer {
         }
       });
       return {
-        generated_at: new Date().toISOString(),
-        error: {
-          code,
-          message
-        }
+        payload: {
+          generated_at: new Date(this.nowMs()).toISOString(),
+          error: {
+            code,
+            message
+          }
+        },
+        projectionDurationMs: this.nowMs() - projectionStartedAtMs,
+        enrichmentDurationMs: null,
+        snapshotAgeMs: null,
+        snapshotFreshnessState: null,
+        snapshotErrorCode: code
       };
     }
   }
 
-  private buildBoundedStateSnapshotResponse(): ApiStateSnapshotResponse {
+  private buildBoundedStateSnapshotResponse(): TimedStateSnapshot {
+    const projectionStartedAtMs = this.nowMs();
     try {
       const state = this.snapshotSource.getStateSnapshot();
       const payload = this.snapshotService.projectState(state);
+      const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
+      const enrichmentStartedAtMs = this.nowMs();
       this.enrichLiveTokenFallbackState(payload);
-      return payload;
+      const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
+      return {
+        payload,
+        projectionDurationMs,
+        enrichmentDurationMs,
+        snapshotAgeMs: payload.snapshot_age_ms,
+        snapshotFreshnessState: payload.snapshot_freshness_state,
+        snapshotErrorCode: null
+      };
     } catch (error) {
       const code: ApiStateErrorResponse['error']['code'] =
         error instanceof LocalApiError && error.code === 'snapshot_timeout'
@@ -474,11 +565,18 @@ export class LocalApiServer {
         }
       });
       return {
-        generated_at: new Date().toISOString(),
-        error: {
-          code,
-          message
-        }
+        payload: {
+          generated_at: new Date(this.nowMs()).toISOString(),
+          error: {
+            code,
+            message
+          }
+        },
+        projectionDurationMs: this.nowMs() - projectionStartedAtMs,
+        enrichmentDurationMs: null,
+        snapshotAgeMs: null,
+        snapshotFreshnessState: null,
+        snapshotErrorCode: code
       };
     }
   }
@@ -492,7 +590,7 @@ export class LocalApiServer {
           ? 'snapshot_timeout'
           : 'snapshot_unavailable';
       return {
-        generated_at: new Date().toISOString(),
+        generated_at: new Date(this.nowMs()).toISOString(),
         error: {
           code,
           message: code === 'snapshot_timeout' ? 'Snapshot timed out' : 'Snapshot unavailable'
@@ -502,7 +600,9 @@ export class LocalApiServer {
   }
 
   private broadcastStateSnapshot(source: string): void {
-    const payload = this.buildBoundedStateSnapshotResponse();
+    const startedAtMs = this.nowMs();
+    const snapshot = this.buildBoundedStateSnapshotResponse();
+    const payload = snapshot.payload;
     if (!('error' in payload)) {
       const healthSignature = `${payload.health.dispatch_validation}:${payload.health.last_error ?? ''}`;
       if (this.lastHealthSignature !== null && this.lastHealthSignature !== healthSignature) {
@@ -513,10 +613,31 @@ export class LocalApiServer {
       }
       this.lastHealthSignature = healthSignature;
     }
-    this.emitEvent('state_snapshot', {
+    if (this.eventClients.size === 0) {
+      return;
+    }
+    const serializationStartedAtMs = this.nowMs();
+    const serialized = this.serializeEvent('state_snapshot', {
       source,
       state: payload
     });
+    const serializationDurationMs = this.nowMs() - serializationStartedAtMs;
+    this.recordControlPlaneObservation({
+      endpoint: '/api/v1/events:state_snapshot',
+      transport: 'sse',
+      observed_at_ms: this.nowMs(),
+      duration_ms: this.nowMs() - startedAtMs,
+      status_code: 200,
+      payload_bytes: serialized.bytes,
+      projection_duration_ms: snapshot.projectionDurationMs,
+      enrichment_duration_ms: snapshot.enrichmentDurationMs,
+      serialization_duration_ms: serializationDurationMs,
+      broadcast_client_count: this.eventClients.size,
+      snapshot_age_ms: snapshot.snapshotAgeMs,
+      snapshot_freshness_state: snapshot.snapshotFreshnessState,
+      snapshot_error_code: snapshot.snapshotErrorCode
+    });
+    this.writeEventMessage(serialized.message);
   }
 
   private resolveLiveThreadTokenTotals(threadIds: string[]): Map<string, number> {
@@ -723,6 +844,7 @@ export class LocalApiServer {
             blocked_event_reject_total: 0,
             blocked_latch_violation_total: 0
           },
+      control_plane: this.controlPlaneHealth.summarize(this.nowMs()),
       runtime_resolution: {
         ...runtimeResolution,
         effective_codex_home: runtimeResolution.effective_codex_home ?? null,
@@ -807,7 +929,26 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
-              const payload = this.buildStateSnapshotResponse();
+              const startedAtMs = this.nowMs();
+              const snapshot = this.buildStateSnapshotResponse();
+              const payload = snapshot.payload;
+              const serializationStartedAtMs = this.nowMs();
+              const serialized = serializeJsonPayload(payload);
+              const serializationDurationMs = this.nowMs() - serializationStartedAtMs;
+              const health = this.recordControlPlaneObservation({
+                endpoint: '/api/v1/state',
+                transport: 'http',
+                observed_at_ms: this.nowMs(),
+                duration_ms: this.nowMs() - startedAtMs,
+                status_code: 200,
+                payload_bytes: serialized.bytes,
+                projection_duration_ms: snapshot.projectionDurationMs,
+                enrichment_duration_ms: snapshot.enrichmentDurationMs,
+                serialization_duration_ms: serializationDurationMs,
+                snapshot_age_ms: snapshot.snapshotAgeMs,
+                snapshot_freshness_state: snapshot.snapshotFreshnessState,
+                snapshot_error_code: snapshot.snapshotErrorCode
+              });
               if (!('error' in payload)) {
                 this.logger?.log({
                   level: 'info',
@@ -817,11 +958,18 @@ export class LocalApiServer {
                     running: payload.counts.running,
                     retrying: payload.counts.retrying,
                     blocked: payload.counts.blocked,
-                    dispatch_validation: payload.health.dispatch_validation
+                    dispatch_validation: payload.health.dispatch_validation,
+                    duration_ms: this.nowMs() - startedAtMs,
+                    payload_bytes: serialized.bytes,
+                    projection_duration_ms: snapshot.projectionDurationMs,
+                    serialization_duration_ms: serializationDurationMs,
+                    snapshot_age_ms: snapshot.snapshotAgeMs,
+                    snapshot_freshness_state: snapshot.snapshotFreshnessState,
+                    control_plane_health: health
                   }
                 });
               }
-              sendJson(response, 200, payload);
+              sendJsonBody(response, 200, serialized.body);
             }
           }
         ]
@@ -980,7 +1128,23 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
-              sendJson(response, 200, this.buildDiagnosticsPayload());
+              const startedAtMs = this.nowMs();
+              const payload = this.buildDiagnosticsPayload();
+              const serializationStartedAtMs = this.nowMs();
+              const serialized = serializeJsonPayload(payload);
+              const serializationDurationMs = this.nowMs() - serializationStartedAtMs;
+              this.recordControlPlaneObservation({
+                endpoint: '/api/v1/diagnostics',
+                transport: 'http',
+                observed_at_ms: this.nowMs(),
+                duration_ms: this.nowMs() - startedAtMs,
+                status_code: 200,
+                payload_bytes: serialized.bytes,
+                projection_duration_ms: null,
+                enrichment_duration_ms: null,
+                serialization_duration_ms: serializationDurationMs
+              });
+              sendJsonBody(response, 200, serialized.body);
             }
           }
         ]

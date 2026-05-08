@@ -207,6 +207,19 @@ function makeApiDiagnostics(): ApiDiagnosticsResponse {
       blocked_event_allowlist_total: 0,
       blocked_event_reject_total: 0,
       blocked_latch_violation_total: 0
+    },
+    control_plane: {
+      generated_at: '2026-04-11T10:06:00.000Z',
+      sample_limit: 40,
+      thresholds: {
+        slow_ms: 1000,
+        degraded_ms: 5000,
+        large_payload_bytes: 1_000_000,
+        degraded_payload_bytes: 5_000_000
+      },
+      endpoint_count: 0,
+      worst_health: 'ok',
+      endpoints: []
     }
   };
 }
