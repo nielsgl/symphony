@@ -568,10 +568,20 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `hooks.after_run`: shell script or null
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
-- `agent.max_concurrent_agents`: integer, default `10`
+- `agent.max_concurrent_agents`: integer, default `10`; local laptop profiles should use a
+  conservative lower value such as `3` unless the operator explicitly accepts dashboard/control-plane
+  responsiveness risk
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
+- `agent.dispatch_backpressure.enabled`: boolean, default `true`
+- `agent.dispatch_backpressure.retry_delay_ms`: integer, default `30000`
+- `agent.dispatch_backpressure.min_running_agents`: non-negative integer, default `1`
+- `agent.dispatch_backpressure.control_plane_health`: `slow`, `large`, or `degraded`; default
+  `degraded`
+- `agent.dispatch_backpressure.control_plane_stale_after_ms`: integer, default `60000`
+- `agent.dispatch_backpressure.host_load_per_cpu`: positive number, optional; when set, dispatch is
+  delayed while one-minute host load per CPU is at or above the threshold
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
 - `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined

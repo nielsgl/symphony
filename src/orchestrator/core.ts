@@ -1,6 +1,7 @@
 import type { Issue } from '../tracker';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
@@ -22,6 +23,7 @@ import type {
   BlockedEntry,
   BudgetRuntimeProjection,
   CircuitBreakerEntry,
+  DispatchBackpressureState,
   MissingToolOutputRecoveryState,
   OperatorActionRecord,
   OrchestratorOptions,
@@ -44,8 +46,20 @@ import type {
   WorkerExitReason,
   WorkerTerminationResult
 } from './types';
+import type { ControlPlaneEndpointHealth, ControlPlaneHealthState, ControlPlaneHealthSummary } from '../api/control-plane-health';
 
 const DEFAULT_INACTIVE_WORKER_PID_TTL_MS = 60 * 60 * 1000;
+const DEFAULT_BACKPRESSURE_RETRY_DELAY_MS = 30_000;
+const DEFAULT_BACKPRESSURE_MIN_RUNNING_AGENTS = 1;
+const DEFAULT_BACKPRESSURE_CONTROL_PLANE_HEALTH: ControlPlaneHealthState = 'degraded';
+const DEFAULT_BACKPRESSURE_CONTROL_PLANE_STALE_AFTER_MS = 60_000;
+
+const CONTROL_PLANE_HEALTH_RANK: Record<ControlPlaneHealthState, number> = {
+  ok: 0,
+  slow: 1,
+  large: 2,
+  degraded: 3
+};
 
 interface ScheduleRetryParams {
   issue_id: string;
@@ -87,6 +101,7 @@ interface ScheduleRetryParams {
   };
   budget?: BudgetRuntimeProjection;
   recovery?: MissingToolOutputRecoveryState | null;
+  delay_ms?: number;
 }
 
 interface WorkspaceConflictContext {
@@ -210,6 +225,21 @@ function cloneIssue(issue: Issue): Issue {
     })),
     created_at: issue.created_at ? new Date(issue.created_at.getTime()) : null,
     updated_at: issue.updated_at ? new Date(issue.updated_at.getTime()) : null
+  };
+}
+
+function cloneDispatchBackpressureState(state: DispatchBackpressureState): DispatchBackpressureState {
+  return { ...state };
+}
+
+function emptyDispatchBackpressureState(retryDelayMs = DEFAULT_BACKPRESSURE_RETRY_DELAY_MS): DispatchBackpressureState {
+  return {
+    active: false,
+    reason_code: null,
+    reason_detail: null,
+    source: null,
+    observed_at_ms: null,
+    retry_delay_ms: retryDelayMs
   };
 }
 
@@ -555,7 +585,8 @@ export class OrchestratorCore {
       codex_rate_limits: null,
       health: {
         dispatch_validation: 'ok',
-        last_error: null
+        last_error: null,
+        dispatch_backpressure: emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs())
       },
       throughput: {
         current_tps: 0,
@@ -638,7 +669,12 @@ export class OrchestratorCore {
       completed: new Set(this.state.completed.values()),
       codex_totals: { ...this.state.codex_totals },
       codex_rate_limits: this.state.codex_rate_limits ? { ...this.state.codex_rate_limits } : null,
-      health: { ...this.state.health },
+      health: {
+        ...this.state.health,
+        dispatch_backpressure: cloneDispatchBackpressureState(
+          this.state.health.dispatch_backpressure ?? emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs())
+        )
+      },
       throughput: this.throughputTracker.snapshot(this.nowMs()),
       recent_runtime_events: this.state.recent_runtime_events.map((event) => ({ ...event }))
     };
@@ -667,6 +703,7 @@ export class OrchestratorCore {
     phase_markers_enabled?: boolean;
     phase_timeline_limit?: number;
     budget?: OrchestratorOptions['config']['budget'];
+    dispatch_backpressure?: OrchestratorOptions['config']['dispatch_backpressure'];
   }): void {
     this.config.poll_interval_ms = config.poll_interval_ms;
     this.config.max_concurrent_agents = config.max_concurrent_agents;
@@ -690,15 +727,251 @@ export class OrchestratorCore {
     this.config.phase_markers_enabled = config.phase_markers_enabled ?? true;
     this.config.phase_timeline_limit = config.phase_timeline_limit ?? 30;
     this.config.budget = config.budget;
+    this.config.dispatch_backpressure = config.dispatch_backpressure;
     this.phaseSettings.enabled = this.config.phase_markers_enabled !== false;
     this.phaseSettings.timeline_limit = Math.max(1, this.config.phase_timeline_limit ?? 30);
 
     this.state.poll_interval_ms = config.poll_interval_ms;
     this.state.max_concurrent_agents = config.max_concurrent_agents;
+    this.state.health.dispatch_backpressure = {
+      ...(this.state.health.dispatch_backpressure ?? emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs())),
+      retry_delay_ms: this.getBackpressureRetryDelayMs()
+    };
   }
 
   async tick(reason: TickReason): Promise<void> {
     await this.runSerializedOperation(() => this.tickOnce(reason));
+  }
+
+  private getBackpressureRetryDelayMs(): number {
+    const configured = this.config.dispatch_backpressure?.retry_delay_ms;
+    if (typeof configured === 'number' && Number.isFinite(configured) && configured > 0) {
+      return Math.trunc(configured);
+    }
+    return DEFAULT_BACKPRESSURE_RETRY_DELAY_MS;
+  }
+
+  private isBackpressureEnabled(): boolean {
+    return this.config.dispatch_backpressure?.enabled !== false;
+  }
+
+  private classifyControlPlaneEndpointLastHealth(
+    endpoint: ControlPlaneEndpointHealth,
+    summary: ControlPlaneHealthSummary
+  ): ControlPlaneHealthState {
+    if (endpoint.last_snapshot_error_code) {
+      return 'degraded';
+    }
+    const duration = endpoint.last_duration_ms ?? 0;
+    const payload = endpoint.last_payload_bytes ?? 0;
+    if (duration >= summary.thresholds.degraded_ms || payload >= summary.thresholds.degraded_payload_bytes) {
+      return 'degraded';
+    }
+    if (payload >= summary.thresholds.large_payload_bytes) {
+      return 'large';
+    }
+    if (duration >= summary.thresholds.slow_ms) {
+      return 'slow';
+    }
+    return 'ok';
+  }
+
+  private evaluateControlPlaneBackpressure(): DispatchBackpressureState | null {
+    const summary = this.ports.getControlPlaneHealth?.();
+    if (!summary || summary.endpoints.length === 0) {
+      return null;
+    }
+
+    const staleAfterMs =
+      this.config.dispatch_backpressure?.control_plane_stale_after_ms ?? DEFAULT_BACKPRESSURE_CONTROL_PLANE_STALE_AFTER_MS;
+    const threshold = this.config.dispatch_backpressure?.control_plane_health ?? DEFAULT_BACKPRESSURE_CONTROL_PLANE_HEALTH;
+    const thresholdRank = CONTROL_PLANE_HEALTH_RANK[threshold] ?? CONTROL_PLANE_HEALTH_RANK.degraded;
+    const nowMs = this.nowMs();
+
+    let selected:
+      | {
+          endpoint: ControlPlaneEndpointHealth;
+          health: ControlPlaneHealthState;
+          observedAtMs: number;
+        }
+      | null = null;
+
+    for (const endpoint of summary.endpoints) {
+      if (!endpoint.last_observed_at) {
+        continue;
+      }
+      const observedAtMs = Date.parse(endpoint.last_observed_at);
+      if (!Number.isFinite(observedAtMs) || nowMs - observedAtMs > staleAfterMs) {
+        continue;
+      }
+      const health = this.classifyControlPlaneEndpointLastHealth(endpoint, summary);
+      if (CONTROL_PLANE_HEALTH_RANK[health] < thresholdRank) {
+        continue;
+      }
+      if (!selected || CONTROL_PLANE_HEALTH_RANK[health] > CONTROL_PLANE_HEALTH_RANK[selected.health]) {
+        selected = { endpoint, health, observedAtMs };
+      }
+    }
+
+    if (!selected) {
+      return null;
+    }
+
+    const reasonDetail = [
+      `source=control_plane`,
+      `endpoint=${selected.endpoint.endpoint}`,
+      `transport=${selected.endpoint.transport}`,
+      `health=${selected.health}`,
+      `duration_ms=${selected.endpoint.last_duration_ms ?? 'unknown'}`,
+      `payload_bytes=${selected.endpoint.last_payload_bytes ?? 'unknown'}`
+    ].join(' ');
+
+    return {
+      active: true,
+      reason_code: REASON_CODES.dispatchBackpressureControlPlane,
+      reason_detail: reasonDetail,
+      source: 'control_plane',
+      observed_at_ms: selected.observedAtMs,
+      retry_delay_ms: this.getBackpressureRetryDelayMs()
+    };
+  }
+
+  private evaluateHostLoadBackpressure(): DispatchBackpressureState | null {
+    const threshold = this.config.dispatch_backpressure?.host_load_per_cpu;
+    if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold <= 0) {
+      return null;
+    }
+
+    const configuredLoad = this.ports.getHostLoad?.();
+    const load = configuredLoad ?? {
+      load_average_1m: os.loadavg()[0] ?? 0,
+      cpu_count: os.cpus().length
+    };
+    const cpuCount = Math.max(1, Math.trunc(load.cpu_count));
+    const loadPerCpu = load.load_average_1m / cpuCount;
+    if (!Number.isFinite(loadPerCpu) || loadPerCpu < threshold) {
+      return null;
+    }
+
+    return {
+      active: true,
+      reason_code: REASON_CODES.dispatchBackpressureHostLoad,
+      reason_detail: [
+        `source=host_load`,
+        `load_average_1m=${Math.round(load.load_average_1m * 100) / 100}`,
+        `cpu_count=${cpuCount}`,
+        `load_per_cpu=${Math.round(loadPerCpu * 100) / 100}`,
+        `threshold_per_cpu=${threshold}`
+      ].join(' '),
+      source: 'host_load',
+      observed_at_ms: this.nowMs(),
+      retry_delay_ms: this.getBackpressureRetryDelayMs()
+    };
+  }
+
+  private evaluateDispatchBackpressure(): DispatchBackpressureState {
+    const retryDelayMs = this.getBackpressureRetryDelayMs();
+    const minRunningAgents = Math.max(
+      0,
+      Math.trunc(this.config.dispatch_backpressure?.min_running_agents ?? DEFAULT_BACKPRESSURE_MIN_RUNNING_AGENTS)
+    );
+
+    if (!this.isBackpressureEnabled() || this.state.running.size < minRunningAgents) {
+      return emptyDispatchBackpressureState(retryDelayMs);
+    }
+
+    return this.evaluateControlPlaneBackpressure() ?? this.evaluateHostLoadBackpressure() ?? emptyDispatchBackpressureState(retryDelayMs);
+  }
+
+  private recordDispatchBackpressure(issue: Issue, backpressure: DispatchBackpressureState, attempt: number | null): void {
+    this.state.health.dispatch_backpressure = cloneDispatchBackpressureState(backpressure);
+    this.state.health.last_error = `dispatch backpressure active for ${issue.identifier}: ${backpressure.reason_code}`;
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.dispatchBackpressureActive,
+      message: 'dispatch delayed by local backpressure',
+      context: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        retry_attempt: attempt ?? 0,
+        reason_code: backpressure.reason_code,
+        reason_detail: backpressure.reason_detail,
+        source: backpressure.source,
+        retry_delay_ms: backpressure.retry_delay_ms
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.dispatchBackpressureActive,
+      severity: 'warn',
+      issue_identifier: issue.identifier,
+      detail: `${backpressure.reason_code}: ${backpressure.reason_detail ?? 'dispatch delayed'}`
+    });
+  }
+
+  private async delayDispatchForBackpressure(issue: Issue, attempt: number | null, backpressure: DispatchBackpressureState): Promise<void> {
+    this.recordDispatchBackpressure(issue, backpressure, attempt);
+    await this.scheduleRetry({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      attempt: attempt ?? 1,
+      delay_type: 'backpressure',
+      delay_ms: backpressure.retry_delay_ms,
+      error: 'dispatch delayed by local backpressure',
+      worker_host: null,
+      workspace_path: null,
+      provisioner_type: null,
+      branch_name: null,
+      repo_root: null,
+      workspace_exists: false,
+      workspace_git_status: null,
+      workspace_provisioned: false,
+      workspace_is_git_worktree: false,
+      copy_ignored_applied: false,
+      copy_ignored_status: null,
+      copy_ignored_summary: null,
+      stop_reason_code: backpressure.reason_code,
+      stop_reason_detail: backpressure.reason_detail,
+      issue_snapshot: issue
+    });
+  }
+
+  private async delayRetryForBackpressure(
+    issue: Issue,
+    retryEntry: RetryEntry,
+    backpressure: DispatchBackpressureState,
+    freshDispatch: boolean
+  ): Promise<void> {
+    this.recordDispatchBackpressure(issue, backpressure, retryEntry.attempt);
+    await this.scheduleRetry({
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      attempt: retryEntry.attempt,
+      issue_run_id: freshDispatch ? null : retryEntry.issue_run_id,
+      previous_attempt_id: freshDispatch ? null : retryEntry.previous_attempt_id,
+      delay_type: 'backpressure',
+      delay_ms: backpressure.retry_delay_ms,
+      error: 'dispatch delayed by local backpressure',
+      worker_host: freshDispatch ? null : retryEntry.worker_host ?? null,
+      workspace_path: freshDispatch ? null : retryEntry.workspace_path ?? null,
+      provisioner_type: freshDispatch ? null : retryEntry.provisioner_type ?? null,
+      branch_name: freshDispatch ? null : retryEntry.branch_name ?? null,
+      repo_root: freshDispatch ? null : retryEntry.repo_root ?? null,
+      workspace_exists: freshDispatch ? false : retryEntry.workspace_exists,
+      workspace_git_status: freshDispatch ? null : retryEntry.workspace_git_status,
+      workspace_provisioned: freshDispatch ? false : retryEntry.workspace_provisioned,
+      workspace_is_git_worktree: freshDispatch ? false : retryEntry.workspace_is_git_worktree,
+      copy_ignored_applied: freshDispatch ? false : retryEntry.copy_ignored_applied,
+      copy_ignored_status: freshDispatch ? null : retryEntry.copy_ignored_status,
+      copy_ignored_summary: freshDispatch ? null : retryEntry.copy_ignored_summary,
+      stop_reason_code: backpressure.reason_code,
+      stop_reason_detail: backpressure.reason_detail,
+      previous_thread_id: freshDispatch ? null : retryEntry.previous_thread_id ?? null,
+      previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
+      progress_signals: retryEntry.progress_signals,
+      budget: retryEntry.budget,
+      recovery: retryEntry.recovery,
+      issue_snapshot: issue
+    });
   }
 
   private async tickOnce(reason: TickReason): Promise<void> {
@@ -744,6 +1017,7 @@ export class OrchestratorCore {
       });
     }
     this.state.health.last_error = null;
+    this.state.health.dispatch_backpressure = emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs());
 
     let candidates: Issue[];
     try {
@@ -820,6 +1094,12 @@ export class OrchestratorCore {
         if (githubLinkingMode === 'required') {
           continue;
         }
+      }
+
+      const backpressure = this.evaluateDispatchBackpressure();
+      if (backpressure.active) {
+        await this.delayDispatchForBackpressure(issue, null, backpressure);
+        break;
       }
 
       await this.dispatchIssue(issue, null);
@@ -3101,9 +3381,28 @@ export class OrchestratorCore {
       return;
     }
 
+    const backpressure = this.evaluateDispatchBackpressure();
+    if (backpressure.active) {
+      await this.delayRetryForBackpressure(issue, retryEntry, backpressure, freshDispatch);
+      return;
+    }
+    this.state.health.dispatch_backpressure = emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs());
+
     if (freshDispatch) {
       this.state.claimed.delete(issue_id);
       await this.dispatchIssue(issue, null);
+      return;
+    }
+
+    if (
+      retryEntry.stop_reason_code === REASON_CODES.dispatchBackpressureControlPlane ||
+      retryEntry.stop_reason_code === REASON_CODES.dispatchBackpressureHostLoad
+    ) {
+      this.state.claimed.delete(issue_id);
+      await this.dispatchIssue(issue, retryEntry.attempt, null, {
+        issue_run_id: retryEntry.issue_run_id,
+        previous_attempt_id: retryEntry.previous_attempt_id
+      });
       return;
     }
 
@@ -4047,9 +4346,12 @@ export class OrchestratorCore {
     }
 
     const delayMs =
-      params.delay_type === 'continuation'
+      params.delay_ms ??
+      (params.delay_type === 'continuation'
         ? 1000
-        : computeFailureBackoffMs(params.attempt, this.config.max_retry_backoff_ms);
+        : params.delay_type === 'backpressure'
+          ? this.getBackpressureRetryDelayMs()
+          : computeFailureBackoffMs(params.attempt, this.config.max_retry_backoff_ms));
 
     const dueAtMs = this.nowMs() + delayMs;
 

@@ -44,6 +44,7 @@ export const CANONICAL_EVENT = {
   orchestration: {
     dispatchValidationFailed: 'orchestration.dispatch.validation.failed',
     dispatchValidationRecovered: 'orchestration.dispatch.validation.recovered',
+    dispatchBackpressureActive: 'orchestration.dispatch.backpressure.active',
     dispatchAttemptStarted: 'orchestration.dispatch.attempt.started',
     dispatchDuplicateSkipped: 'orchestration.dispatch.duplicate.skipped',
     dispatchSpawnSucceeded: 'orchestration.dispatch.spawn.succeeded',

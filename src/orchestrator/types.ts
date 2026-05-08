@@ -4,6 +4,7 @@ import type { StructuredLogger } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { PhaseMarker, PhaseMarkerName } from '../observability';
 import type { ExecutionGraphEntityStatus, RunTerminalStatus } from '../persistence';
+import type { ControlPlaneHealthSummary, ControlPlaneHealthState } from '../api/control-plane-health';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
 export type WorkerExitReason = 'normal' | 'abnormal';
@@ -49,7 +50,7 @@ export interface ReleasedWorkerRecord {
   turn_id?: string | null;
   session_id?: string | null;
 }
-export type RetryDelayType = 'continuation' | 'failure';
+export type RetryDelayType = 'continuation' | 'failure' | 'backpressure';
 export type BudgetHardLimitPolicy = 'block_requires_resume' | 'terminate_attempt';
 export type BudgetStatus = 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable';
 export type QuarantinedWorkerEventReason =
@@ -563,6 +564,7 @@ export interface OrchestratorState {
   health: {
     dispatch_validation: 'ok' | 'failed';
     last_error: string | null;
+    dispatch_backpressure?: DispatchBackpressureState;
   };
   throughput: {
     current_tps: number;
@@ -584,6 +586,22 @@ export interface OrchestratorState {
 export interface DispatchPreflightResult {
   dispatch_allowed: boolean;
   reason?: string;
+}
+
+export interface HostLoadSnapshot {
+  load_average_1m: number;
+  cpu_count: number;
+}
+
+export type DispatchBackpressureSource = 'control_plane' | 'host_load';
+
+export interface DispatchBackpressureState {
+  active: boolean;
+  reason_code: string | null;
+  reason_detail: string | null;
+  source: DispatchBackpressureSource | null;
+  observed_at_ms: number | null;
+  retry_delay_ms: number;
 }
 
 export interface SpawnWorkerResultSuccess {
@@ -623,6 +641,8 @@ export type SpawnWorkerResult = SpawnWorkerResultSuccess | SpawnWorkerResultFail
 export interface OrchestratorPorts {
   tracker: TrackerAdapter;
   dispatchPreflight: () => DispatchPreflightResult;
+  getControlPlaneHealth?: () => ControlPlaneHealthSummary | null;
+  getHostLoad?: () => HostLoadSnapshot | null;
   spawnWorker: (params: {
     issue: Issue;
     attempt: number | null;
@@ -849,6 +869,14 @@ export interface OrchestratorConfig {
   };
   worker_hosts?: string[];
   max_concurrent_agents_per_host?: number | null;
+  dispatch_backpressure?: {
+    enabled?: boolean;
+    retry_delay_ms?: number;
+    min_running_agents?: number;
+    control_plane_health?: ControlPlaneHealthState;
+    control_plane_stale_after_ms?: number;
+    host_load_per_cpu?: number | null;
+  };
 }
 
 export interface OrchestratorOptions {

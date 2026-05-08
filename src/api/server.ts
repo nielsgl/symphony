@@ -297,7 +297,7 @@ export class LocalApiServer {
     };
     this.logger = options.logger;
     this.nowMs = options.nowMs ?? (() => Date.now());
-    this.controlPlaneHealth = new ControlPlaneHealthRecorder(options.controlPlaneHealth);
+    this.controlPlaneHealth = options.controlPlaneHealthRecorder ?? new ControlPlaneHealthRecorder(options.controlPlaneHealth);
     const codexHome = (process.env.SYMPHONY_CODEX_HOME || `${process.env.HOME || ''}/.codex`).trim();
     this.codexStateDbPath = options.codexStateDbPath ?? `${codexHome.replace(/\/+$/, '')}/state_5.sqlite`;
     this.refreshCoalescer = new RefreshCoalescer({

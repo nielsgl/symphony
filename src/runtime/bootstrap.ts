@@ -5,7 +5,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
-import { LocalApiServer } from '../api';
+import { ControlPlaneHealthRecorder, LocalApiServer } from '../api';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
 import {
   DEFAULT_LOG_FILE_NAME,
@@ -740,6 +740,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   });
 
   const retryTimers = new Map<string, RuntimeTimer>();
+  const controlPlaneHealth = new ControlPlaneHealthRecorder();
   let pollIntervalHandle: NodeJS.Timeout | null = null;
 
   const applyRuntimeConfig = (nextConfig: EffectiveConfig, nextWorkflowPath: string, nextDefinition: WorkflowDefinition): void => {
@@ -788,7 +789,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       progress_stalled_waiting_ms: nextConfig.codex.progress_stalled_waiting_ms,
       budget: nextConfig.budget,
       worker_hosts: nextConfig.worker?.ssh_hosts ?? [],
-      max_concurrent_agents_per_host: nextConfig.worker?.max_concurrent_agents_per_host ?? null
+      max_concurrent_agents_per_host: nextConfig.worker?.max_concurrent_agents_per_host ?? null,
+      dispatch_backpressure: nextConfig.agent.dispatch_backpressure
     });
 
     bridge.setRuntimeConfig(nextConfig, nextDefinition.prompt_template);
@@ -856,11 +858,13 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       phase_timeline_limit: effectiveConfig.observability?.phase_timeline_limit ?? 30,
       budget: effectiveConfig.budget,
       worker_hosts: effectiveConfig.worker?.ssh_hosts ?? [],
-      max_concurrent_agents_per_host: effectiveConfig.worker?.max_concurrent_agents_per_host ?? null
+      max_concurrent_agents_per_host: effectiveConfig.worker?.max_concurrent_agents_per_host ?? null,
+      dispatch_backpressure: effectiveConfig.agent.dispatch_backpressure
     },
     ports: {
       tracker: trackerProxy,
       dispatchPreflight,
+      getControlPlaneHealth: () => controlPlaneHealth.summarize(nowMs()),
       spawnWorker: ({ issue, attempt, worker_host }) => bridge.spawnWorker({ issue, attempt, worker_host }),
       recoverMissingToolOutput: (params) => bridge.recoverMissingToolOutput(params),
       terminateWorker: createRuntimeTerminateWorkerPort(bridge),
@@ -1156,6 +1160,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           },
           codexStateDbPath: path.join(effectiveConfig.codex.effective_codex_home ?? `${process.env.HOME ?? ''}/.codex`, 'state_5.sqlite'),
           logger,
+          controlPlaneHealthRecorder: controlPlaneHealth,
           nowMs
         });
 

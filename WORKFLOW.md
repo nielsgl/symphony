@@ -43,8 +43,14 @@ hooks:
     node scripts/workspace-before-remove.js
   timeout_ms: 60000
 agent:
-  max_concurrent_agents: 10
+  max_concurrent_agents: 3
   max_turns: 20
+  dispatch_backpressure:
+    enabled: true
+    retry_delay_ms: 30000
+    min_running_agents: 1
+    control_plane_health: degraded
+    control_plane_stale_after_ms: 60000
 codex:
   home: $HOME/.codex
   model: gpt-5.5

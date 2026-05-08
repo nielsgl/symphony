@@ -326,6 +326,74 @@ export class ConfigValidator {
       }
     }
 
+    const dispatchBackpressure = effectiveConfig.agent.dispatch_backpressure ?? {
+      enabled: true,
+      retry_delay_ms: 30000,
+      min_running_agents: 1,
+      control_plane_health: 'degraded' as const,
+      control_plane_stale_after_ms: 60000
+    };
+    if (
+      !Number.isFinite(dispatchBackpressure.retry_delay_ms) ||
+      dispatchBackpressure.retry_delay_ms <= 0 ||
+      Math.trunc(dispatchBackpressure.retry_delay_ms) !== dispatchBackpressure.retry_delay_ms
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_dispatch_backpressure',
+        message: 'agent.dispatch_backpressure.retry_delay_ms must be a positive integer',
+        at
+      };
+    }
+    if (
+      !Number.isFinite(dispatchBackpressure.min_running_agents) ||
+      dispatchBackpressure.min_running_agents < 0 ||
+      Math.trunc(dispatchBackpressure.min_running_agents) !== dispatchBackpressure.min_running_agents
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_dispatch_backpressure',
+        message: 'agent.dispatch_backpressure.min_running_agents must be a non-negative integer',
+        at
+      };
+    }
+    if (
+      dispatchBackpressure.control_plane_health !== 'slow' &&
+      dispatchBackpressure.control_plane_health !== 'large' &&
+      dispatchBackpressure.control_plane_health !== 'degraded'
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_dispatch_backpressure',
+        message: "agent.dispatch_backpressure.control_plane_health must be one of: slow, large, degraded",
+        at
+      };
+    }
+    if (
+      !Number.isFinite(dispatchBackpressure.control_plane_stale_after_ms) ||
+      dispatchBackpressure.control_plane_stale_after_ms <= 0 ||
+      Math.trunc(dispatchBackpressure.control_plane_stale_after_ms) !== dispatchBackpressure.control_plane_stale_after_ms
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_dispatch_backpressure',
+        message: 'agent.dispatch_backpressure.control_plane_stale_after_ms must be a positive integer',
+        at
+      };
+    }
+    if (
+      dispatchBackpressure.host_load_per_cpu !== undefined &&
+      dispatchBackpressure.host_load_per_cpu !== null &&
+      (!Number.isFinite(dispatchBackpressure.host_load_per_cpu) || dispatchBackpressure.host_load_per_cpu <= 0)
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_agent_dispatch_backpressure',
+        message: 'agent.dispatch_backpressure.host_load_per_cpu must be positive when provided',
+        at
+      };
+    }
+
     const budget = effectiveConfig.budget ?? {
       rolling_window_minutes: 1440,
       warning_threshold_ratio: 0.8,
