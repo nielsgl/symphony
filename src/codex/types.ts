@@ -1,4 +1,5 @@
 import { REASON_CODES } from '../observability/reason-codes';
+import type { CodexAppServerThreadActivitySource } from './app-server-protocol';
 
 export interface CodexRunnerStartInput {
   command: string;
@@ -124,6 +125,9 @@ export interface CodexRunnerEvent {
   token_telemetry_last_source?: string | null;
   token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
+  codex_thread_activity_at_ms?: number | null;
+  codex_thread_activity_source?: CodexAppServerThreadActivitySource | null;
+  codex_thread_activity_status?: string | null;
   detail?: string;
   tool_call_id?: string;
   tool_name?: string;

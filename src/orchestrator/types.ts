@@ -1,4 +1,5 @@
 import type { Issue, TrackerAdapter } from '../tracker';
+import type { CodexAppServerThreadActivitySource } from '../codex/app-server-protocol';
 import type { CodexUsageTotals, TokenTelemetryStatus } from '../codex';
 import type { StructuredLogger } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
@@ -175,6 +176,9 @@ export interface RunningEntry {
   } | null;
   started_at_ms: number;
   last_codex_timestamp_ms: number | null;
+  codex_thread_activity_at_ms?: number | null;
+  codex_thread_activity_source?: CodexAppServerThreadActivitySource | null;
+  codex_thread_activity_status?: string | null;
   current_phase?: PhaseMarkerName | null;
   current_phase_at_ms?: number | null;
   phase_detail?: string | null;
@@ -847,6 +851,9 @@ export interface WorkerObservabilityEvent {
   token_telemetry_last_source?: string | null;
   token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
+  codex_thread_activity_at_ms?: number | null;
+  codex_thread_activity_source?: CodexAppServerThreadActivitySource | null;
+  codex_thread_activity_status?: string | null;
   tool_call_id?: string;
   tool_name?: string;
   tool_call_evidence_source?: ToolCallEvidenceSource;

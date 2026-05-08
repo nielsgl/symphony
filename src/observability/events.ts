@@ -30,6 +30,7 @@ export const CANONICAL_EVENT = {
     unsupportedToolCall: 'codex.tool.unsupported',
     unsupportedServerRequest: 'codex.protocol.unsupported_request',
     protocolMalformedLine: 'codex.protocol.malformed_line',
+    threadActivityUpdated: 'codex.thread.activity_updated',
     sideOutput: 'codex.side_output',
     turnWaiting: 'codex.turn.waiting',
     commandLegacyPathUsed: 'codex.command.legacy_path_used',

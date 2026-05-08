@@ -10,6 +10,7 @@ import {
   extractUnsupportedDynamicToolConsoleMessage,
   serializeDynamicToolCapabilityMismatchDetail
 } from '../observability/dynamic-tool-capability';
+import { extractCodexAppServerThreadActivity } from './app-server-protocol';
 import { CodexRunnerError } from './errors';
 import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
 import { buildSshSpawnArgs } from './ssh-target';
@@ -1025,6 +1026,7 @@ export class CodexRunner {
       }
 
       emit({ event: CANONICAL_EVENT.codex.sessionStarted, thread_id });
+      protocol.emitThreadActivity(threadResponse, thread_id, emit);
 
       const maxTurns = Math.max(1, input.maxTurns ?? 1);
       let turnsCompleted = 0;
@@ -1568,6 +1570,25 @@ class ProtocolClient {
     this.activeTurnContext = context;
   }
 
+  emitThreadActivity(
+    payload: unknown,
+    threadId: string | null | undefined,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): void {
+    const activity = extractCodexAppServerThreadActivity(payload, threadId);
+    if (!activity) {
+      return;
+    }
+
+    emit({
+      event: CANONICAL_EVENT.codex.threadActivityUpdated,
+      thread_id: activity.thread_id,
+      codex_thread_activity_at_ms: activity.updated_at_ms,
+      codex_thread_activity_source: activity.source,
+      codex_thread_activity_status: activity.status
+    });
+  }
+
   notify(method: string, params: Record<string, unknown>): void {
     this.write({ method, params });
   }
@@ -1620,6 +1641,7 @@ class ProtocolClient {
       while (this.nextNotificationIndex < this.notifications.length) {
         const message = this.notifications[this.nextNotificationIndex++];
         this.usageTracker.observe(message);
+        this.emitThreadActivity(message.params, this.activeTurnContext?.thread_id, emit);
 
         const rateLimits = this.extractRateLimits(message);
         if (rateLimits) {

@@ -1398,7 +1398,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if (runningHintBadge && entry.operator_explainer_hint.actionability !== 'none') {
         stateFlags.append(runningHintBadge);
       }
-      if (stateFlags.childNodes.length > 0) {
+      if (stateFlags.children.length > 0) {
         stateCell.append(stateFlags);
       }
 
@@ -1434,11 +1434,22 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       if (entry.current_phase_at) {
         const phaseAgeMs = Date.now() - Date.parse(entry.current_phase_at);
         const stale = Number.isFinite(phaseAgeMs) && phaseAgeMs > DASHBOARD_CONFIG.phase_stale_warn_ms;
-        phaseMeta.textContent = (entry.phase_elapsed_ms ? 'elapsed ' + Math.floor(entry.phase_elapsed_ms / 1000) + 's' : 'elapsed n/a') + ' • updated ' + formatDurationFromIso(entry.current_phase_at) + ' ago' + (stale ? ' • No phase movement yet' : '');
+        phaseMeta.textContent = (entry.phase_elapsed_ms ? 'elapsed ' + Math.floor(entry.phase_elapsed_ms / 1000) + 's' : 'elapsed n/a') + ' • phase unchanged for ' + formatDurationFromIso(entry.current_phase_at) + (stale ? ' • No phase movement yet' : '');
       } else {
         phaseMeta.textContent = 'No phase movement yet';
       }
-      phaseCell.append(phaseLabel, phaseMeta);
+      const threadActivityMeta = document.createElement('div');
+      threadActivityMeta.className = 'muted';
+      const threadActivity = entry.codex_thread_activity || null;
+      if (threadActivity && threadActivity.updated_at) {
+        const threadStatus = threadActivity.thread_status ? ' • ' + threadActivity.thread_status : '';
+        threadActivityMeta.textContent = 'Codex thread active ' + formatDurationFromIso(threadActivity.updated_at) + ' ago' + threadStatus;
+      } else if (entry.thread_id) {
+        threadActivityMeta.textContent = 'Codex thread activity unavailable';
+      } else {
+        threadActivityMeta.textContent = 'Codex thread n/a';
+      }
+      phaseCell.append(phaseLabel, phaseMeta, threadActivityMeta);
 
       const runtimeCell = document.createElement('td');
       runtimeCell.className = 'runtime-cell';

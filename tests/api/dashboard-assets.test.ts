@@ -498,6 +498,9 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('entry.current_blocker_class');
     expect(clientJs).toContain('entry.time_since_progress');
     expect(clientJs).toContain('entry.last_successful_step');
+    expect(clientJs).toContain('phase unchanged for ');
+    expect(clientJs).toContain('Codex thread active ');
+    expect(clientJs).toContain('Codex thread activity unavailable');
     expect(clientJs).toContain('entry.transcript_tool_call_diagnostic_summary');
     expect(clientJs).toContain('blockerCell.append(blockerValue, diagnosticSummary);');
   });
@@ -547,6 +550,78 @@ describe('dashboard assets', () => {
 
     expect(harness.stateFetchCount()).toBe(1);
     expect(harness.document.getElementById('connection-detail').textContent).toBe('Streaming updates connected');
+  });
+
+  it('renders phase age and Codex thread activity as separate clocks', async () => {
+    const harness = installDashboardClientHarness();
+    vi.setSystemTime(new Date('2026-05-08T15:05:00.000Z'));
+    await flushPromises();
+
+    const state = makeStatePayload() as any;
+    state.counts.running = 1;
+    state.running = [
+      {
+        issue_identifier: 'NIE-78',
+        state: 'In Progress',
+        session_id: 'thread-1-turn-1',
+        worker_host: 'hessian',
+        workspace_path: '/tmp/symphony/NIE-78',
+        provisioner_type: 'worktree',
+        branch_name: 'feature/NIE-78',
+        workspace_git_status: 'clean',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        turn_count: 1,
+        current_phase: 'implementation',
+        current_phase_at: '2026-05-08T15:00:00.000Z',
+        phase_elapsed_ms: 300000,
+        phase_timing: {
+          phase_started_at: '2026-05-08T15:00:00.000Z',
+          phase_elapsed_ms: 300000,
+          source: 'symphony_phase_marker'
+        },
+        codex_thread_activity: {
+          thread_id: 'thread-1',
+          updated_at: '2026-05-08T15:04:45.000Z',
+          updated_at_ms: Date.parse('2026-05-08T15:04:45.000Z'),
+          age_ms: 15000,
+          source: 'app_server_protocol_thread_updated_at',
+          status: 'available',
+          thread_status: 'running'
+        },
+        started_at: '2026-05-08T14:55:00.000Z',
+        last_event: 'codex.turn.waiting',
+        last_event_summary: 'codex turn waiting: heartbeat',
+        last_message: 'heartbeat',
+        last_event_at: '2026-05-08T15:04:30.000Z',
+        tokens: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+        token_telemetry_status: 'available',
+        token_telemetry_confidence: 'observed_live',
+        token_telemetry_source: 'app_server_protocol',
+        turn_control_state: 'agent_turn',
+        progress_signal_state: 'heartbeat_only',
+        current_blocker_class: null,
+        time_since_progress: 300000,
+        last_successful_step: 'codex.turn.started',
+        transcript_tool_call_diagnostic_summary: null,
+        operator_actions: [],
+        actions: {}
+      }
+    ];
+
+    harness.stream().onopen?.();
+    harness.stream().onmessage?.({
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state } })
+    });
+    await flushPromises();
+
+    const text = harness.document.getElementById('running-rows').textContent;
+    expect(text).toContain('implementation');
+    expect(text).toContain('phase unchanged for 5m');
+    expect(text).not.toContain('updated 5m ago');
+    expect(text).toContain('Codex thread active 0m 15s ago');
+    expect(text).toContain('codex turn waiting: heartbeat');
+    expect(text).toContain('5:04:30');
   });
 
   it('resumes fallback polling when the stream errors after a healthy snapshot', async () => {

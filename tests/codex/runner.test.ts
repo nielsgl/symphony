@@ -140,6 +140,38 @@ describe('CodexRunner', () => {
     );
   });
 
+  it('emits app-server Thread.updatedAt activity metadata from the generated protocol shape', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: Array<{ event: string; thread_id?: string; codex_thread_activity_at_ms?: number | null }> = [];
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        onEvent: (event) => events.push(event)
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1","updatedAt":1770000000,"status":"running"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"method":"turn/completed","params":{}}\n');
+
+    await promise;
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.threadActivityUpdated,
+        thread_id: 'thread-1',
+        codex_thread_activity_at_ms: 1770000000000,
+        codex_thread_activity_source: 'app_server_protocol_thread_updated_at',
+        codex_thread_activity_status: 'running'
+      })
+    );
+  });
+
   it('settles deterministically and force-kills a cancelled app-server process that does not exit', async () => {
     vi.useFakeTimers();
     try {
