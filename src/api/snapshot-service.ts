@@ -142,6 +142,7 @@ function projectTranscriptToolCallDiagnostics(entry: {
 
 function projectTranscriptToolCallDiagnosticSummary(entry: {
   transcript_tool_call_diagnostics?: import('../orchestrator').TranscriptToolCallDiagnostic[];
+  tool_call_ledger?: RunningEntry['tool_call_ledger'];
   tool_output_wait?: import('../orchestrator').BlockedEntry['tool_output_wait'];
   recovery?: import('../orchestrator').MissingToolOutputRecoveryState | null;
   identifier?: string;
@@ -169,11 +170,20 @@ function projectTranscriptToolCallDiagnosticSummary(entry: {
 
   const activeMissingToolOutput = entry.tool_output_wait ?? null;
   const recovery = entry.recovery ?? null;
+  const ledgerRecords = projectToolCallLedger(entry);
+  for (const ledgerRecord of ledgerRecords) {
+    newestObservedAtMs =
+      newestObservedAtMs === null
+        ? ledgerRecord.last_seen_at_ms
+        : Math.max(newestObservedAtMs, ledgerRecord.last_seen_at_ms);
+  }
+  const detailAvailable =
+    diagnostics.length > 0 || ledgerRecords.length > 0 || Boolean(activeMissingToolOutput) || Boolean(recovery);
   return {
-    detailed_diagnostics_available: diagnostics.length > 0,
+    detailed_diagnostics_available: detailAvailable,
     total_count: diagnostics.length,
     detail_url:
-      diagnostics.length > 0
+      detailAvailable
         ? `/api/v1/issues/${encodeURIComponent(entry.issue_identifier ?? entry.identifier ?? '')}/diagnostics`
         : null,
     newest_observed_at: newestObservedAtMs === null ? null : asIsoDate(newestObservedAtMs),
@@ -437,7 +447,6 @@ function toStateRunningRow(
     current_blocker_class: operatorExplainer.actionability === 'none' ? null : operatorExplainer.classification,
     time_since_progress: timeSinceProgress,
     last_successful_step: resolveLastSuccessfulStep(entry),
-    tool_call_ledger: projectToolCallLedger(entry),
     transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary(entry),
     ...notBlockedExplainer,
     operator_actions: (operatorActions?.get(issueId) ?? [])
@@ -880,7 +889,6 @@ export class SnapshotService {
             stalled_waiting_ms: 300_000
           }),
           operator_actions: projectOperatorActions(state, issueId, entry),
-          tool_call_ledger: projectToolCallLedger(entry),
           transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary(entry),
           tokens: {
             input_tokens: entry.tokens.input_tokens,

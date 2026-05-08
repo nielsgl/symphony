@@ -403,7 +403,6 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     current_blocker_class: string | null;
     time_since_progress: number | null;
     last_successful_step: string | null;
-    tool_call_ledger: ApiToolCallLedgerEntry[];
     transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
@@ -738,7 +737,6 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
-    tool_call_ledger: ApiToolCallLedgerEntry[];
     transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
     tokens: {
       input_tokens: number;
