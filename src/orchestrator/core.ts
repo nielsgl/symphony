@@ -177,6 +177,27 @@ function workerTerminationResultDetail(prefix: string, result: WorkerTermination
   return `${prefix} ${fields.join(' ')}`;
 }
 
+function workerTerminationExceptionResult(error: unknown): WorkerTerminationResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    cancellation_supported: false,
+    cancellation_requested: true,
+    worker_settled: null,
+    graceful_exit_observed: null,
+    forced_kill_requested: false,
+    forced_kill_settled: null,
+    cleanup_requested: false,
+    cleanup_succeeded: null,
+    result: 'unknown',
+    reason_code: REASON_CODES.workerCancelUnknown,
+    detail: `Worker termination failed before returning typed outcome: ${message}`
+  };
+}
+
+function cloneWorkerTerminationResult(result: WorkerTerminationResult): WorkerTerminationResult {
+  return { ...result };
+}
+
 function cloneIssue(issue: Issue): Issue {
   return {
     ...issue,
@@ -353,7 +374,10 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
     quarantined_events: (entry.quarantined_events ?? []).map((event) => ({ ...event })),
     quarantined_event_count: entry.quarantined_event_count ?? 0,
     last_quarantined_event_at_ms: entry.last_quarantined_event_at_ms ?? null,
-    recovery: entry.recovery ? { ...entry.recovery } : null
+    recovery: entry.recovery ? { ...entry.recovery } : null,
+    worker_termination_result: entry.worker_termination_result
+      ? cloneWorkerTerminationResult(entry.worker_termination_result)
+      : null
   };
 }
 
@@ -2107,19 +2131,53 @@ export class OrchestratorCore {
 
     this.ports.notifyObservers?.();
 
-    const terminationResult = await this.ports.terminateWorker({
-      issue_id: issueId,
-      worker_handle: running.worker_handle,
-      cleanup_workspace: false,
-      reason: stopReasonCode
-    });
-    await this.completeRunRecord(
-      running,
-      'failed',
-      stopReasonCode,
-      null,
-      workerTerminationResultDetail(stopReasonDetail, terminationResult)
-    );
+    let terminationResult: WorkerTerminationResult;
+    try {
+      terminationResult = await this.ports.terminateWorker({
+        issue_id: issueId,
+        worker_handle: running.worker_handle,
+        cleanup_workspace: false,
+        reason: stopReasonCode
+      });
+    } catch (error) {
+      if (budget.hard_limit_policy === 'block_requires_resume') {
+        const unknownResult = workerTerminationExceptionResult(error);
+        this.updateBudgetBlockedTerminationEvidence(
+          issueId,
+          workerTerminationResultDetail(stopReasonDetail, unknownResult),
+          unknownResult
+        );
+      }
+      throw error;
+    }
+
+    const terminalReasonDetail = workerTerminationResultDetail(stopReasonDetail, terminationResult);
+    if (budget.hard_limit_policy === 'block_requires_resume') {
+      this.updateBudgetBlockedTerminationEvidence(issueId, terminalReasonDetail, terminationResult);
+    }
+    await this.completeRunRecord(running, 'failed', stopReasonCode, null, terminalReasonDetail);
+  }
+
+  private updateBudgetBlockedTerminationEvidence(
+    issueId: string,
+    stopReasonDetail: string,
+    terminationResult: WorkerTerminationResult
+  ): void {
+    const blockedEntry = this.state.blocked_inputs.get(issueId);
+    if (!blockedEntry || blockedEntry.stop_reason_code !== REASON_CODES.operatorBudgetLimitExceeded) {
+      return;
+    }
+
+    blockedEntry.stop_reason_detail = stopReasonDetail;
+    blockedEntry.worker_termination_result = cloneWorkerTerminationResult(terminationResult);
+    if (blockedEntry.budget) {
+      blockedEntry.budget = {
+        ...blockedEntry.budget,
+        budget_message: stopReasonDetail
+      };
+    }
+    void this.persistence?.upsertBlockedInput?.(issueId, JSON.stringify(blockedEntry));
+    this.ports.notifyObservers?.();
   }
 
   private recordBudgetUsageSample(issueId: string, totalTokens: number, timestampMs: number): void {
