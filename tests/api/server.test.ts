@@ -606,6 +606,221 @@ describe('LocalApiServer', () => {
     expect(JSON.stringify(payload).length).toBeLessThan(25_000);
   });
 
+  it('keeps the 2026-05-08 overload class bounded across polling, detail, SSE, refresh, and telemetry', async () => {
+    const diagnosticsPerRun = 200;
+    const running = new Map(
+      Array.from({ length: 4 }, (_, runIndex) => {
+        const issueId = `issue-overload-${runIndex + 1}`;
+        const issueIdentifier = `ABC-OVERLOAD-${runIndex + 1}`;
+        const observedBase = runIndex * diagnosticsPerRun;
+        return [
+          issueId,
+          makeRunningEntry({
+            issue: makeIssue({ id: issueId, identifier: issueIdentifier }),
+            identifier: issueIdentifier,
+            run_id: `run-overload-${runIndex + 1}`,
+            issue_run_id: `issue-run-overload-${runIndex + 1}`,
+            attempt_id: `attempt-overload-${runIndex + 1}`,
+            session_id: `session-overload-${runIndex + 1}`,
+            thread_id: `thread-overload-${runIndex + 1}`,
+            turn_id: `turn-overload-${runIndex + 1}`,
+            worker_host: 'laptop-1',
+            tokens: {
+              input_tokens: 250_000 + runIndex,
+              output_tokens: 125_000 + runIndex,
+              total_tokens: 375_000 + runIndex,
+              model_context_window: 1_000_000
+            },
+            transcript_tool_call_diagnostics: Array.from({ length: diagnosticsPerRun }, (_, diagnosticIndex) =>
+              makeTranscriptDiagnostic(observedBase + diagnosticIndex, {
+                issue_id: issueId,
+                issue_identifier: issueIdentifier,
+                run_id: `run-overload-${runIndex + 1}`,
+                issue_run_id: `issue-run-overload-${runIndex + 1}`,
+                attempt_id: `attempt-overload-${runIndex + 1}`,
+                active_issue_id: issueId,
+                active_issue_identifier: issueIdentifier,
+                active_run_id: `run-overload-${runIndex + 1}`,
+                active_issue_run_id: `issue-run-overload-${runIndex + 1}`,
+                active_attempt_id: `attempt-overload-${runIndex + 1}`
+              })
+            ),
+            tool_call_ledger: {
+              [`call-overload-${runIndex + 1}`]: {
+                call_id: `call-overload-${runIndex + 1}`,
+                tool_name: 'exec_command',
+                thread_id: `thread-overload-${runIndex + 1}`,
+                turn_id: `turn-overload-${runIndex + 1}`,
+                session_id: `session-overload-${runIndex + 1}`,
+                issue_id: issueId,
+                issue_identifier: issueIdentifier,
+                run_id: `run-overload-${runIndex + 1}`,
+                issue_run_id: `issue-run-overload-${runIndex + 1}`,
+                attempt_id: `attempt-overload-${runIndex + 1}`,
+                first_seen_at_ms: Date.parse('2026-04-10T10:01:00.000Z') + runIndex,
+                last_seen_at_ms: Date.parse('2026-04-10T10:02:00.000Z') + runIndex,
+                completed_at_ms: null,
+                completion_status: 'pending',
+                evidence_sources: ['session_transcript'],
+                start_evidence_source: 'session_transcript',
+                completion_evidence_source: null,
+                last_agent_message: 'waiting for exec_command output'
+              }
+            },
+            tool_output_wait:
+              runIndex === 0
+                ? {
+                    tool_name: 'exec_command',
+                    call_id: 'call-overload-1',
+                    thread_id: 'thread-overload-1',
+                    turn_id: 'turn-overload-1',
+                    session_id: 'session-overload-1',
+                    elapsed_wait_ms: 51_000,
+                    last_agent_message: 'waiting for exec_command output',
+                    evidence_source: 'session_transcript',
+                    recommended_actions: ['Inspect diagnostics']
+                  }
+                : null
+          })
+        ];
+      })
+    );
+    const state = makeState({
+      running,
+      codex_totals: {
+        input_tokens: 1_000_000,
+        output_tokens: 500_000,
+        total_tokens: 1_500_000,
+        seconds_running: 0
+      }
+    });
+    const getStateSnapshot = vi.fn(() => state);
+    const listRunHistory = vi.fn((limit: number) =>
+      Array.from({ length: Math.min(limit, 30) }, (_, index) => ({
+        run_id: `run-stopped-${index}`,
+        issue_id: `issue-stopped-${index}`,
+        issue_identifier: `ABC-STOPPED-${index}`,
+        started_at: '2026-04-10T09:00:00.000Z',
+        ended_at: '2026-04-10T09:05:00.000Z',
+        terminal_status: 'failed',
+        error_code: 'failed_phase',
+        session_ids: [`thread-stopped-${index}`],
+        thread_id: `thread-stopped-${index}`
+      }))
+    );
+    const reconstructThreadLineage = vi.fn((threadId: string) => makeThreadLineage({ thread_id: threadId }));
+    const refreshTick = vi.fn(async () => undefined);
+
+    server = new LocalApiServer({
+      snapshotSource: { getStateSnapshot },
+      refreshSource: { tick: refreshTick },
+      diagnosticsSource: makeDiagnosticsSource({
+        listRunHistory,
+        reconstructThreadLineage
+      }),
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    await server.listen();
+    const address = server.address();
+
+    const firstStateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const firstStateBody = await firstStateResponse.text();
+    const firstStatePayload = JSON.parse(firstStateBody) as {
+      running: Array<{
+        tokens: { total_tokens: number };
+        transcript_tool_call_diagnostic_summary: {
+          detailed_diagnostics_available: boolean;
+          total_count: number;
+          active_missing_tool_output: { active: boolean; call_id: string | null };
+        };
+      }>;
+      stopped_runs: unknown[];
+    };
+    const secondStateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const secondStateBody = await secondStateResponse.text();
+
+    expect(firstStateResponse.status).toBe(200);
+    expect(secondStateResponse.status).toBe(200);
+    expect(Buffer.byteLength(firstStateBody, 'utf8')).toBeLessThan(120_000);
+    expect(Buffer.byteLength(secondStateBody, 'utf8')).toBeLessThan(120_000);
+    expect(firstStateBody).not.toContain('transcript_tool_call_diagnostics');
+    expect(firstStateBody).not.toContain('active_issue_id');
+    expect(firstStatePayload.running).toHaveLength(4);
+    expect(firstStatePayload.running.every((entry) => entry.transcript_tool_call_diagnostic_summary.total_count === diagnosticsPerRun)).toBe(true);
+    expect(firstStatePayload.running[0]?.transcript_tool_call_diagnostic_summary).toMatchObject({
+      detailed_diagnostics_available: true,
+      active_missing_tool_output: {
+        active: true,
+        call_id: 'call-overload-1'
+      }
+    });
+    expect(firstStatePayload.running[3]?.tokens.total_tokens).toBe(375_003);
+    expect(firstStatePayload.stopped_runs.length).toBeLessThanOrEqual(25);
+    expect(listRunHistory).toHaveBeenCalledWith(25);
+
+    const snapshotCallsBeforeRefresh = getStateSnapshot.mock.calls.length;
+    const refreshResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
+    expect(refreshResponse.status).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(refreshTick).toHaveBeenCalledTimes(1);
+    expect(getStateSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeRefresh);
+
+    const detailResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-OVERLOAD-1/diagnostics?limit=5`);
+    const detailPayload = (await detailResponse.json()) as {
+      runtime_diagnostics: {
+        missing_tool_output: { call_id: string } | null;
+        transcript_tool_call_diagnostics: {
+          metadata: { total_available_count: number; included_count: number; has_more: boolean };
+          records: Array<{ lineage: string }>;
+        };
+        tool_call_ledger: {
+          records: Array<{ call_id: string; completion_status: string }>;
+        };
+      };
+    };
+    expect(detailResponse.status).toBe(200);
+    expect(detailPayload.runtime_diagnostics.missing_tool_output).toMatchObject({ call_id: 'call-overload-1' });
+    expect(detailPayload.runtime_diagnostics.transcript_tool_call_diagnostics.metadata).toMatchObject({
+      total_available_count: diagnosticsPerRun,
+      included_count: 5,
+      has_more: true
+    });
+    expect(new Set(detailPayload.runtime_diagnostics.transcript_tool_call_diagnostics.records.map((record) => record.lineage))).toEqual(
+      new Set(['unattributed', 'external_manual', 'prior_stale', 'active_owned'])
+    );
+    expect(detailPayload.runtime_diagnostics.tool_call_ledger.records[0]).toMatchObject({
+      call_id: 'call-overload-1',
+      completion_status: 'pending'
+    });
+
+    const runHistoryCallsBeforeSse = listRunHistory.mock.calls.length;
+    const streamResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/events`);
+    const events = await readSseEvents(streamResponse, 1);
+    const stateSnapshotEvent = events.find((entry) => entry.data.type === 'state_snapshot');
+    const sseStateBody = JSON.stringify(stateSnapshotEvent?.data.payload);
+    expect(streamResponse.status).toBe(200);
+    expect(sseStateBody).not.toContain('transcript_tool_call_diagnostics');
+    expect(sseStateBody).not.toContain('active_issue_id');
+    expect(listRunHistory).toHaveBeenCalledTimes(runHistoryCallsBeforeSse);
+
+    const telemetryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/summary?limit=10`);
+    const telemetryPayload = (await telemetryResponse.json()) as { sample_count: number; token_burn_rate: number };
+    expect(telemetryResponse.status).toBe(200);
+    expect(telemetryPayload.sample_count).toBeGreaterThanOrEqual(4);
+    expect(telemetryPayload.token_burn_rate).toBeGreaterThan(0);
+    expect(JSON.stringify(telemetryPayload)).not.toContain('transcript_tool_call_diagnostics');
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      control_plane: {
+        endpoints: Array<{ endpoint: string; last_payload_bytes: number | null }>;
+      };
+    };
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.control_plane.endpoints.find((entry) => entry.endpoint === '/api/v1/state')?.last_payload_bytes).toBeLessThan(120_000);
+    expect(JSON.stringify(diagnosticsPayload.control_plane)).not.toContain('transcript_tool_call_diagnostics');
+  });
+
   it('records compact control-plane latency and payload health for state snapshots', async () => {
     const state = makeState({
       running: new Map([
