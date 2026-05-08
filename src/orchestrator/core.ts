@@ -819,6 +819,7 @@ export class OrchestratorCore {
       }
     }
 
+    this.captureMissingToolOutputRecoveryReplacementLineage(runningEntry, workerEvent);
     this.updateOutstandingToolCalls(runningEntry, workerEvent);
 
     if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
@@ -1068,6 +1069,33 @@ export class OrchestratorCore {
       typeof turnId === 'string' &&
       turnId !== runningEntry.turn_id
     );
+  }
+
+  private captureMissingToolOutputRecoveryReplacementLineage(
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ): void {
+    const recovery = runningEntry.recovery ?? null;
+    if (!recovery || recovery.last_result !== 'started' || workerEvent.event !== CANONICAL_EVENT.codex.turnStarted) {
+      return;
+    }
+
+    const replacementTurnId = workerEvent.turn_id ?? runningEntry.turn_id ?? null;
+    if (!replacementTurnId || replacementTurnId === recovery.previous_turn_id) {
+      return;
+    }
+
+    const replacementThreadId = workerEvent.thread_id ?? runningEntry.thread_id ?? recovery.previous_thread_id ?? null;
+    if (recovery.previous_thread_id && replacementThreadId && replacementThreadId !== recovery.previous_thread_id) {
+      return;
+    }
+
+    runningEntry.recovery = {
+      ...recovery,
+      replacement_thread_id: replacementThreadId,
+      replacement_turn_id: replacementTurnId,
+      replacement_session_id: workerEvent.session_id ?? runningEntry.session_id ?? null
+    };
   }
 
   private isPreviousRecoveryTurnEvent(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
@@ -6263,9 +6291,13 @@ export class OrchestratorCore {
     if (!recovery) {
       return null;
     }
-    const replacementTurnId = runningEntry.turn_id && runningEntry.turn_id !== recovery.previous_turn_id ? runningEntry.turn_id : null;
+    const replacementThreadId = recovery.replacement_thread_id ?? runningEntry.thread_id ?? recovery.previous_thread_id ?? null;
+    const replacementTurnId =
+      recovery.replacement_turn_id ??
+      (runningEntry.turn_id && runningEntry.turn_id !== recovery.previous_turn_id ? runningEntry.turn_id : null);
     const replacementSessionId =
-      runningEntry.session_id && runningEntry.session_id !== recovery.previous_session_id ? runningEntry.session_id : null;
+      recovery.replacement_session_id ??
+      (runningEntry.session_id && runningEntry.session_id !== recovery.previous_session_id ? runningEntry.session_id : null);
     return {
       status:
         recovery.last_result === 'started'
@@ -6297,7 +6329,7 @@ export class OrchestratorCore {
         detail: recovery.interrupt_cancel_result?.detail ?? null
       },
       replacement_turn: {
-        thread_id: runningEntry.thread_id ?? recovery.previous_thread_id ?? null,
+        thread_id: replacementThreadId,
         turn_id: replacementTurnId,
         session_id: replacementSessionId
       },

@@ -209,6 +209,9 @@ export interface MissingToolOutputRecoveryState {
   previous_thread_id: string | null;
   previous_turn_id: string | null;
   previous_session_id: string | null;
+  replacement_thread_id?: string | null;
+  replacement_turn_id?: string | null;
+  replacement_session_id?: string | null;
   previous_worker_handle_known: boolean;
   previous_codex_app_server_pid: string | null;
   last_tool_name: string;

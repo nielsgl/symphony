@@ -237,6 +237,10 @@ export function projectMissingToolOutputRecovery(
   const threadId = currentThreadId(entry, recovery);
   const turnId = currentTurnId(entry, recovery);
   const sessionId = currentSessionId(entry, recovery);
+  const replacementThreadId = recovery?.replacement_thread_id ?? (recovery ? threadId : null);
+  const replacementTurnId = recovery?.replacement_turn_id ?? (recovery && turnId !== previousTurnId ? turnId : null);
+  const replacementSessionId =
+    recovery?.replacement_session_id ?? (recovery && sessionId !== previousSessionId ? sessionId : null);
 
   return {
     status,
@@ -260,9 +264,9 @@ export function projectMissingToolOutputRecovery(
     },
     interrupt_cancel_result: interruptCancelResult(recovery),
     replacement_turn: {
-      thread_id: recovery ? threadId : null,
-      turn_id: recovery && turnId !== previousTurnId ? turnId : null,
-      session_id: recovery && sessionId !== previousSessionId ? sessionId : null
+      thread_id: replacementThreadId,
+      turn_id: replacementTurnId,
+      session_id: replacementSessionId
     },
     guarded_prompt_dispatch: {
       status: guardedPromptDispatchStatus(recovery),

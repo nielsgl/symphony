@@ -163,6 +163,9 @@ function makeRetryEntry(overrides: Partial<RetryEntry> = {}): RetryEntry {
       previous_thread_id: 'thread-prev',
       previous_turn_id: 'turn-prev',
       previous_session_id: 'thread-prev-turn-prev',
+      replacement_thread_id: 'thread-prev',
+      replacement_turn_id: 'turn-replacement-success',
+      replacement_session_id: 'session-replacement-success',
       previous_worker_handle_known: true,
       previous_codex_app_server_pid: '12345',
       last_tool_name: 'linear_graphql',
@@ -660,6 +663,11 @@ describe('thread diagnostics blocker classification', () => {
         guarded_prompt_dispatch: {
           status: 'sent',
           prompt_hash: 'hash-retry'
+        },
+        replacement_turn: {
+          thread_id: 'thread-prev',
+          turn_id: 'turn-replacement-success',
+          session_id: 'session-replacement-success'
         },
         final_outcome: {
           result: 'succeeded'
