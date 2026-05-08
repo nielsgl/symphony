@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { SnapshotService } from '../../src/api';
-import type { OrchestratorState } from '../../src/orchestrator';
+import type { OrchestratorState, TranscriptToolCallDiagnostic, TranscriptToolCallLineage } from '../../src/orchestrator';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
 import type { Issue } from '../../src/tracker';
@@ -110,6 +110,42 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
       sample_count: 0
     },
     recent_runtime_events: [],
+    ...overrides
+  };
+}
+
+function makeTranscriptDiagnostic(
+  index: number,
+  overrides: Partial<TranscriptToolCallDiagnostic> = {}
+): TranscriptToolCallDiagnostic {
+  const lineage = (['active_owned', 'prior_stale', 'external_manual', 'unattributed'] as TranscriptToolCallLineage[])[
+    index % 4
+  ];
+  return {
+    kind: index % 2 === 0 ? 'function_call' : 'function_call_output',
+    call_id: `call-${index}`,
+    tool_name: index % 2 === 0 ? 'linear_graphql' : null,
+    thread_id: `thread-${index % 3}`,
+    turn_id: `turn-${index % 5}`,
+    session_id: `session-${index % 7}`,
+    issue_id: `issue-${index % 2}`,
+    issue_identifier: `ABC-${index % 2}`,
+    run_id: `run-${index % 2}`,
+    issue_run_id: `issue-run-${index % 2}`,
+    attempt_id: `attempt-${index % 2}`,
+    codex_app_server_pid: `${1000 + index}`,
+    observed_at_ms: Date.parse('2026-04-10T10:01:00.000Z') + index * 1000,
+    lineage,
+    reason: `${lineage} diagnostic`,
+    active_issue_id: 'issue-active',
+    active_issue_identifier: 'ABC-ACTIVE',
+    active_run_id: 'run-active',
+    active_issue_run_id: 'issue-run-active',
+    active_attempt_id: 'attempt-active',
+    active_codex_app_server_pid: '9999',
+    active_thread_id: 'thread-active',
+    active_turn_id: 'turn-active',
+    active_session_id: 'session-active',
     ...overrides
   };
 }
@@ -241,6 +277,80 @@ describe('SnapshotService', () => {
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');
+    expect(projected.retrying[0]?.transcript_tool_call_diagnostic_summary).toMatchObject({
+      detailed_diagnostics_available: false,
+      total_count: 0,
+      newest_observed_at: null,
+      active_missing_tool_output: { active: false },
+      recovery: { active: false, status: null, attempt_count: 0 }
+    });
+  });
+
+  it('keeps state summary bounded for multiple active runs with large transcript diagnostic histories', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            transcript_tool_call_diagnostics: Array.from({ length: 200 }, (_, index) => makeTranscriptDiagnostic(index))
+          })
+        ],
+        [
+          'issue-2',
+          makeRunningEntry({
+            issue: makeIssue({ id: 'issue-2', identifier: 'ABC-2' }),
+            identifier: 'ABC-2',
+            transcript_tool_call_diagnostics: Array.from({ length: 200 }, (_, index) =>
+              makeTranscriptDiagnostic(index + 200, { active_issue_id: 'issue-2', active_issue_identifier: 'ABC-2' })
+            )
+          })
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+    const firstRunning = projected.running[0] as unknown as Record<string, unknown>;
+
+    expect(projected.running).toHaveLength(2);
+    expect(firstRunning).not.toHaveProperty('transcript_tool_call_diagnostics');
+    expect(JSON.stringify(projected.running)).not.toContain('active_issue_id');
+    expect(projected.running[0]?.transcript_tool_call_diagnostic_summary).toEqual({
+      detailed_diagnostics_available: true,
+      total_count: 200,
+      newest_observed_at: '2026-04-10T10:04:19.000Z',
+      newest_observed_at_ms: Date.parse('2026-04-10T10:04:19.000Z'),
+      counts_by_lineage: {
+        active_owned: 50,
+        prior_stale: 50,
+        external_manual: 50,
+        unattributed: 50
+      },
+      counts_by_kind: {
+        function_call: 100,
+        function_call_output: 100
+      },
+      active_missing_tool_output: {
+        active: false,
+        tool_name: null,
+        call_id: null,
+        thread_id: null,
+        turn_id: null,
+        session_id: null,
+        evidence_source: null
+      },
+      recovery: {
+        active: false,
+        status: null,
+        attempt_count: 0,
+        last_result_reason_code: null,
+        previous_thread_id: null,
+        replacement_thread_id: null
+      }
+    });
+    expect(JSON.stringify(projected).length).toBeLessThan(25_000);
   });
 
   it('computes snapshot freshness from the source snapshot timestamp', () => {
@@ -577,7 +687,58 @@ describe('SnapshotService', () => {
               session_id: 'session-1',
               elapsed_wait_ms: 2000,
               last_agent_message: 'waiting for linear_graphql output',
+              evidence_source: 'session_transcript',
               recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
+            },
+            transcript_tool_call_diagnostics: [
+              makeTranscriptDiagnostic(0, {
+                lineage: 'active_owned',
+                kind: 'function_call',
+                observed_at_ms: Date.parse('2026-04-10T10:04:01.000Z')
+              }),
+              makeTranscriptDiagnostic(1, {
+                lineage: 'prior_stale',
+                kind: 'function_call_output',
+                observed_at_ms: Date.parse('2026-04-10T10:04:02.000Z')
+              }),
+              makeTranscriptDiagnostic(2, {
+                lineage: 'external_manual',
+                kind: 'function_call',
+                observed_at_ms: Date.parse('2026-04-10T10:04:03.000Z')
+              }),
+              makeTranscriptDiagnostic(3, {
+                lineage: 'unattributed',
+                kind: 'function_call_output',
+                observed_at_ms: Date.parse('2026-04-10T10:04:04.000Z')
+              })
+            ],
+            recovery: {
+              attempt_count: 1,
+              started_at_ms: Date.parse('2026-04-10T10:04:10.000Z'),
+              reason_code: REASON_CODES.missingToolOutput,
+              mode: 'same_thread_guarded_continuation',
+              previous_thread_id: 'thread-1',
+              previous_turn_id: 'turn-1',
+              previous_session_id: 'session-1',
+              replacement_thread_id: 'thread-2',
+              replacement_turn_id: 'turn-2',
+              replacement_session_id: 'session-2',
+              previous_worker_handle_known: true,
+              previous_codex_app_server_pid: '12345',
+              last_tool_name: 'linear_graphql',
+              last_call_id: 'call_pfKTUH5GFubLHpXfln7UScnU',
+              evidence_source: 'session_transcript',
+              elapsed_wait_ms: 2000,
+              last_agent_message: 'waiting for linear_graphql output',
+              last_observed_phase: 'implementation',
+              last_observed_phase_detail: 'waiting for tool output',
+              recent_event_count: 1,
+              quarantined_event_count: 0,
+              prompt_hash: 'hash-1',
+              prompt_summary: 'Recover missing linear_graphql output.',
+              last_result: 'blocked',
+              last_result_reason_code: 'guarded_continuation_waiting',
+              last_result_detail: 'waiting for replacement turn'
             },
             session_console: []
           }
@@ -600,14 +761,48 @@ describe('SnapshotService', () => {
         session_id: 'session-1',
         elapsed_wait_ms: 2000,
         last_agent_message: 'waiting for linear_graphql output',
+        evidence_source: 'session_transcript',
         recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
       },
+      transcript_tool_call_diagnostic_summary: {
+        detailed_diagnostics_available: true,
+        total_count: 4,
+        newest_observed_at: '2026-04-10T10:04:04.000Z',
+        newest_observed_at_ms: Date.parse('2026-04-10T10:04:04.000Z'),
+        counts_by_lineage: {
+          active_owned: 1,
+          prior_stale: 1,
+          external_manual: 1,
+          unattributed: 1
+        },
+        counts_by_kind: {
+          function_call: 2,
+          function_call_output: 2
+        },
+        active_missing_tool_output: {
+          active: true,
+          tool_name: 'linear_graphql',
+          call_id: 'call_pfKTUH5GFubLHpXfln7UScnU',
+          thread_id: 'thread-1',
+          turn_id: 'turn-1',
+          session_id: 'session-1',
+          evidence_source: 'session_transcript'
+        },
+        recovery: {
+          active: true,
+          status: 'blocked',
+          attempt_count: 1,
+          last_result_reason_code: 'guarded_continuation_waiting',
+          previous_thread_id: 'thread-1',
+          replacement_thread_id: 'thread-2'
+        }
+      },
       missing_tool_output_recovery: {
-        status: 'not_started',
-        headline: 'Missing tool output detected',
+        status: 'manual_action_required',
+        headline: 'Missing-output recovery needs operator action',
         original_tool_name: 'linear_graphql',
         original_call_id: 'call_pfKTUH5GFubLHpXfln7UScnU',
-        evidence_source: null,
+        evidence_source: 'session_transcript',
         active_ownership: {
           issue_id: 'issue-tool',
           issue_identifier: 'ABC-TOOL',
@@ -624,15 +819,19 @@ describe('SnapshotService', () => {
           status: 'not_started'
         },
         final_outcome: {
-          result: null
+          result: 'blocked'
         }
       }
     });
+    expect(stateProjection.blocked[0] as unknown as Record<string, unknown>).not.toHaveProperty(
+      'transcript_tool_call_diagnostics'
+    );
+    expect(JSON.stringify(stateProjection.blocked[0])).not.toContain('active_issue_id');
 
     const issueProjection = service.projectIssue(state, 'ABC-TOOL');
     expect(issueProjection.status).toBe('blocked');
     expect(issueProjection.blocked?.tool_output_wait?.call_id).toBe('call_pfKTUH5GFubLHpXfln7UScnU');
-    expect(issueProjection.blocked?.missing_tool_output_recovery?.next_action).toContain('Inspect the active Codex thread');
+    expect(issueProjection.blocked?.missing_tool_output_recovery?.next_action).toContain('Inspect current external state');
     expect(issueProjection.operator_explainer.reason_code).toBe(REASON_CODES.missingToolOutput);
   });
 

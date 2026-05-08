@@ -6,7 +6,7 @@ import path from 'node:path';
 import { LocalApiServer } from '../../src/api';
 import { LocalApiError } from '../../src/api/errors';
 import { replayForensicsBundle, type ForensicsBundle } from '../../src/api/forensics';
-import type { OrchestratorState } from '../../src/orchestrator';
+import type { OrchestratorState, TranscriptToolCallDiagnostic, TranscriptToolCallLineage } from '../../src/orchestrator';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
 import type { ExecutionGraphThreadLineage } from '../../src/persistence';
@@ -116,6 +116,42 @@ function makeState(overrides: Partial<OrchestratorState> = {}): OrchestratorStat
       sample_count: 0
     },
     recent_runtime_events: [],
+    ...overrides
+  };
+}
+
+function makeTranscriptDiagnostic(
+  index: number,
+  overrides: Partial<TranscriptToolCallDiagnostic> = {}
+): TranscriptToolCallDiagnostic {
+  const lineage = (['active_owned', 'prior_stale', 'external_manual', 'unattributed'] as TranscriptToolCallLineage[])[
+    index % 4
+  ];
+  return {
+    kind: index % 2 === 0 ? 'function_call' : 'function_call_output',
+    call_id: `call-${index}`,
+    tool_name: 'linear_graphql',
+    thread_id: `thread-${index % 3}`,
+    turn_id: `turn-${index % 5}`,
+    session_id: `session-${index % 7}`,
+    issue_id: `issue-${index % 2}`,
+    issue_identifier: `ABC-${index % 2}`,
+    run_id: `run-${index % 2}`,
+    issue_run_id: `issue-run-${index % 2}`,
+    attempt_id: `attempt-${index % 2}`,
+    codex_app_server_pid: `${1000 + index}`,
+    observed_at_ms: Date.parse('2026-04-10T10:01:00.000Z') + index * 1000,
+    lineage,
+    reason: `${lineage} diagnostic`,
+    active_issue_id: 'issue-active',
+    active_issue_identifier: 'ABC-ACTIVE',
+    active_run_id: 'run-active',
+    active_issue_run_id: 'issue-run-active',
+    active_attempt_id: 'attempt-active',
+    active_codex_app_server_pid: '9999',
+    active_thread_id: 'thread-active',
+    active_turn_id: 'turn-active',
+    active_session_id: 'session-active',
     ...overrides
   };
 }
@@ -483,6 +519,77 @@ describe('LocalApiServer', () => {
       branch_name: 'feature/ABC-2',
       repo_root: '/tmp/source'
     });
+  });
+
+  it('serves GET /api/v1/state with bounded transcript diagnostic summaries instead of raw records', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            transcript_tool_call_diagnostics: Array.from({ length: 200 }, (_, index) => makeTranscriptDiagnostic(index))
+          })
+        ],
+        [
+          'issue-2',
+          makeRunningEntry({
+            issue: makeIssue({ id: 'issue-2', identifier: 'ABC-2' }),
+            identifier: 'ABC-2',
+            transcript_tool_call_diagnostics: Array.from({ length: 200 }, (_, index) =>
+              makeTranscriptDiagnostic(index + 200, { active_issue_id: 'issue-2', active_issue_identifier: 'ABC-2' })
+            )
+          })
+        ]
+      ])
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const payload = (await response.json()) as {
+      running: Array<Record<string, unknown> & {
+        transcript_tool_call_diagnostic_summary: {
+          detailed_diagnostics_available: boolean;
+          total_count: number;
+          newest_observed_at: string | null;
+          counts_by_lineage: Record<string, number>;
+          counts_by_kind: Record<string, number>;
+        };
+      }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.running).toHaveLength(2);
+    expect(payload.running[0]).not.toHaveProperty('transcript_tool_call_diagnostics');
+    expect(JSON.stringify(payload)).not.toContain('"transcript_tool_call_diagnostics"');
+    expect(JSON.stringify(payload)).not.toContain('"active_issue_id"');
+    expect(payload.running[0]?.transcript_tool_call_diagnostic_summary).toMatchObject({
+      detailed_diagnostics_available: true,
+      total_count: 200,
+      newest_observed_at: '2026-04-10T10:04:19.000Z',
+      counts_by_lineage: {
+        active_owned: 50,
+        prior_stale: 50,
+        external_manual: 50,
+        unattributed: 50
+      },
+      counts_by_kind: {
+        function_call: 100,
+        function_call_output: 100
+      }
+    });
+    expect(JSON.stringify(payload).length).toBeLessThan(25_000);
   });
 
   it('projects recent stopped terminal runs from durable history into state recovery view', async () => {
