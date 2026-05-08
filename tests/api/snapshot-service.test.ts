@@ -888,7 +888,7 @@ describe('SnapshotService', () => {
                 message: null
               }
             ],
-            quarantined_event_count: 1,
+            quarantined_event_count: 2,
             last_quarantined_event_at_ms: Date.parse('2026-04-10T10:01:45.000Z'),
             quarantined_events: [
               {
@@ -904,6 +904,20 @@ describe('SnapshotService', () => {
                 active_turn_id: 'fresh-turn',
                 active_session_id: 'fresh-session',
                 reason: 'lineage_mismatch'
+              },
+              {
+                at_ms: Date.parse('2026-04-10T10:01:50.000Z'),
+                event: CANONICAL_EVENT.codex.phasePlanning,
+                message: 'late planning after task_complete',
+                codex_app_server_pid: '2002',
+                thread_id: 'fresh-thread',
+                turn_id: 'fresh-turn',
+                session_id: 'fresh-session',
+                active_codex_app_server_pid: '2002',
+                active_thread_id: 'fresh-thread',
+                active_turn_id: 'fresh-turn',
+                active_session_id: 'fresh-session',
+                reason: 'terminal_residue'
               }
             ]
           })
@@ -914,7 +928,7 @@ describe('SnapshotService', () => {
     const issue = service.projectIssue(state, 'ABC-1');
     expect(issue.running?.thread_id).toBe('fresh-thread');
     expect(issue.running?.codex_app_server_pid).toBe('2002');
-    expect(issue.running?.quarantined_event_count).toBe(1);
+    expect(issue.running?.quarantined_event_count).toBe(2);
     expect(issue.recent_events).toEqual([
       {
         at: '2026-04-10T10:01:30.000Z',
@@ -936,13 +950,27 @@ describe('SnapshotService', () => {
         active_turn_id: 'fresh-turn',
         active_session_id: 'fresh-session',
         reason: 'lineage_mismatch'
+      },
+      {
+        at: '2026-04-10T10:01:50.000Z',
+        event: CANONICAL_EVENT.codex.phasePlanning,
+        message: 'late planning after task_complete',
+        codex_app_server_pid: '2002',
+        thread_id: 'fresh-thread',
+        turn_id: 'fresh-turn',
+        session_id: 'fresh-session',
+        active_codex_app_server_pid: '2002',
+        active_thread_id: 'fresh-thread',
+        active_turn_id: 'fresh-turn',
+        active_session_id: 'fresh-session',
+        reason: 'terminal_residue'
       }
     ]);
 
     const projectedState = service.projectState(state);
     expect(projectedState.running[0]?.thread_id).toBe('fresh-thread');
     expect(projectedState.running[0]?.codex_app_server_pid).toBe('2002');
-    expect(projectedState.running[0]?.quarantined_event_count).toBe(1);
+    expect(projectedState.running[0]?.quarantined_event_count).toBe(2);
   });
 
   it('projects running issue retry metadata with worker and workspace context when queued', () => {
