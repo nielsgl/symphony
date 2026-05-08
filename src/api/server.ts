@@ -470,27 +470,34 @@ export class LocalApiServer {
     return warningsByThreadId;
   }
 
-  private enrichStoppedRunRecoveryState(payload: ApiStateResponse, state: OrchestratorState): void {
+  private buildStoppedRunRecoveryResponse(limit = 25): {
+    stopped_runs: ApiStateResponse['stopped_runs'];
+    counts: { stopped: number };
+  } {
     if (!this.diagnosticsSource) {
-      payload.stopped_runs = [];
-      payload.counts.stopped = 0;
-      return;
+      throw new LocalApiError('stopped_run_recovery_unavailable', 'Stopped-run recovery source is not configured', 503);
     }
-    const runs = this.diagnosticsSource.listRunHistory(25);
+    const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
+    const payload = this.snapshotService.projectState(state);
+    const runs = this.diagnosticsSource.listRunHistory(limit);
     const activeIssueIdentifiers = new Set<string>([
       ...payload.running.map((entry) => entry.issue_identifier),
       ...payload.retrying.map((entry) => entry.issue_identifier),
       ...payload.blocked.map((entry) => entry.issue_identifier)
     ]);
     const blockedIssueIdentifiers = new Set<string>(payload.blocked.map((entry) => entry.issue_identifier));
-    payload.stopped_runs = buildStoppedRunRecoveryEntries({
+    const stoppedRuns = buildStoppedRunRecoveryEntries({
       runs,
       activeIssueIdentifiers,
       blockedIssueIdentifiers,
       capabilityWarningsByThreadId: this.buildCapabilityWarningsByThreadId(runs)
     });
-    payload.counts.stopped = payload.stopped_runs.filter((entry) => !entry.active_issue_present).length;
-    void state;
+    return {
+      stopped_runs: stoppedRuns,
+      counts: {
+        stopped: stoppedRuns.filter((entry) => !entry.active_issue_present).length
+      }
+    };
   }
 
   private buildStateSnapshotResponse(): TimedStateSnapshot {
@@ -501,7 +508,6 @@ export class LocalApiServer {
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
       this.enrichLiveTokenFallbackState(payload);
-      this.enrichStoppedRunRecoveryState(payload, state);
       const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
       return {
         payload,
@@ -1159,6 +1165,21 @@ export class LocalApiServer {
                 serialization_duration_ms: serializationDurationMs
               });
               sendJsonBody(response, 200, serialized.body);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/stopped-runs\/recovery$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (request, response) => {
+              const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+              const limitRaw = requestUrl.searchParams.get('limit');
+              const parsedLimit = limitRaw ? Number.parseInt(limitRaw, 10) : NaN;
+              const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 25;
+              sendJson(response, 200, this.buildStoppedRunRecoveryResponse(limit));
             }
           }
         ]

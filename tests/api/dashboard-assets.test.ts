@@ -1,3 +1,5 @@
+import vm from 'node:vm';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderDashboardClientJs, renderDashboardHtml } from '../../src/api/dashboard-assets';
@@ -11,70 +13,192 @@ const ORIGINAL_GLOBALS = {
 };
 
 class FakeClassList {
-  add() {}
-  remove() {}
-  toggle() {}
-  contains() {
+  private readonly values = new Set<string>();
+
+  add(...tokens: string[]): void {
+    for (const token of tokens) {
+      this.values.add(token);
+    }
+  }
+
+  remove(...tokens: string[]): void {
+    for (const token of tokens) {
+      this.values.delete(token);
+    }
+  }
+
+  contains(token: string): boolean {
+    return this.values.has(token);
+  }
+
+  toggle(token: string, force?: boolean): boolean {
+    const shouldAdd = force ?? !this.values.has(token);
+    if (shouldAdd) {
+      this.values.add(token);
+      return true;
+    }
+    this.values.delete(token);
     return false;
+  }
+
+  setFromClassName(className: string): void {
+    this.values.clear();
+    for (const token of className.split(/\s+/)) {
+      if (token) {
+        this.values.add(token);
+      }
+    }
+  }
+
+  toString(): string {
+    return Array.from(this.values).join(' ');
   }
 }
 
 class FakeElement {
-  textContent = '';
-  className = '';
-  value = '';
-  open = false;
-  disabled = false;
-  title = '';
-  href = '';
-  type = '';
+  readonly tagName: string;
+  readonly classList = new FakeClassList();
+  readonly listeners = new Map<string, Array<(event: { target?: FakeElement; key?: string; preventDefault(): void }) => void>>();
+  readonly attributes = new Map<string, string>();
+  children: FakeElement[] = [];
   colSpan = 0;
   dataset: Record<string, string> = {};
+  disabled = false;
+  href = '';
+  id = '';
+  open = true;
+  placeholder = '';
   style: Record<string, string> = {};
-  classList = new FakeClassList();
-  listeners = new Map<string, Array<(event?: Record<string, unknown>) => void>>();
-  children: FakeElement[] = [];
+  title = '';
+  type = '';
+  value = '';
+  private ownText = '';
+  private ownClassName = '';
 
-  append(...children: FakeElement[]) {
-    this.children.push(...children);
+  constructor(tagName: string) {
+    this.tagName = tagName.toUpperCase();
   }
 
-  appendChild(child: FakeElement) {
-    this.children.push(child);
-    return child;
+  get className(): string {
+    return this.ownClassName;
   }
 
-  replaceChildren(...children: FakeElement[]) {
-    this.children = children;
+  set className(value: string) {
+    this.ownClassName = value;
+    this.classList.setFromClassName(value);
   }
 
-  addEventListener(type: string, listener: (event?: Record<string, unknown>) => void) {
-    const listeners = this.listeners.get(type) || [];
-    listeners.push(listener);
-    this.listeners.set(type, listeners);
+  get textContent(): string {
+    return this.ownText + this.children.map((child) => child.textContent).join('');
   }
 
-  dispatch(type: string, event: Record<string, unknown> = {}) {
-    for (const listener of this.listeners.get(type) || []) {
-      listener(event);
+  set textContent(value: string) {
+    this.ownText = value;
+    this.children = [];
+  }
+
+  append(...nodes: Array<FakeElement | string>): void {
+    for (const node of nodes) {
+      this.appendChild(typeof node === 'string' ? FakeElement.text(node) : node);
     }
   }
 
-  setAttribute(name: string, value: string) {
+  appendChild(node: FakeElement): FakeElement {
+    this.children.push(node);
+    return node;
+  }
+
+  replaceChildren(...nodes: FakeElement[]): void {
+    this.ownText = '';
+    this.children = nodes;
+  }
+
+  addEventListener(type: string, handler: (event: { target?: FakeElement; key?: string; preventDefault(): void }) => void): void {
+    const handlers = this.listeners.get(type) || [];
+    handlers.push(handler);
+    this.listeners.set(type, handlers);
+  }
+
+  click(): void {
+    this.dispatch('click');
+  }
+
+  dispatch(type: string, event: { target?: FakeElement; key?: string; preventDefault(): void } = { preventDefault() {} }): void {
+    const handlers = type === 'click' ? this.listeners.get('click') || [] : this.listeners.get(type) || [];
+    for (const handler of handlers) {
+      handler({ ...event, target: event.target ?? this });
+    }
+  }
+
+  focus(): void {
+    // Focus tracking is not needed for these dashboard assertions.
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
     if (name.startsWith('data-')) {
       this.dataset[name.slice('data-'.length)] = value;
     }
   }
 
-  getAttribute(name: string) {
+  getAttribute(name: string): string | null {
     if (name.startsWith('data-')) {
       return this.dataset[name.slice('data-'.length)] || null;
     }
-    return null;
+    return this.attributes.get(name) || null;
   }
 
-  querySelectorAll() {
+  querySelectorAll(_selector: string): FakeElement[] {
     return [];
+  }
+
+  static text(value: string): FakeElement {
+    const element = new FakeElement('#text');
+    element.textContent = value;
+    return element;
+  }
+}
+
+class FakeDocument {
+  readonly elements = new Map<string, FakeElement>();
+  readonly listeners = new Map<string, Array<(event: { key?: string; preventDefault(): void }) => void>>();
+  activeElement: FakeElement | null = null;
+
+  constructor(html: string) {
+    const ids = html.matchAll(/id="([^"]+)"/g);
+    for (const match of ids) {
+      const element = new FakeElement('div');
+      element.id = match[1];
+      this.elements.set(match[1], element);
+    }
+  }
+
+  getElementById(id: string): FakeElement {
+    let element = this.elements.get(id);
+    if (!element) {
+      element = new FakeElement('div');
+      element.id = id;
+      this.elements.set(id, element);
+    }
+    return element;
+  }
+
+  createElement(tagName: string): FakeElement {
+    return new FakeElement(tagName);
+  }
+
+  createTextNode(value: string): FakeElement {
+    return FakeElement.text(value);
+  }
+
+  querySelectorAll(_selector: string): FakeElement[] {
+    return [];
+  }
+
+  addEventListener(type: string, handler: (event: { key?: string; preventDefault(): void }) => void): void {
+    const handlers = this.listeners.get(type) || [];
+    handlers.push(handler);
+    this.listeners.set(type, handlers);
   }
 }
 
@@ -91,6 +215,34 @@ class FakeEventSource {
 
   close() {
     this.closed = true;
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function okJson(payload: unknown) {
+  return {
+    ok: true,
+    async json() {
+      return payload;
+    }
+  };
+}
+
+async function flushPromises(): Promise<void> {
+  if (vi.isFakeTimers()) {
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  for (let index = 0; index < 10; index += 1) {
+    await Promise.resolve();
   }
 }
 
@@ -117,60 +269,125 @@ function makeStatePayload() {
       output_tokens: 0,
       seconds_running: 0
     },
+    health: {
+      dispatch_validation: 'ok',
+      last_error: null
+    },
     rate_limits: null,
     throughput: null,
     running: [],
     retrying: [],
     blocked: [],
     stopped_runs: [],
-    recent_runtime_events: [],
-    health: {
-      dispatch_validation: 'ok',
-      last_error: null
-    }
+    recent_events: [],
+    recent_runtime_events: []
   };
 }
 
-function okJson(payload: unknown) {
-  return Promise.resolve({
-    ok: true,
-    json: async () => payload
-  } as Response);
+function createRuntimeStatePayload() {
+  return makeStatePayload();
 }
 
-async function flushPromises() {
-  await vi.advanceTimersByTimeAsync(0);
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+function createStoppedRunRecoveryPayload() {
+  return {
+    counts: {
+      stopped: 1
+    },
+    stopped_runs: [
+      {
+        run_id: 'run-stopped-1',
+        issue_identifier: 'NIE-119',
+        thread_id: 'thread-stopped-1',
+        session_id: 'session-stopped-1',
+        turn_id: 'turn-stopped-1',
+        last_relevant_at: '2026-05-08T15:59:00.000Z',
+        terminal_status: 'stopped',
+        terminal_reason_code: 'capability_mismatch',
+        terminal_reason_detail: 'Stopped after unsupported browser capability.',
+        root_cause_status: 'action_required',
+        root_cause_reason_code: 'missing_tool_output_recovery',
+        root_cause_reason_detail: 'Inspect thread lineage before resume.',
+        recovery_status: 'capability_mismatch',
+        capability_mismatch: true,
+        resume_valid: false,
+        resume_disabled_reason: 'Unsupported browser capability.',
+        capability_warning: {
+          unsupported_capability_message: 'Browser tool was unavailable.',
+          recommended_recovery_action: 'Resume with browser-capable runtime.'
+        },
+        actions: {
+          inspect_forensics_url: '/api/v1/history/run-stopped-1',
+          inspect_thread_url: '/api/v1/threads/thread-stopped-1',
+          copy_thread_id_supported: true,
+          copy_session_id_supported: true
+        }
+      }
+    ]
+  };
+}
+
+function installDashboardClient(fetchImpl: (url: string, init?: unknown) => Promise<{ ok: boolean; json(): Promise<unknown> }>) {
+  const document = new FakeDocument(renderDashboardHtml());
+  const storage = new Map<string, string>();
+  const fetchCalls: string[] = [];
+  const sandbox = {
+    console,
+    document,
+    EventSource: class {
+      close() {}
+    },
+    fetch: (url: string, init?: unknown) => {
+      fetchCalls.push(String(url));
+      return fetchImpl(String(url), init);
+    },
+    localStorage: {
+      getItem(key: string) {
+        return storage.get(key) || null;
+      },
+      setItem(key: string, value: string) {
+        storage.set(key, value);
+      }
+    },
+    setInterval() {
+      return 0;
+    },
+    clearInterval() {},
+    setTimeout() {
+      return 0;
+    },
+    clearTimeout() {},
+    window: {
+      confirm: () => true,
+      localStorage: {
+        getItem(key: string) {
+          return storage.get(key) || null;
+        },
+        setItem(key: string, value: string) {
+          storage.set(key, value);
+        }
+      },
+      open() {},
+      prompt: () => ''
+    }
+  };
+  sandbox.window = { ...sandbox.window, localStorage: sandbox.localStorage };
+  vm.runInNewContext(
+    renderDashboardClientJs({
+      dashboard_enabled: false,
+      refresh_ms: 500,
+      render_interval_ms: 250
+    }),
+    sandbox
+  );
+
+  return { document, fetchCalls };
 }
 
 function installDashboardClientHarness() {
   vi.useFakeTimers();
   FakeEventSource.instances = [];
-  const elements = new Map<string, FakeElement>();
+  const document = new FakeDocument(renderDashboardHtml());
   const fetchCalls: string[] = [];
-  const document = {
-    getElementById(id: string) {
-      if (!elements.has(id)) {
-        elements.set(id, new FakeElement());
-      }
-      return elements.get(id);
-    },
-    createElement() {
-      return new FakeElement();
-    },
-    createTextNode(value: string) {
-      const node = new FakeElement();
-      node.textContent = value;
-      return node;
-    },
-    querySelectorAll() {
-      return [];
-    },
-    addEventListener() {},
-    activeElement: null
-  };
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     fetchCalls.push(String(url));
     if (url === '/api/v1/state') {
@@ -198,7 +415,9 @@ function installDashboardClientHarness() {
     localStorage: {
       getItem: vi.fn(() => null),
       setItem: vi.fn()
-    }
+    },
+    prompt: vi.fn(() => ''),
+    confirm: vi.fn(() => true)
   });
   vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal('EventSource', FakeEventSource);
@@ -207,7 +426,7 @@ function installDashboardClientHarness() {
   Function(script)();
 
   return {
-    elements,
+    document,
     fetchCalls,
     stateFetchCount: () => fetchCalls.filter((url) => url === '/api/v1/state').length,
     refreshFetchCount: () => fetchCalls.filter((url) => url === '/api/v1/refresh').length,
@@ -327,7 +546,7 @@ describe('dashboard assets', () => {
     await flushPromises();
 
     expect(harness.stateFetchCount()).toBe(1);
-    expect(harness.elements.get('connection-detail')?.textContent).toBe('Streaming updates connected');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Streaming updates connected');
   });
 
   it('resumes fallback polling when the stream errors after a healthy snapshot', async () => {
@@ -363,7 +582,7 @@ describe('dashboard assets', () => {
     await flushPromises();
     expect(harness.stateFetchCount()).toBe(1);
 
-    harness.elements.get('refresh-button')?.dispatch('click');
+    harness.document.getElementById('refresh-button').click();
     await flushPromises();
 
     expect(harness.refreshFetchCount()).toBe(1);
@@ -371,6 +590,66 @@ describe('dashboard assets', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await flushPromises();
     expect(harness.stateFetchCount()).toBe(2);
+  });
+
+  it('lazy-loads stopped-run recovery details only on operator request', () => {
+    const html = renderDashboardHtml();
+    const clientJs = renderDashboardClientJs();
+    const pollBlock = clientJs.slice(clientJs.indexOf('async function loadStateViaPoll()'), clientJs.indexOf('function scheduleStateSave()'));
+    const streamBlock = clientJs.slice(clientJs.indexOf('function handleSseEnvelope'), clientJs.indexOf('function connectStream'));
+
+    expect(html).toContain('id="stopped-run-recovery-load"');
+    expect(clientJs).toContain("fetchJson('/api/v1/stopped-runs/recovery')");
+    expect(clientJs).toContain("elements.stoppedRunRecoveryLoad.addEventListener('click'");
+    expect(clientJs).toContain('Stopped-run recovery detail loads on demand.');
+    expect(pollBlock).not.toContain('/api/v1/stopped-runs/recovery');
+    expect(streamBlock).not.toContain('/api/v1/stopped-runs/recovery');
+  });
+
+  it('preserves stopped-run recovery loaded before the initial state snapshot', async () => {
+    const stateRequest = deferred<{ ok: boolean; json(): Promise<unknown> }>();
+    const fetchCalls: string[] = [];
+    const runtime = installDashboardClient(async (url) => {
+      fetchCalls.push(url);
+      if (url === '/api/v1/state') {
+        return stateRequest.promise;
+      }
+      if (url === '/api/v1/stopped-runs/recovery') {
+        return okJson(createStoppedRunRecoveryPayload());
+      }
+      if (url === '/api/v1/ui-state') {
+        return okJson({ state: null });
+      }
+      if (url === '/api/v1/diagnostics') {
+        return okJson({ runtime_resolution: null });
+      }
+      if (url === '/api/v1/history?limit=8') {
+        return okJson({ runs: [] });
+      }
+      throw new Error('Unexpected dashboard fetch: ' + url);
+    });
+
+    await flushPromises();
+
+    expect(fetchCalls).toContain('/api/v1/state');
+    expect(fetchCalls).not.toContain('/api/v1/stopped-runs/recovery');
+
+    const recoveryList = runtime.document.getElementById('stopped-run-recovery-list');
+    runtime.document.getElementById('stopped-run-recovery-load').click();
+    await flushPromises();
+
+    expect(fetchCalls.filter((url) => url === '/api/v1/stopped-runs/recovery')).toHaveLength(1);
+    expect(recoveryList.textContent).toContain('NIE-119');
+    expect(recoveryList.textContent).toContain('Capability mismatch');
+    expect(recoveryList.textContent).toContain('Browser tool was unavailable.');
+
+    stateRequest.resolve(okJson(createRuntimeStatePayload()));
+    await flushPromises();
+
+    expect(recoveryList.textContent).toContain('NIE-119');
+    expect(recoveryList.textContent).toContain('Capability mismatch');
+    expect(recoveryList.textContent).toContain('Browser tool was unavailable.');
+    expect(recoveryList.textContent).not.toContain('No recent stopped runs need recovery.');
   });
 
   it('snapshots the stuck drilldown rendering vocabulary', () => {
