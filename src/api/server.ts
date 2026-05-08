@@ -496,7 +496,7 @@ export class LocalApiServer {
   private buildStateSnapshotResponse(): TimedStateSnapshot {
     const projectionStartedAtMs = this.nowMs();
     try {
-      const state = this.snapshotSource.getStateSnapshot();
+      const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
@@ -546,7 +546,7 @@ export class LocalApiServer {
   private buildBoundedStateSnapshotResponse(): TimedStateSnapshot {
     const projectionStartedAtMs = this.nowMs();
     try {
-      const state = this.snapshotSource.getStateSnapshot();
+      const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
@@ -594,7 +594,7 @@ export class LocalApiServer {
 
   private readTelemetryStateSnapshot(): OrchestratorState | ApiStateErrorResponse {
     try {
-      return this.snapshotSource.getStateSnapshot();
+      return this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
     } catch (error) {
       const code: ApiStateErrorResponse['error']['code'] =
         error instanceof LocalApiError && error.code === 'snapshot_timeout'
@@ -788,7 +788,7 @@ export class LocalApiServer {
       token_telemetry_last_at_ms: null
     };
     try {
-      const snapshot = this.snapshotSource.getStateSnapshot();
+      const snapshot = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const projected = this.snapshotService.projectState(snapshot);
       this.enrichLiveTokenFallbackState(projected);
       observedDimensions = {
@@ -871,7 +871,10 @@ export class LocalApiServer {
 
   private resolveIssueTokenSnapshot(issueIdentifier: string): Partial<ForensicsTokenSnapshot> | null {
     try {
-      const issue = this.snapshotService.projectIssue(this.snapshotSource.getStateSnapshot(), issueIdentifier);
+      const issue = this.snapshotService.projectIssue(
+        this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false }),
+        issueIdentifier
+      );
       this.enrichLiveTokenFallbackIssue(issue);
       return issue.running?.tokens ?? null;
     } catch {
@@ -1639,7 +1642,7 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (_request, response, match) => {
               const issueIdentifier = decodeURIComponent(match[1]);
-              const state = this.snapshotSource.getStateSnapshot();
+              const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
               const payload = this.snapshotService.projectIssue(state, issueIdentifier);
               this.enrichLiveTokenFallbackIssue(payload);
               this.logger?.log({
@@ -1665,7 +1668,7 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (_request, response, match) => {
               const issueIdentifier = decodeURIComponent(match[1]);
-              const state = this.snapshotSource.getStateSnapshot();
+              const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
               const payload = this.snapshotService.projectIssue(state, issueIdentifier);
               this.enrichLiveTokenFallbackIssue(payload);
               this.logger?.log({

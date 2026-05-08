@@ -1,4 +1,4 @@
-import type { OrchestratorState, TickReason, ToolCallEvidenceSource, ToolCallCompletionStatus } from '../orchestrator';
+import type { OrchestratorState, StateSnapshotOptions, TickReason, ToolCallEvidenceSource, ToolCallCompletionStatus } from '../orchestrator';
 import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { StructuredLogger } from '../observability';
@@ -66,7 +66,7 @@ export interface ApiDegradedFields {
 }
 
 export interface RuntimeSnapshotSource {
-  getStateSnapshot(): OrchestratorState;
+  getStateSnapshot(options?: StateSnapshotOptions): OrchestratorState;
 }
 
 export interface RefreshTickSource {

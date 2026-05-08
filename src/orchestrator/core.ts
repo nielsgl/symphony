@@ -34,11 +34,13 @@ import type {
   RetryEntry,
   RunningEntry,
   ReleasedWorkerRecord,
+  StateSnapshotOptions,
   TickReason,
   ToolCallLedgerEntry,
   ToolCallLedgerObservation,
   QuarantinedWorkerEventReason,
   TranscriptToolCallDiagnostic,
+  TranscriptToolCallDiagnosticStats,
   TranscriptToolCallLineage,
   WorkerCompletionReason,
   WorkerExitDetails,
@@ -243,7 +245,59 @@ function emptyDispatchBackpressureState(retryDelayMs = DEFAULT_BACKPRESSURE_RETR
   };
 }
 
-function cloneRunningEntry(entry: RunningEntry): RunningEntry {
+const emptyTranscriptToolCallDiagnosticStats = (): TranscriptToolCallDiagnosticStats => ({
+  total_count: 0,
+  newest_observed_at_ms: null,
+  counts_by_lineage: {
+    active_owned: 0,
+    prior_stale: 0,
+    external_manual: 0,
+    unattributed: 0
+  },
+  counts_by_kind: {
+    function_call: 0,
+    function_call_output: 0
+  }
+});
+
+function summarizeTranscriptToolCallDiagnostics(
+  diagnostics: TranscriptToolCallDiagnostic[] | undefined
+): TranscriptToolCallDiagnosticStats {
+  const stats = emptyTranscriptToolCallDiagnosticStats();
+  for (const diagnostic of diagnostics ?? []) {
+    stats.total_count += 1;
+    stats.counts_by_lineage[diagnostic.lineage] += 1;
+    stats.counts_by_kind[diagnostic.kind] += 1;
+    stats.newest_observed_at_ms =
+      stats.newest_observed_at_ms === null
+        ? diagnostic.observed_at_ms
+        : Math.max(stats.newest_observed_at_ms, diagnostic.observed_at_ms);
+  }
+  return stats;
+}
+
+function cloneTranscriptToolCallDiagnostics(
+  diagnostics: TranscriptToolCallDiagnostic[] | undefined,
+  options: Required<StateSnapshotOptions>
+): {
+  transcript_tool_call_diagnostics?: TranscriptToolCallDiagnostic[];
+  transcript_tool_call_diagnostic_stats?: TranscriptToolCallDiagnosticStats;
+} {
+  if (options.includeTranscriptToolCallDiagnostics) {
+    return {
+      transcript_tool_call_diagnostics: (diagnostics ?? []).map((diagnostic) => ({
+        ...diagnostic
+      })),
+      transcript_tool_call_diagnostic_stats: undefined
+    };
+  }
+  return {
+    transcript_tool_call_diagnostics: undefined,
+    transcript_tool_call_diagnostic_stats: summarizeTranscriptToolCallDiagnostics(diagnostics)
+  };
+}
+
+function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotOptions>): RunningEntry {
   return {
     ...entry,
     issue: cloneIssue(entry.issue),
@@ -279,9 +333,7 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     outstanding_tool_calls: Object.fromEntries(
       Object.entries(entry.outstanding_tool_calls ?? {}).map(([callId, call]) => [callId, { ...call }])
     ),
-    transcript_tool_call_diagnostics: (entry.transcript_tool_call_diagnostics ?? []).map((diagnostic) => ({
-      ...diagnostic
-    })),
+    ...cloneTranscriptToolCallDiagnostics(entry.transcript_tool_call_diagnostics, options),
     codex_session_transcript_scan_offsets: { ...(entry.codex_session_transcript_scan_offsets ?? {}) },
     recovery: entry.recovery ? { ...entry.recovery } : null,
     termination: entry.termination ? { ...entry.termination } : null,
@@ -342,7 +394,7 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
   };
 }
 
-function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
+function cloneBlockedEntry(entry: BlockedEntry, options: Required<StateSnapshotOptions>): BlockedEntry {
   return {
     issue_id: entry.issue_id,
     issue_identifier: entry.issue_identifier,
@@ -400,7 +452,7 @@ function cloneBlockedEntry(entry: BlockedEntry): BlockedEntry {
           recommended_actions: [...entry.tool_output_wait.recommended_actions]
         }
       : null,
-    transcript_tool_call_diagnostics: (entry.transcript_tool_call_diagnostics ?? []).map((diagnostic) => ({ ...diagnostic })),
+    ...cloneTranscriptToolCallDiagnostics(entry.transcript_tool_call_diagnostics, options),
     session_console: (entry.session_console ?? []).map((event) => ({ ...event })),
     quarantined_events: (entry.quarantined_events ?? []).map((event) => ({ ...event })),
     quarantined_event_count: entry.quarantined_event_count ?? 0,
@@ -602,19 +654,22 @@ export class OrchestratorCore {
     this.serializedOperation = Promise.resolve();
   }
 
-  getStateSnapshot(): OrchestratorState {
+  getStateSnapshot(options: StateSnapshotOptions = {}): OrchestratorState {
+    const snapshotOptions: Required<StateSnapshotOptions> = {
+      includeTranscriptToolCallDiagnostics: options.includeTranscriptToolCallDiagnostics ?? true
+    };
     return {
       ...this.state,
       snapshot_generated_at_ms: this.nowMs(),
       running: new Map(
-        Array.from(this.state.running.entries()).map(([issueId, entry]) => [issueId, cloneRunningEntry(entry)])
+        Array.from(this.state.running.entries()).map(([issueId, entry]) => [issueId, cloneRunningEntry(entry, snapshotOptions)])
       ),
       claimed: new Set(this.state.claimed.values()),
       retry_attempts: new Map(
         Array.from(this.state.retry_attempts.entries()).map(([issueId, entry]) => [issueId, cloneRetryEntry(entry)])
       ),
       blocked_inputs: new Map(
-        Array.from(this.state.blocked_inputs.entries()).map(([issueId, entry]) => [issueId, cloneBlockedEntry(entry)])
+        Array.from(this.state.blocked_inputs.entries()).map(([issueId, entry]) => [issueId, cloneBlockedEntry(entry, snapshotOptions)])
       ),
       operator_actions: new Map(
         Array.from((this.state.operator_actions ?? new Map<string, OperatorActionRecord[]>()).entries()).map(([issueId, entries]) => [
@@ -3655,7 +3710,7 @@ export class OrchestratorCore {
       this.state.circuit_breakers.set(entry.issue_id, cloneCircuitBreakerEntry(entry));
     }
     for (const entry of params.blocked_entries) {
-      this.state.blocked_inputs.set(entry.issue_id, cloneBlockedEntry(entry));
+      this.state.blocked_inputs.set(entry.issue_id, cloneBlockedEntry(entry, { includeTranscriptToolCallDiagnostics: true }));
       this.state.claimed.add(entry.issue_id);
     }
     for (const [issueId, actions] of params.operator_actions ?? new Map<string, OperatorActionRecord[]>()) {

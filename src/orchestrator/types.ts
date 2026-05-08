@@ -181,6 +181,7 @@ export interface RunningEntry {
   tool_call_ledger?: Record<string, ToolCallLedgerEntry>;
   outstanding_tool_calls?: Record<string, OutstandingToolCall>;
   transcript_tool_call_diagnostics?: TranscriptToolCallDiagnostic[];
+  transcript_tool_call_diagnostic_stats?: TranscriptToolCallDiagnosticStats;
   codex_session_transcript_scan_offsets?: Record<string, number>;
   recovery?: MissingToolOutputRecoveryState | null;
   termination?: RunningEntryTermination | null;
@@ -315,6 +316,17 @@ export interface TranscriptToolCallDiagnostic {
   active_thread_id: string | null;
   active_turn_id: string | null;
   active_session_id: string | null;
+}
+
+export interface TranscriptToolCallDiagnosticStats {
+  total_count: number;
+  newest_observed_at_ms: number | null;
+  counts_by_lineage: Record<TranscriptToolCallLineage, number>;
+  counts_by_kind: Record<'function_call' | 'function_call_output', number>;
+}
+
+export interface StateSnapshotOptions {
+  includeTranscriptToolCallDiagnostics?: boolean;
 }
 
 export type OperatorActionType = 'cancel' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
@@ -498,6 +510,7 @@ export interface BlockedEntry {
     recommended_actions: string[];
   } | null;
   transcript_tool_call_diagnostics?: TranscriptToolCallDiagnostic[];
+  transcript_tool_call_diagnostic_stats?: TranscriptToolCallDiagnosticStats;
   recovery?: MissingToolOutputRecoveryState | null;
   worker_termination_result?: WorkerTerminationResult | null;
   quarantined_events?: Array<{

@@ -1,4 +1,4 @@
-import type { OperatorActionRecord, OrchestratorState, RunningEntry } from '../orchestrator';
+import type { OperatorActionRecord, OrchestratorState, RunningEntry, TranscriptToolCallDiagnosticStats } from '../orchestrator';
 import { explainOperatorRuntimeState, REASON_CODES, toOperatorExplainerHint } from '../observability';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
@@ -142,6 +142,7 @@ function projectTranscriptToolCallDiagnostics(entry: {
 
 function projectTranscriptToolCallDiagnosticSummary(entry: {
   transcript_tool_call_diagnostics?: import('../orchestrator').TranscriptToolCallDiagnostic[];
+  transcript_tool_call_diagnostic_stats?: TranscriptToolCallDiagnosticStats;
   tool_call_ledger?: RunningEntry['tool_call_ledger'];
   tool_output_wait?: import('../orchestrator').BlockedEntry['tool_output_wait'];
   recovery?: import('../orchestrator').MissingToolOutputRecoveryState | null;
@@ -149,23 +150,30 @@ function projectTranscriptToolCallDiagnosticSummary(entry: {
   issue_identifier?: string;
 }): ApiTranscriptToolCallDiagnosticSummary {
   const diagnostics = entry.transcript_tool_call_diagnostics ?? [];
-  const countsByLineage: ApiTranscriptToolCallDiagnosticSummary['counts_by_lineage'] = {
-    active_owned: 0,
-    prior_stale: 0,
-    external_manual: 0,
-    unattributed: 0
-  };
-  const countsByKind: ApiTranscriptToolCallDiagnosticSummary['counts_by_kind'] = {
-    function_call: 0,
-    function_call_output: 0
-  };
-  let newestObservedAtMs: number | null = null;
+  const stats = entry.transcript_tool_call_diagnostic_stats;
+  const countsByLineage: ApiTranscriptToolCallDiagnosticSummary['counts_by_lineage'] = stats
+    ? { ...stats.counts_by_lineage }
+    : {
+        active_owned: 0,
+        prior_stale: 0,
+        external_manual: 0,
+        unattributed: 0
+      };
+  const countsByKind: ApiTranscriptToolCallDiagnosticSummary['counts_by_kind'] = stats
+    ? { ...stats.counts_by_kind }
+    : {
+        function_call: 0,
+        function_call_output: 0
+      };
+  let newestObservedAtMs: number | null = stats?.newest_observed_at_ms ?? null;
 
-  for (const diagnostic of diagnostics) {
-    countsByLineage[diagnostic.lineage] += 1;
-    countsByKind[diagnostic.kind] += 1;
-    newestObservedAtMs =
-      newestObservedAtMs === null ? diagnostic.observed_at_ms : Math.max(newestObservedAtMs, diagnostic.observed_at_ms);
+  if (!stats) {
+    for (const diagnostic of diagnostics) {
+      countsByLineage[diagnostic.lineage] += 1;
+      countsByKind[diagnostic.kind] += 1;
+      newestObservedAtMs =
+        newestObservedAtMs === null ? diagnostic.observed_at_ms : Math.max(newestObservedAtMs, diagnostic.observed_at_ms);
+    }
   }
 
   const activeMissingToolOutput = entry.tool_output_wait ?? null;
@@ -178,10 +186,10 @@ function projectTranscriptToolCallDiagnosticSummary(entry: {
         : Math.max(newestObservedAtMs, ledgerRecord.last_seen_at_ms);
   }
   const detailAvailable =
-    diagnostics.length > 0 || ledgerRecords.length > 0 || Boolean(activeMissingToolOutput) || Boolean(recovery);
+    (stats?.total_count ?? diagnostics.length) > 0 || ledgerRecords.length > 0 || Boolean(activeMissingToolOutput) || Boolean(recovery);
   return {
     detailed_diagnostics_available: detailAvailable,
-    total_count: diagnostics.length,
+    total_count: stats?.total_count ?? diagnostics.length,
     detail_url:
       detailAvailable
         ? `/api/v1/issues/${encodeURIComponent(entry.issue_identifier ?? entry.identifier ?? '')}/diagnostics`

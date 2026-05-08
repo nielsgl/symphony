@@ -962,7 +962,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           host: resolvedHost,
           port: resolvedPort,
           snapshotSource: {
-            getStateSnapshot: () => orchestrator.getStateSnapshot()
+            getStateSnapshot: (options) => orchestrator.getStateSnapshot(options)
           },
           refreshSource: {
             tick: (reason) => orchestrator.tick(reason)

@@ -9,6 +9,9 @@ import type {
   OrchestratorConfig,
   OrchestratorPersistencePort,
   OrchestratorPorts,
+  OrchestratorState,
+  TranscriptToolCallDiagnostic,
+  TranscriptToolCallLineage,
   WorkerTerminationResult
 } from '../../src/orchestrator/types';
 import type { StructuredLogger } from '../../src/observability';
@@ -238,6 +241,100 @@ function createHarness(options: {
 }
 
 describe('OrchestratorCore', () => {
+  it('summary snapshots omit raw transcript diagnostic clone work for high-volume active entries', async () => {
+    const harness = createHarness({ configOverrides: { max_concurrent_agents: 4 } });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue(
+      Array.from({ length: 4 }, (_, index) =>
+        makeIssue({
+          id: `i-summary-${index + 1}`,
+          identifier: `ABC-SUMMARY-${index + 1}`
+        })
+      )
+    );
+    await harness.orchestrator.tick('interval');
+
+    let detailFieldReads = 0;
+    const makeDiagnostic = (index: number): TranscriptToolCallDiagnostic => {
+      const lineage = (['active_owned', 'prior_stale', 'external_manual', 'unattributed'] as TranscriptToolCallLineage[])[
+        index % 4
+      ];
+      const diagnostic = {
+        kind: index % 2 === 0 ? 'function_call' : 'function_call_output',
+        call_id: `call-${index}`,
+        tool_name: 'exec_command',
+        thread_id: `thread-${index % 5}`,
+        turn_id: `turn-${index % 7}`,
+        session_id: `session-${index % 11}`,
+        issue_id: `issue-${index % 4}`,
+        issue_identifier: `ABC-${index % 4}`,
+        run_id: `run-${index % 4}`,
+        issue_run_id: `issue-run-${index % 4}`,
+        attempt_id: `attempt-${index % 4}`,
+        codex_app_server_pid: `${1000 + index}`,
+        observed_at_ms: 1_000_000 + index,
+        lineage,
+        active_issue_identifier: 'ABC-ACTIVE',
+        active_run_id: 'run-active',
+        active_issue_run_id: 'issue-run-active',
+        active_attempt_id: 'attempt-active',
+        active_codex_app_server_pid: '9999',
+        active_thread_id: 'thread-active',
+        active_turn_id: 'turn-active',
+        active_session_id: 'session-active'
+      } as Omit<TranscriptToolCallDiagnostic, 'reason' | 'active_issue_id'>;
+      return Object.defineProperties(diagnostic, {
+        reason: {
+          enumerable: true,
+          get: () => {
+            detailFieldReads += 1;
+            return `${lineage} diagnostic`;
+          }
+        },
+        active_issue_id: {
+          enumerable: true,
+          get: () => {
+            detailFieldReads += 1;
+            return 'issue-active';
+          }
+        }
+      }) as TranscriptToolCallDiagnostic;
+    };
+
+    const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
+    for (const [entryIndex, entry] of Array.from(runtimeState.running.values()).entries()) {
+      entry.transcript_tool_call_diagnostics = Array.from({ length: 200 }, (_, diagnosticIndex) =>
+        makeDiagnostic(entryIndex * 200 + diagnosticIndex)
+      );
+    }
+
+    const summarySnapshot = harness.orchestrator.getStateSnapshot({
+      includeTranscriptToolCallDiagnostics: false
+    });
+
+    expect(detailFieldReads).toBe(0);
+    expect(summarySnapshot.running.size).toBe(4);
+    for (const entry of summarySnapshot.running.values()) {
+      expect(entry.transcript_tool_call_diagnostics).toBeUndefined();
+      expect(entry.transcript_tool_call_diagnostic_stats).toMatchObject({
+        total_count: 200,
+        counts_by_lineage: {
+          active_owned: 50,
+          prior_stale: 50,
+          external_manual: 50,
+          unattributed: 50
+        },
+        counts_by_kind: {
+          function_call: 100,
+          function_call_output: 100
+        }
+      });
+    }
+
+    const fullSnapshot = harness.orchestrator.getStateSnapshot();
+    expect(detailFieldReads).toBeGreaterThan(0);
+    expect(fullSnapshot.running.get('i-summary-1')?.transcript_tool_call_diagnostics).toHaveLength(200);
+  });
+
   it('[SPEC-4.1-1][SPEC-7.1-1][SPEC-8.1-1][SPEC-17.4-1] dispatches in priority->created_at->identifier order', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([
