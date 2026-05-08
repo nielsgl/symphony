@@ -11,6 +11,15 @@ export interface CodexAppServerThreadEnvelopeV2 {
   thread?: CodexAppServerThreadV2;
 }
 
+export interface CodexAppServerThreadReadParamsV2 extends Record<string, unknown> {
+  threadId: string;
+  includeTurns?: boolean;
+}
+
+export interface CodexAppServerThreadReadResponseV2 extends Record<string, unknown> {
+  thread: CodexAppServerThreadV2;
+}
+
 export interface CodexAppServerThreadActivity {
   thread_id: string;
   updated_at_ms: number;

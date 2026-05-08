@@ -126,7 +126,7 @@ describe('CodexRunner', () => {
     const writtenMethods = parseWrittenMessages(fake)
       .map((line) => (typeof line.method === 'string' ? line.method : null))
       .filter((method): method is string => Boolean(method));
-    expect(writtenMethods).toEqual(['initialize', 'initialized', 'thread/start', 'turn/start']);
+    expect(writtenMethods).toEqual(['initialize', 'initialized', 'thread/start', 'turn/start', 'thread/read']);
 
     const turnStart = parseWrittenMessages(fake).find((line) => line.method === 'turn/start') as
       | { params?: Record<string, unknown> }
@@ -140,7 +140,7 @@ describe('CodexRunner', () => {
     );
   });
 
-  it('emits app-server Thread.updatedAt activity metadata from the generated protocol shape', async () => {
+  it('emits app-server Thread.updatedAt activity metadata from thread/read for the active thread', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const events: Array<{ event: string; thread_id?: string; codex_thread_activity_at_ms?: number | null }> = [];
@@ -155,8 +155,9 @@ describe('CodexRunner', () => {
     );
 
     fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
-    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1","updatedAt":1770000000,"status":"running"}}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":4,"result":{"thread":{"id":"thread-1","updatedAt":1770000000,"status":"running"}}}\n');
     fake.emitStdout('{"method":"turn/completed","params":{}}\n');
 
     await promise;
@@ -170,6 +171,10 @@ describe('CodexRunner', () => {
         codex_thread_activity_status: 'running'
       })
     );
+    const threadRead = parseWrittenMessages(fake).find((line) => line.method === 'thread/read') as
+      | { params?: Record<string, unknown> }
+      | undefined;
+    expect(threadRead?.params).toEqual({ threadId: 'thread-1', includeTurns: false });
   });
 
   it('settles deterministically and force-kills a cancelled app-server process that does not exit', async () => {
@@ -426,9 +431,9 @@ describe('CodexRunner', () => {
 
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
-    fake.emitStdout('{"id":4,"result":{"turn":{"id":"turn-2"}}}\n');
+    fake.emitStdout('{"id":5,"result":{"turn":{"id":"turn-2"}}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
-    fake.emitStdout('{"id":5,"result":{"turn":{"id":"turn-3"}}}\n');
+    fake.emitStdout('{"id":7,"result":{"turn":{"id":"turn-3"}}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
 
     const result = await promise;
@@ -470,7 +475,7 @@ describe('CodexRunner', () => {
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
-    fake.emitStdout('{"id":4,"result":{"turn":{"id":"turn-2"}}}\n');
+    fake.emitStdout('{"id":5,"result":{"turn":{"id":"turn-2"}}}\n');
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
