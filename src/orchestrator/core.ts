@@ -192,6 +192,7 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     })),
     codex_session_transcript_scan_offsets: { ...(entry.codex_session_transcript_scan_offsets ?? {}) },
     recovery: entry.recovery ? { ...entry.recovery } : null,
+    ownership_conflict: entry.ownership_conflict ? { ...entry.ownership_conflict } : null,
     budget: entry.budget ? { ...entry.budget } : undefined
   };
 }
@@ -326,6 +327,11 @@ function humanizeWorkerEvent(event: WorkerObservabilityEvent): string {
 
 function normalizeCodexAppServerPid(pid: number | string | null | undefined): string | null {
   return pid === undefined || pid === null ? null : String(pid);
+}
+
+function normalizeWorkerInstanceId(workerInstanceId: string | null | undefined): string | null {
+  const trimmed = workerInstanceId?.trim();
+  return trimmed ? trimmed : null;
 }
 
 function severityForRuntimeEvent(eventName: string): 'info' | 'warn' | 'error' {
@@ -713,6 +719,11 @@ export class OrchestratorCore {
     await run;
   }
 
+  private workerInstanceIdFromHandle(workerHandle: unknown): string | null {
+    const record = asRecord(workerHandle);
+    return normalizeWorkerInstanceId(readString(record?.worker_instance_id));
+  }
+
   onWorkerEvent(issue_id: string, workerEvent: WorkerObservabilityEvent): void {
     const runningEntry = this.state.running.get(issue_id);
     if (!runningEntry) {
@@ -964,6 +975,15 @@ export class OrchestratorCore {
     workerEvent: WorkerObservabilityEvent
   ): QuarantinedWorkerEventReason | null {
     const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
+    const eventWorkerInstanceId = normalizeWorkerInstanceId(workerEvent.worker_instance_id);
+    if (
+      eventWorkerInstanceId &&
+      runningEntry.worker_instance_id &&
+      eventWorkerInstanceId !== runningEntry.worker_instance_id
+    ) {
+      return 'worker_identity_mismatch';
+    }
+
     if (eventPid && this.isInactiveWorkerPidForIssue(issueId, eventPid)) {
       return 'inactive_worker_pid';
     }
@@ -1081,10 +1101,18 @@ export class OrchestratorCore {
       event: workerEvent.event,
       message: workerEvent.detail ?? null,
       codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
+      worker_instance_id: normalizeWorkerInstanceId(workerEvent.worker_instance_id),
       session_id: workerEvent.session_id ?? null,
       thread_id: workerEvent.thread_id ?? null,
       turn_id: workerEvent.turn_id ?? null,
       active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+      active_worker_instance_id: runningEntry.worker_instance_id ?? null,
+      run_id: null,
+      issue_run_id: null,
+      attempt_id: null,
+      active_run_id: runningEntry.run_id ?? null,
+      active_issue_run_id: runningEntry.issue_run_id ?? null,
+      active_attempt_id: runningEntry.attempt_id ?? null,
       active_session_id: runningEntry.session_id ?? null,
       active_thread_id: runningEntry.thread_id ?? null,
       active_turn_id: runningEntry.turn_id ?? null,
@@ -1109,11 +1137,67 @@ export class OrchestratorCore {
         event_session_id: workerEvent.session_id ?? null,
         active_codex_app_server_pid: runningEntry.codex_app_server_pid,
         event_codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
+        active_worker_instance_id: runningEntry.worker_instance_id ?? null,
+        event_worker_instance_id: normalizeWorkerInstanceId(workerEvent.worker_instance_id),
+        active_run_id: runningEntry.run_id ?? null,
+        active_issue_run_id: runningEntry.issue_run_id ?? null,
+        active_attempt_id: runningEntry.attempt_id ?? null,
         event: workerEvent.event,
         reason: quarantinedEvent.reason
       }
     });
+    this.maybeRecordOwnershipConflict(runningEntry, workerEvent, reason);
     this.ports.notifyObservers?.();
+  }
+
+  private maybeRecordOwnershipConflict(
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent,
+    reason: QuarantinedWorkerEventReason
+  ): void {
+    if (reason !== 'worker_identity_mismatch' && reason !== 'inactive_worker_pid') {
+      return;
+    }
+    if (runningEntry.session_id || runningEntry.thread_id || runningEntry.turn_id) {
+      return;
+    }
+
+    const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
+    const eventWorkerInstanceId = normalizeWorkerInstanceId(workerEvent.worker_instance_id);
+    if (!eventPid && !eventWorkerInstanceId) {
+      return;
+    }
+
+    runningEntry.ownership_conflict = {
+      reason: 'pre_session_identity_conflict',
+      detected_at_ms: workerEvent.timestamp_ms,
+      event: workerEvent.event,
+      event_codex_app_server_pid: eventPid,
+      active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+      event_worker_instance_id: eventWorkerInstanceId,
+      active_worker_instance_id: runningEntry.worker_instance_id ?? null,
+      event_thread_id: workerEvent.thread_id ?? null,
+      event_turn_id: workerEvent.turn_id ?? null,
+      event_session_id: workerEvent.session_id ?? null
+    };
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.ownershipConflictDetected,
+      message: 'active worker ownership conflict detected',
+      context: {
+        issue_id: runningEntry.issue.id,
+        issue_identifier: runningEntry.identifier,
+        conflict_reason: runningEntry.ownership_conflict.reason,
+        active_run_id: runningEntry.run_id ?? null,
+        active_issue_run_id: runningEntry.issue_run_id ?? null,
+        active_attempt_id: runningEntry.attempt_id ?? null,
+        active_worker_instance_id: runningEntry.worker_instance_id ?? null,
+        active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+        event_worker_instance_id: eventWorkerInstanceId,
+        event_codex_app_server_pid: eventPid,
+        event: workerEvent.event
+      }
+    });
   }
 
   private isInactiveWorkerPidForIssue(issueId: string, pid: string): boolean {
@@ -1957,6 +2041,39 @@ export class OrchestratorCore {
     this.ports.notifyObservers?.();
   }
 
+  private staleWorkerExitReasonForRunningEntry(
+    running: RunningEntry,
+    details: WorkerExitDetails
+  ): 'worker_instance_mismatch' | 'worker_handle_mismatch' | 'worker_pid_mismatch' | 'thread_mismatch' | 'turn_mismatch' | 'session_mismatch' | null {
+    const exitWorkerInstanceId = normalizeWorkerInstanceId(details.worker_instance_id);
+    if (exitWorkerInstanceId && running.worker_instance_id && exitWorkerInstanceId !== running.worker_instance_id) {
+      return 'worker_instance_mismatch';
+    }
+
+    if (details.worker_handle !== undefined && details.worker_handle !== running.worker_handle) {
+      return 'worker_handle_mismatch';
+    }
+
+    const exitPid = normalizeCodexAppServerPid(details.codex_app_server_pid);
+    if (exitPid && running.codex_app_server_pid && exitPid !== running.codex_app_server_pid) {
+      return 'worker_pid_mismatch';
+    }
+
+    if (details.thread_id && running.thread_id && details.thread_id !== running.thread_id) {
+      return 'thread_mismatch';
+    }
+
+    if (details.turn_id && running.turn_id && details.turn_id !== running.turn_id) {
+      return 'turn_mismatch';
+    }
+
+    if (details.session_id && running.session_id && details.session_id !== running.session_id) {
+      return 'session_mismatch';
+    }
+
+    return null;
+  }
+
   async onWorkerExit(
     issue_id: string,
     reason: WorkerExitReason,
@@ -1965,6 +2082,59 @@ export class OrchestratorCore {
   ): Promise<void> {
     const running = this.state.running.get(issue_id);
     if (!running) {
+      if (this.state.completed.has(issue_id)) {
+        this.logger?.log({
+          level: 'info',
+          event: CANONICAL_EVENT.orchestration.staleWorkerExitIgnored,
+          message: 'late worker exit observed after runtime ownership was already released',
+          context: {
+            issue_id,
+            reason,
+            error: error ?? null,
+            completion_reason: details.completion_reason ?? null,
+            refreshed_state: details.refreshed_state ?? null,
+            stale_reason: 'ownership_already_released',
+            event_worker_instance_id: normalizeWorkerInstanceId(details.worker_instance_id),
+            event_codex_app_server_pid: normalizeCodexAppServerPid(details.codex_app_server_pid),
+            event_thread_id: details.thread_id ?? null,
+            event_turn_id: details.turn_id ?? null,
+            event_session_id: details.session_id ?? null
+          }
+        });
+      }
+      return;
+    }
+
+    const staleExitReason = this.staleWorkerExitReasonForRunningEntry(running, details);
+    if (staleExitReason) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.orchestration.staleWorkerExitIgnored,
+        message: 'stale worker exit ignored for active run',
+        context: {
+          issue_id,
+          issue_identifier: running.identifier,
+          reason,
+          error: error ?? null,
+          completion_reason: details.completion_reason ?? null,
+          refreshed_state: details.refreshed_state ?? null,
+          stale_reason: staleExitReason,
+          active_run_id: running.run_id ?? null,
+          active_issue_run_id: running.issue_run_id ?? null,
+          active_attempt_id: running.attempt_id ?? null,
+          active_worker_instance_id: running.worker_instance_id ?? null,
+          event_worker_instance_id: normalizeWorkerInstanceId(details.worker_instance_id),
+          active_codex_app_server_pid: running.codex_app_server_pid ?? null,
+          event_codex_app_server_pid: normalizeCodexAppServerPid(details.codex_app_server_pid),
+          active_thread_id: running.thread_id ?? null,
+          event_thread_id: details.thread_id ?? null,
+          active_turn_id: running.turn_id ?? null,
+          event_turn_id: details.turn_id ?? null,
+          active_session_id: running.session_id ?? null,
+          event_session_id: details.session_id ?? null
+        }
+      });
+      this.ports.notifyObservers?.();
       return;
     }
 
@@ -2989,6 +3159,10 @@ export class OrchestratorCore {
     }
 
     this.state.claimed.add(issue.id);
+    if (attempt === null || attempt === 0) {
+      this.state.completed.delete(issue.id);
+      this.state.phase_timeline?.set(issue.id, []);
+    }
     this.emitPhaseMarker(issue.id, {
       phase: REASON_CODES.dispatchStarted,
       detail: 'dispatch attempt started',
@@ -3130,6 +3304,7 @@ export class OrchestratorCore {
       issue_run_id: graphContext.issue_run_id ?? null,
       attempt_id: null,
       worker_handle: spawned.worker_handle,
+      worker_instance_id: spawned.worker_instance_id ?? this.workerInstanceIdFromHandle(spawned.worker_handle),
       monitor_handle: spawned.monitor_handle,
       retry_attempt: attempt ?? 0,
       workspace_path: spawned.workspace_path ?? null,
@@ -3185,6 +3360,7 @@ export class OrchestratorCore {
       quarantined_events: [],
       quarantined_event_count: 0,
       last_quarantined_event_at_ms: null,
+      ownership_conflict: null,
       started_at_ms: startedAtMs,
       last_codex_timestamp_ms: null,
       current_phase: null,
@@ -5792,6 +5968,7 @@ export class OrchestratorCore {
     this.state.running.set(issueId, {
       ...runningEntry,
       worker_handle: recovered.worker_handle,
+      worker_instance_id: recovered.worker_instance_id ?? this.workerInstanceIdFromHandle(recovered.worker_handle),
       monitor_handle: recovered.monitor_handle,
       worker_host: recovered.worker_host ?? runningEntry.worker_host ?? null,
       workspace_path: recovered.workspace_path ?? runningEntry.workspace_path ?? null,
@@ -5832,6 +6009,7 @@ export class OrchestratorCore {
       running_wait_stall_event_emitted: false,
       outstanding_tool_calls: {},
       codex_session_transcript_scan_offsets: {},
+      ownership_conflict: null,
       recovery: { ...interruptedRecovery, last_result: 'started' }
     });
 

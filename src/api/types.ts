@@ -318,6 +318,19 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_heartbeat_at_ms: number | null;
     quarantined_event_count: number;
     last_quarantined_event_at: string | null;
+    ownership_conflict: {
+      reason: 'pre_session_identity_conflict' | 'ownership_conflict';
+      detected_at: string;
+      detected_at_ms: number;
+      event: string;
+      event_codex_app_server_pid: string | null;
+      active_codex_app_server_pid: string | null;
+      event_worker_instance_id: string | null;
+      active_worker_instance_id: string | null;
+      event_thread_id: string | null;
+      event_turn_id: string | null;
+      event_session_id: string | null;
+    } | null;
     current_blocker_class: string | null;
     time_since_progress: number | null;
     last_successful_step: string | null;
@@ -464,6 +477,19 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     awaiting_operator_resume_nonce: number;
     quarantined_event_count: number;
     last_quarantined_event_at: string | null;
+    ownership_conflict: {
+      reason: 'pre_session_identity_conflict' | 'ownership_conflict';
+      detected_at: string;
+      detected_at_ms: number;
+      event: string;
+      event_codex_app_server_pid: string | null;
+      active_codex_app_server_pid: string | null;
+      event_worker_instance_id: string | null;
+      active_worker_instance_id: string | null;
+      event_thread_id: string | null;
+      event_turn_id: string | null;
+      event_session_id: string | null;
+    } | null;
     breaker_active: boolean;
     breaker_hit_count: number;
     breaker_window_minutes: number;
@@ -821,6 +847,14 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     thread_id: string | null;
     turn_id: string | null;
     active_codex_app_server_pid: string | null;
+    worker_instance_id: string | null;
+    active_worker_instance_id: string | null;
+    run_id: string | null;
+    issue_run_id: string | null;
+    attempt_id: string | null;
+    active_run_id: string | null;
+    active_issue_run_id: string | null;
+    active_attempt_id: string | null;
     active_session_id: string | null;
     active_thread_id: string | null;
     active_turn_id: string | null;

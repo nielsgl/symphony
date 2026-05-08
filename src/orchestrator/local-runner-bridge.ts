@@ -13,6 +13,7 @@ import { runLocalWorkerAttempt, runLocalWorkerRecoveryAttempt } from './local-wo
 interface WorkerHandle {
   issue_id: string;
   issue_identifier: string;
+  worker_instance_id: string;
   worker_host: string | null;
   promise: Promise<void>;
   cancel: (reason: string) => Promise<void>;
@@ -28,7 +29,7 @@ export interface LocalRunnerBridgeOptions {
   issueStateFetcher?: (issue_ids: string[]) => Promise<Issue[]>;
   logger?: StructuredLogger;
   onWorkerExit?: (
-    params: { issue_id: string; reason: 'normal' | 'abnormal'; error?: string } & WorkerExitDetails
+    params: { issue_id: string; reason: 'normal' | 'abnormal'; error?: string; worker_handle?: unknown } & WorkerExitDetails
   ) => Promise<void> | void;
   onWorkerEvent?: (params: { issue_id: string; event: CodexRunnerEvent }) => void;
 }
@@ -42,6 +43,7 @@ export class LocalRunnerBridge {
   private readonly issueStateFetcher: (issue_ids: string[]) => Promise<Issue[]>;
   private readonly onWorkerExit?: LocalRunnerBridgeOptions['onWorkerExit'];
   private readonly onWorkerEvent?: LocalRunnerBridgeOptions['onWorkerEvent'];
+  private nextWorkerSequence = 0;
 
   constructor(options: LocalRunnerBridgeOptions) {
     this.workspaceManager = options.workspaceManager;
@@ -86,12 +88,14 @@ export class LocalRunnerBridge {
       };
     }
     const cancellationController = new AbortController();
+    const workerInstanceId = this.createWorkerInstanceId(params.issue.id);
     let runnerSettled = false;
     const workerPromise = this.startWorker(
       params.issue,
       params.attempt,
       workerHost,
       params.resume_context ?? null,
+      workerInstanceId,
       cancellationController.signal,
       () => {
         runnerSettled = true;
@@ -100,6 +104,7 @@ export class LocalRunnerBridge {
     const worker_handle: WorkerHandle = {
       issue_id: params.issue.id,
       issue_identifier: params.issue.identifier,
+      worker_instance_id: workerInstanceId,
       promise: workerPromise,
       worker_host: workerHost,
       cancel: createWorkerCancel({
@@ -115,6 +120,7 @@ export class LocalRunnerBridge {
     return {
       ok: true,
       worker_handle,
+      worker_instance_id: workerInstanceId,
       monitor_handle: worker_handle,
       worker_host: workerHost,
       workspace_path: workspace.path,
@@ -151,13 +157,15 @@ export class LocalRunnerBridge {
       };
     }
     const cancellationController = new AbortController();
+    const workerInstanceId = this.createWorkerInstanceId(params.issue.id);
     let runnerSettled = false;
-    const workerPromise = this.startRecoveryWorker(params, workerHost, cancellationController.signal, () => {
+    const workerPromise = this.startRecoveryWorker(params, workerHost, workerInstanceId, cancellationController.signal, () => {
       runnerSettled = true;
     });
     const worker_handle: WorkerHandle = {
       issue_id: params.issue.id,
       issue_identifier: params.issue.identifier,
+      worker_instance_id: workerInstanceId,
       promise: workerPromise,
       worker_host: workerHost,
       cancel: createWorkerCancel({
@@ -173,6 +181,7 @@ export class LocalRunnerBridge {
     return {
       ok: true,
       worker_handle,
+      worker_instance_id: workerInstanceId,
       monitor_handle: worker_handle,
       worker_host: workerHost,
       workspace_path: workspace.path,
@@ -209,10 +218,13 @@ export class LocalRunnerBridge {
         context: {
           issue_id: params.issue_id,
           issue_identifier: workerHandle.issue_identifier,
+          worker_instance_id: workerHandle.worker_instance_id,
           cleanup_workspace: params.cleanup_workspace,
           reason: params.reason ?? 'worker_terminated',
           worker_host: workerHandle.worker_host,
-          cancellation_contract: 'supported'
+          cancellation_contract: 'supported',
+          cancel_requested: true,
+          graceful_exit_observed: true
         }
       });
     } else {
@@ -223,6 +235,7 @@ export class LocalRunnerBridge {
         context: {
           issue_id: params.issue_id,
           issue_identifier: workerHandle.issue_identifier,
+          worker_instance_id: workerHandle.worker_instance_id,
           cleanup_workspace: params.cleanup_workspace,
           reason: params.reason ?? 'worker_terminated',
           worker_host: workerHandle.worker_host,
@@ -232,8 +245,31 @@ export class LocalRunnerBridge {
     }
 
     if (params.cleanup_workspace) {
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.workspace.teardownStart,
+        message: 'worker workspace cleanup attempted',
+        context: {
+          issue_id: params.issue_id,
+          issue_identifier: workerHandle.issue_identifier,
+          worker_instance_id: workerHandle.worker_instance_id,
+          reason: params.reason ?? 'worker_terminated'
+        }
+      });
       workerHandle.cleanup_workspace_promise ??= this.workspaceManager.cleanupWorkspace(workerHandle.issue_identifier);
-      await workerHandle.cleanup_workspace_promise;
+      const cleanupSucceeded = await workerHandle.cleanup_workspace_promise;
+      this.logger?.log({
+        level: cleanupSucceeded ? 'info' : 'warn',
+        event: cleanupSucceeded ? CANONICAL_EVENT.workspace.teardownSuccess : CANONICAL_EVENT.workspace.teardownFailed,
+        message: cleanupSucceeded ? 'worker workspace cleanup succeeded' : 'worker workspace cleanup failed',
+        context: {
+          issue_id: params.issue_id,
+          issue_identifier: workerHandle.issue_identifier,
+          worker_instance_id: workerHandle.worker_instance_id,
+          reason: params.reason ?? 'worker_terminated',
+          cleanup_succeeded: cleanupSucceeded
+        }
+      });
     }
   }
 
@@ -242,6 +278,7 @@ export class LocalRunnerBridge {
     attempt: number | null,
     worker_host: string | null,
     resume_context: string | null,
+    workerInstanceId: string,
     cancellationSignal: AbortSignal,
     onRunnerSettled: () => void
   ): Promise<void> {
@@ -268,7 +305,7 @@ export class LocalRunnerBridge {
       issueStateFetcher: this.issueStateFetcher,
       cancellationSignal,
       onCodexEvent: (event) => {
-        this.onWorkerEvent?.({ issue_id: issue.id, event });
+        this.onWorkerEvent?.({ issue_id: issue.id, event: { ...event, worker_instance_id: workerInstanceId } });
       }
     });
     onRunnerSettled();
@@ -303,6 +340,7 @@ export class LocalRunnerBridge {
       issue_id: issue.id,
       reason: result.reason,
       error: result.error,
+      worker_instance_id: workerInstanceId,
       completion_reason: result.completion_reason,
       refreshed_state: result.refreshed_state
     });
@@ -318,6 +356,7 @@ export class LocalRunnerBridge {
       recovery_prompt: string;
     },
     worker_host: string | null,
+    workerInstanceId: string,
     cancellationSignal: AbortSignal,
     onRunnerSettled: () => void
   ): Promise<void> {
@@ -350,7 +389,7 @@ export class LocalRunnerBridge {
       recoveryPrompt: params.recovery_prompt,
       cancellationSignal,
       onCodexEvent: (event) => {
-        this.onWorkerEvent?.({ issue_id: params.issue.id, event });
+        this.onWorkerEvent?.({ issue_id: params.issue.id, event: { ...event, worker_instance_id: workerInstanceId } });
       }
     });
     onRunnerSettled();
@@ -358,9 +397,15 @@ export class LocalRunnerBridge {
       issue_id: params.issue.id,
       reason: result.reason,
       error: result.error,
+      worker_instance_id: workerInstanceId,
       completion_reason: result.completion_reason,
       refreshed_state: result.refreshed_state
     });
+  }
+
+  private createWorkerInstanceId(issueId: string): string {
+    this.nextWorkerSequence += 1;
+    return `${issueId}:${Date.now().toString(36)}:${this.nextWorkerSequence}`;
   }
 }
 

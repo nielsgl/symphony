@@ -937,7 +937,7 @@ describe('SnapshotService', () => {
       }
     ]);
     expect(issue.stale_events).toEqual([
-      {
+      expect.objectContaining({
         at: '2026-04-10T10:01:45.000Z',
         event: CANONICAL_EVENT.codex.turnWaiting,
         message: 'late prior-review heartbeat',
@@ -950,8 +950,8 @@ describe('SnapshotService', () => {
         active_turn_id: 'fresh-turn',
         active_session_id: 'fresh-session',
         reason: 'lineage_mismatch'
-      },
-      {
+      }),
+      expect.objectContaining({
         at: '2026-04-10T10:01:50.000Z',
         event: CANONICAL_EVENT.codex.phasePlanning,
         message: 'late planning after task_complete',
@@ -964,13 +964,96 @@ describe('SnapshotService', () => {
         active_turn_id: 'fresh-turn',
         active_session_id: 'fresh-session',
         reason: 'terminal_residue'
-      }
+      })
     ]);
 
     const projectedState = service.projectState(state);
     expect(projectedState.running[0]?.thread_id).toBe('fresh-thread');
     expect(projectedState.running[0]?.codex_app_server_pid).toBe('2002');
     expect(projectedState.running[0]?.quarantined_event_count).toBe(2);
+  });
+
+  it('filters stale operator actions from running issue detail projections', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:02:00.000Z')
+    });
+
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            run_id: 'fresh-run',
+            attempt_id: 'fresh-attempt',
+            thread_id: 'fresh-thread',
+            turn_id: 'fresh-turn',
+            session_id: 'fresh-session',
+            started_at_ms: Date.parse('2026-04-10T10:01:00.000Z')
+          })
+        ]
+      ]),
+      operator_actions: new Map([
+        [
+          'issue-1',
+          [
+            {
+              action: 'cancel',
+              requested_at_ms: Date.parse('2026-04-10T10:00:30.000Z'),
+              result: 'accepted',
+              result_code: 'current_turn_cancelled',
+              message: 'cancel accepted',
+              target_identifiers: {
+                issue_id: 'issue-1',
+                issue_identifier: 'ABC-1',
+                run_id: 'old-run',
+                attempt_id: 'old-attempt',
+                thread_id: 'old-thread',
+                turn_id: 'old-turn',
+                session_id: 'old-session'
+              }
+            },
+            {
+              action: 'resume',
+              requested_at_ms: Date.parse('2026-04-10T10:01:30.000Z'),
+              result: 'accepted',
+              result_code: 'resume_accepted',
+              message: 'resume accepted',
+              target_identifiers: {
+                issue_id: 'issue-1',
+                issue_identifier: 'ABC-1',
+                run_id: 'fresh-run',
+                attempt_id: 'fresh-attempt',
+                thread_id: 'fresh-thread',
+                turn_id: 'fresh-turn',
+                session_id: 'fresh-session'
+              }
+            }
+          ]
+        ]
+      ])
+    });
+
+    const issue = service.projectIssue(state, 'ABC-1');
+    expect(issue.operator_actions).toEqual([
+      expect.objectContaining({
+        action: 'resume',
+        result_code: 'resume_accepted'
+      })
+    ]);
+    expect(issue.running?.operator_actions).toEqual([
+      expect.objectContaining({
+        action: 'resume',
+        result_code: 'resume_accepted'
+      })
+    ]);
+
+    const projectedState = service.projectState(state);
+    expect(projectedState.running[0]?.operator_actions).toEqual([
+      expect.objectContaining({
+        action: 'resume',
+        result_code: 'resume_accepted'
+      })
+    ]);
   });
 
   it('projects running issue retry metadata with worker and workspace context when queued', () => {

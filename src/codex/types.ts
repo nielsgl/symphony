@@ -112,6 +112,7 @@ export interface CodexRunnerEvent {
   event: string;
   timestamp: string;
   codex_app_server_pid: number | null;
+  worker_instance_id?: string | null;
   thread_id?: string;
   turn_id?: string;
   session_id?: string;

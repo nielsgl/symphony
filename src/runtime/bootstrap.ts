@@ -180,6 +180,7 @@ function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObservabil
     turn_id: event.turn_id,
     session_id: event.session_id,
     codex_app_server_pid: event.codex_app_server_pid,
+    worker_instance_id: event.worker_instance_id,
     detail: event.detail,
     usage: event.usage,
     rate_limits: event.rate_limits,
@@ -723,8 +724,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     logger,
     promptTemplate: workflowDefinition.prompt_template,
     issueStateFetcher: async (issue_ids) => tracker.fetch_issue_states_by_ids(issue_ids),
-    onWorkerExit: async ({ issue_id, reason, error, completion_reason, refreshed_state }) => {
-      await orchestrator.onWorkerExit(issue_id, reason, error, { completion_reason, refreshed_state });
+    onWorkerExit: async ({ issue_id, reason, error, completion_reason, refreshed_state, worker_instance_id }) => {
+      await orchestrator.onWorkerExit(issue_id, reason, error, { completion_reason, refreshed_state, worker_instance_id });
     },
     onWorkerEvent: ({ issue_id, event }) => {
       orchestrator.onWorkerEvent(issue_id, toWorkerEvent(event, nowMs()));

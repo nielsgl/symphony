@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { OrchestratorCore } from '../../src/orchestrator/core';
+import { SnapshotService } from '../../src/api/snapshot-service';
 import type { OrchestratorConfig, OrchestratorPersistencePort, OrchestratorPorts } from '../../src/orchestrator/types';
 import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
@@ -105,11 +106,14 @@ function createHarness(options: {
   const spawnWorker: OrchestratorPorts['spawnWorker'] =
     options.spawnWorker ??
     (async ({ issue, attempt, worker_host, resume_context }) => {
+      const worker_instance_id = `${issue.id}-worker-${spawned.length + 1}`;
+      const worker_handle = { issue_id: issue.id, worker_instance_id };
       spawned.push({ issue_id: issue.id, attempt, worker_host, resume_context });
       return {
         ok: true,
-        worker_handle: { issue_id: issue.id },
-        monitor_handle: { issue_id: issue.id },
+        worker_handle,
+        worker_instance_id,
+        monitor_handle: worker_handle,
         worker_host
       };
     });
@@ -686,6 +690,68 @@ describe('OrchestratorCore', () => {
     expect(snapshot.retry_attempts.has('i-paused')).toBe(false);
     expect(snapshot.completed.has('i-paused')).toBe(true);
     expect(harness.terminated).toEqual([]);
+  });
+
+  it('surfaces pre-session ownership conflicts and filters stale operator action state from fresh runs', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review', 'In Progress']
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-action', identifier: 'NIE-ACTION', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    const firstWorkerId = harness.orchestrator.getStateSnapshot().running.get('i-stale-action')?.worker_instance_id;
+
+    harness.orchestrator.onWorkerEvent('i-stale-action', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'old-thread',
+      turn_id: 'old-turn',
+      session_id: 'old-session',
+      codex_app_server_pid: 97537,
+      worker_instance_id: firstWorkerId
+    });
+    await harness.orchestrator.cancelCurrentTurn('NIE-ACTION', {
+      confirmed: true,
+      actor: 'operator',
+      reason_note: 'wrong worker'
+    });
+    harness.now.value += 100;
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-action', identifier: 'NIE-ACTION', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    const fresh = harness.orchestrator.getStateSnapshot().running.get('i-stale-action');
+    expect(fresh?.worker_instance_id).toBe('i-stale-action-worker-2');
+    expect(fresh?.session_id).toBeNull();
+    harness.orchestrator.onWorkerEvent('i-stale-action', {
+      timestamp_ms: harness.now.value + 2,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'same-issue event from a different live worker before session identity',
+      codex_app_server_pid: 87938,
+      worker_instance_id: firstWorkerId
+    });
+
+    const projected = new SnapshotService({ nowMs: () => harness.now.value + 3 }).projectState(
+      harness.orchestrator.getStateSnapshot()
+    );
+    const row = projected.running.find((entry) => entry.issue_id === 'i-stale-action');
+    expect(row?.operator_actions).toEqual([]);
+    expect(row?.quarantined_event_count).toBe(1);
+    expect(row?.ownership_conflict).toEqual(
+      expect.objectContaining({
+        reason: 'pre_session_identity_conflict',
+        event_codex_app_server_pid: '87938',
+        active_worker_instance_id: 'i-stale-action-worker-2',
+        event_worker_instance_id: firstWorkerId
+      })
+    );
   });
 
   it('does not schedule continuation retry when normal exit has no refreshed issue', async () => {
@@ -3651,6 +3717,90 @@ describe('OrchestratorCore', () => {
     expect(freshReview?.retry_attempt).toBe(0);
     expect(freshReview?.thread_id).toBeNull();
     expect(freshReview?.session_id).toBeNull();
+  });
+
+  it('ignores late implementation worker exit after Agent Review fresh dispatch claims pre-session ownership', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    let runSequence = 0;
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => `run-${++runSequence}`,
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review']
+      },
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-duplicate-review', identifier: 'ABC-DUPE', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    const implementationWorkerId = harness.orchestrator.getStateSnapshot().running.get('i-duplicate-review')?.worker_instance_id;
+
+    harness.orchestrator.onWorkerEvent('i-duplicate-review', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session',
+      codex_app_server_pid: 33021,
+      worker_instance_id: implementationWorkerId
+    });
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-duplicate-review', identifier: 'ABC-DUPE', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.reconcileRunningIssues();
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-duplicate-review', identifier: 'ABC-DUPE', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    const reviewBeforeLateExit = harness.orchestrator.getStateSnapshot().running.get('i-duplicate-review');
+    expect(reviewBeforeLateExit?.worker_instance_id).toBe('i-duplicate-review-worker-2');
+    expect(reviewBeforeLateExit?.thread_id).toBeNull();
+    expect(reviewBeforeLateExit?.session_id).toBeNull();
+
+    await harness.orchestrator.onWorkerExit('i-duplicate-review', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review',
+      worker_instance_id: implementationWorkerId,
+      codex_app_server_pid: 33021,
+      thread_id: 'implementation-thread',
+      turn_id: 'implementation-turn',
+      session_id: 'implementation-session'
+    });
+
+    const reviewAfterLateExit = harness.orchestrator.getStateSnapshot().running.get('i-duplicate-review');
+    expect(reviewAfterLateExit?.worker_instance_id).toBe('i-duplicate-review-worker-2');
+    expect(reviewAfterLateExit?.run_id).toBe('run-2');
+    expect(reviewAfterLateExit?.thread_id).toBeNull();
+    expect(harness.spawned).toHaveLength(2);
+    expect(completedRuns).toHaveLength(1);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.orchestration.staleWorkerExitIgnored,
+        context: expect.objectContaining({
+          issue_id: 'i-duplicate-review',
+          stale_reason: 'worker_instance_mismatch',
+          active_worker_instance_id: 'i-duplicate-review-worker-2',
+          event_worker_instance_id: implementationWorkerId
+        })
+      })
+    );
+
+    await harness.orchestrator.tick('interval');
+    expect(harness.spawned).toHaveLength(2);
   });
 
   it('releases completed Agent Review ownership when issue routes back to In Progress for fresh dispatch', async () => {

@@ -53,6 +53,8 @@ export const CANONICAL_EVENT = {
     workerTerminated: 'orchestration.worker.terminated',
     workerEvent: 'orchestration.worker.event',
     staleWorkerEventIgnored: 'orchestration.worker_event.stale_ignored',
+    staleWorkerExitIgnored: 'orchestration.worker_exit.stale_ignored',
+    ownershipConflictDetected: 'orchestration.ownership.conflict_detected',
     workerStalled: 'orchestration.worker.stalled',
     workerHostSlotsExhausted: 'orchestration.worker.host_slots_exhausted',
     blockedInputScheduled: 'orchestration.blocked_input.scheduled',
