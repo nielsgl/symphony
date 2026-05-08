@@ -2300,6 +2300,12 @@ describe('OrchestratorCore', () => {
       recovery: {
         last_result: 'succeeded',
         last_result_reason_code: REASON_CODES.maxTurnsReached,
+        previous_thread_id: 'thread-recover-success',
+        previous_turn_id: 'turn-old-success',
+        previous_session_id: 'session-old-success',
+        replacement_thread_id: 'thread-recover-success',
+        replacement_turn_id: 'turn-replacement-success',
+        replacement_session_id: 'session-replacement-success',
         last_tool_name: 'linear_graphql',
         last_call_id: 'call_recover_success'
       }
@@ -2336,6 +2342,66 @@ describe('OrchestratorCore', () => {
         })
       })
     ]);
+  });
+
+  it('preserves replacement lineage when a guarded recovery turn fails after starting', async () => {
+    const harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      recoverMissingToolOutput: async (params) => ({
+        ok: true,
+        worker_handle: { recovery: true },
+        monitor_handle: { recovery: true },
+        worker_host: params.worker_host
+      })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-fails-after-start', identifier: 'ABC-RECOVER-FAILS' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-recover-fails-after-start', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-recover-fails',
+      turn_id: 'turn-old-fails',
+      session_id: 'session-old-fails'
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-fails-after-start', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_recover_fails',
+      thread_id: 'thread-recover-fails',
+      turn_id: 'turn-old-fails',
+      session_id: 'session-old-fails'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    harness.orchestrator.onWorkerEvent('i-recover-fails-after-start', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-recover-fails',
+      turn_id: 'turn-replacement-fails',
+      session_id: 'session-replacement-fails'
+    });
+
+    await harness.orchestrator.onWorkerExit('i-recover-fails-after-start', 'abnormal', 'replacement failed');
+
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-recover-fails-after-start')).toMatchObject({
+      stop_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+      recovery: {
+        last_result: 'failed',
+        last_result_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+        previous_thread_id: 'thread-recover-fails',
+        previous_turn_id: 'turn-old-fails',
+        previous_session_id: 'session-old-fails',
+        replacement_thread_id: 'thread-recover-fails',
+        replacement_turn_id: 'turn-replacement-fails',
+        replacement_session_id: 'session-replacement-fails',
+        last_tool_name: 'linear_graphql',
+        last_call_id: 'call_recover_fails'
+      }
+    });
   });
 
   it('blocks missing tool output without a previous turn id instead of spawning unrelated recovery', async () => {

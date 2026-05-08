@@ -270,6 +270,11 @@ describe('forensics export bundle', () => {
           status: 'succeeded',
           original_tool_name: 'linear_graphql',
           original_call_id: 'call-1',
+          replacement_turn: {
+            thread_id: 'thread-1',
+            turn_id: 'turn-recovery',
+            session_id: 'session-recovery'
+          },
           final_outcome: {
             result: 'succeeded',
             detail: 'token=super-secret-token'
@@ -283,6 +288,11 @@ describe('forensics export bundle', () => {
       status: 'succeeded',
       original_tool_name: 'linear_graphql',
       original_call_id: 'call-1',
+      replacement_turn: {
+        thread_id: 'thread-1',
+        turn_id: 'turn-recovery',
+        session_id: 'session-recovery'
+      },
       final_outcome: {
         result: 'succeeded',
         detail: 'token=***REDACTED***'
