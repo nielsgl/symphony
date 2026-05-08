@@ -820,18 +820,20 @@ function createProcessCancellation(params: {
 }): {
   withCancellation: <T>(promise: Promise<T>) => Promise<T>;
   cancellationRequested: () => boolean;
-  waitForCancellation: () => Promise<void>;
+  waitForCancellation: () => Promise<CodexRunnerError | null>;
   dispose: () => void;
 } {
   const { processHandle, signal } = params;
   let cancellationSettled: Promise<void> | null = null;
   let rejectCancellation: ((error: CodexRunnerError) => void) | null = null;
   let cancellationRejected = false;
+  let cancellationError: CodexRunnerError | null = null;
 
   const cancellationPromise = new Promise<never>((_, reject) => {
     rejectCancellation = (error) => {
       if (!cancellationRejected) {
         cancellationRejected = true;
+        cancellationError = error;
         reject(error);
       }
     };
@@ -878,6 +880,7 @@ function createProcessCancellation(params: {
     cancellationRequested: () => Boolean(signal?.aborted),
     waitForCancellation: async () => {
       await cancellationSettled;
+      return cancellationError;
     },
     dispose: () => {
       signal?.removeEventListener('abort', requestCancellation);
@@ -1184,11 +1187,12 @@ export class CodexRunner {
     } catch (error) {
       if (error instanceof CodexRunnerError) {
         if (cancellation.cancellationRequested()) {
+          const cancellationError = await cancellation.waitForCancellation();
           emit({ event: CANONICAL_EVENT.codex.turnCancelled, detail: abortReason(input.cancellationSignal) });
           if (error.code === 'turn_cancelled' && error.message.startsWith('worker_cancelled:')) {
             throw error;
           }
-          throw createCancellationError(input.cancellationSignal);
+          throw cancellationError ?? createCancellationError(input.cancellationSignal);
         }
         if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
           throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
@@ -1408,11 +1412,12 @@ export class CodexRunner {
     } catch (error) {
       if (error instanceof CodexRunnerError) {
         if (cancellation.cancellationRequested()) {
+          const cancellationError = await cancellation.waitForCancellation();
           emit({ event: CANONICAL_EVENT.codex.turnCancelled, detail: abortReason(input.cancellationSignal) });
           if (error.code === 'turn_cancelled' && error.message.startsWith('worker_cancelled:')) {
             throw error;
           }
-          throw createCancellationError(input.cancellationSignal);
+          throw cancellationError ?? createCancellationError(input.cancellationSignal);
         }
         if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
           throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
