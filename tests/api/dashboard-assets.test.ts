@@ -81,6 +81,27 @@ describe('dashboard assets', () => {
     expect(streamBlock).not.toContain('/api/v1/stopped-runs/recovery');
   });
 
+  it('preserves stopped-run recovery loaded before the initial state snapshot', () => {
+    const clientJs = renderDashboardClientJs();
+    const loadBlock = clientJs.slice(
+      clientJs.indexOf('async function loadStoppedRunRecovery()'),
+      clientJs.indexOf('function applyPayload(payload, source)')
+    );
+    const applyBlock = clientJs.slice(
+      clientJs.indexOf('function applyPayload(payload, source)'),
+      clientJs.indexOf('function updateRuntimeClock()')
+    );
+
+    expect(clientJs).toContain('stoppedRunRecoveryPayload: null');
+    expect(clientJs).toContain('function normalizeStoppedRunRecoveryPayload(recovery)');
+    expect(clientJs).toContain('function mergeStoppedRunRecoveryPayload(payload, recoveryPayload)');
+    expect(loadBlock).toContain('state.stoppedRunRecoveryPayload = normalizeStoppedRunRecoveryPayload(recovery);');
+    expect(loadBlock).toContain('renderStoppedRunRecovery(state.stoppedRunRecoveryPayload);');
+    expect(applyBlock).toContain('state.stoppedRunRecoveryLoaded && state.stoppedRunRecoveryPayload');
+    expect(applyBlock).toContain('payload = mergeStoppedRunRecoveryPayload(payload, state.stoppedRunRecoveryPayload);');
+    expect(applyBlock).not.toContain('state.stoppedRunRecoveryLoaded && state.lastGoodPayload');
+  });
+
   it('snapshots the stuck drilldown rendering vocabulary', () => {
     const clientJs = renderDashboardClientJs();
     const stuckVocabulary = [

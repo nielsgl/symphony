@@ -340,6 +340,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     uiStateSaveTimer: null,
     stoppedRunRecoveryLoaded: false,
     stoppedRunRecoveryLoading: false,
+    stoppedRunRecoveryPayload: null,
     filter: {
       query: '',
       status: 'all',
@@ -2089,6 +2090,29 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.stoppedRunRecoveryList.replaceChildren(...cards);
   }
 
+  function normalizeStoppedRunRecoveryPayload(recovery) {
+    return {
+      stopped_runs: recovery && Array.isArray(recovery.stopped_runs) ? recovery.stopped_runs : [],
+      counts: {
+        stopped:
+          recovery && recovery.counts && typeof recovery.counts.stopped === 'number'
+            ? recovery.counts.stopped
+            : 0
+      }
+    };
+  }
+
+  function mergeStoppedRunRecoveryPayload(payload, recoveryPayload) {
+    return {
+      ...payload,
+      stopped_runs: recoveryPayload.stopped_runs || [],
+      counts: {
+        ...payload.counts,
+        stopped: recoveryPayload.counts && typeof recoveryPayload.counts.stopped === 'number' ? recoveryPayload.counts.stopped : 0
+      }
+    };
+  }
+
   async function loadStoppedRunRecovery() {
     if (state.stoppedRunRecoveryLoading) {
       return;
@@ -2100,18 +2124,14 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     try {
       const recovery = await fetchJson('/api/v1/stopped-runs/recovery');
       state.stoppedRunRecoveryLoaded = true;
+      state.stoppedRunRecoveryPayload = normalizeStoppedRunRecoveryPayload(recovery);
       if (state.payload) {
-        state.payload = {
-          ...state.payload,
-          stopped_runs: recovery.stopped_runs || [],
-          counts: {
-            ...state.payload.counts,
-            stopped: recovery.counts && typeof recovery.counts.stopped === 'number' ? recovery.counts.stopped : 0
-          }
-        };
+        state.payload = mergeStoppedRunRecoveryPayload(state.payload, state.stoppedRunRecoveryPayload);
         state.lastGoodPayload = state.payload;
         renderOverview(state.payload);
         renderStoppedRunRecovery(state.payload);
+      } else {
+        renderStoppedRunRecovery(state.stoppedRunRecoveryPayload);
       }
       setRefreshStatus('Stopped-run recovery loaded', false);
     } catch (error) {
@@ -2132,15 +2152,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     }
 
     clearSnapshotError();
-    if (state.stoppedRunRecoveryLoaded && state.lastGoodPayload) {
-      payload = {
-        ...payload,
-        stopped_runs: state.lastGoodPayload.stopped_runs || [],
-        counts: {
-          ...payload.counts,
-          stopped: state.lastGoodPayload.counts ? state.lastGoodPayload.counts.stopped || 0 : 0
-        }
-      };
+    if (state.stoppedRunRecoveryLoaded && state.stoppedRunRecoveryPayload) {
+      payload = mergeStoppedRunRecoveryPayload(payload, state.stoppedRunRecoveryPayload);
     }
     state.payload = payload;
     state.lastGoodPayload = payload;
