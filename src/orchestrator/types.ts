@@ -498,6 +498,7 @@ export interface BlockedEntry {
   } | null;
   transcript_tool_call_diagnostics?: TranscriptToolCallDiagnostic[];
   recovery?: MissingToolOutputRecoveryState | null;
+  worker_termination_result?: WorkerTerminationResult | null;
   quarantined_events?: Array<{
     at_ms: number;
     event: string;

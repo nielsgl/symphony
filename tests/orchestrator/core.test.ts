@@ -5964,6 +5964,78 @@ describe('OrchestratorCore', () => {
     });
   });
 
+  it('budget resume blocks expose typed worker termination evidence', async () => {
+    const completedRuns: Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0][] = [];
+    const harness = createHarness({
+      persistence: {
+        startRun: async () => 'run-budget-block-unsupported',
+        appendIssueRun: async () => 'issue-run-budget-block-unsupported',
+        appendAttempt: async () => 'attempt-budget-block-unsupported',
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async (params) => {
+          completedRuns.push(params);
+        }
+      },
+      configOverrides: {
+        budget: {
+          per_run_total_tokens: 50,
+          rolling_window_minutes: 1440,
+          warning_threshold_ratio: 0.8,
+          hard_limit_policy: 'block_requires_resume'
+        }
+      },
+      terminateWorker: async () =>
+        makeTerminationResult({
+          cancellation_supported: false,
+          cancellation_requested: false,
+          worker_settled: null,
+          graceful_exit_observed: null,
+          result: 'unsupported',
+          reason_code: 'worker_cancel_unsupported',
+          detail: 'worker handle does not implement cancel(reason)'
+        })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-budget-block-unsupported' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-budget-block-unsupported', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      usage: {
+        input_tokens: 30,
+        output_tokens: 25,
+        total_tokens: 55
+      },
+      token_telemetry_status: 'available'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const blocked = snapshot.blocked_inputs.get('i-budget-block-unsupported');
+    expect(blocked?.stop_reason_code).toBe(REASON_CODES.operatorBudgetLimitExceeded);
+    expect(blocked?.stop_reason_detail).toContain('termination_result=unsupported');
+    expect(blocked?.stop_reason_detail).toContain('termination_reason_code=worker_cancel_unsupported');
+    expect(blocked?.worker_termination_result).toEqual(
+      expect.objectContaining({
+        result: 'unsupported',
+        reason_code: 'worker_cancel_unsupported',
+        detail: 'worker handle does not implement cancel(reason)'
+      })
+    );
+    expect(completedRuns[0]?.terminal_reason_detail).toContain('termination_result=unsupported');
+    expect(completedRuns[0]?.terminal_reason_detail).toContain('termination_reason_code=worker_cancel_unsupported');
+
+    const projected = new SnapshotService().projectState(snapshot);
+    expect(projected.blocked[0]?.stop_reason_detail).toContain('termination_result=unsupported');
+    expect(projected.blocked[0]?.worker_termination_result).toEqual(
+      expect.objectContaining({
+        result: 'unsupported',
+        reason_code: 'worker_cancel_unsupported'
+      })
+    );
+  });
+
   it('latches budget hard limits before async termination can finish', async () => {
     const terminateError = new Error('termination timed out');
     const harness = createHarness({

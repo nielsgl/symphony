@@ -409,6 +409,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     } | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
+    worker_termination_result: import('../orchestrator').WorkerTerminationResult | null;
     conflict_files: Array<{
       path: string;
       status: 'staged' | 'unstaged' | 'unknown';
@@ -731,6 +732,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     } | null;
     stop_reason_code: string;
     stop_reason_detail: string | null;
+    worker_termination_result: import('../orchestrator').WorkerTerminationResult | null;
     conflict_files: Array<{
       path: string;
       status: 'staged' | 'unstaged' | 'unknown';
