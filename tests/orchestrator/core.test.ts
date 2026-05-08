@@ -3768,6 +3768,179 @@ describe('OrchestratorCore', () => {
     ).toBe(false);
   });
 
+  it('quarantines terminal turn residue before tracker refresh releases ownership', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review', 'In Progress'],
+        fresh_dispatch_states: ['Agent Review', 'In Progress']
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-terminal-residue', identifier: 'NIE-95', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-terminal-residue', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 85269
+    });
+    harness.orchestrator.onWorkerEvent('i-terminal-residue', {
+      timestamp_ms: harness.now.value + 2,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      detail: 'task_complete',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 85269
+    });
+    harness.orchestrator.onWorkerEvent('i-terminal-residue', {
+      timestamp_ms: harness.now.value + 3,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'late waiting after task_complete',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 85269
+    });
+    harness.orchestrator.onWorkerEvent('i-terminal-residue', {
+      timestamp_ms: harness.now.value + 4,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'late planning after task_complete',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session',
+      codex_app_server_pid: 85269
+    });
+    harness.orchestrator.onWorkerEvent('i-terminal-residue', {
+      timestamp_ms: harness.now.value + 5,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      detail: 'wrong-lineage terminal',
+      thread_id: 'review-thread',
+      turn_id: 'older-turn',
+      session_id: 'older-session'
+    });
+
+    const completedRunning = harness.orchestrator.getStateSnapshot().running.get('i-terminal-residue');
+    expect(completedRunning?.last_event).toBe(CANONICAL_EVENT.codex.turnCompleted);
+    expect(completedRunning?.last_message).toBe('task_complete');
+    expect(completedRunning?.last_codex_timestamp_ms).toBe(harness.now.value + 2);
+    expect(completedRunning?.last_progress_transition_at_ms).toBe(harness.now.value + 2);
+    expect(completedRunning?.current_phase).toBe('validation');
+    expect(completedRunning?.recent_events.map((event) => event.event)).toEqual([
+      CANONICAL_EVENT.codex.turnStarted,
+      CANONICAL_EVENT.codex.turnCompleted
+    ]);
+    expect(completedRunning?.quarantined_event_count).toBe(3);
+    expect(completedRunning?.quarantined_events?.map((event) => [event.event, event.reason])).toEqual([
+      [CANONICAL_EVENT.codex.turnWaiting, 'terminal_residue'],
+      [CANONICAL_EVENT.codex.phasePlanning, 'terminal_residue'],
+      [CANONICAL_EVENT.codex.turnCompleted, 'lineage_mismatch']
+    ]);
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-terminal-residue', identifier: 'NIE-95', state: 'In Progress' })
+    ]);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-terminal-residue', identifier: 'NIE-95', state: 'In Progress' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    const freshImplementation = harness.orchestrator.getStateSnapshot().running.get('i-terminal-residue');
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-terminal-residue',
+        cleanup_workspace: false,
+        reason: REASON_CODES.handoffRelease
+      }
+    ]);
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-terminal-residue', attempt: null, worker_host: null, resume_context: null },
+      { issue_id: 'i-terminal-residue', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    expect(freshImplementation?.started_issue_state).toBe('In Progress');
+    expect(freshImplementation?.last_event).toBeNull();
+  });
+
+  it.each([
+    ['Agent Review', 'Merging', 'review', 'land'],
+    ['In Progress', 'Agent Review', 'implementation', 'review']
+  ])('releases completed %s ownership when issue routes to %s for fresh dispatch', async (fromState, toState, prior, next) => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review', 'Merging'],
+        handoff_states: ['In Progress', 'Agent Review', 'Merging'],
+        fresh_dispatch_states: ['In Progress', 'Agent Review', 'Merging']
+      },
+      persistence: {
+        startRun: async () => `run-${prior}-terminal-release`,
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async (params) => {
+          completedRuns.push(params);
+        }
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: `i-${prior}-to-${next}`, identifier: 'NIE-HANDOFF', state: fromState })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent(`i-${prior}-to-${next}`, {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: `${prior}-thread`,
+      turn_id: `${prior}-turn`,
+      session_id: `${prior}-session`,
+      codex_app_server_pid: 46181
+    });
+    harness.orchestrator.onWorkerEvent(`i-${prior}-to-${next}`, {
+      timestamp_ms: harness.now.value + 2,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      detail: 'task_complete',
+      thread_id: `${prior}-thread`,
+      turn_id: `${prior}-turn`,
+      session_id: `${prior}-session`,
+      codex_app_server_pid: 46181
+    });
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: `i-${prior}-to-${next}`, identifier: 'NIE-HANDOFF', state: toState })
+    ]);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: `i-${prior}-to-${next}`, identifier: 'NIE-HANDOFF', state: toState })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        terminal_status: 'cancelled',
+        error_code: REASON_CODES.handoffRelease,
+        terminal_reason_code: REASON_CODES.handoffRelease,
+        session_id: `${prior}-session`,
+        thread_id: `${prior}-thread`,
+        turn_id: `${prior}-turn`
+      })
+    ]);
+    expect(harness.spawned).toEqual([
+      { issue_id: `i-${prior}-to-${next}`, attempt: null, worker_host: null, resume_context: null },
+      { issue_id: `i-${prior}-to-${next}`, attempt: null, worker_host: null, resume_context: null }
+    ]);
+    const running = harness.orchestrator.getStateSnapshot().running.get(`i-${prior}-to-${next}`);
+    expect(running?.started_issue_state).toBe(toState);
+    expect(running?.thread_id).toBeNull();
+    expect(running?.session_id).toBeNull();
+  });
+
   it('keeps fresh review worker running while Agent Review remains active', async () => {
     const harness = createHarness({
       configOverrides: {
