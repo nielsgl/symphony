@@ -19,7 +19,7 @@ import {
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
 import { SqlitePersistenceStore } from '../persistence';
-import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult } from '../orchestrator';
+import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult, type OrchestratorPorts } from '../orchestrator';
 import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
@@ -169,6 +169,13 @@ export interface RuntimeBootstrapResult {
   effectiveConfig: EffectiveConfig;
   start: () => Promise<void>;
   stop: () => Promise<void>;
+}
+
+export function createRuntimeTerminateWorkerPort(
+  bridge: Pick<LocalRunnerBridge, 'terminateWorker'>
+): OrchestratorPorts['terminateWorker'] {
+  return ({ issue_id, worker_handle, cleanup_workspace, reason }) =>
+    bridge.terminateWorker({ issue_id, worker_handle, cleanup_workspace, reason });
 }
 
 function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObservabilityEvent {
@@ -856,8 +863,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       dispatchPreflight,
       spawnWorker: ({ issue, attempt, worker_host }) => bridge.spawnWorker({ issue, attempt, worker_host }),
       recoverMissingToolOutput: (params) => bridge.recoverMissingToolOutput(params),
-      terminateWorker: ({ issue_id, worker_handle, cleanup_workspace }) =>
-        bridge.terminateWorker({ issue_id, worker_handle, cleanup_workspace }),
+      terminateWorker: createRuntimeTerminateWorkerPort(bridge),
       scheduleRetryTimer: ({ issue_id, due_at_ms, callback }) => {
         const delayMs = Math.max(0, due_at_ms - nowMs());
         const timeout = setTimeout(() => {
