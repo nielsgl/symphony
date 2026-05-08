@@ -452,8 +452,57 @@ export class LocalApiServer {
     }
   }
 
+  private buildBoundedStateSnapshotResponse(): ApiStateSnapshotResponse {
+    try {
+      const state = this.snapshotSource.getStateSnapshot();
+      const payload = this.snapshotService.projectState(state);
+      this.enrichLiveTokenFallbackState(payload);
+      return payload;
+    } catch (error) {
+      const code: ApiStateErrorResponse['error']['code'] =
+        error instanceof LocalApiError && error.code === 'snapshot_timeout'
+          ? 'snapshot_timeout'
+          : 'snapshot_unavailable';
+      const message = code === 'snapshot_timeout' ? 'Snapshot timed out' : 'Snapshot unavailable';
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.api.stateSnapshotUnavailable,
+        message,
+        context: {
+          code,
+          detail: error instanceof Error ? error.message : 'unknown'
+        }
+      });
+      return {
+        generated_at: new Date().toISOString(),
+        error: {
+          code,
+          message
+        }
+      };
+    }
+  }
+
+  private readTelemetryStateSnapshot(): OrchestratorState | ApiStateErrorResponse {
+    try {
+      return this.snapshotSource.getStateSnapshot();
+    } catch (error) {
+      const code: ApiStateErrorResponse['error']['code'] =
+        error instanceof LocalApiError && error.code === 'snapshot_timeout'
+          ? 'snapshot_timeout'
+          : 'snapshot_unavailable';
+      return {
+        generated_at: new Date().toISOString(),
+        error: {
+          code,
+          message: code === 'snapshot_timeout' ? 'Snapshot timed out' : 'Snapshot unavailable'
+        }
+      };
+    }
+  }
+
   private broadcastStateSnapshot(source: string): void {
-    const payload = this.buildStateSnapshotResponse();
+    const payload = this.buildBoundedStateSnapshotResponse();
     if (!('error' in payload)) {
       const healthSignature = `${payload.health.dispatch_validation}:${payload.health.last_error ?? ''}`;
       if (this.lastHealthSignature !== null && this.lastHealthSignature !== healthSignature) {
@@ -820,13 +869,13 @@ export class LocalApiServer {
             handler: async (request, response) => {
               const requestUrl = new URL(request.url ?? '/', 'http://localhost');
               const filters = parseTelemetryQuery(requestUrl);
-              const payload = this.buildStateSnapshotResponse();
-              if ('error' in payload) {
-                sendJson(response, 503, payload);
+              const state = this.readTelemetryStateSnapshot();
+              if ('error' in state) {
+                sendJson(response, 503, state);
                 return;
               }
               sendJson(response, 200, buildTelemetrySummaryResponse({
-                state: payload,
+                state,
                 diagnosticsSource: this.diagnosticsSource,
                 filters
               }));
@@ -842,13 +891,13 @@ export class LocalApiServer {
             handler: async (request, response) => {
               const requestUrl = new URL(request.url ?? '/', 'http://localhost');
               const filters = parseTelemetryQuery(requestUrl);
-              const payload = this.buildStateSnapshotResponse();
-              if ('error' in payload) {
-                sendJson(response, 503, payload);
+              const state = this.readTelemetryStateSnapshot();
+              if ('error' in state) {
+                sendJson(response, 503, state);
                 return;
               }
               sendJson(response, 200, buildTelemetryQueryResponse({
-                state: payload,
+                state,
                 diagnosticsSource: this.diagnosticsSource,
                 filters
               }));

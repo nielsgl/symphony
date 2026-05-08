@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 
-import type { ApiStateResponse, DiagnosticsSource } from './types';
+import type { OrchestratorState } from '../orchestrator';
+import { explainOperatorRuntimeState } from '../observability';
+import { REASON_CODES } from '../observability/reason-codes';
+import {
+  resolveBlockedProgressSignal,
+  resolveProgressSignal,
+  resolveRunningTurnControl
+} from './runtime-visibility';
+import type { DiagnosticsSource } from './types';
 
 const QUERY_FILTERS = new Set([
   'from',
@@ -17,6 +25,8 @@ const QUERY_FILTERS = new Set([
   'workflow_hash',
   'limit'
 ]);
+
+const TELEMETRY_RUN_HISTORY_LIMIT = 500;
 
 type TelemetryClassification = string | null;
 
@@ -142,7 +152,7 @@ export function parseTelemetryQuery(url: URL): TelemetryQueryFilters {
 }
 
 export function buildTelemetryQueryResponse(params: {
-  state: ApiStateResponse;
+  state: OrchestratorState;
   diagnosticsSource?: DiagnosticsSource;
   filters: TelemetryQueryFilters;
   generatedAt?: string;
@@ -160,7 +170,7 @@ export function buildTelemetryQueryResponse(params: {
 }
 
 export function buildTelemetrySummaryResponse(params: {
-  state: ApiStateResponse;
+  state: OrchestratorState;
   diagnosticsSource?: DiagnosticsSource;
   filters: TelemetryQueryFilters;
   generatedAt?: string;
@@ -214,7 +224,7 @@ export function buildTelemetrySummaryResponse(params: {
 }
 
 function collectFilteredTelemetryRows(
-  state: ApiStateResponse,
+  state: OrchestratorState,
   diagnosticsSource: DiagnosticsSource | undefined,
   filters: TelemetryQueryFilters
 ): TelemetryEventRow[] {
@@ -235,48 +245,81 @@ function normalizedParam(url: URL, key: string): string | null {
   return trimmed;
 }
 
-function collectTelemetryRows(state: ApiStateResponse, diagnosticsSource?: DiagnosticsSource): TelemetryEventRow[] {
-  const generatedAtMs = Date.parse(state.generated_at);
+function asIsoDate(timestampMs: number): string {
+  return new Date(timestampMs).toISOString();
+}
+
+function runningClassification(entry: OrchestratorState['running'] extends Map<string, infer Entry> ? Entry : never): string {
+  if (entry.stalled_waiting_since_ms && entry.stalled_waiting_reason) {
+    return 'stalled_waiting';
+  }
+  if (entry.awaiting_input_since_ms) {
+    return 'input_required';
+  }
+  return explainOperatorRuntimeState({
+    state_class: 'running',
+    awaiting_input: false,
+    stalled_waiting: false,
+    stalled_waiting_reason: null,
+    reason_code: null,
+    reason_detail: entry.last_event_summary ?? entry.last_message
+  }).classification;
+}
+
+function blockedClassification(entry: OrchestratorState['blocked_inputs'] extends Map<string, infer Entry> ? Entry : never): string {
+  return explainOperatorRuntimeState({
+    state_class: 'blocked',
+    reason_code: entry.stop_reason_code,
+    reason_detail: entry.stop_reason_detail
+  }).classification;
+}
+
+function budgetUsageTokens(entry: { budget?: { budget_usage_tokens: number | null } | null }): number {
+  return entry.budget?.budget_usage_tokens ?? 0;
+}
+
+function collectTelemetryRows(state: OrchestratorState, diagnosticsSource?: DiagnosticsSource): TelemetryEventRow[] {
+  const generatedAtMs = state.snapshot_generated_at_ms ?? Date.now();
   const runtime = runtimeDimensions(diagnosticsSource);
   const rows: TelemetryEventRow[] = [];
 
-  for (const entry of state.running) {
-    const observedAtMs = Date.parse(entry.last_event_at ?? entry.started_at);
+  for (const entry of state.running.values()) {
+    const progressSignal = resolveProgressSignal(entry);
+    const turnControl = resolveRunningTurnControl(entry);
+    const observedAtMs = entry.last_codex_timestamp_ms ?? entry.started_at_ms;
     const timeToFirstProgress =
-      entry.last_progress_transition_at_ms !== null ? Math.max(0, entry.last_progress_transition_at_ms - Date.parse(entry.started_at)) : null;
-    const classification =
-      entry.stalled_waiting
-        ? 'stalled_waiting'
-        : entry.awaiting_input
-          ? 'input_required'
-          : entry.operator_explainer_hint?.classification ?? 'running';
+      entry.last_progress_transition_at_ms !== null && typeof entry.last_progress_transition_at_ms === 'number'
+        ? Math.max(0, entry.last_progress_transition_at_ms - entry.started_at_ms)
+        : null;
+    const classification = runningClassification(entry);
     rows.push({
       observed_at: new Date(observedAtMs).toISOString(),
       observed_at_ms: observedAtMs,
       source: 'runtime_snapshot',
-      issue_identifier: entry.issue_identifier,
+      issue_identifier: entry.identifier,
       thread_id: entry.thread_id,
-      reason_code: entry.turn_control_reason_code ?? entry.stalled_waiting_reason ?? entry.not_blocked_explainer_code,
+      reason_code:
+        turnControl.turn_control_reason_code ??
+        (entry.stalled_waiting_since_ms && entry.stalled_waiting_reason ? REASON_CODES.turnWaitingThresholdExceeded : null),
       classification,
       tool_name: null,
-      worker_host: entry.worker_host,
+      worker_host: entry.worker_host ?? null,
       ...runtime,
       status: 'running',
       latency_ms: null,
       time_to_first_progress_ms: timeToFirstProgress,
       tokens_total: entry.tokens.total_tokens,
-      progress_signal_state: entry.progress_signal_state,
-      burn_without_progress: entry.tokens.total_tokens > 0 && entry.progress_signal_state !== 'advancing'
+      progress_signal_state: progressSignal.progress_signal_state,
+      burn_without_progress: entry.tokens.total_tokens > 0 && progressSignal.progress_signal_state !== 'advancing'
     });
   }
 
-  for (const entry of state.retrying) {
-    const observedAtMs = Date.parse(entry.due_at);
+  for (const entry of state.retry_attempts.values()) {
     rows.push({
-      observed_at: entry.due_at,
-      observed_at_ms: observedAtMs,
+      observed_at: asIsoDate(entry.due_at_ms),
+      observed_at_ms: entry.due_at_ms,
       source: 'runtime_snapshot',
-      issue_identifier: entry.issue_identifier,
+      issue_identifier: entry.identifier,
       thread_id: entry.previous_thread_id,
       reason_code: entry.stop_reason_code,
       classification: 'retry_loop',
@@ -286,18 +329,19 @@ function collectTelemetryRows(state: ApiStateResponse, diagnosticsSource?: Diagn
       status: 'retrying',
       latency_ms: null,
       time_to_first_progress_ms: null,
-      tokens_total: entry.budget_usage_tokens ?? 0,
+      tokens_total: budgetUsageTokens(entry),
       progress_signal_state: null,
-      burn_without_progress: (entry.budget_usage_tokens ?? 0) > 0
+      burn_without_progress: budgetUsageTokens(entry) > 0
     });
   }
 
-  for (const entry of state.blocked) {
-    const observedAtMs = Date.parse(entry.blocked_at);
-    const classification = entry.operator_explainer_hint?.classification ?? 'blocked';
+  for (const entry of state.blocked_inputs.values()) {
+    const progressSignal = resolveBlockedProgressSignal(entry);
+    const classification = blockedClassification(entry);
+    const tokensTotal = budgetUsageTokens(entry);
     rows.push({
-      observed_at: entry.blocked_at,
-      observed_at_ms: observedAtMs,
+      observed_at: asIsoDate(entry.blocked_at_ms),
+      observed_at_ms: entry.blocked_at_ms,
       source: 'runtime_snapshot',
       issue_identifier: entry.issue_identifier,
       thread_id: entry.previous_thread_id,
@@ -308,20 +352,19 @@ function collectTelemetryRows(state: ApiStateResponse, diagnosticsSource?: Diagn
       ...runtime,
       status: 'blocked',
       latency_ms: null,
-      time_to_first_progress_ms: entry.last_progress_transition_at_ms
-        ? Math.max(0, entry.last_progress_transition_at_ms - observedAtMs)
+      time_to_first_progress_ms: progressSignal.last_progress_transition_at_ms
+        ? Math.max(0, progressSignal.last_progress_transition_at_ms - entry.blocked_at_ms)
         : null,
-      tokens_total: entry.budget_usage_tokens ?? 0,
-      progress_signal_state: entry.progress_signal_state,
-      burn_without_progress: (entry.budget_usage_tokens ?? 0) > 0 && entry.progress_signal_state !== 'advancing'
+      tokens_total: tokensTotal,
+      progress_signal_state: progressSignal.progress_signal_state,
+      burn_without_progress: tokensTotal > 0 && progressSignal.progress_signal_state !== 'advancing'
     });
   }
 
   for (const event of state.recent_runtime_events) {
-    const observedAtMs = Date.parse(event.at);
     rows.push({
-      observed_at: event.at,
-      observed_at_ms: observedAtMs,
+      observed_at: asIsoDate(event.at_ms),
+      observed_at_ms: event.at_ms,
       source: 'runtime_snapshot',
       issue_identifier: event.issue_identifier ?? null,
       thread_id: event.session_id ?? null,
@@ -340,20 +383,11 @@ function collectTelemetryRows(state: ApiStateResponse, diagnosticsSource?: Diagn
   }
 
   const lineageThreadIds = new Set<string>();
-  for (const run of diagnosticsSource?.listRunHistory(10_000) ?? []) {
+  for (const run of diagnosticsSource?.listRunHistory(TELEMETRY_RUN_HISTORY_LIMIT) ?? []) {
     for (const sessionId of run.session_ids) {
       lineageThreadIds.add(sessionId);
     }
   }
-  for (const row of [...state.running, ...state.retrying, ...state.blocked]) {
-    if ('thread_id' in row && row.thread_id) {
-      lineageThreadIds.add(row.thread_id);
-    }
-    if ('previous_thread_id' in row && row.previous_thread_id) {
-      lineageThreadIds.add(row.previous_thread_id);
-    }
-  }
-
   for (const threadId of lineageThreadIds) {
     const lineage = diagnosticsSource?.reconstructThreadLineage?.(threadId);
     if (!lineage) {
@@ -409,7 +443,7 @@ function collectTelemetryRows(state: ApiStateResponse, diagnosticsSource?: Diagn
     }
   }
 
-  return rows.filter((row) => Number.isFinite(row.observed_at_ms) && row.observed_at_ms <= (generatedAtMs || Date.now()));
+  return rows.filter((row) => Number.isFinite(row.observed_at_ms) && row.observed_at_ms <= generatedAtMs);
 }
 
 function runtimeDimensions(diagnosticsSource?: DiagnosticsSource): Pick<TelemetryEventRow, 'model' | 'workflow_hash'> {

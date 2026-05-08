@@ -326,6 +326,20 @@ function makeDiagnosticsSource(overrides: Record<string, unknown> = {}) {
   } as never;
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolvePromise: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  return {
+    promise,
+    resolve: () => {
+      resolvePromise?.();
+    }
+  };
+}
+
 let server: LocalApiServer | null = null;
 
 async function readSseEvents(
@@ -1422,6 +1436,60 @@ describe('LocalApiServer', () => {
     expect(query.events[0]?.workflow_hash).toMatch(/^[a-f0-9]{12}$/);
   });
 
+  it('serves telemetry from bounded targeted projection instead of full state diagnostics', async () => {
+    const listRunHistory = vi.fn(() => [
+      {
+        run_id: 'run-1',
+        issue_id: 'issue-1',
+        issue_identifier: 'ABC-1',
+        started_at: '2026-04-10T10:00:00.000Z',
+        ended_at: '2026-04-10T10:05:00.000Z',
+        terminal_status: 'succeeded',
+        error_code: null,
+        session_ids: ['thread-complete']
+      }
+    ]);
+    const reconstructThreadLineage = vi.fn((threadId: string) =>
+      threadId === 'thread-complete' ? makeThreadLineage({ thread_id: threadId }) : null
+    );
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () =>
+          makeState({
+            running: new Map([
+              [
+                'issue-1',
+                makeRunningEntry({
+                  issue: makeIssue({ identifier: 'ABC-1' }),
+                  identifier: 'ABC-1',
+                  thread_id: 'thread-live',
+                  transcript_tool_call_diagnostics: Array.from({ length: 200 }, (_, index) => makeTranscriptDiagnostic(index))
+                })
+              ]
+            ])
+          })
+      },
+      refreshSource: { tick: vi.fn(async () => undefined) },
+      diagnosticsSource: makeDiagnosticsSource({
+        listRunHistory,
+        reconstructThreadLineage
+      })
+    });
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/query?tool_name=exec_command`);
+    const payload = (await response.json()) as { result_count: number };
+
+    expect(response.status).toBe(200);
+    expect(payload.result_count).toBe(1);
+    expect(listRunHistory).toHaveBeenCalledTimes(1);
+    expect(listRunHistory).toHaveBeenCalledWith(500);
+    expect(reconstructThreadLineage).toHaveBeenCalledTimes(1);
+    expect(reconstructThreadLineage).toHaveBeenCalledWith('thread-complete');
+  });
+
   it('returns deterministic empty-window telemetry responses and typed validation errors', async () => {
     server = new LocalApiServer({
       snapshotSource: {
@@ -2020,6 +2088,44 @@ describe('LocalApiServer', () => {
     expect(secondPayload.coalesced).toBe(true);
   });
 
+  it('coalesces API refresh requests while a manual refresh tick is in flight', async () => {
+    const currentTick = deferred();
+    const tick = vi.fn(async () => await currentTick.promise);
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const first = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
+    expect(first.status).toBe(202);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(tick).toHaveBeenCalledTimes(1);
+
+    const second = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
+    const third = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
+    const secondPayload = (await second.json()) as { coalesced: boolean };
+    const thirdPayload = (await third.json()) as { coalesced: boolean };
+
+    expect(second.status).toBe(202);
+    expect(third.status).toBe(202);
+    expect(secondPayload.coalesced).toBe(true);
+    expect(thirdPayload.coalesced).toBe(true);
+
+    currentTick.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(tick).toHaveBeenCalledTimes(2);
+  });
+
   it('serves embedded dashboard HTML at root path', async () => {
     server = new LocalApiServer({
       snapshotSource: {
@@ -2122,6 +2228,71 @@ describe('LocalApiServer', () => {
     for (let i = 1; i < ids.length; i += 1) {
       expect(ids[i]).toBeGreaterThan(ids[i - 1]);
     }
+  });
+
+  it('serves SSE state snapshots without stopped-run diagnostic fan-out', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            transcript_tool_call_diagnostics: Array.from({ length: 200 }, (_, index) => makeTranscriptDiagnostic(index))
+          })
+        ]
+      ])
+    });
+    const listRunHistory = vi.fn(() => [
+      {
+        run_id: 'run-stopped',
+        issue_id: 'issue-stopped',
+        issue_identifier: 'ABC-STOPPED',
+        started_at: '2026-04-10T09:00:00.000Z',
+        ended_at: '2026-04-10T09:05:00.000Z',
+        terminal_status: 'failed',
+        error_code: 'failed_phase',
+        session_ids: ['thread-stopped'],
+        thread_id: 'thread-stopped'
+      }
+    ]);
+    const reconstructThreadLineage = vi.fn(() => makeThreadLineage({ thread_id: 'thread-stopped' }));
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource({
+        listRunHistory,
+        reconstructThreadLineage
+      })
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/events`);
+    expect(response.status).toBe(200);
+
+    const events = await readSseEvents(response, 1);
+    const stateSnapshotEvent = events.find((entry) => entry.data.type === 'state_snapshot');
+    expect(stateSnapshotEvent).toBeDefined();
+    const payload = stateSnapshotEvent?.data.payload as {
+      state?: {
+        running?: Array<Record<string, unknown>>;
+        stopped_runs?: unknown[];
+        counts?: { stopped: number };
+      };
+    };
+
+    expect(listRunHistory).not.toHaveBeenCalled();
+    expect(reconstructThreadLineage).not.toHaveBeenCalled();
+    expect(payload.state?.stopped_runs).toEqual([]);
+    expect(payload.state?.counts?.stopped).toBe(0);
+    expect(JSON.stringify(payload.state)).not.toContain('transcript_tool_call_diagnostics');
+    expect(JSON.stringify(payload.state)).not.toContain('active_issue_id');
+    expect(payload.state?.running?.[0]).toHaveProperty('transcript_tool_call_diagnostic_summary');
   });
 
   it('emits refresh_accepted event envelopes on POST /api/v1/refresh', async () => {
