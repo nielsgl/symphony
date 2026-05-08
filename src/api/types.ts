@@ -248,6 +248,32 @@ export interface ApiTranscriptToolCallDiagnostic {
   active_session_id: string | null;
 }
 
+export interface ApiTranscriptToolCallDiagnosticSummary {
+  detailed_diagnostics_available: boolean;
+  total_count: number;
+  newest_observed_at: string | null;
+  newest_observed_at_ms: number | null;
+  counts_by_lineage: Record<import('../orchestrator').TranscriptToolCallLineage, number>;
+  counts_by_kind: Record<'function_call' | 'function_call_output', number>;
+  active_missing_tool_output: {
+    active: boolean;
+    tool_name: string | null;
+    call_id: string | null;
+    thread_id: string | null;
+    turn_id: string | null;
+    session_id: string | null;
+    evidence_source: import('../orchestrator').ToolCallEvidenceSource | null;
+  };
+  recovery: {
+    active: boolean;
+    status: import('../orchestrator').MissingToolOutputRecoveryResult | null;
+    attempt_count: number;
+    last_result_reason_code: string | null;
+    previous_thread_id: string | null;
+    replacement_thread_id: string | null;
+  };
+}
+
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
   counts: {
@@ -335,7 +361,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     time_since_progress: number | null;
     last_successful_step: string | null;
     tool_call_ledger: ApiToolCallLedgerEntry[];
-    transcript_tool_call_diagnostics: ApiTranscriptToolCallDiagnostic[];
+    transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
@@ -383,6 +409,9 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_phase_at: string | null;
     last_phase_detail: string | null;
     operator_explainer_hint: OperatorExplainerHint | null;
+    recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
+    missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
+    transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
   }>;
   blocked: Array<ApiBudgetProjection & {
     issue_id: string;
@@ -451,7 +480,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
       recommended_actions: string[];
     } | null;
-    transcript_tool_call_diagnostics: ApiTranscriptToolCallDiagnostic[];
+    transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
     last_input_submit: {
       submitted_at: string;
       request_id: string;

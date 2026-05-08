@@ -18,7 +18,8 @@ import type {
   ApiBudgetProjection,
   ApiCurrentOperatorBlockProjection,
   ApiIssueResponse,
-  ApiStateResponse
+  ApiStateResponse,
+  ApiTranscriptToolCallDiagnosticSummary
 } from './types';
 
 function asIsoDate(timestampMs: number): string {
@@ -135,6 +136,60 @@ function projectTranscriptToolCallDiagnostics(entry: {
     active_turn_id: diagnostic.active_turn_id,
     active_session_id: diagnostic.active_session_id
   }));
+}
+
+function projectTranscriptToolCallDiagnosticSummary(entry: {
+  transcript_tool_call_diagnostics?: import('../orchestrator').TranscriptToolCallDiagnostic[];
+  tool_output_wait?: import('../orchestrator').BlockedEntry['tool_output_wait'];
+  recovery?: import('../orchestrator').MissingToolOutputRecoveryState | null;
+}): ApiTranscriptToolCallDiagnosticSummary {
+  const diagnostics = entry.transcript_tool_call_diagnostics ?? [];
+  const countsByLineage: ApiTranscriptToolCallDiagnosticSummary['counts_by_lineage'] = {
+    active_owned: 0,
+    prior_stale: 0,
+    external_manual: 0,
+    unattributed: 0
+  };
+  const countsByKind: ApiTranscriptToolCallDiagnosticSummary['counts_by_kind'] = {
+    function_call: 0,
+    function_call_output: 0
+  };
+  let newestObservedAtMs: number | null = null;
+
+  for (const diagnostic of diagnostics) {
+    countsByLineage[diagnostic.lineage] += 1;
+    countsByKind[diagnostic.kind] += 1;
+    newestObservedAtMs =
+      newestObservedAtMs === null ? diagnostic.observed_at_ms : Math.max(newestObservedAtMs, diagnostic.observed_at_ms);
+  }
+
+  const activeMissingToolOutput = entry.tool_output_wait ?? null;
+  const recovery = entry.recovery ?? null;
+  return {
+    detailed_diagnostics_available: diagnostics.length > 0,
+    total_count: diagnostics.length,
+    newest_observed_at: newestObservedAtMs === null ? null : asIsoDate(newestObservedAtMs),
+    newest_observed_at_ms: newestObservedAtMs,
+    counts_by_lineage: countsByLineage,
+    counts_by_kind: countsByKind,
+    active_missing_tool_output: {
+      active: Boolean(activeMissingToolOutput),
+      tool_name: activeMissingToolOutput?.tool_name ?? null,
+      call_id: activeMissingToolOutput?.call_id ?? null,
+      thread_id: activeMissingToolOutput?.thread_id ?? null,
+      turn_id: activeMissingToolOutput?.turn_id ?? null,
+      session_id: activeMissingToolOutput?.session_id ?? null,
+      evidence_source: activeMissingToolOutput?.evidence_source ?? null
+    },
+    recovery: {
+      active: Boolean(recovery),
+      status: recovery?.last_result ?? null,
+      attempt_count: recovery?.attempt_count ?? 0,
+      last_result_reason_code: recovery?.last_result_reason_code ?? null,
+      previous_thread_id: recovery?.previous_thread_id ?? null,
+      replacement_thread_id: recovery?.replacement_thread_id ?? null
+    }
+  };
 }
 
 function projectQuarantinedRunningEvents(entry: RunningEntry) {
@@ -338,7 +393,7 @@ function toStateRunningRow(
     time_since_progress: timeSinceProgress,
     last_successful_step: resolveLastSuccessfulStep(entry),
     tool_call_ledger: projectToolCallLedger(entry),
-    transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(entry),
+    transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary(entry),
     ...notBlockedExplainer,
     operator_actions: (operatorActions?.get(issueId) ?? [])
       .filter((action) => actionBelongsToRunningEntry(action, entry))
@@ -434,6 +489,7 @@ export class SnapshotService {
       last_phase_detail: entry.last_phase_detail ?? null,
       recovery: entry.recovery ? { ...entry.recovery } : null,
       missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
+      transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary(entry),
       operator_explainer_hint: toOperatorExplainerHint(
         explainOperatorRuntimeState({
           state_class: 'retrying',
@@ -528,7 +584,7 @@ export class SnapshotService {
             }
           : null,
         tool_output_wait: projectMissingToolOutput(entry),
-        transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(entry),
+        transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary(entry),
         last_input_submit: entry.last_input_submit
           ? {
               submitted_at: asIsoDate(entry.last_input_submit.submitted_at_ms),
