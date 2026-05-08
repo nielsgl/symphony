@@ -182,6 +182,11 @@ should also leave a short Linear decision comment for auditability.
 Agent Review should treat avoidable raw `linear_graphql` usage skeptically when
 Linear MCP or a dedicated script-backed path can perform the same routine
 workflow operation.
+For cross-cutting contract, lifecycle, state, projection, routing, or shared
+runtime changes, follow the canonical propagation-matrix protocol in
+`WORKFLOW.md` Step 3 before routing the issue onward. Keep this playbook as a
+pointer only; `WORKFLOW.md` is the source of truth for matrix triggers,
+surfaces, sibling-gap batching, and early-stop rules.
 
 ## 6. Start Symphony (CLI and Desktop)
 

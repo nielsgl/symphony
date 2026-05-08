@@ -350,16 +350,55 @@ Use this only when completion is blocked by missing required tools or missing au
      an existing narrow script-backed path could perform the same issue lookup,
      comment/workpad, state transition, label/status/project, or normal link
      operation.
-7. If findings are fixable within the current approach, including missing or non-rendering UI evidence:
+7. Run the cross-cutting contract propagation protocol when the diff or issue
+   introduces or changes any typed contract, lifecycle invariant, state
+   machine, persistence/API projection, operator-facing outcome, workflow
+   routing rule, or shared runtime behavior.
+   - Do not classify the change as non-cross-cutting by judgment alone. If none
+     of those concrete triggers is present, the Agent Review comment must state
+     `Propagation matrix: not required` and give the specific reason.
+   - Build the matrix from current code reality: inspect the diff and relevant
+     production files rather than copying PR-summary claims.
+   - Check only relevant rows, but consider these repo surfaces before posting
+     findings: canonical type/schema/port contract; adapters and runtime
+     bootstrap wiring; primary happy path; every issue-named
+     stop/failure/retry/block path; persistence and durable records;
+     API/dashboard/forensics projections; logs/operator UX/observability; tests
+     for success and failure modes; and the real implementation path behind
+     mocks or fakes when behavior depends on process/runtime semantics.
+   - Keep validation evidence separate from propagation evidence. Passing
+     commands prove the test suite result, not that each contract boundary was
+     semantically traced.
+   - If blocking findings exist, continue adjacent scanning far enough to batch
+     sibling gaps on the same contract surface before moving the issue back.
+     Group findings by surface instead of returning after the first local gap.
+   - A reviewer may stop early only for an immediate P1 safety issue. In that
+     case, the review comment must say sibling-gap scanning intentionally
+     stopped and name any unreviewed surfaces.
+   - Keep the review comment compact. For triggered changes, the Agent Review
+     comment must include this matrix shape, then list grouped findings below
+     it:
+
+     ```markdown
+     Propagation matrix:
+     | Surface | Checked reality | Result |
+     | --- | --- | --- |
+     | Type/schema/port | `<files or symbols>` | `<pass/finding/N/A>` |
+     | Ports/adapters/runtime bootstrap | `<files or path>` | `<pass/finding/N/A>` |
+     | Named stop/failure paths | `<cases>` | `<pass/finding/N/A>` |
+     | Persistence/API/dashboard/forensics | `<records/projections>` | `<pass/finding/N/A>` |
+     | Logs/operator UX/tests/real path | `<evidence>` | `<pass/finding/N/A>` |
+     ```
+8. If findings are fixable within the current approach, including missing or non-rendering UI evidence:
    - Post a normal Linear review findings comment; do not edit the implementation workpad for reviewer findings.
    - Move issue from `Agent Review` to `In Progress`.
-8. If the implementation needs a fresh approach:
+9. If the implementation needs a fresh approach:
    - Post a normal Linear review findings comment that explains the reset-level reason.
    - Move issue from `Agent Review` to `Rework`.
-9. If review passes and UI or human review is required:
+10. If review passes and UI or human review is required:
    - Post a short Linear comment: `Agent Review passed: no blocking findings. Routing: Human Review.`
    - Move issue from `Agent Review` to `Human Review`.
-10. If review passes and no human review is required:
+11. If review passes and no human review is required:
    - Post a short Linear comment: `Agent Review passed: no blocking findings. Routing: Merging.`
    - Move issue from `Agent Review` to `Merging`.
 
