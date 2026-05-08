@@ -45,7 +45,57 @@ describe('SqlitePersistenceStore', () => {
     expect(history).toHaveLength(1);
     expect(history[0].run_id).toBe(runId);
     expect(history[0].terminal_status).toBe('succeeded');
+    expect(history[0].completed_at).toBe('2026-04-11T10:00:00.000Z');
     expect(history[0].session_ids).toEqual(['thread-1-turn-1']);
+  });
+
+  it('persists completed_at for terminal statuses and leaves active runs null', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-completed-at-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const terminalStatuses = ['succeeded', 'failed', 'cancelled', 'timed_out', 'stalled'] as const;
+    let nowMs = Date.parse('2026-04-11T10:00:00.000Z');
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => nowMs });
+    stores.push(storeA);
+
+    const activeRunId = storeA.startRun({ issue_id: 'active-1', issue_identifier: 'ACTIVE-1' });
+    for (const [index, terminal_status] of terminalStatuses.entries()) {
+      const runId = storeA.startRun({ issue_id: `issue-${index}`, issue_identifier: `ABC-${index}` });
+      nowMs = Date.parse(`2026-04-11T10:0${index + 1}:00.000Z`);
+      storeA.completeRun({
+        run_id: runId,
+        terminal_status,
+        error_code: terminal_status === 'succeeded' ? null : `reason-${terminal_status}`,
+        terminal_reason_code: terminal_status === 'succeeded' ? null : `reason-${terminal_status}`,
+        session_id: `session-${terminal_status}`,
+        thread_id: `thread-${terminal_status}`,
+        turn_id: `turn-${terminal_status}`
+      });
+    }
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const history = storeB.listRunHistory(10);
+    const activeRun = history.find((run) => run.run_id === activeRunId);
+    expect(activeRun).toMatchObject({
+      terminal_status: null,
+      ended_at: null,
+      completed_at: null
+    });
+
+    for (const terminal_status of terminalStatuses) {
+      const run = history.find((entry) => entry.terminal_status === terminal_status);
+      expect(run?.completed_at).toBe(run?.ended_at);
+      expect(run?.completed_at).toMatch(/^2026-04-11T10:0[1-5]:00.000Z$/);
+      expect(run).toMatchObject({
+        session_id: `session-${terminal_status}`,
+        thread_id: `thread-${terminal_status}`,
+        turn_id: `turn-${terminal_status}`
+      });
+    }
   });
 
   it('persists terminal reconciliation reason with root-cause diagnostics across restart', async () => {
@@ -92,6 +142,7 @@ describe('SqlitePersistenceStore', () => {
       issue_id: 'i-1',
       issue_identifier: 'ABC-1',
       terminal_status: 'cancelled',
+      completed_at: '2026-04-11T10:05:00.000Z',
       error_code: 'non_active_state_transition',
       terminal_reason_code: 'non_active_state_transition',
       root_cause_status: 'blocked',

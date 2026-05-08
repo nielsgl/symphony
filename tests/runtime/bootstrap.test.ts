@@ -537,10 +537,11 @@ describe('createRuntimeEnvironment', () => {
 
     const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history`);
     const historyPayload = (await historyResponse.json()) as {
-      runs: Array<{ run_id: string; issue_identifier: string; terminal_status: string | null }>;
+      runs: Array<{ run_id: string; issue_identifier: string; terminal_status: string | null; completed_at: string | null }>;
     };
     expect(historyResponse.status).toBe(200);
     expect(historyPayload.runs.some((entry) => entry.run_id === runId)).toBe(true);
+    expect(historyPayload.runs.find((entry) => entry.run_id === runId)?.completed_at).toBe(new Date(seededAtMs).toISOString());
 
     const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
     const statePayload = (await stateResponse.json()) as {
