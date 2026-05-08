@@ -1,8 +1,16 @@
 import vm from 'node:vm';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderDashboardClientJs, renderDashboardHtml } from '../../src/api/dashboard-assets';
+
+const ORIGINAL_GLOBALS = {
+  document: globalThis.document,
+  window: globalThis.window,
+  EventSource: globalThis.EventSource,
+  fetch: globalThis.fetch,
+  setInterval: globalThis.setInterval
+};
 
 class FakeClassList {
   private readonly values = new Set<string>();
@@ -21,6 +29,16 @@ class FakeClassList {
 
   contains(token: string): boolean {
     return this.values.has(token);
+  }
+
+  toggle(token: string, force?: boolean): boolean {
+    const shouldAdd = force ?? !this.values.has(token);
+    if (shouldAdd) {
+      this.values.add(token);
+      return true;
+    }
+    this.values.delete(token);
+    return false;
   }
 
   setFromClassName(className: string): void {
@@ -43,11 +61,14 @@ class FakeElement {
   readonly listeners = new Map<string, Array<(event: { target?: FakeElement; key?: string; preventDefault(): void }) => void>>();
   readonly attributes = new Map<string, string>();
   children: FakeElement[] = [];
+  colSpan = 0;
+  dataset: Record<string, string> = {};
   disabled = false;
   href = '';
   id = '';
   open = true;
   placeholder = '';
+  style: Record<string, string> = {};
   title = '';
   type = '';
   value = '';
@@ -99,9 +120,13 @@ class FakeElement {
   }
 
   click(): void {
-    const handlers = this.listeners.get('click') || [];
+    this.dispatch('click');
+  }
+
+  dispatch(type: string, event: { target?: FakeElement; key?: string; preventDefault(): void } = { preventDefault() {} }): void {
+    const handlers = type === 'click' ? this.listeners.get('click') || [] : this.listeners.get(type) || [];
     for (const handler of handlers) {
-      handler({ target: this, preventDefault() {} });
+      handler({ ...event, target: event.target ?? this });
     }
   }
 
@@ -111,10 +136,20 @@ class FakeElement {
 
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
+    if (name.startsWith('data-')) {
+      this.dataset[name.slice('data-'.length)] = value;
+    }
   }
 
   getAttribute(name: string): string | null {
+    if (name.startsWith('data-')) {
+      return this.dataset[name.slice('data-'.length)] || null;
+    }
     return this.attributes.get(name) || null;
+  }
+
+  querySelectorAll(_selector: string): FakeElement[] {
+    return [];
   }
 
   static text(value: string): FakeElement {
@@ -152,6 +187,10 @@ class FakeDocument {
     return new FakeElement(tagName);
   }
 
+  createTextNode(value: string): FakeElement {
+    return FakeElement.text(value);
+  }
+
   querySelectorAll(_selector: string): FakeElement[] {
     return [];
   }
@@ -160,6 +199,22 @@ class FakeDocument {
     const handlers = this.listeners.get(type) || [];
     handlers.push(handler);
     this.listeners.set(type, handlers);
+  }
+}
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  closed = false;
+
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
+
+  close() {
+    this.closed = true;
   }
 }
 
@@ -183,14 +238,23 @@ function okJson(payload: unknown) {
 }
 
 async function flushPromises(): Promise<void> {
+  if (vi.isFakeTimers()) {
+    await vi.advanceTimersByTimeAsync(0);
+  }
   for (let index = 0; index < 10; index += 1) {
     await Promise.resolve();
   }
 }
 
-function createRuntimeStatePayload() {
+function makeStatePayload() {
   return {
-    generated_at: '2026-05-08T16:00:00.000Z',
+    generated_at: '2026-05-08T15:00:00.000Z',
+    snapshot_generated_at_ms: Date.parse('2026-05-08T15:00:00.000Z'),
+    snapshot_age_ms: 0,
+    snapshot_freshness_state: 'fresh',
+    api_degraded_mode: false,
+    api_degraded_reason_code: null,
+    api_degraded_routes: [],
     counts: {
       running: 0,
       retrying: 0,
@@ -218,6 +282,10 @@ function createRuntimeStatePayload() {
     recent_events: [],
     recent_runtime_events: []
   };
+}
+
+function createRuntimeStatePayload() {
+  return makeStatePayload();
 }
 
 function createStoppedRunRecoveryPayload() {
@@ -315,6 +383,79 @@ function installDashboardClient(fetchImpl: (url: string, init?: unknown) => Prom
   return { document, fetchCalls };
 }
 
+function installDashboardClientHarness() {
+  vi.useFakeTimers();
+  FakeEventSource.instances = [];
+  const document = new FakeDocument(renderDashboardHtml());
+  const fetchCalls: string[] = [];
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    fetchCalls.push(String(url));
+    if (url === '/api/v1/state') {
+      return okJson(makeStatePayload());
+    }
+    if (url === '/api/v1/refresh') {
+      expect(init?.method).toBe('POST');
+      return okJson({ queued: true, coalesced: false });
+    }
+    if (url === '/api/v1/ui-state') {
+      return okJson({ state: null });
+    }
+    if (url === '/api/v1/diagnostics') {
+      return okJson({ runtime_resolution: null });
+    }
+    if (url === '/api/v1/history?limit=8') {
+      return okJson({ runs: [] });
+    }
+    return okJson({});
+  });
+
+  vi.stubGlobal('document', document);
+  vi.stubGlobal('window', {
+    open: vi.fn(),
+    localStorage: {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn()
+    },
+    prompt: vi.fn(() => ''),
+    confirm: vi.fn(() => true)
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  vi.stubGlobal('EventSource', FakeEventSource);
+
+  const script = renderDashboardClientJs({ dashboard_enabled: true, refresh_ms: 500, render_interval_ms: 500, phase_stale_warn_ms: 1000 });
+  Function(script)();
+
+  return {
+    document,
+    fetchCalls,
+    stateFetchCount: () => fetchCalls.filter((url) => url === '/api/v1/state').length,
+    refreshFetchCount: () => fetchCalls.filter((url) => url === '/api/v1/refresh').length,
+    stream: () => {
+      const stream = FakeEventSource.instances.at(-1);
+      expect(stream).toBeDefined();
+      return stream!;
+    }
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  if (ORIGINAL_GLOBALS.document) {
+    globalThis.document = ORIGINAL_GLOBALS.document;
+  }
+  if (ORIGINAL_GLOBALS.window) {
+    globalThis.window = ORIGINAL_GLOBALS.window;
+  }
+  if (ORIGINAL_GLOBALS.EventSource) {
+    globalThis.EventSource = ORIGINAL_GLOBALS.EventSource;
+  }
+  if (ORIGINAL_GLOBALS.fetch) {
+    globalThis.fetch = ORIGINAL_GLOBALS.fetch;
+  }
+  globalThis.setInterval = ORIGINAL_GLOBALS.setInterval;
+});
+
 describe('dashboard assets', () => {
   it('renders client budget display logic for visible status, policy, and stop messages', () => {
     const clientJs = renderDashboardClientJs();
@@ -378,6 +519,77 @@ describe('dashboard assets', () => {
     expect(refreshBlock).not.toContain('/diagnostics');
     expect(streamBlock).toContain("type === 'state_snapshot'");
     expect(streamBlock).not.toContain('/diagnostics');
+  });
+
+  it('keeps polling before the stream delivers a usable state snapshot', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    expect(harness.stateFetchCount()).toBe(1);
+    harness.stream().onopen?.();
+    await vi.advanceTimersByTimeAsync(500);
+    await flushPromises();
+
+    expect(harness.stateFetchCount()).toBe(2);
+  });
+
+  it('suspends routine polling after a healthy stream state snapshot arrives', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    harness.stream().onopen?.();
+    harness.stream().onmessage?.({
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state: makeStatePayload() } })
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1500);
+    await flushPromises();
+
+    expect(harness.stateFetchCount()).toBe(1);
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Streaming updates connected');
+  });
+
+  it('resumes fallback polling when the stream errors after a healthy snapshot', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    harness.stream().onopen?.();
+    harness.stream().onmessage?.({
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state: makeStatePayload() } })
+    });
+    await flushPromises();
+    expect(harness.stateFetchCount()).toBe(1);
+
+    harness.stream().onerror?.();
+    await flushPromises();
+    expect(harness.stateFetchCount()).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(500);
+    await flushPromises();
+    expect(harness.stateFetchCount()).toBe(3);
+  });
+
+  it('keeps manual refresh explicit while stream polling is suspended', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    harness.stream().onopen?.();
+    harness.stream().onmessage?.({
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state: makeStatePayload() } })
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(harness.stateFetchCount()).toBe(1);
+
+    harness.document.getElementById('refresh-button').click();
+    await flushPromises();
+
+    expect(harness.refreshFetchCount()).toBe(1);
+    expect(harness.stateFetchCount()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(harness.stateFetchCount()).toBe(2);
   });
 
   it('lazy-loads stopped-run recovery details only on operator request', () => {
