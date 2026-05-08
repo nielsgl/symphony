@@ -139,6 +139,44 @@ function readTimestampMs(value: Record<string, unknown> | null): number | null {
   return null;
 }
 
+function workerTerminationResultContext(result: WorkerTerminationResult | null | undefined): Record<string, unknown> {
+  if (!result) {
+    return {
+      worker_termination_result: null
+    };
+  }
+  return {
+    worker_termination_result: result.result,
+    worker_termination_reason_code: result.reason_code,
+    worker_termination_detail: result.detail,
+    worker_cancellation_supported: result.cancellation_supported,
+    worker_cancellation_requested: result.cancellation_requested,
+    worker_settled: result.worker_settled,
+    graceful_exit_observed: result.graceful_exit_observed,
+    forced_kill_requested: result.forced_kill_requested,
+    forced_kill_settled: result.forced_kill_settled,
+    cleanup_requested: result.cleanup_requested,
+    cleanup_succeeded: result.cleanup_succeeded
+  };
+}
+
+function workerTerminationResultDetail(prefix: string, result: WorkerTerminationResult): string {
+  const fields = [
+    `termination_result=${result.result}`,
+    `termination_reason_code=${result.reason_code}`,
+    `termination_detail=${result.detail ?? 'none'}`,
+    `cancellation_supported=${result.cancellation_supported}`,
+    `cancellation_requested=${result.cancellation_requested}`,
+    `worker_settled=${result.worker_settled ?? 'unknown'}`,
+    `graceful_exit_observed=${result.graceful_exit_observed ?? 'unknown'}`,
+    `forced_kill_requested=${result.forced_kill_requested}`,
+    `forced_kill_settled=${result.forced_kill_settled ?? 'unknown'}`,
+    `cleanup_requested=${result.cleanup_requested}`,
+    `cleanup_succeeded=${result.cleanup_succeeded ?? 'unknown'}`
+  ];
+  return `${prefix} ${fields.join(' ')}`;
+}
+
 function cloneIssue(issue: Issue): Issue {
   return {
     ...issue,
@@ -2069,13 +2107,19 @@ export class OrchestratorCore {
 
     this.ports.notifyObservers?.();
 
-    await this.ports.terminateWorker({
+    const terminationResult = await this.ports.terminateWorker({
       issue_id: issueId,
       worker_handle: running.worker_handle,
       cleanup_workspace: false,
       reason: stopReasonCode
     });
-    await this.completeRunRecord(running, 'failed', stopReasonCode);
+    await this.completeRunRecord(
+      running,
+      'failed',
+      stopReasonCode,
+      null,
+      workerTerminationResultDetail(stopReasonDetail, terminationResult)
+    );
   }
 
   private recordBudgetUsageSample(issueId: string, totalTokens: number, timestampMs: number): void {
@@ -2352,21 +2396,24 @@ export class OrchestratorCore {
           thread_id: running.thread_id,
           session_id: running.session_id
         });
-        if (normalStop.cleanup_workspace) {
-          await this.ports.terminateWorker({
+        const terminationResult = normalStop.cleanup_workspace
+          ? await this.ports.terminateWorker({
             issue_id,
             worker_handle: running.worker_handle,
             cleanup_workspace: true,
             reason: 'terminal_state_transition'
-          });
-        }
-        await this.completeRunRecord(running, 'succeeded', null);
+          })
+          : null;
+        const terminalReasonDetail = terminationResult
+          ? workerTerminationResultDetail(normalStop.detail, terminationResult)
+          : normalStop.detail;
+        await this.completeRunRecord(running, 'succeeded', normalStop.reason_code, null, terminalReasonDetail);
         await this.persistExecutionGraphStateTransition(
           running,
           'succeeded',
           'succeeded',
           normalStop.reason_code,
-          normalStop.detail
+          terminalReasonDetail
         );
         this.state.completed.add(issue_id);
         this.state.claimed.delete(issue_id);
@@ -2383,6 +2430,7 @@ export class OrchestratorCore {
             completion_reason: completionReason,
             refreshed_state: details.refreshed_state ?? null,
             stop_reason_code: normalStop.reason_code,
+            ...workerTerminationResultContext(terminationResult),
             cleanup_workspace: normalStop.cleanup_workspace,
             worker_termination_requested: normalStop.cleanup_workspace,
             worker_process_identity_known: Boolean(running.codex_app_server_pid),
@@ -3268,7 +3316,7 @@ export class OrchestratorCore {
         continue;
       }
 
-      await this.ports.terminateWorker({
+      const terminationResult = await this.ports.terminateWorker({
         issue_id: issueId,
         worker_handle: runningEntry.worker_handle,
         cleanup_workspace: false,
@@ -3278,7 +3326,8 @@ export class OrchestratorCore {
       this.addRuntimeSecondsFromEntry(runningEntry);
       this.state.running.delete(issueId);
 
-      await this.completeRunRecord(runningEntry, 'stalled', 'worker stalled');
+      const stalledDetail = workerTerminationResultDetail('worker stalled', terminationResult);
+      await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.workerStalled, null, stalledDetail);
 
       await this.scheduleRetry({
         issue_id: issueId,
@@ -3301,7 +3350,7 @@ export class OrchestratorCore {
         copy_ignored_status: runningEntry.copy_ignored_status,
         copy_ignored_summary: runningEntry.copy_ignored_summary,
         stop_reason_code: REASON_CODES.workerStalled,
-        stop_reason_detail: 'worker stalled',
+        stop_reason_detail: stalledDetail,
         previous_thread_id: runningEntry.thread_id,
         previous_session_id: runningEntry.session_id,
         issue_snapshot: runningEntry.issue
@@ -3315,7 +3364,8 @@ export class OrchestratorCore {
           issue_id: issueId,
           issue_identifier: runningEntry.identifier,
           session_id: runningEntry.session_id,
-          elapsed_ms: elapsedMs
+          elapsed_ms: elapsedMs,
+          ...workerTerminationResultContext(terminationResult)
         }
       });
       this.recordRuntimeEvent({
@@ -3323,7 +3373,7 @@ export class OrchestratorCore {
         severity: 'warn',
         issue_identifier: runningEntry.identifier,
         session_id: runningEntry.session_id ?? undefined,
-        detail: 'worker stalled'
+        detail: stalledDetail
       });
     }
   }
@@ -3678,8 +3728,9 @@ export class OrchestratorCore {
       }
     });
 
+    let terminationResult: WorkerTerminationResult | null = null;
     try {
-      await this.ports.terminateWorker({
+      terminationResult = await this.ports.terminateWorker({
         issue_id,
         worker_handle: runningEntry.worker_handle,
         cleanup_workspace,
@@ -3743,9 +3794,10 @@ export class OrchestratorCore {
       state: 'finalizing'
     };
 
+    const finalizationDetail = workerTerminationResultDetail(`worker termination finalized: ${reason}`, terminationResult);
     this.addRuntimeSecondsFromEntry(runningEntry);
-    await this.completeRunRecord(runningEntry, 'cancelled', reason);
-    await this.persistExecutionGraphStateTransition(runningEntry, 'cancelled', 'cancelled', reason, `worker terminated: ${reason}`);
+    await this.completeRunRecord(runningEntry, 'cancelled', reason, null, finalizationDetail);
+    await this.persistExecutionGraphStateTransition(runningEntry, 'cancelled', 'cancelled', reason, finalizationDetail);
     this.rememberInactiveWorkerPid(runningEntry, reason);
     this.rememberReleasedWorker(runningEntry, reason, cleanup_workspace);
     this.state.running.delete(issue_id);
@@ -3753,7 +3805,7 @@ export class OrchestratorCore {
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.orchestration.workerTerminated,
-      message: `worker terminated: ${reason}`,
+      message: `worker termination finalized: ${reason}`,
       context: {
         issue_id,
         issue_identifier: runningEntry.identifier,
@@ -3762,6 +3814,7 @@ export class OrchestratorCore {
         reason,
         termination_state: 'finalized',
         termination_exit_observed: Boolean(runningEntry.termination.exit_observed_at_ms),
+        ...workerTerminationResultContext(terminationResult),
         worker_termination_requested: true,
         worker_process_identity_known: Boolean(runningEntry.codex_app_server_pid),
         codex_app_server_pid: runningEntry.codex_app_server_pid,
@@ -6474,18 +6527,20 @@ export class OrchestratorCore {
       `elapsed_wait_ms=${diagnostic.elapsed_wait_ms}`
     ].join(' ');
 
+    let terminationResult: WorkerTerminationResult | null = null;
     if (options.terminate_worker ?? true) {
-      await this.ports.terminateWorker({
+      terminationResult = await this.ports.terminateWorker({
         issue_id: issueId,
         worker_handle: runningEntry.worker_handle,
         cleanup_workspace: false,
         reason: stopReasonCode
       });
     }
+    const blockDetail = terminationResult ? workerTerminationResultDetail(detail, terminationResult) : detail;
 
     this.rememberInactiveWorkerPid(runningEntry, stopReasonCode);
     this.addRuntimeSecondsFromEntry(runningEntry);
-    await this.completeRunRecord(runningEntry, 'cancelled', stopReasonCode, recovery);
+    await this.completeRunRecord(runningEntry, 'cancelled', stopReasonCode, recovery, blockDetail);
     this.state.running.delete(issueId);
 
     await this.scheduleBlockedInput({
@@ -6507,7 +6562,7 @@ export class OrchestratorCore {
       copy_ignored_status: runningEntry.copy_ignored_status,
       copy_ignored_summary: runningEntry.copy_ignored_summary,
       stop_reason_code: stopReasonCode,
-      stop_reason_detail: detail,
+      stop_reason_detail: blockDetail,
       resolution_hints: recommendedActions,
       required_actions: recommendedActions,
       session_console: runningEntry.recent_events,
@@ -6524,14 +6579,14 @@ export class OrchestratorCore {
       severity: 'warn',
       issue_identifier: runningEntry.identifier,
       session_id: diagnostic.session_id ?? undefined,
-      detail
+      detail: blockDetail
     });
     await this.persistExecutionGraphStateTransition(
       runningEntry,
       'blocked',
       'blocked',
       stopReasonCode,
-      detail
+      blockDetail
     );
     this.ports.notifyObservers?.();
   }
@@ -6540,7 +6595,8 @@ export class OrchestratorCore {
     runningEntry: RunningEntry,
     terminal_status: 'succeeded' | 'failed' | 'timed_out' | 'stalled' | 'cancelled',
     error_code: string | null,
-    recoveryOverride: MissingToolOutputRecoveryState | null = null
+    recoveryOverride: MissingToolOutputRecoveryState | null = null,
+    terminalReasonDetail: string | null = null
   ): Promise<void> {
     if (!runningEntry.run_id || !this.persistence) {
       return;
@@ -6553,6 +6609,7 @@ export class OrchestratorCore {
         terminal_status,
         error_code,
         terminal_reason_code: error_code,
+        terminal_reason_detail: terminalReasonDetail,
         root_cause_status: rootCause.status,
         root_cause_reason_code: rootCause.reason_code,
         root_cause_reason_detail: rootCause.reason_detail,
