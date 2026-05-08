@@ -62,6 +62,9 @@ interface WaitForTerminalResult {
   input_required_payload?: CodexInputRequestPayload;
 }
 
+const PROCESS_CANCEL_GRACE_MS = 500;
+const PROCESS_CANCEL_FORCE_SETTLE_MS = 100;
+
 interface TurnEventContext {
   thread_id: string;
   turn_id: string;
@@ -789,6 +792,99 @@ function defaultSpawnProcess(params: {
   return child;
 }
 
+function abortReason(signal: AbortSignal | undefined): string {
+  const reason = signal?.reason;
+  return typeof reason === 'string' && reason.trim().length > 0 ? reason : 'worker_cancelled';
+}
+
+function createCancellationError(signal: AbortSignal | undefined, outcome = 'requested'): CodexRunnerError {
+  return new CodexRunnerError('turn_cancelled', `worker_cancelled:${abortReason(signal)}:${outcome}`);
+}
+
+function waitForProcessExit(
+  processHandle: RunnerProcess,
+  timeoutMs: number
+): Promise<'exited' | 'timeout'> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve('timeout'), timeoutMs);
+    processHandle.once('exit', () => {
+      clearTimeout(timeout);
+      resolve('exited');
+    });
+  });
+}
+
+function createProcessCancellation(params: {
+  processHandle: RunnerProcess;
+  signal?: AbortSignal;
+}): {
+  withCancellation: <T>(promise: Promise<T>) => Promise<T>;
+  cancellationRequested: () => boolean;
+  waitForCancellation: () => Promise<void>;
+  dispose: () => void;
+} {
+  const { processHandle, signal } = params;
+  let cancellationSettled: Promise<void> | null = null;
+  let rejectCancellation: ((error: CodexRunnerError) => void) | null = null;
+  let cancellationRejected = false;
+
+  const cancellationPromise = new Promise<never>((_, reject) => {
+    rejectCancellation = (error) => {
+      if (!cancellationRejected) {
+        cancellationRejected = true;
+        reject(error);
+      }
+    };
+  });
+  // Prevent late aborts after a completed turn from surfacing as unhandled rejections.
+  cancellationPromise.catch(() => undefined);
+
+  const requestCancellation = () => {
+    if (cancellationSettled) {
+      return;
+    }
+
+    cancellationSettled = (async () => {
+      processHandle.kill('SIGTERM');
+      const gracefulExit = await waitForProcessExit(processHandle, PROCESS_CANCEL_GRACE_MS);
+      if (gracefulExit !== 'exited') {
+        processHandle.kill('SIGKILL');
+        const forcedExit = await waitForProcessExit(processHandle, PROCESS_CANCEL_FORCE_SETTLE_MS);
+        rejectCancellation?.(
+          createCancellationError(signal, forcedExit === 'exited' ? 'forced_kill_exited' : 'forced_kill_requested')
+        );
+        return;
+      }
+      rejectCancellation?.(createCancellationError(signal, 'graceful_exit'));
+    })();
+  };
+
+  if (signal?.aborted) {
+    requestCancellation();
+  } else {
+    signal?.addEventListener('abort', requestCancellation, { once: true });
+  }
+
+  return {
+    withCancellation: <T>(promise: Promise<T>): Promise<T> => {
+      if (!signal) {
+        return promise;
+      }
+      if (signal.aborted) {
+        requestCancellation();
+      }
+      return Promise.race([promise, cancellationPromise]);
+    },
+    cancellationRequested: () => Boolean(signal?.aborted),
+    waitForCancellation: async () => {
+      await cancellationSettled;
+    },
+    dispose: () => {
+      signal?.removeEventListener('abort', requestCancellation);
+    }
+  };
+}
+
 function assertWorkspaceCwd(workspaceCwd: string): void {
   if (!path.isAbsolute(workspaceCwd)) {
     throw new CodexRunnerError('invalid_workspace_cwd', 'Workspace cwd must be an absolute path');
@@ -867,18 +963,21 @@ export class CodexRunner {
 
     const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor, normalizeCodexHome(input));
     const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
+    const cancellation = createProcessCancellation({ processHandle, signal: input.cancellationSignal });
     protocol.setEventEmitter(emit);
 
     try {
-      await protocol.request(
-        'initialize',
-        {
-          clientInfo: { name: 'symphony', version: '0.1.0' },
-          capabilities: {
-            experimentalApi: true
-          }
-        },
-        input.readTimeoutMs
+      await cancellation.withCancellation(
+        protocol.request(
+          'initialize',
+          {
+            clientInfo: { name: 'symphony', version: '0.1.0' },
+            capabilities: {
+              experimentalApi: true
+            }
+          },
+          input.readTimeoutMs
+        )
       );
 
       protocol.notify('initialized', {});
@@ -891,20 +990,24 @@ export class CodexRunner {
 
       let threadResponse: Record<string, unknown>;
       try {
-        threadResponse = await protocol.request(
-          'thread/start',
-          {
-            ...baseThreadStartParams,
-            dynamicTools: this.dynamicToolExecutor.toolSpecs()
-          },
-          input.readTimeoutMs
+        threadResponse = await cancellation.withCancellation(
+          protocol.request(
+            'thread/start',
+            {
+              ...baseThreadStartParams,
+              dynamicTools: this.dynamicToolExecutor.toolSpecs()
+            },
+            input.readTimeoutMs
+          )
         );
       } catch (error) {
         if (!requiresExperimentalApiCapability(error)) {
           throw error;
         }
 
-        threadResponse = await protocol.request('thread/start', baseThreadStartParams, input.readTimeoutMs);
+        threadResponse = await cancellation.withCancellation(
+          protocol.request('thread/start', baseThreadStartParams, input.readTimeoutMs)
+        );
       }
 
       const thread_id = readNestedString(threadResponse, [
@@ -931,17 +1034,19 @@ export class CodexRunner {
           thread_id,
           detail: turnIndex === 0 ? 'initial_prompt' : 'continuation_prompt'
         });
-        const turnResponse = await protocol.request(
-          'turn/start',
-          {
-            threadId: thread_id,
-            input: [{ type: 'text', text: promptText }],
-            cwd: input.workspaceCwd,
-            title: input.title,
-            approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
-            sandboxPolicy
-          },
-          input.readTimeoutMs
+        const turnResponse = await cancellation.withCancellation(
+          protocol.request(
+            'turn/start',
+            {
+              threadId: thread_id,
+              input: [{ type: 'text', text: promptText }],
+              cwd: input.workspaceCwd,
+              title: input.title,
+              approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
+              sandboxPolicy
+            },
+            input.readTimeoutMs
+          )
         );
 
         const turn_id = readNestedString(turnResponse, [
@@ -967,7 +1072,7 @@ export class CodexRunner {
           session_id: `${thread_id}-${turn_id}`
         });
 
-        const waitResult = await protocol.waitForTurnTerminal(input.turnTimeoutMs, emit);
+        const waitResult = await cancellation.withCancellation(protocol.waitForTurnTerminal(input.turnTimeoutMs, emit));
         const session_id = `${thread_id}-${turn_id}`;
         const usage = waitResult.usage;
         const telemetry = waitResult.telemetry;
@@ -1078,6 +1183,13 @@ export class CodexRunner {
       throw new CodexRunnerError('response_error', 'Reached unexpected end of turn loop');
     } catch (error) {
       if (error instanceof CodexRunnerError) {
+        if (cancellation.cancellationRequested()) {
+          emit({ event: CANONICAL_EVENT.codex.turnCancelled, detail: abortReason(input.cancellationSignal) });
+          if (error.code === 'turn_cancelled' && error.message.startsWith('worker_cancelled:')) {
+            throw error;
+          }
+          throw createCancellationError(input.cancellationSignal);
+        }
         if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
           throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
         }
@@ -1088,8 +1200,13 @@ export class CodexRunner {
       throw error;
     } finally {
       if (shouldTerminateProcess) {
-        processHandle.kill('SIGKILL');
+        if (cancellation.cancellationRequested()) {
+          await cancellation.waitForCancellation();
+        } else {
+          processHandle.kill('SIGKILL');
+        }
       }
+      cancellation.dispose();
     }
   }
 
@@ -1115,31 +1232,36 @@ export class CodexRunner {
 
     const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor, normalizeCodexHome(input));
     const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
+    const cancellation = createProcessCancellation({ processHandle, signal: input.cancellationSignal });
     protocol.setEventEmitter(emit);
 
     try {
-      await protocol.request(
-        'initialize',
-        {
-          clientInfo: { name: 'symphony', version: '0.1.0' },
-          capabilities: {
-            experimentalApi: true
-          }
-        },
-        input.readTimeoutMs
+      await cancellation.withCancellation(
+        protocol.request(
+          'initialize',
+          {
+            clientInfo: { name: 'symphony', version: '0.1.0' },
+            capabilities: {
+              experimentalApi: true
+            }
+          },
+          input.readTimeoutMs
+        )
       );
       protocol.notify('initialized', {});
 
-      const threadResponse = await protocol.request(
-        'thread/resume',
-        {
-          threadId: input.previousThreadId,
-          cwd: input.workspaceCwd,
-          approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
-          sandbox: input.threadSandbox ?? 'workspace-write',
-          persistExtendedHistory: true
-        },
-        input.readTimeoutMs
+      const threadResponse = await cancellation.withCancellation(
+        protocol.request(
+          'thread/resume',
+          {
+            threadId: input.previousThreadId,
+            cwd: input.workspaceCwd,
+            approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
+            sandbox: input.threadSandbox ?? 'workspace-write',
+            persistExtendedHistory: true
+          },
+          input.readTimeoutMs
+        )
       );
       const thread_id =
         readNestedString(threadResponse, [
@@ -1152,13 +1274,15 @@ export class CodexRunner {
 
       emit({ event: CANONICAL_EVENT.codex.sessionStarted, thread_id });
 
-      await protocol.request(
-        'turn/interrupt',
-        {
-          threadId: thread_id,
-          turnId: input.previousTurnId
-        },
-        input.readTimeoutMs
+      await cancellation.withCancellation(
+        protocol.request(
+          'turn/interrupt',
+          {
+            threadId: thread_id,
+            turnId: input.previousTurnId
+          },
+          input.readTimeoutMs
+        )
       );
       emit({
         event: CANONICAL_EVENT.codex.turnCancelled,
@@ -1173,17 +1297,19 @@ export class CodexRunner {
         thread_id,
         detail: 'guarded_recovery_prompt'
       });
-      const turnResponse = await protocol.request(
-        'turn/start',
-        {
-          threadId: thread_id,
-          input: [{ type: 'text', text: input.prompt }],
-          cwd: input.workspaceCwd,
-          title: input.title,
-          approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
-          sandboxPolicy: normalizeTurnSandboxPolicy(input.turnSandboxPolicy)
-        },
-        input.readTimeoutMs
+      const turnResponse = await cancellation.withCancellation(
+        protocol.request(
+          'turn/start',
+          {
+            threadId: thread_id,
+            input: [{ type: 'text', text: input.prompt }],
+            cwd: input.workspaceCwd,
+            title: input.title,
+            approvalPolicy: normalizeApprovalPolicy(input.approvalPolicy),
+            sandboxPolicy: normalizeTurnSandboxPolicy(input.turnSandboxPolicy)
+          },
+          input.readTimeoutMs
+        )
       );
       const turn_id = readNestedString(turnResponse, [
         ['turn', 'id'],
@@ -1200,7 +1326,7 @@ export class CodexRunner {
       emit({ event: CANONICAL_EVENT.codex.turnStarted, thread_id, turn_id, session_id });
       protocol.setTurnContext({ thread_id, turn_id, session_id });
 
-      const waitResult = await protocol.waitForTurnTerminal(input.turnTimeoutMs, emit);
+      const waitResult = await cancellation.withCancellation(protocol.waitForTurnTerminal(input.turnTimeoutMs, emit));
       const usage = waitResult.usage;
       const telemetry = waitResult.telemetry;
       const rate_limits = waitResult.rate_limits;
@@ -1281,6 +1407,13 @@ export class CodexRunner {
       };
     } catch (error) {
       if (error instanceof CodexRunnerError) {
+        if (cancellation.cancellationRequested()) {
+          emit({ event: CANONICAL_EVENT.codex.turnCancelled, detail: abortReason(input.cancellationSignal) });
+          if (error.code === 'turn_cancelled' && error.message.startsWith('worker_cancelled:')) {
+            throw error;
+          }
+          throw createCancellationError(input.cancellationSignal);
+        }
         if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
           throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
         }
@@ -1289,7 +1422,12 @@ export class CodexRunner {
       }
       throw error;
     } finally {
-      processHandle.kill('SIGKILL');
+      if (cancellation.cancellationRequested()) {
+        await cancellation.waitForCancellation();
+      } else {
+        processHandle.kill('SIGKILL');
+      }
+      cancellation.dispose();
     }
   }
 

@@ -15,6 +15,8 @@ interface WorkerHandle {
   issue_identifier: string;
   worker_host: string | null;
   promise: Promise<void>;
+  cancel: (reason: string) => Promise<void>;
+  cleanup_workspace_promise?: Promise<boolean>;
 }
 
 export interface LocalRunnerBridgeOptions {
@@ -83,12 +85,31 @@ export class LocalRunnerBridge {
         error: error instanceof Error ? error.message : 'workspace provisioning failed'
       };
     }
-    const workerPromise = this.startWorker(params.issue, params.attempt, workerHost, params.resume_context ?? null);
+    const cancellationController = new AbortController();
+    let runnerSettled = false;
+    const workerPromise = this.startWorker(
+      params.issue,
+      params.attempt,
+      workerHost,
+      params.resume_context ?? null,
+      cancellationController.signal,
+      () => {
+        runnerSettled = true;
+      }
+    );
     const worker_handle: WorkerHandle = {
       issue_id: params.issue.id,
       issue_identifier: params.issue.identifier,
       promise: workerPromise,
-      worker_host: workerHost
+      worker_host: workerHost,
+      cancel: createWorkerCancel({
+        issue_id: params.issue.id,
+        issue_identifier: params.issue.identifier,
+        worker_host: workerHost,
+        controller: cancellationController,
+        workerPromise,
+        isRunnerSettled: () => runnerSettled
+      })
     };
 
     return {
@@ -129,12 +150,24 @@ export class LocalRunnerBridge {
         error: error instanceof Error ? error.message : 'workspace provisioning failed'
       };
     }
-    const workerPromise = this.startRecoveryWorker(params, workerHost);
+    const cancellationController = new AbortController();
+    let runnerSettled = false;
+    const workerPromise = this.startRecoveryWorker(params, workerHost, cancellationController.signal, () => {
+      runnerSettled = true;
+    });
     const worker_handle: WorkerHandle = {
       issue_id: params.issue.id,
       issue_identifier: params.issue.identifier,
       promise: workerPromise,
-      worker_host: workerHost
+      worker_host: workerHost,
+      cancel: createWorkerCancel({
+        issue_id: params.issue.id,
+        issue_identifier: params.issue.identifier,
+        worker_host: workerHost,
+        controller: cancellationController,
+        workerPromise,
+        isRunnerSettled: () => runnerSettled
+      })
     };
 
     return {
@@ -156,24 +189,61 @@ export class LocalRunnerBridge {
     };
   }
 
-  async terminateWorker(params: { issue_id: string; worker_handle: unknown; cleanup_workspace: boolean }): Promise<void> {
-    if (!params.cleanup_workspace) {
-      return;
-    }
-
+  async terminateWorker(params: {
+    issue_id: string;
+    worker_handle: unknown;
+    cleanup_workspace: boolean;
+    reason?: string;
+  }): Promise<void> {
     const workerHandle = params.worker_handle as WorkerHandle | null;
     if (!workerHandle?.issue_identifier) {
       return;
     }
 
-    await this.workspaceManager.cleanupWorkspace(workerHandle.issue_identifier);
+    if (typeof workerHandle.cancel === 'function') {
+      await workerHandle.cancel(params.reason ?? 'worker_terminated');
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.orchestration.workerTerminated,
+        message: 'worker process cancellation requested',
+        context: {
+          issue_id: params.issue_id,
+          issue_identifier: workerHandle.issue_identifier,
+          cleanup_workspace: params.cleanup_workspace,
+          reason: params.reason ?? 'worker_terminated',
+          worker_host: workerHandle.worker_host,
+          cancellation_contract: 'supported'
+        }
+      });
+    } else {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.orchestration.workerTerminated,
+        message: 'worker process cancellation unsupported',
+        context: {
+          issue_id: params.issue_id,
+          issue_identifier: workerHandle.issue_identifier,
+          cleanup_workspace: params.cleanup_workspace,
+          reason: params.reason ?? 'worker_terminated',
+          worker_host: workerHandle.worker_host,
+          cancellation_contract: 'unsupported'
+        }
+      });
+    }
+
+    if (params.cleanup_workspace) {
+      workerHandle.cleanup_workspace_promise ??= this.workspaceManager.cleanupWorkspace(workerHandle.issue_identifier);
+      await workerHandle.cleanup_workspace_promise;
+    }
   }
 
   private async startWorker(
     issue: Issue,
     attempt: number | null,
     worker_host: string | null,
-    resume_context: string | null
+    resume_context: string | null,
+    cancellationSignal: AbortSignal,
+    onRunnerSettled: () => void
   ): Promise<void> {
     this.logger?.log({
       level: 'info',
@@ -196,10 +266,12 @@ export class LocalRunnerBridge {
       renderPrompt: this.renderPrompt,
       resumeContext: resume_context,
       issueStateFetcher: this.issueStateFetcher,
+      cancellationSignal,
       onCodexEvent: (event) => {
         this.onWorkerEvent?.({ issue_id: issue.id, event });
       }
     });
+    onRunnerSettled();
     if (result.reason === 'normal') {
       this.logger?.log({
         level: 'info',
@@ -245,7 +317,9 @@ export class LocalRunnerBridge {
       previous_session_id: string | null;
       recovery_prompt: string;
     },
-    worker_host: string | null
+    worker_host: string | null,
+    cancellationSignal: AbortSignal,
+    onRunnerSettled: () => void
   ): Promise<void> {
     this.logger?.log({
       level: 'info',
@@ -274,10 +348,12 @@ export class LocalRunnerBridge {
       previousTurnId: params.previous_turn_id,
       previousSessionId: params.previous_session_id,
       recoveryPrompt: params.recovery_prompt,
+      cancellationSignal,
       onCodexEvent: (event) => {
         this.onWorkerEvent?.({ issue_id: params.issue.id, event });
       }
     });
+    onRunnerSettled();
     await this.onWorkerExit?.({
       issue_id: params.issue.id,
       reason: result.reason,
@@ -286,4 +362,25 @@ export class LocalRunnerBridge {
       refreshed_state: result.refreshed_state
     });
   }
+}
+
+function createWorkerCancel(params: {
+  issue_id: string;
+  issue_identifier: string;
+  worker_host: string | null;
+  controller: AbortController;
+  workerPromise: Promise<void>;
+  isRunnerSettled: () => boolean;
+}): (reason: string) => Promise<void> {
+  let cancellationPromise: Promise<void> | null = null;
+  return async (reason: string): Promise<void> => {
+    if (!params.controller.signal.aborted) {
+      params.controller.abort(reason);
+    }
+
+    cancellationPromise ??= params.workerPromise.catch(() => undefined);
+    if (!params.isRunnerSettled()) {
+      await cancellationPromise;
+    }
+  };
 }
