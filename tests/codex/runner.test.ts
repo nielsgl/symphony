@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CodexRunner, CONTINUATION_GUIDANCE } from '../../src/codex';
 import type { CodexRunnerStartInput } from '../../src/codex';
@@ -20,6 +20,7 @@ class FakeProcess {
   stderr = new EventEmitter();
   private readonly exitEmitter = new EventEmitter();
   readonly writes: string[] = [];
+  readonly signals: Array<NodeJS.Signals | number | undefined> = [];
   killed = false;
   stdin = {
     write: (data: string) => {
@@ -27,7 +28,8 @@ class FakeProcess {
     }
   };
 
-  kill(): void {
+  kill(signal?: NodeJS.Signals | number): void {
+    this.signals.push(signal);
     this.killed = true;
   }
 
@@ -136,6 +138,40 @@ describe('CodexRunner', () => {
     expect(threadStart?.params?.dynamicTools).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'linear_graphql' })])
     );
+  });
+
+  it('settles deterministically and force-kills a cancelled app-server process that does not exit', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = new FakeProcess();
+      const workspaceCwd = makeWorkspace();
+      const controller = new AbortController();
+      const runner = new CodexRunner({
+        spawnProcess: () => fake
+      });
+
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          cancellationSignal: controller.signal
+        })
+      );
+
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+
+      const assertion = expect(promise).rejects.toMatchObject({
+        code: 'turn_cancelled',
+        message: 'worker_cancelled:operator_cancel_turn:forced_kill_requested'
+      });
+      controller.abort('operator_cancel_turn');
+      await vi.advanceTimersByTimeAsync(700);
+
+      await assertion;
+      expect(fake.signals).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('launches typed commands with native args and env instead of bash interpolation', async () => {
