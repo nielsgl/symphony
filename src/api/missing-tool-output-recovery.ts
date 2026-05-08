@@ -1,5 +1,12 @@
 import { REASON_CODES } from '../observability/reason-codes';
-import type { BlockedEntry, MissingToolOutputRecoveryState, RetryEntry, RunningEntry, ToolCallEvidenceSource } from '../orchestrator';
+import type {
+  BlockedEntry,
+  MissingToolOutputRecoveryState,
+  RetryEntry,
+  RunningEntry,
+  ToolCallEvidenceSource,
+  WorkerTerminationResult
+} from '../orchestrator';
 
 export type MissingToolOutputRecoveryOutcomeStatus =
   | 'not_started'
@@ -32,6 +39,7 @@ export interface MissingToolOutputRecoveryEvidence {
     status: 'not_started' | 'succeeded' | 'failed' | 'unknown';
     reason_code: string | null;
     detail: string | null;
+    termination_result: WorkerTerminationResult | null;
   };
   replacement_turn: {
     thread_id: string | null;
@@ -185,7 +193,8 @@ function interruptCancelResult(recovery: MissingToolOutputRecoveryState | null):
     return {
       status: 'not_started',
       reason_code: null,
-      detail: null
+      detail: null,
+      termination_result: null
     };
   }
   const result = recovery.interrupt_cancel_result ?? null;
@@ -193,13 +202,15 @@ function interruptCancelResult(recovery: MissingToolOutputRecoveryState | null):
     return {
       status: result.status,
       reason_code: result.reason_code ?? null,
-      detail: result.detail ?? null
+      detail: result.detail ?? null,
+      termination_result: result.termination_result ?? null
     };
   }
   return {
     status: 'not_started',
     reason_code: null,
-    detail: null
+    detail: null,
+    termination_result: null
   };
 }
 

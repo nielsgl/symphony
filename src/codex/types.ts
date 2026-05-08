@@ -48,6 +48,8 @@ export type CodexTurnErrorCode =
   | 'turn_cancelled'
   | typeof REASON_CODES.turnInputRequired;
 
+export type CodexCancellationOutcome = 'requested' | 'graceful_exit' | 'forced_kill_exited' | 'forced_kill_requested';
+
 export interface CodexUsageTotals {
   input_tokens: number;
   output_tokens: number;
@@ -99,6 +101,7 @@ export interface CodexTurnResult {
   time_to_first_token_ms?: number;
   error_code?: CodexTurnErrorCode;
   error_detail?: string;
+  cancellation_outcome?: CodexCancellationOutcome;
   input_required_payload?: CodexInputRequestPayload;
   turns_completed: number;
   usage?: CodexUsageTotals;

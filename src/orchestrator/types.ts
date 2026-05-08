@@ -226,6 +226,21 @@ export interface ToolCallLedgerEntry {
 export type MissingToolOutputRecoveryMode = 'same_thread_guarded_continuation';
 export type MissingToolOutputRecoveryResult = 'started' | 'succeeded' | 'blocked' | 'failed';
 export type MissingToolOutputRecoveryInterruptStatus = 'not_started' | 'succeeded' | 'failed' | 'unknown';
+export type WorkerTerminationOutcome = 'succeeded' | 'failed' | 'unsupported' | 'unknown';
+
+export interface WorkerTerminationResult {
+  cancellation_supported: boolean;
+  cancellation_requested: boolean;
+  worker_settled: boolean | null;
+  graceful_exit_observed: boolean | null;
+  forced_kill_requested: boolean;
+  forced_kill_settled: boolean | null;
+  cleanup_requested: boolean;
+  cleanup_succeeded: boolean | null;
+  result: WorkerTerminationOutcome;
+  reason_code: string;
+  detail: string | null;
+}
 
 export interface MissingToolOutputRecoveryState {
   attempt_count: number;
@@ -255,6 +270,7 @@ export interface MissingToolOutputRecoveryState {
     status: MissingToolOutputRecoveryInterruptStatus;
     reason_code?: string | null;
     detail?: string | null;
+    termination_result?: WorkerTerminationResult | null;
   } | null;
   last_result: MissingToolOutputRecoveryResult;
   last_result_reason_code?: string | null;
@@ -626,7 +642,7 @@ export interface OrchestratorPorts {
     worker_handle: unknown;
     cleanup_workspace: boolean;
     reason: string;
-  }) => Promise<void>;
+  }) => Promise<WorkerTerminationResult>;
   scheduleRetryTimer: (params: {
     issue_id: string;
     due_at_ms: number;

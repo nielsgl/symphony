@@ -40,7 +40,8 @@ import type {
   WorkerCompletionReason,
   WorkerExitDetails,
   WorkerObservabilityEvent,
-  WorkerExitReason
+  WorkerExitReason,
+  WorkerTerminationResult
 } from './types';
 
 const DEFAULT_INACTIVE_WORKER_PID_TTL_MS = 60 * 60 * 1000;
@@ -6175,27 +6176,47 @@ export class OrchestratorCore {
       return;
     }
 
-    await this.ports.terminateWorker({
+    const terminationResult = await this.ports.terminateWorker({
       issue_id: issueId,
       worker_handle: runningEntry.worker_handle,
       cleanup_workspace: false,
       reason: REASON_CODES.missingToolOutputRecoveryInterrupted
     });
+    const interruptedRecovery: MissingToolOutputRecoveryState = {
+      ...recovery,
+      interrupt_cancel_result: {
+        status: this.workerTerminationInterruptStatus(terminationResult),
+        reason_code: terminationResult.reason_code,
+        detail: terminationResult.detail,
+        termination_result: terminationResult
+      }
+    };
+    if (!this.workerTerminationAllowsRecovery(terminationResult)) {
+      await this.blockMissingToolOutput(
+        issueId,
+        runningEntry,
+        missingToolOutput,
+        observedAtMs,
+        REASON_CODES.missingToolOutputRecoveryStartFailed,
+        `worker interruption not safely confirmed result=${terminationResult.result} reason_code=${terminationResult.reason_code} detail=${terminationResult.detail ?? 'none'}`,
+        { ...interruptedRecovery, last_result: 'failed', last_result_reason_code: terminationResult.reason_code, last_result_detail: terminationResult.detail },
+        { terminate_worker: false }
+      );
+      return;
+    }
     this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.missingToolOutputRecoveryInterrupted);
     this.recordRuntimeEvent({
       event: CANONICAL_EVENT.orchestration.missingToolOutputRecoveryInterruptCompleted,
       severity: 'warn',
       issue_identifier: runningEntry.identifier,
       session_id: previousSessionId ?? undefined,
-      detail: `thread_id=${previousThreadId} turn_id=${previousTurnId} tool_name=${missingToolOutput.tool_name} call_id=${missingToolOutput.call_id}`
+      detail: `thread_id=${previousThreadId} turn_id=${previousTurnId} tool_name=${missingToolOutput.tool_name} call_id=${missingToolOutput.call_id} termination_result=${terminationResult.result} termination_reason_code=${terminationResult.reason_code}`
     });
-    const interruptedRecovery: MissingToolOutputRecoveryState = {
-      ...recovery,
-      interrupt_cancel_result: {
-        status: 'succeeded',
-        reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
-        detail: `interrupted previous turn ${previousTurnId ?? 'unknown'} on thread ${previousThreadId ?? 'unknown'}`
-      }
+    interruptedRecovery.interrupt_cancel_result = {
+      status: 'succeeded',
+      reason_code: terminationResult.reason_code,
+      detail: terminationResult.detail ?? `interrupted previous turn ${previousTurnId ?? 'unknown'} on thread ${previousThreadId ?? 'unknown'}`,
+      termination_result: terminationResult
     };
 
     const recovered = await this.ports.recoverMissingToolOutput({
@@ -6341,6 +6362,28 @@ export class OrchestratorCore {
     };
   }
 
+  private workerTerminationAllowsRecovery(result: WorkerTerminationResult): boolean {
+    return (
+      result.result === 'succeeded' &&
+      result.cancellation_supported &&
+      result.cancellation_requested &&
+      result.worker_settled === true &&
+      (result.forced_kill_requested ? result.forced_kill_settled === true : true)
+    );
+  }
+
+  private workerTerminationInterruptStatus(
+    result: WorkerTerminationResult
+  ): NonNullable<MissingToolOutputRecoveryState['interrupt_cancel_result']>['status'] {
+    if (this.workerTerminationAllowsRecovery(result)) {
+      return 'succeeded';
+    }
+    if (result.result === 'unknown') {
+      return 'unknown';
+    }
+    return 'failed';
+  }
+
   private buildMissingToolOutputRecoveryPrompt(
     runningEntry: RunningEntry,
     missingToolOutput: OutstandingToolCall,
@@ -6393,7 +6436,8 @@ export class OrchestratorCore {
     observedAtMs: number,
     stopReasonCode: string = REASON_CODES.missingToolOutput,
     stopReasonDetailPrefix: string | null = null,
-    recovery: MissingToolOutputRecoveryState | null = null
+    recovery: MissingToolOutputRecoveryState | null = null,
+    options: { terminate_worker?: boolean } = {}
   ): Promise<void> {
     if (!this.state.running.has(issueId) || this.state.blocked_inputs.has(issueId)) {
       return;
@@ -6430,12 +6474,14 @@ export class OrchestratorCore {
       `elapsed_wait_ms=${diagnostic.elapsed_wait_ms}`
     ].join(' ');
 
-    await this.ports.terminateWorker({
-      issue_id: issueId,
-      worker_handle: runningEntry.worker_handle,
-      cleanup_workspace: false,
-      reason: stopReasonCode
-    });
+    if (options.terminate_worker ?? true) {
+      await this.ports.terminateWorker({
+        issue_id: issueId,
+        worker_handle: runningEntry.worker_handle,
+        cleanup_workspace: false,
+        reason: stopReasonCode
+      });
+    }
 
     this.rememberInactiveWorkerPid(runningEntry, stopReasonCode);
     this.addRuntimeSecondsFromEntry(runningEntry);

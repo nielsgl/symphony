@@ -2,7 +2,8 @@ import type { Issue } from '../tracker';
 import type { WorkspaceManager } from '../workspace';
 import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
-import type { CodexInputRequestPayload } from '../codex/types';
+import type { CodexCancellationOutcome, CodexInputRequestPayload } from '../codex/types';
+import { CodexRunnerError } from '../codex/errors';
 import type { EffectiveConfig } from '../workflow';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
@@ -34,6 +35,7 @@ export interface LocalWorkerRunResult {
   completion_reason?: WorkerCompletionReason;
   refreshed_state?: string | null;
   error?: string;
+  cancellation_outcome?: CodexCancellationOutcome;
   input_required_payload?: CodexInputRequestPayload;
 }
 
@@ -127,6 +129,7 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
           reason: 'abnormal',
           session_id: turnResult.session_id,
           error,
+          cancellation_outcome: turnResult.cancellation_outcome,
           input_required_payload: turnResult.input_required_payload
         };
       }
@@ -208,6 +211,15 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
       completion_reason: REASON_CODES.maxTurnsReached
     };
   } catch (error) {
+    const cancellationOutcome = readCancellationOutcome(error);
+    if (cancellationOutcome) {
+      return {
+        reason: 'abnormal',
+        session_id: null,
+        error: error instanceof Error ? error.message : 'worker cancellation requested',
+        cancellation_outcome: cancellationOutcome
+      };
+    }
     const workspaceConflictError = await renderWorkspaceConflictError(error, workspacePath);
     return {
       reason: 'abnormal',
@@ -277,6 +289,7 @@ export async function runLocalWorkerRecoveryAttempt(
         reason: 'abnormal',
         session_id: turnResult.session_id,
         error: turnResult.error_code ?? turnResult.last_event,
+        cancellation_outcome: turnResult.cancellation_outcome,
         input_required_payload: turnResult.input_required_payload
       };
     }
@@ -347,6 +360,15 @@ export async function runLocalWorkerRecoveryAttempt(
       completion_reason: REASON_CODES.maxTurnsReached
     };
   } catch (error) {
+    const cancellationOutcome = readCancellationOutcome(error);
+    if (cancellationOutcome) {
+      return {
+        reason: 'abnormal',
+        session_id: null,
+        error: error instanceof Error ? error.message : 'worker cancellation requested',
+        cancellation_outcome: cancellationOutcome
+      };
+    }
     const workspaceConflictError = await renderWorkspaceConflictError(error, workspacePath);
     return {
       reason: 'abnormal',
@@ -358,6 +380,23 @@ export async function runLocalWorkerRecoveryAttempt(
       await input.workspaceManager.finalizeAttempt(workspacePath);
     }
   }
+}
+
+function readCancellationOutcome(error: unknown): CodexCancellationOutcome | undefined {
+  if (!(error instanceof CodexRunnerError) || error.code !== 'turn_cancelled') {
+    return undefined;
+  }
+  const prefix = 'worker_cancelled:';
+  if (!error.message.startsWith(prefix)) {
+    return undefined;
+  }
+  const outcome = error.message.slice(prefix.length).split(':').pop();
+  return outcome === 'requested' ||
+    outcome === 'graceful_exit' ||
+    outcome === 'forced_kill_exited' ||
+    outcome === 'forced_kill_requested'
+    ? outcome
+    : undefined;
 }
 
 async function renderWorkspaceConflictError(error: unknown, workspacePath: string | null): Promise<string | null> {
