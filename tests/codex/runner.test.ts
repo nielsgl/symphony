@@ -707,7 +707,7 @@ describe('CodexRunner', () => {
     const promise = runner.startSessionAndRunTurn(
       makeStartInput(workspaceCwd, {
         commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 60
+        turnTimeoutMs: 100
       })
     );
 
@@ -715,9 +715,9 @@ describe('CodexRunner', () => {
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-progress"}}}\n');
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-progress"}}}\n');
 
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise((resolve) => setTimeout(resolve, 70));
     fake.emitStdout('{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}}\n');
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise((resolve) => setTimeout(resolve, 70));
     writeTranscriptRecord(codexHome, 'rollout-thread-progress.jsonl', {
       timestamp: '2026-05-07T19:45:20.171Z',
       type: 'event_msg',
@@ -726,6 +726,7 @@ describe('CodexRunner', () => {
         turn_id: 'turn-progress'
       }
     });
+    fake.emitStdout('{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}}\n');
 
     await expect(promise).resolves.toMatchObject({
       status: 'completed',

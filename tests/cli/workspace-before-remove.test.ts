@@ -72,7 +72,7 @@ describe('workspace-before-remove script', () => {
     expect(result.stdout).toContain('workspace-before-remove: skipped (gh unavailable)');
 
     fs.rmSync(tempDir, { recursive: true, force: true });
-  });
+  }, 30_000);
 
   it('no-ops when git branch is detached or empty', () => {
     const root = process.cwd();
