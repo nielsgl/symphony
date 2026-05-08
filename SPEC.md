@@ -657,6 +657,9 @@ Distinct terminal reasons are important because retry logic and logs differ.
   - If the worker is stale, superseded, or already released by a terminal/handoff transition, record
     a stale-exit diagnostic and do not remove, complete, fail, retry, or otherwise mutate the active
     run.
+  - If the active running entry is marked `termination_requested`/release-in-progress, a matching
+    exit is confirmation-only. The termination path remains the lifecycle owner and is the only path
+    allowed to record final cancellation/release.
   - For a matching worker, remove the running entry.
   - Update aggregate runtime totals.
   - Schedule continuation retry (attempt `1`) after the worker exhausts or finishes its in-process
@@ -664,6 +667,8 @@ Distinct terminal reasons are important because retry logic and logs differ.
 
 - `Worker Exit (abnormal)`
   - Apply the same active-owner check as normal exits.
+  - During release-in-progress, matching abnormal exits are also confirmation-only and must not
+    schedule retry, schedule blocked input, or persist failed/blocked/retrying lifecycle transitions.
   - For a matching worker, remove the running entry.
   - Update aggregate runtime totals.
   - Schedule exponential-backoff retry.
@@ -696,9 +701,12 @@ Distinct terminal reasons are important because retry logic and logs differ.
   dispatch, session, turn, or validation markers.
 - Operator action summaries are scoped to the active run window; stale cancel/requeue/resume action
   labels from prior same-issue runs must not be projected as the current run's last action.
-- Termination evidence should distinguish cancel requested, graceful exit observed, forced kill
-  evidence when surfaced by the Codex runner, workspace cleanup attempted, and cleanup
-  succeeded/failed.
+- Termination evidence should distinguish termination requested, matching exit observed during
+  release, stale/superseded exit observed during release, termination failure, forced kill evidence
+  when surfaced by the Codex runner, workspace cleanup attempted, and cleanup succeeded/failed.
+- `termination_requested` must be recorded on the running entry before awaiting worker cancellation
+  or workspace cleanup. If cancellation fails, the entry remains available with explicit
+  termination-failed diagnostics instead of silently returning to healthy running.
 - Reconciliation runs before dispatch on every tick.
 - Restart recovery is tracker-driven and filesystem-driven (no durable orchestrator DB required).
 - Startup terminal cleanup removes stale workspaces for issues already in terminal states.

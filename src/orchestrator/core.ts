@@ -30,6 +30,7 @@ import type {
   RetryDelayType,
   RetryEntry,
   RunningEntry,
+  ReleasedWorkerRecord,
   TickReason,
   ToolCallLedgerEntry,
   ToolCallLedgerObservation,
@@ -192,12 +193,17 @@ function cloneRunningEntry(entry: RunningEntry): RunningEntry {
     })),
     codex_session_transcript_scan_offsets: { ...(entry.codex_session_transcript_scan_offsets ?? {}) },
     recovery: entry.recovery ? { ...entry.recovery } : null,
+    termination: entry.termination ? { ...entry.termination } : null,
     ownership_conflict: entry.ownership_conflict ? { ...entry.ownership_conflict } : null,
     budget: entry.budget ? { ...entry.budget } : undefined
   };
 }
 
 function cloneOperatorAction(entry: OperatorActionRecord): OperatorActionRecord {
+  return { ...entry };
+}
+
+function cloneReleasedWorkerRecord(entry: ReleasedWorkerRecord): ReleasedWorkerRecord {
   return { ...entry };
 }
 
@@ -431,6 +437,7 @@ export class OrchestratorCore {
       phase_timeline: new Map(),
       budget_usage_samples: new Map(),
       inactive_worker_pids: new Map(),
+      released_workers: new Map(),
       completed: new Set(),
       codex_totals: {
         input_tokens: 0,
@@ -515,6 +522,11 @@ export class OrchestratorCore {
             >()
           ).entries()
         ).map(([issueId, entries]) => [issueId, entries.map((entry) => ({ ...entry }))])
+      ),
+      released_workers: new Map(
+        Array.from((this.state.released_workers ?? new Map<string, ReleasedWorkerRecord[]>()).entries()).map(
+          ([issueId, entries]) => [issueId, entries.map((entry) => cloneReleasedWorkerRecord(entry))]
+        )
       ),
       completed: new Set(this.state.completed.values()),
       codex_totals: { ...this.state.codex_totals },
@@ -1242,6 +1254,54 @@ export class OrchestratorCore {
       this.state.inactive_worker_pids = new Map();
     }
     this.state.inactive_worker_pids.set(issueId, next);
+  }
+
+  private rememberReleasedWorker(runningEntry: RunningEntry, reason: string, cleanupWorkspace: boolean): void {
+    const issueId = runningEntry.issue.id;
+    const existing = this.state.released_workers?.get(issueId) ?? [];
+    const next = [
+      ...existing,
+      {
+        released_at_ms: this.nowMs(),
+        reason,
+        cleanup_workspace: cleanupWorkspace,
+        worker_instance_id: runningEntry.worker_instance_id ?? null,
+        codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+        thread_id: runningEntry.thread_id ?? null,
+        turn_id: runningEntry.turn_id ?? null,
+        session_id: runningEntry.session_id ?? null
+      }
+    ].slice(-20);
+    if (!this.state.released_workers) {
+      this.state.released_workers = new Map();
+    }
+    this.state.released_workers.set(issueId, next);
+  }
+
+  private findReleasedWorkerRecord(issueId: string, details: WorkerExitDetails): ReleasedWorkerRecord | null {
+    const released = this.state.released_workers?.get(issueId) ?? [];
+    if (released.length === 0) {
+      return null;
+    }
+    const workerInstanceId = normalizeWorkerInstanceId(details.worker_instance_id);
+    const pid = normalizeCodexAppServerPid(details.codex_app_server_pid);
+    return (
+      released.find((entry) => {
+        if (workerInstanceId && entry.worker_instance_id === workerInstanceId) {
+          return true;
+        }
+        if (pid && entry.codex_app_server_pid === pid) {
+          return true;
+        }
+        if (details.turn_id && entry.turn_id === details.turn_id) {
+          return true;
+        }
+        if (details.session_id && entry.session_id === details.session_id) {
+          return true;
+        }
+        return false;
+      }) ?? null
+    );
   }
 
   private pruneInactiveWorkerPidsForIssue(issueId: string): Array<{
@@ -2074,6 +2134,85 @@ export class OrchestratorCore {
     return null;
   }
 
+  private async applyWorkerExitLineage(running: RunningEntry, details: WorkerExitDetails): Promise<void> {
+    const sessionId = details.session_id ?? null;
+    if (sessionId && !running.session_id) {
+      running.session_id = sessionId;
+      if (running.run_id) {
+        await this.persistence?.recordSession({
+          run_id: running.run_id,
+          session_id: sessionId
+        });
+      }
+    }
+    if (details.thread_id && !running.thread_id) {
+      running.thread_id = details.thread_id;
+    }
+    if (details.turn_id && !running.turn_id) {
+      running.turn_id = details.turn_id;
+    }
+    const codexAppServerPid = normalizeCodexAppServerPid(details.codex_app_server_pid);
+    if (codexAppServerPid && !running.codex_app_server_pid) {
+      running.codex_app_server_pid = codexAppServerPid;
+    }
+  }
+
+  private recordTerminationExitObserved(
+    issue_id: string,
+    running: RunningEntry,
+    reason: WorkerExitReason,
+    error: string | undefined,
+    details: WorkerExitDetails
+  ): void {
+    const termination = running.termination;
+    if (!termination) {
+      return;
+    }
+    const observedAtMs = this.nowMs();
+    running.termination = {
+      ...termination,
+      state: 'exit_observed',
+      exit_observed_at_ms: termination.exit_observed_at_ms ?? observedAtMs,
+      worker_instance_id:
+        normalizeWorkerInstanceId(details.worker_instance_id) ?? termination.worker_instance_id ?? running.worker_instance_id ?? null,
+      codex_app_server_pid:
+        normalizeCodexAppServerPid(details.codex_app_server_pid) ?? termination.codex_app_server_pid ?? running.codex_app_server_pid ?? null,
+      thread_id: details.thread_id ?? termination.thread_id ?? running.thread_id ?? null,
+      turn_id: details.turn_id ?? termination.turn_id ?? running.turn_id ?? null,
+      session_id: details.session_id ?? termination.session_id ?? running.session_id ?? null
+    };
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.workerExitHandled,
+      message: 'worker exit observed during termination release',
+      context: {
+        issue_id,
+        issue_identifier: running.identifier,
+        reason,
+        error: error ?? null,
+        outcome: 'termination_exit_observed',
+        termination_reason: termination.reason,
+        termination_state: running.termination.state,
+        cleanup_workspace: termination.cleanup_workspace,
+        active_run_id: running.run_id ?? null,
+        active_issue_run_id: running.issue_run_id ?? null,
+        active_attempt_id: running.attempt_id ?? null,
+        active_worker_instance_id: running.worker_instance_id ?? null,
+        event_worker_instance_id: normalizeWorkerInstanceId(details.worker_instance_id),
+        active_codex_app_server_pid: running.codex_app_server_pid ?? null,
+        event_codex_app_server_pid: normalizeCodexAppServerPid(details.codex_app_server_pid),
+        active_thread_id: running.thread_id ?? null,
+        event_thread_id: details.thread_id ?? null,
+        active_turn_id: running.turn_id ?? null,
+        event_turn_id: details.turn_id ?? null,
+        active_session_id: running.session_id ?? null,
+        event_session_id: details.session_id ?? null,
+        completion_reason: details.completion_reason ?? null,
+        refreshed_state: details.refreshed_state ?? null
+      }
+    });
+  }
+
   async onWorkerExit(
     issue_id: string,
     reason: WorkerExitReason,
@@ -2082,7 +2221,8 @@ export class OrchestratorCore {
   ): Promise<void> {
     const running = this.state.running.get(issue_id);
     if (!running) {
-      if (this.state.completed.has(issue_id)) {
+      const releasedWorker = this.findReleasedWorkerRecord(issue_id, details);
+      if (this.state.completed.has(issue_id) || releasedWorker) {
         this.logger?.log({
           level: 'info',
           event: CANONICAL_EVENT.orchestration.staleWorkerExitIgnored,
@@ -2094,6 +2234,8 @@ export class OrchestratorCore {
             completion_reason: details.completion_reason ?? null,
             refreshed_state: details.refreshed_state ?? null,
             stale_reason: 'ownership_already_released',
+            release_reason: releasedWorker?.reason ?? null,
+            release_session_id: releasedWorker?.session_id ?? null,
             event_worker_instance_id: normalizeWorkerInstanceId(details.worker_instance_id),
             event_codex_app_server_pid: normalizeCodexAppServerPid(details.codex_app_server_pid),
             event_thread_id: details.thread_id ?? null,
@@ -2119,6 +2261,8 @@ export class OrchestratorCore {
           completion_reason: details.completion_reason ?? null,
           refreshed_state: details.refreshed_state ?? null,
           stale_reason: staleExitReason,
+          termination_state: running.termination?.state ?? null,
+          termination_reason: running.termination?.reason ?? null,
           active_run_id: running.run_id ?? null,
           active_issue_run_id: running.issue_run_id ?? null,
           active_attempt_id: running.attempt_id ?? null,
@@ -2134,6 +2278,14 @@ export class OrchestratorCore {
           event_session_id: details.session_id ?? null
         }
       });
+      this.ports.notifyObservers?.();
+      return;
+    }
+
+    await this.applyWorkerExitLineage(running, details);
+
+    if (running.termination) {
+      this.recordTerminationExitObserved(issue_id, running, reason, error, details);
       this.ports.notifyObservers?.();
       return;
     }
@@ -3370,7 +3522,8 @@ export class OrchestratorCore {
       outstanding_tool_calls: {},
       transcript_tool_call_diagnostics: [],
       codex_session_transcript_scan_offsets: {},
-      recovery: null
+      recovery: null,
+      termination: null
     });
     this.emitPhaseMarker(issue.id, {
       phase: 'workspace_ready',
@@ -3463,17 +3616,109 @@ export class OrchestratorCore {
       return;
     }
 
-    await this.ports.terminateWorker({
-      issue_id,
-      worker_handle: runningEntry.worker_handle,
+    const requestedAtMs = this.nowMs();
+    runningEntry.termination = {
+      state: 'requested',
+      reason,
       cleanup_workspace,
-      reason
+      requested_at_ms: requestedAtMs,
+      worker_handle: runningEntry.worker_handle,
+      worker_instance_id: runningEntry.worker_instance_id ?? null,
+      codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+      thread_id: runningEntry.thread_id ?? null,
+      turn_id: runningEntry.turn_id ?? null,
+      session_id: runningEntry.session_id ?? null
+    };
+
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.workerTerminated,
+      message: `worker termination requested: ${reason}`,
+      context: {
+        issue_id,
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id,
+        cleanup_workspace,
+        reason,
+        termination_state: 'requested',
+        worker_instance_id: runningEntry.worker_instance_id ?? null,
+        worker_process_identity_known: Boolean(runningEntry.codex_app_server_pid),
+        codex_app_server_pid: runningEntry.codex_app_server_pid,
+        thread_id: runningEntry.thread_id,
+        turn_id: runningEntry.turn_id
+      }
     });
+
+    try {
+      await this.ports.terminateWorker({
+        issue_id,
+        worker_handle: runningEntry.worker_handle,
+        cleanup_workspace,
+        reason
+      });
+    } catch (error) {
+      const failureDetail = error instanceof Error ? error.message : String(error);
+      if (this.state.running.get(issue_id) === runningEntry) {
+        runningEntry.termination = {
+          ...runningEntry.termination,
+          state: 'failed',
+          failure_at_ms: this.nowMs(),
+          failure_detail: failureDetail
+        };
+        this.state.health.last_error = `worker termination failed for ${runningEntry.identifier}: ${failureDetail}`;
+      }
+      this.logger?.log({
+        level: 'error',
+        event: CANONICAL_EVENT.orchestration.workerTerminated,
+        message: `worker termination failed: ${reason}`,
+        context: {
+          issue_id,
+          issue_identifier: runningEntry.identifier,
+          session_id: runningEntry.session_id,
+          cleanup_workspace,
+          reason,
+          termination_state: 'failed',
+          error: failureDetail,
+          worker_instance_id: runningEntry.worker_instance_id ?? null,
+          worker_process_identity_known: Boolean(runningEntry.codex_app_server_pid),
+          codex_app_server_pid: runningEntry.codex_app_server_pid,
+          thread_id: runningEntry.thread_id,
+          turn_id: runningEntry.turn_id
+        }
+      });
+      this.ports.notifyObservers?.();
+      return;
+    }
+
+    if (this.state.running.get(issue_id) !== runningEntry) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.orchestration.workerTerminated,
+        message: 'worker termination finalization skipped for superseded ownership',
+        context: {
+          issue_id,
+          issue_identifier: runningEntry.identifier,
+          session_id: runningEntry.session_id,
+          cleanup_workspace,
+          reason,
+          termination_state: runningEntry.termination?.state ?? null,
+          active_worker_instance_id: this.state.running.get(issue_id)?.worker_instance_id ?? null,
+          released_worker_instance_id: runningEntry.worker_instance_id ?? null
+        }
+      });
+      return;
+    }
+
+    runningEntry.termination = {
+      ...runningEntry.termination,
+      state: 'finalizing'
+    };
 
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'cancelled', reason);
     await this.persistExecutionGraphStateTransition(runningEntry, 'cancelled', 'cancelled', reason, `worker terminated: ${reason}`);
     this.rememberInactiveWorkerPid(runningEntry, reason);
+    this.rememberReleasedWorker(runningEntry, reason, cleanup_workspace);
     this.state.running.delete(issue_id);
     this.state.claimed.delete(issue_id);
     this.logger?.log({
@@ -3486,6 +3731,8 @@ export class OrchestratorCore {
         session_id: runningEntry.session_id,
         cleanup_workspace,
         reason,
+        termination_state: 'finalized',
+        termination_exit_observed: Boolean(runningEntry.termination.exit_observed_at_ms),
         worker_termination_requested: true,
         worker_process_identity_known: Boolean(runningEntry.codex_app_server_pid),
         codex_app_server_pid: runningEntry.codex_app_server_pid,

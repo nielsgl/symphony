@@ -24,6 +24,31 @@ export interface WorkerExitDetails {
   turn_id?: string | null;
   session_id?: string | null;
 }
+export interface RunningEntryTermination {
+  state: 'requested' | 'exit_observed' | 'finalizing' | 'failed';
+  reason: string;
+  cleanup_workspace: boolean;
+  requested_at_ms: number;
+  exit_observed_at_ms?: number;
+  failure_at_ms?: number;
+  failure_detail?: string;
+  worker_handle?: unknown;
+  worker_instance_id?: string | null;
+  codex_app_server_pid?: string | null;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  session_id?: string | null;
+}
+export interface ReleasedWorkerRecord {
+  released_at_ms: number;
+  reason: string;
+  cleanup_workspace: boolean;
+  worker_instance_id?: string | null;
+  codex_app_server_pid?: string | null;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  session_id?: string | null;
+}
 export type RetryDelayType = 'continuation' | 'failure';
 export type BudgetHardLimitPolicy = 'block_requires_resume' | 'terminate_attempt';
 export type BudgetStatus = 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable';
@@ -157,6 +182,7 @@ export interface RunningEntry {
   transcript_tool_call_diagnostics?: TranscriptToolCallDiagnostic[];
   codex_session_transcript_scan_offsets?: Record<string, number>;
   recovery?: MissingToolOutputRecoveryState | null;
+  termination?: RunningEntryTermination | null;
 }
 
 export type ToolCallEvidenceSource = 'worker_event' | 'app_server_protocol' | 'session_transcript';
@@ -502,6 +528,7 @@ export interface OrchestratorState {
       session_id: string | null;
     }>
   >;
+  released_workers?: Map<string, ReleasedWorkerRecord[]>;
   completed: Set<string>;
   codex_totals: {
     input_tokens: number;

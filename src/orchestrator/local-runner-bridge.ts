@@ -342,7 +342,8 @@ export class LocalRunnerBridge {
       error: result.error,
       worker_instance_id: workerInstanceId,
       completion_reason: result.completion_reason,
-      refreshed_state: result.refreshed_state
+      refreshed_state: result.refreshed_state,
+      session_id: result.session_id
     });
   }
 
@@ -399,7 +400,8 @@ export class LocalRunnerBridge {
       error: result.error,
       worker_instance_id: workerInstanceId,
       completion_reason: result.completion_reason,
-      refreshed_state: result.refreshed_state
+      refreshed_state: result.refreshed_state,
+      session_id: result.session_id
     });
   }
 
