@@ -626,6 +626,13 @@ describe('ConfigResolver', () => {
     expect(config.agent.max_concurrent_agents).toBe(10);
     expect(config.agent.max_turns).toBe(20);
     expect(config.agent.max_retry_backoff_ms).toBe(300000);
+    expect(config.agent.dispatch_backpressure).toEqual({
+      enabled: true,
+      retry_delay_ms: 30000,
+      min_running_agents: 1,
+      control_plane_health: 'degraded',
+      control_plane_stale_after_ms: 60000
+    });
     expect(config.codex.turn_timeout_ms).toBe(3600000);
     expect(config.codex.read_timeout_ms).toBe(5000);
     expect(config.codex.stall_timeout_ms).toBe(300000);

@@ -31,6 +31,7 @@ export type ValidationErrorCode =
   | 'invalid_agent_max_retry_backoff_ms'
   | 'invalid_agent_respawn_window_minutes'
   | 'invalid_agent_respawn_max_attempts_without_progress'
+  | 'invalid_agent_dispatch_backpressure'
   | 'invalid_budget_per_run_total_tokens'
   | 'invalid_budget_per_issue_rolling_tokens'
   | 'invalid_budget_rolling_window_minutes'
@@ -96,6 +97,14 @@ export interface AgentConfig {
   respawn_max_attempts_without_progress?: number;
   max_turns: number;
   max_concurrent_agents_by_state: Record<string, number>;
+  dispatch_backpressure?: {
+    enabled: boolean;
+    retry_delay_ms: number;
+    min_running_agents: number;
+    control_plane_health: 'slow' | 'large' | 'degraded';
+    control_plane_stale_after_ms: number;
+    host_load_per_cpu?: number | null;
+  };
 }
 
 export type BudgetHardLimitPolicy = 'block_requires_resume' | 'terminate_attempt';

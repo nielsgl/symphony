@@ -4,7 +4,7 @@ import { REASON_CODES } from '../observability/reason-codes';
 import type { StructuredLogger } from '../observability';
 import type { DurableRunHistoryRecord, ExecutionGraphThreadLineage, PersistenceHealth, UiContinuityState } from '../persistence';
 import type { SecurityProfile } from '../security';
-import type { ControlPlaneHealthSummary, ControlPlaneThresholds } from './control-plane-health';
+import type { ControlPlaneHealthRecorder, ControlPlaneHealthSummary, ControlPlaneThresholds } from './control-plane-health';
 
 export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume';
 export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'stalled_waiting';
@@ -1114,6 +1114,7 @@ export interface LocalApiServerOptions {
     sampleLimit?: number;
     thresholds?: Partial<ControlPlaneThresholds>;
   };
+  controlPlaneHealthRecorder?: ControlPlaneHealthRecorder;
 }
 
 export interface ApiDiagnosticsResponse {

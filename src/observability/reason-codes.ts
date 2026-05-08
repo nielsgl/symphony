@@ -38,6 +38,8 @@ export const REASON_CODES = {
   workerExitAbnormal: 'worker_exit_abnormal',
   workerStalled: 'worker_stalled',
   slotsExhausted: 'slots_exhausted',
+  dispatchBackpressureControlPlane: 'dispatch_backpressure_control_plane',
+  dispatchBackpressureHostLoad: 'dispatch_backpressure_host_load',
   retryFetchFailed: 'retry_fetch_failed',
   spawnFailed: 'spawn_failed',
   manualResume: 'manual_resume',
@@ -215,6 +217,26 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Run is waiting to retry',
     detail: 'No orchestrator or worker-host slots are currently available.',
     expected_transition: 'Automatic retry at the scheduled due time'
+  },
+  [REASON_CODES.dispatchBackpressureControlPlane]: {
+    reason_code: REASON_CODES.dispatchBackpressureControlPlane,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Wait for local control-plane health to recover', 'Reduce local agent concurrency if this persists'],
+    label: 'Control Plane Backpressure',
+    headline: 'Run is waiting for local capacity',
+    detail: 'Dispatch is delayed because compact control-plane health indicates degraded local supervision.',
+    expected_transition: 'Automatic retry after the configured backpressure delay'
+  },
+  [REASON_CODES.dispatchBackpressureHostLoad]: {
+    reason_code: REASON_CODES.dispatchBackpressureHostLoad,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Wait for host load to fall', 'Reduce local agent concurrency if this persists'],
+    label: 'Host Load Backpressure',
+    headline: 'Run is waiting for local capacity',
+    detail: 'Dispatch is delayed because local host load is above the configured threshold.',
+    expected_transition: 'Automatic retry after the configured backpressure delay'
   },
   [REASON_CODES.retryFetchFailed]: {
     reason_code: REASON_CODES.retryFetchFailed,

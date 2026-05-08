@@ -16,6 +16,7 @@ import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
 import { SqlitePersistenceStore } from '../../src/persistence/store';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
+import type { ControlPlaneHealthSummary } from '../../src/api/control-plane-health';
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -68,6 +69,60 @@ function makeTerminationResult(overrides: Partial<WorkerTerminationResult> = {})
   };
 }
 
+function makeControlPlaneHealthSummary(
+  health: 'ok' | 'slow' | 'large' | 'degraded',
+  observedAtMs: number,
+  overrides: Partial<ControlPlaneHealthSummary['endpoints'][number]> = {}
+): ControlPlaneHealthSummary {
+  const durationByHealth = {
+    ok: 120,
+    slow: 1_250,
+    large: 120,
+    degraded: 6_000
+  };
+  const payloadByHealth = {
+    ok: 10_000,
+    slow: 10_000,
+    large: 1_500_000,
+    degraded: 10_000
+  };
+  return {
+    generated_at: new Date(observedAtMs).toISOString(),
+    sample_limit: 40,
+    thresholds: {
+      slow_ms: 1_000,
+      degraded_ms: 5_000,
+      large_payload_bytes: 1_000_000,
+      degraded_payload_bytes: 5_000_000
+    },
+    endpoint_count: 1,
+    worst_health: health,
+    endpoints: [
+      {
+        endpoint: '/api/v1/state',
+        transport: 'http',
+        sample_count: 1,
+        health,
+        last_observed_at: new Date(observedAtMs).toISOString(),
+        last_duration_ms: durationByHealth[health],
+        max_duration_ms: durationByHealth[health],
+        avg_duration_ms: durationByHealth[health],
+        last_payload_bytes: payloadByHealth[health],
+        max_payload_bytes: payloadByHealth[health],
+        avg_payload_bytes: payloadByHealth[health],
+        last_projection_duration_ms: null,
+        last_enrichment_duration_ms: null,
+        last_serialization_duration_ms: null,
+        last_broadcast_client_count: null,
+        last_snapshot_age_ms: null,
+        last_snapshot_freshness_state: null,
+        last_snapshot_error_code: null,
+        ...overrides
+      }
+    ]
+  };
+}
+
 interface Harness {
   orchestrator: OrchestratorCore;
   tracker: ReturnType<typeof makeTracker>;
@@ -108,6 +163,8 @@ function createHarness(options: {
   resolveProgressSignals?: OrchestratorPorts['resolveProgressSignals'];
   logger?: StructuredLogger;
   persistence?: OrchestratorPersistencePort;
+  getControlPlaneHealth?: OrchestratorPorts['getControlPlaneHealth'];
+  getHostLoad?: OrchestratorPorts['getHostLoad'];
 } = {}): Harness {
   const tracker = makeTracker();
   const now = { value: 1_000_000 };
@@ -146,6 +203,8 @@ function createHarness(options: {
     ports: {
       tracker,
       dispatchPreflight: () => ({ dispatch_allowed: true }),
+      getControlPlaneHealth: options.getControlPlaneHealth,
+      getHostLoad: options.getHostLoad,
       spawnWorker,
       recoverMissingToolOutput: options.recoverMissingToolOutput,
       terminateWorker:
@@ -378,6 +437,125 @@ describe('OrchestratorCore', () => {
     expect(retryEntry?.error).toBe('no available worker host slots');
     expect(retryEntry?.stop_reason_code).toBe('slots_exhausted');
     expect(harness.spawned).toEqual([{ issue_id: 'i-capacity-1', attempt: null, worker_host: 'build-1', resume_context: null }]);
+  });
+
+  it('allows dispatch under healthy control-plane conditions', async () => {
+    const harness = createHarness({
+      getControlPlaneHealth: () => makeControlPlaneHealthSummary('ok', harness.now.value)
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-healthy' })]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-healthy']);
+    expect(harness.orchestrator.getStateSnapshot().health.dispatch_backpressure?.active).toBe(false);
+  });
+
+  it('delays new dispatch under degraded control-plane pressure without killing running agents', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    let controlPlaneHealth = makeControlPlaneHealthSummary('ok', 1_000_000);
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        max_concurrent_agents: 3,
+        dispatch_backpressure: {
+          retry_delay_ms: 15_000,
+          min_running_agents: 1,
+          control_plane_health: 'degraded'
+        }
+      },
+      getControlPlaneHealth: () => controlPlaneHealth
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-running', identifier: 'ABC-RUN' })]);
+    await harness.orchestrator.tick('interval');
+
+    controlPlaneHealth = makeControlPlaneHealthSummary('degraded', harness.now.value);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-delayed', identifier: 'ABC-DELAY' })]);
+    await harness.orchestrator.tick('manual_refresh');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const retryEntry = snapshot.retry_attempts.get('i-delayed');
+    expect(snapshot.running.has('i-running')).toBe(true);
+    expect(harness.terminated).toEqual([]);
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-running']);
+    expect(retryEntry).toMatchObject({
+      issue_id: 'i-delayed',
+      attempt: 1,
+      stop_reason_code: REASON_CODES.dispatchBackpressureControlPlane,
+      error: 'dispatch delayed by local backpressure'
+    });
+    expect(retryEntry?.due_at_ms).toBe(harness.now.value + 15_000);
+    expect(snapshot.health.dispatch_backpressure).toMatchObject({
+      active: true,
+      reason_code: REASON_CODES.dispatchBackpressureControlPlane,
+      source: 'control_plane',
+      retry_delay_ms: 15_000
+    });
+    expect(logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.dispatchBackpressureActive)?.context).toMatchObject({
+      issue_id: 'i-delayed',
+      issue_identifier: 'ABC-DELAY',
+      reason_code: REASON_CODES.dispatchBackpressureControlPlane,
+      source: 'control_plane'
+    });
+  });
+
+  it('clears backpressure after health recovers and dispatches a delayed retry', async () => {
+    let controlPlaneHealth = makeControlPlaneHealthSummary('ok', 1_000_000);
+    const harness = createHarness({
+      configOverrides: {
+        max_concurrent_agents: 3,
+        dispatch_backpressure: {
+          retry_delay_ms: 15_000,
+          min_running_agents: 1,
+          control_plane_health: 'degraded'
+        }
+      },
+      getControlPlaneHealth: () => controlPlaneHealth
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-running', identifier: 'ABC-RUN' })]);
+    await harness.orchestrator.tick('interval');
+    controlPlaneHealth = makeControlPlaneHealthSummary('degraded', harness.now.value);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover', identifier: 'ABC-RECOVER' })]);
+    await harness.orchestrator.tick('interval');
+
+    controlPlaneHealth = makeControlPlaneHealthSummary('ok', harness.now.value + 1_000);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover', identifier: 'ABC-RECOVER' })]);
+    await harness.orchestrator.onRetryTimer('i-recover');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-running', 'i-recover']);
+    expect(snapshot.retry_attempts.has('i-recover')).toBe(false);
+    expect(snapshot.running.has('i-recover')).toBe(true);
+    expect(snapshot.health.dispatch_backpressure?.active).toBe(false);
+  });
+
+  it('keeps host-load backpressure distinct from slot exhaustion on retry', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        max_concurrent_agents: 2,
+        dispatch_backpressure: {
+          retry_delay_ms: 20_000,
+          min_running_agents: 1,
+          host_load_per_cpu: 1
+        }
+      },
+      getHostLoad: () => ({ load_average_1m: 4, cpu_count: 2 })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-running', identifier: 'ABC-1-RUN' }),
+      makeIssue({ id: 'i-host-pressure', identifier: 'ABC-2-HOST' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-host-pressure');
+    expect(retryEntry?.stop_reason_code).toBe(REASON_CODES.dispatchBackpressureHostLoad);
+    expect(retryEntry?.due_at_ms).toBe(harness.now.value + 20_000);
+    expect(harness.orchestrator.getStateSnapshot().health.last_error).toContain('dispatch backpressure active');
   });
 
   it('schedules continuation retry with attempt=1 and 1000ms delay on normal exit', async () => {

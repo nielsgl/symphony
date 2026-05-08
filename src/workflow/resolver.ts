@@ -271,6 +271,17 @@ function readReasoningEffort(value: unknown): 'low' | 'medium' | 'high' | 'xhigh
   return undefined;
 }
 
+function readControlPlaneBackpressureHealth(value: unknown): 'slow' | 'large' | 'degraded' {
+  if (typeof value !== 'string') {
+    return 'degraded';
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'slow' || normalized === 'large' || normalized === 'degraded') {
+    return normalized;
+  }
+  return 'degraded';
+}
+
 function hasPathSeparator(value: string): boolean {
   return (
     value.includes('/') ||
@@ -340,6 +351,7 @@ export class ConfigResolver {
     const copyIgnored = asRecord(workspace.copy_ignored);
     const hooks = asRecord(config.hooks);
     const agent = asRecord(config.agent);
+    const dispatchBackpressure = asRecord(agent.dispatch_backpressure);
     const budget = asRecord(config.budget);
     const codex = asRecord(config.codex);
     const persistence = asRecord(config.persistence);
@@ -569,7 +581,17 @@ export class ConfigResolver {
         respawn_window_minutes: readIntStrict(agent.respawn_window_minutes, 30),
         respawn_max_attempts_without_progress: readIntStrict(agent.respawn_max_attempts_without_progress, 3),
         max_turns: readIntStrict(agent.max_turns, 20),
-        max_concurrent_agents_by_state: normalizePerStateMap(agent.max_concurrent_agents_by_state)
+        max_concurrent_agents_by_state: normalizePerStateMap(agent.max_concurrent_agents_by_state),
+        dispatch_backpressure: {
+          enabled: readBoolean(dispatchBackpressure.enabled, true),
+          retry_delay_ms: readIntStrict(dispatchBackpressure.retry_delay_ms, 30000),
+          min_running_agents: readIntStrict(dispatchBackpressure.min_running_agents, 1),
+          control_plane_health: readControlPlaneBackpressureHealth(dispatchBackpressure.control_plane_health),
+          control_plane_stale_after_ms: readIntStrict(dispatchBackpressure.control_plane_stale_after_ms, 60000),
+          ...(dispatchBackpressure.host_load_per_cpu !== undefined
+            ? { host_load_per_cpu: Number(dispatchBackpressure.host_load_per_cpu) }
+            : {})
+        }
       },
       budget: {
         ...(budget.per_run_total_tokens !== undefined
