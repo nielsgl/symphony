@@ -2364,6 +2364,15 @@ describe('OrchestratorCore', () => {
         error_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
         missing_tool_output_recovery: expect.objectContaining({
           status: 'in_progress',
+          interrupt_cancel_result: expect.objectContaining({
+            status: 'succeeded',
+            termination_result: expect.objectContaining({
+              result: 'succeeded',
+              reason_code: 'worker_cancel_graceful_exit',
+              worker_settled: true,
+              graceful_exit_observed: true
+            })
+          }),
           final_outcome: expect.objectContaining({ result: 'started' })
         })
       }),
@@ -2377,6 +2386,15 @@ describe('OrchestratorCore', () => {
           status: 'succeeded',
           original_tool_name: 'linear_graphql',
           original_call_id: 'call_recover_success',
+          interrupt_cancel_result: expect.objectContaining({
+            status: 'succeeded',
+            termination_result: expect.objectContaining({
+              result: 'succeeded',
+              reason_code: 'worker_cancel_graceful_exit',
+              worker_settled: true,
+              graceful_exit_observed: true
+            })
+          }),
           replacement_turn: expect.objectContaining({
             thread_id: 'thread-recover-success',
             turn_id: 'turn-replacement-success',

@@ -6619,7 +6619,8 @@ export class OrchestratorCore {
       interrupt_cancel_result: {
         status: recovery.interrupt_cancel_result?.status ?? 'not_started',
         reason_code: recovery.interrupt_cancel_result?.reason_code ?? null,
-        detail: recovery.interrupt_cancel_result?.detail ?? null
+        detail: recovery.interrupt_cancel_result?.detail ?? null,
+        termination_result: recovery.interrupt_cancel_result?.termination_result ?? null
       },
       replacement_turn: {
         thread_id: replacementThreadId,
