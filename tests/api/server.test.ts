@@ -797,6 +797,7 @@ describe('LocalApiServer', () => {
             issue_identifier: 'ABC-1',
             started_at: '2026-04-10T10:00:00.000Z',
             ended_at: '2026-04-10T10:01:00.000Z',
+            completed_at: '2026-04-10T10:01:00.000Z',
             terminal_status: 'succeeded',
             error_code: null,
             terminal_reason_code: null,
@@ -2206,6 +2207,7 @@ describe('LocalApiServer', () => {
             issue_identifier: 'ABC-1',
             started_at: '2026-04-10T10:00:00.000Z',
             ended_at: '2026-04-10T10:01:00.000Z',
+            completed_at: '2026-04-10T10:01:00.000Z',
             terminal_status: 'succeeded',
             error_code: null,
             terminal_reason_code: null,
@@ -2218,6 +2220,26 @@ describe('LocalApiServer', () => {
             thread_id: null,
             turn_id: null,
             session_ids: ['thread-1-turn-1']
+          },
+          {
+            run_id: 'run-active',
+            issue_id: 'issue-active',
+            issue_identifier: 'ABC-ACTIVE',
+            started_at: '2026-04-10T10:02:00.000Z',
+            ended_at: null,
+            completed_at: null,
+            terminal_status: null,
+            error_code: null,
+            terminal_reason_code: null,
+            terminal_reason_detail: null,
+            root_cause_status: null,
+            root_cause_reason_code: null,
+            root_cause_reason_detail: null,
+            root_cause_at: null,
+            session_id: null,
+            thread_id: null,
+            turn_id: null,
+            session_ids: []
           }
         ],
         reconstructThreadLineage: (threadId) =>
@@ -2438,10 +2460,20 @@ describe('LocalApiServer', () => {
       workspace_root: '/tmp/workspaces'
     });
 
-    const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history?limit=1`);
-    const historyPayload = (await historyResponse.json()) as { runs: Array<{ run_id: string }> };
+    const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history?limit=2`);
+    const historyPayload = (await historyResponse.json()) as {
+      runs: Array<{ run_id: string; terminal_status: string | null; completed_at: string | null }>;
+    };
     expect(historyResponse.status).toBe(200);
     expect(historyPayload.runs[0].run_id).toBe('run-1');
+    expect(historyPayload.runs.find((run) => run.run_id === 'run-1')).toMatchObject({
+      terminal_status: 'succeeded',
+      completed_at: '2026-04-10T10:01:00.000Z'
+    });
+    expect(historyPayload.runs.find((run) => run.run_id === 'run-active')).toMatchObject({
+      terminal_status: null,
+      completed_at: null
+    });
 
     const lineageResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history/threads/thread-1`);
     const lineagePayload = (await lineageResponse.json()) as {
