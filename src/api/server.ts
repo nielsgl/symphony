@@ -25,6 +25,7 @@ import {
 import type {
   ApiDiagnosticsResponse,
   ApiIssueResponse,
+  ApiIssueRuntimeDiagnosticsResponse,
   ApiEventEnvelope,
   ApiStateResponse,
   ApiStateErrorResponse,
@@ -224,6 +225,16 @@ function statusForOperatorActionFailure(code: string): number {
     return 503;
   }
   return 422;
+}
+
+function parseRuntimeDiagnosticsPage(request: IncomingMessage): { limit?: number; offset?: number } {
+  const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+  const limitRaw = requestUrl.searchParams.get('limit');
+  const offsetRaw = requestUrl.searchParams.get('offset');
+  return {
+    limit: limitRaw ? Number.parseInt(limitRaw, 10) : undefined,
+    offset: offsetRaw ? Number.parseInt(offsetRaw, 10) : undefined
+  };
 }
 
 export class LocalApiServer {
@@ -1060,8 +1071,20 @@ export class LocalApiServer {
         routes: [
           {
             method: 'GET',
-            handler: async (_request, response, match) => {
+            handler: async (request, response, match) => {
               const issueIdentifier = decodeURIComponent(match[1]);
+              let runtimeDiagnostics: ApiIssueRuntimeDiagnosticsResponse | null = null;
+              try {
+                runtimeDiagnostics = this.snapshotService.projectIssueRuntimeDiagnostics(
+                  this.snapshotSource.getStateSnapshot(),
+                  issueIdentifier,
+                  parseRuntimeDiagnosticsPage(request)
+                );
+              } catch (error) {
+                if (!(error instanceof LocalApiError && error.code === 'issue_diagnostics_not_found')) {
+                  throw error;
+                }
+              }
               const payload = buildThreadDiagnosticsByIssueIdentifier({
                 state: this.snapshotSource.getStateSnapshot(),
                 issue_identifier: issueIdentifier,
@@ -1069,11 +1092,11 @@ export class LocalApiServer {
                 reconstructLatestThreadLineageByIssueIdentifier:
                   this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier
               });
-              if (!payload) {
+              if (!payload && !runtimeDiagnostics) {
                 throw new LocalApiError('thread_diagnostics_not_found', `Issue ${issueIdentifier} has no thread diagnostics`, 404);
               }
 
-              sendJson(response, 200, payload);
+              sendJson(response, 200, payload ? { ...payload, runtime_diagnostics: runtimeDiagnostics } : runtimeDiagnostics);
             }
           }
         ]

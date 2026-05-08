@@ -249,31 +249,26 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.token_telemetry_confidence).toBe('observed_live');
     expect(projected.running[0]?.budget_status).toBe('ok');
     expect(projected.running[0]?.budget_usage_tokens).toBeNull();
-    expect(projected.running[0]?.tool_call_ledger).toEqual([
-      {
-        call_id: 'call-api-1',
-        tool_name: 'linear_graphql',
-        thread_id: 'thread-1',
-        turn_id: 'turn-3',
-        session_id: 'thread-1-turn-3',
-        issue_id: 'issue-1',
-        issue_identifier: 'ABC-1',
-        run_id: 'run-1',
-        issue_run_id: 'issue-run-1',
-        attempt_id: 'attempt-1',
-        first_seen_at: '2026-04-10T10:01:05.000Z',
-        first_seen_at_ms: Date.parse('2026-04-10T10:01:05.000Z'),
-        last_seen_at: '2026-04-10T10:01:07.000Z',
-        last_seen_at_ms: Date.parse('2026-04-10T10:01:07.000Z'),
-        completed_at: '2026-04-10T10:01:07.000Z',
-        completed_at_ms: Date.parse('2026-04-10T10:01:07.000Z'),
-        completion_status: 'completed',
-        evidence_sources: ['app_server_protocol', 'worker_event'],
-        start_evidence_source: 'app_server_protocol',
-        completion_evidence_source: 'worker_event',
-        last_agent_message: 'waiting for linear_graphql output'
-      }
-    ]);
+    expect(projected.running[0] as unknown as Record<string, unknown>).not.toHaveProperty('tool_call_ledger');
+    expect(projected.running[0]?.transcript_tool_call_diagnostic_summary).toMatchObject({
+      detailed_diagnostics_available: true,
+      total_count: 0,
+      detail_url: '/api/v1/issues/ABC-1/diagnostics',
+      newest_observed_at: '2026-04-10T10:01:07.000Z',
+      newest_observed_at_ms: Date.parse('2026-04-10T10:01:07.000Z')
+    });
+    expect(JSON.stringify(projected.running[0])).not.toContain('call-api-1');
+    const issueDetail = service.projectIssue(state, 'ABC-1');
+    expect(issueDetail.running as unknown as Record<string, unknown>).not.toHaveProperty('tool_call_ledger');
+    expect(JSON.stringify(issueDetail.running)).not.toContain('call-api-1');
+    expect(issueDetail.running?.transcript_tool_call_diagnostic_summary).toMatchObject({
+      detailed_diagnostics_available: true,
+      total_count: 0,
+      detail_url: '/api/v1/issues/ABC-1/diagnostics'
+    });
+    const runtimeDiagnostics = service.projectIssueRuntimeDiagnostics(state, 'ABC-1');
+    expect(runtimeDiagnostics.tool_call_ledger.records).toHaveLength(1);
+    expect(runtimeDiagnostics.tool_call_ledger.records[0]?.call_id).toBe('call-api-1');
     expect(projected.retrying[0]?.worker_host).toBe('build-1');
     expect(projected.retrying[0]?.workspace_path).toBe('/tmp/symphony/ABC-2');
     expect(projected.retrying[0]?.stop_reason_code).toBe('turn_input_required');
@@ -320,6 +315,7 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.transcript_tool_call_diagnostic_summary).toEqual({
       detailed_diagnostics_available: true,
       total_count: 200,
+      detail_url: '/api/v1/issues/ABC-1/diagnostics',
       newest_observed_at: '2026-04-10T10:04:19.000Z',
       newest_observed_at_ms: Date.parse('2026-04-10T10:04:19.000Z'),
       counts_by_lineage: {
@@ -767,6 +763,7 @@ describe('SnapshotService', () => {
       transcript_tool_call_diagnostic_summary: {
         detailed_diagnostics_available: true,
         total_count: 4,
+        detail_url: '/api/v1/issues/ABC-TOOL/diagnostics',
         newest_observed_at: '2026-04-10T10:04:04.000Z',
         newest_observed_at_ms: Date.parse('2026-04-10T10:04:04.000Z'),
         counts_by_lineage: {
@@ -831,8 +828,84 @@ describe('SnapshotService', () => {
     const issueProjection = service.projectIssue(state, 'ABC-TOOL');
     expect(issueProjection.status).toBe('blocked');
     expect(issueProjection.blocked?.tool_output_wait?.call_id).toBe('call_pfKTUH5GFubLHpXfln7UScnU');
+    expect(issueProjection.blocked as unknown as Record<string, unknown>).not.toHaveProperty('transcript_tool_call_diagnostics');
+    expect(issueProjection.blocked?.transcript_tool_call_diagnostic_summary.detail_url).toBe(
+      '/api/v1/issues/ABC-TOOL/diagnostics'
+    );
     expect(issueProjection.blocked?.missing_tool_output_recovery?.next_action).toContain('Inspect current external state');
     expect(issueProjection.operator_explainer.reason_code).toBe(REASON_CODES.missingToolOutput);
+  });
+
+  it('projects bounded issue runtime diagnostics with pagination metadata', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            transcript_tool_call_diagnostics: Array.from({ length: 8 }, (_, index) => makeTranscriptDiagnostic(index)),
+            tool_call_ledger: Object.fromEntries(
+              Array.from({ length: 5 }, (_, index) => [
+                `call-${index}`,
+                {
+                  call_id: `call-${index}`,
+                  tool_name: 'linear_graphql',
+                  thread_id: 'thread-1',
+                  turn_id: 'turn-1',
+                  session_id: 'session-1',
+                  issue_id: 'issue-1',
+                  issue_identifier: 'ABC-1',
+                  run_id: 'run-1',
+                  issue_run_id: 'issue-run-1',
+                  attempt_id: 'attempt-1',
+                  first_seen_at_ms: Date.parse('2026-04-10T10:01:00.000Z') + index * 1000,
+                  last_seen_at_ms: Date.parse('2026-04-10T10:02:00.000Z') + index * 1000,
+                  completed_at_ms: null,
+                  completion_status: 'pending',
+                  evidence_sources: ['session_transcript'],
+                  start_evidence_source: 'session_transcript',
+                  completion_evidence_source: null,
+                  last_agent_message: 'waiting for output'
+                }
+              ])
+            )
+          })
+        ]
+      ])
+    });
+
+    const diagnostics = service.projectIssueRuntimeDiagnostics(state, 'ABC-1', { limit: 3, offset: 2 });
+
+    expect(diagnostics.status).toBe('running');
+    expect(diagnostics.transcript_tool_call_diagnostics.metadata).toEqual({
+      total_available_count: 8,
+      included_count: 3,
+      limit: 3,
+      offset: 2,
+      has_more: true,
+      truncated: true,
+      oldest_observed_at: '2026-04-10T10:01:03.000Z',
+      oldest_observed_at_ms: Date.parse('2026-04-10T10:01:03.000Z'),
+      newest_observed_at: '2026-04-10T10:01:05.000Z',
+      newest_observed_at_ms: Date.parse('2026-04-10T10:01:05.000Z')
+    });
+    expect(diagnostics.transcript_tool_call_diagnostics.records.map((record) => record.call_id)).toEqual([
+      'call-5',
+      'call-4',
+      'call-3'
+    ]);
+    expect(diagnostics.tool_call_ledger.metadata).toMatchObject({
+      total_available_count: 5,
+      included_count: 3,
+      limit: 3,
+      offset: 2,
+      has_more: false,
+      truncated: true
+    });
+    expect(diagnostics.tool_call_ledger.records.map((record) => record.call_id)).toEqual(['call-2', 'call-1', 'call-0']);
+    expect(JSON.stringify(diagnostics)).toContain('"active_issue_id"');
   });
 
   it('only projects no-progress blocked issues as stalled waiting', () => {
