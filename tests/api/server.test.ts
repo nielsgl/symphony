@@ -769,6 +769,7 @@ describe('LocalApiServer', () => {
     expect(refreshTick).toHaveBeenCalledTimes(1);
     expect(getStateSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeRefresh);
 
+    const snapshotCallsBeforeDetail = getStateSnapshot.mock.calls.length;
     const detailResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-OVERLOAD-1/diagnostics?limit=5`);
     const detailPayload = (await detailResponse.json()) as {
       runtime_diagnostics: {
@@ -783,7 +784,7 @@ describe('LocalApiServer', () => {
       };
     };
     expect(detailResponse.status).toBe(200);
-    expect(getStateSnapshot.mock.calls.at(-2)).toEqual([]);
+    expect(getStateSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeDetail + 1);
     expect(getStateSnapshot.mock.calls.at(-1)).toEqual([]);
     expect(detailPayload.runtime_diagnostics.missing_tool_output).toMatchObject({ call_id: 'call-overload-1' });
     expect(detailPayload.runtime_diagnostics.transcript_tool_call_diagnostics.metadata).toMatchObject({
