@@ -41,8 +41,10 @@ function redactPromptPreview(input: string | null | undefined): string | null {
   return truncated && truncated !== '***REDACTED***' ? truncated : null;
 }
 
-function projectOperatorActions(state: OrchestratorState, issueId: string) {
-  return (state.operator_actions?.get(issueId) ?? []).map((action) => ({ ...action }));
+function projectOperatorActions(state: OrchestratorState, issueId: string, runningEntry?: RunningEntry) {
+  return (state.operator_actions?.get(issueId) ?? [])
+    .filter((action) => !runningEntry || actionBelongsToRunningEntry(action, runningEntry))
+    .map((action) => ({ ...action }));
 }
 
 function resolveStateFreshness(state: OrchestratorState, nowMs: number) {
@@ -640,7 +642,7 @@ export class SnapshotService {
         status: 'running',
         ...freshness,
         ...createApiDegradedDiagnostics(null, []),
-        operator_actions: projectOperatorActions(state, issueId),
+        operator_actions: projectOperatorActions(state, issueId, entry),
         operator_explainer: operatorExplainer,
         workspace: {
           path: entry.workspace_path,
@@ -711,7 +713,7 @@ export class SnapshotService {
             now_ms: nowMs,
             stalled_waiting_ms: 300_000
           }),
-          operator_actions: projectOperatorActions(state, issueId),
+          operator_actions: projectOperatorActions(state, issueId, entry),
           tool_call_ledger: projectToolCallLedger(entry),
           transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(entry),
           tokens: {
