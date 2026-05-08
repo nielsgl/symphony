@@ -21,6 +21,11 @@ export interface WorkerExitDetails {
 export type RetryDelayType = 'continuation' | 'failure';
 export type BudgetHardLimitPolicy = 'block_requires_resume' | 'terminate_attempt';
 export type BudgetStatus = 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable';
+export type QuarantinedWorkerEventReason =
+  | 'lineage_mismatch'
+  | 'worker_identity_mismatch'
+  | 'inactive_worker_pid'
+  | 'terminal_residue';
 
 export interface BudgetRuntimeProjection {
   budget_usage_tokens: number | null;
@@ -111,7 +116,7 @@ export interface RunningEntry {
     active_session_id: string | null;
     active_thread_id: string | null;
     active_turn_id: string | null;
-    reason: 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid';
+    reason: QuarantinedWorkerEventReason;
   }>;
   quarantined_event_count?: number;
   last_quarantined_event_at_ms?: number | null;
@@ -430,7 +435,7 @@ export interface BlockedEntry {
     thread_id: string | null;
     turn_id: string | null;
     active_codex_app_server_pid?: string | null;
-    reason: 'awaiting_operator_latch' | 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid';
+    reason: 'awaiting_operator_latch' | QuarantinedWorkerEventReason;
   }>;
   quarantined_event_count?: number;
   last_quarantined_event_at_ms?: number | null;

@@ -824,7 +824,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     active_session_id: string | null;
     active_thread_id: string | null;
     active_turn_id: string | null;
-    reason: 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid';
+    reason: 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid' | 'terminal_residue';
   }>;
   last_error: string | null;
   logs: {

@@ -33,6 +33,7 @@ import type {
   TickReason,
   ToolCallLedgerEntry,
   ToolCallLedgerObservation,
+  QuarantinedWorkerEventReason,
   TranscriptToolCallDiagnostic,
   TranscriptToolCallLineage,
   WorkerCompletionReason,
@@ -961,7 +962,7 @@ export class OrchestratorCore {
     issueId: string,
     runningEntry: RunningEntry,
     workerEvent: WorkerObservabilityEvent
-  ): 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid' | null {
+  ): QuarantinedWorkerEventReason | null {
     const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
     if (eventPid && this.isInactiveWorkerPidForIssue(issueId, eventPid)) {
       return 'inactive_worker_pid';
@@ -991,6 +992,10 @@ export class OrchestratorCore {
       return 'lineage_mismatch';
     }
 
+    if (this.isTerminalTurnResidue(runningEntry, workerEvent)) {
+      return 'terminal_residue';
+    }
+
     if (runningEntry.turn_id && workerEvent.turn_id && workerEvent.turn_id !== runningEntry.turn_id) {
       return 'lineage_mismatch';
     }
@@ -1013,6 +1018,24 @@ export class OrchestratorCore {
       typeof turnId === 'string' &&
       !(runningEntry.persisted_turn_ids ?? []).includes(turnId)
     );
+  }
+
+  private isTerminalTurnResidue(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
+    if (!runningEntry.last_event || !this.isTerminalTurnEvent(runningEntry.last_event)) {
+      return false;
+    }
+    if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
+      return false;
+    }
+
+    const sameTurn = Boolean(runningEntry.turn_id) && workerEvent.turn_id === runningEntry.turn_id;
+    const sameSession = Boolean(runningEntry.session_id) && workerEvent.session_id === runningEntry.session_id;
+    const sameThread =
+      !runningEntry.thread_id || !workerEvent.thread_id || workerEvent.thread_id === runningEntry.thread_id;
+    const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
+    const sameWorkerPid = Boolean(runningEntry.codex_app_server_pid) && eventPid === runningEntry.codex_app_server_pid;
+    const hasEventLineage = Boolean(workerEvent.thread_id || workerEvent.turn_id || workerEvent.session_id || eventPid);
+    return sameThread && (sameTurn || sameSession || sameWorkerPid || !hasEventLineage);
   }
 
   private isSameThreadRecoveryTurnStart(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
@@ -1051,7 +1074,7 @@ export class OrchestratorCore {
     issueId: string,
     runningEntry: RunningEntry,
     workerEvent: WorkerObservabilityEvent,
-    reason: 'lineage_mismatch' | 'worker_identity_mismatch' | 'inactive_worker_pid'
+    reason: QuarantinedWorkerEventReason
   ): void {
     const quarantinedEvent = {
       at_ms: workerEvent.timestamp_ms,
