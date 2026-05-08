@@ -28,6 +28,12 @@ describe('dashboard assets', () => {
     expect(html).toContain('id="thread-capability-warnings"');
     expect(html).toContain('id="thread-raw-events"');
     expect(clientJs).toContain("fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics')");
+    expect(clientJs.split("fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics')")).toHaveLength(2);
+    expect(clientJs).toContain('function formatDiagnosticSummary(summary)');
+    expect(clientJs).toContain('Summary diagnostics: ');
+    expect(clientJs).toContain('Detailed diagnostics: loaded');
+    expect(clientJs).toContain('Detailed diagnostics: unavailable');
+    expect(clientJs).toContain("elements.threadRawEvents.textContent = 'Detailed diagnostics are not loaded.'");
     expect(clientJs).toContain("renderTimelineLane('Phase'");
     expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'classification'");
     expect(clientJs).toContain('diagnostics.capability_warnings');
@@ -38,6 +44,27 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('entry.current_blocker_class');
     expect(clientJs).toContain('entry.time_since_progress');
     expect(clientJs).toContain('entry.last_successful_step');
+    expect(clientJs).toContain('entry.transcript_tool_call_diagnostic_summary');
+    expect(clientJs).toContain('blockerCell.append(blockerValue, diagnosticSummary);');
+  });
+
+  it('lazy-loads issue diagnostics only for opened detail surfaces', () => {
+    const clientJs = renderDashboardClientJs();
+    const restoreBlock = clientJs.slice(clientJs.indexOf('async function loadUiState()'), clientJs.indexOf('async function loadIssue'));
+    const refreshBlock = clientJs.slice(clientJs.indexOf('async function refreshNow()'), clientJs.indexOf('async function loadDiagnostics()'));
+    const streamBlock = clientJs.slice(clientJs.indexOf('function handleSseEnvelope'), clientJs.indexOf('function connectStream'));
+
+    expect(restoreBlock).toContain('if (state.selectedIssue && elements.issuePanel.open)');
+    expect(restoreBlock).toContain("void loadIssue(state.selectedIssue, { openPanel: false });");
+    expect(restoreBlock).not.toContain('if (state.selectedIssue) {\n        void loadIssue(state.selectedIssue);');
+    expect(clientJs).toContain("elements.issuePanel.addEventListener('toggle'");
+    expect(clientJs).toContain('state.suppressIssuePanelToggleLoad');
+    expect(clientJs).toContain("void loadIssue(state.selectedIssue, { openPanel: false });");
+    expect(clientJs).toContain('if (loadOptions.openPanel !== false && !elements.issuePanel.open)');
+    expect(refreshBlock).toContain("fetchJson('/api/v1/refresh'");
+    expect(refreshBlock).not.toContain('/diagnostics');
+    expect(streamBlock).toContain("type === 'state_snapshot'");
+    expect(streamBlock).not.toContain('/diagnostics');
   });
 
   it('snapshots the stuck drilldown rendering vocabulary', () => {

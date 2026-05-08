@@ -347,6 +347,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       throughputOpen: true,
       runtimeEventsOpen: true
     },
+    suppressIssuePanelToggleLoad: false,
     runtimeResolution: null
   };
 
@@ -1156,6 +1157,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   function renderThreadDiagnostics(diagnostics) {
     if (!diagnostics) {
       elements.threadDetail.classList.add('hidden');
+      elements.threadRawEvents.textContent = 'Detailed diagnostics are not loaded.';
       return;
     }
     elements.threadDetail.classList.remove('hidden');
@@ -1216,6 +1218,29 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
           })
           .join('\\n')
       : 'No raw event stream entries.';
+  }
+
+  function getDiagnosticSummary(entry) {
+    return entry && entry.transcript_tool_call_diagnostic_summary ? entry.transcript_tool_call_diagnostic_summary : null;
+  }
+
+  function formatDiagnosticSummary(summary) {
+    if (!summary) {
+      return 'Summary diagnostics: unavailable';
+    }
+    const parts = [];
+    parts.push(summary.detailed_diagnostics_available ? 'detail available' : 'summary only');
+    parts.push(formatNumber(summary.total_count || 0) + ' transcript records');
+    if (summary.active_missing_tool_output && summary.active_missing_tool_output.active) {
+      parts.push('missing output ' + (summary.active_missing_tool_output.tool_name || summary.active_missing_tool_output.call_id || 'active'));
+    }
+    if (summary.recovery && summary.recovery.active) {
+      parts.push('recovery ' + (summary.recovery.status || 'active'));
+    }
+    if (summary.newest_observed_at) {
+      parts.push('newest ' + formatDate(summary.newest_observed_at));
+    }
+    return 'Summary diagnostics: ' + parts.join(' | ');
   }
 
   function formatInputDecisionContext(detail) {
@@ -1449,7 +1474,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       tokensCell.append(createBudgetBlock(entry));
 
       const blockerCell = document.createElement('td');
-      blockerCell.textContent = entry.current_blocker_class || 'n/a';
+      const blockerValue = document.createElement('div');
+      blockerValue.textContent = entry.current_blocker_class || 'n/a';
+      const diagnosticSummary = document.createElement('div');
+      diagnosticSummary.className = 'muted';
+      diagnosticSummary.textContent = formatDiagnosticSummary(getDiagnosticSummary(entry));
+      blockerCell.append(blockerValue, diagnosticSummary);
 
       const timeSinceProgressCell = document.createElement('td');
       timeSinceProgressCell.textContent =
@@ -2183,26 +2213,36 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
       state.uiStateLoaded = true;
 
-      if (state.selectedIssue) {
-        void loadIssue(state.selectedIssue);
+      if (state.selectedIssue && elements.issuePanel.open) {
+        void loadIssue(state.selectedIssue, { openPanel: false });
       }
     } catch {
       state.uiStateLoaded = true;
     }
   }
 
-  async function loadIssue(identifier) {
+  async function loadIssue(identifier, options) {
     const issueId = (identifier || '').trim();
     if (!issueId) {
       return;
+    }
+    const loadOptions = options || {};
+    if (loadOptions.openPanel !== false && !elements.issuePanel.open) {
+      state.suppressIssuePanelToggleLoad = true;
+      elements.issuePanel.open = true;
+      setTimeout(function () {
+        state.suppressIssuePanelToggleLoad = false;
+      }, 0);
     }
 
     try {
       const payload = await fetchJson('/api/v1/' + encodeURIComponent(issueId));
       let diagnostics = null;
+      let diagnosticsLoadFailed = false;
       try {
         diagnostics = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics');
       } catch (_diagnosticsError) {
+        diagnosticsLoadFailed = true;
         diagnostics = null;
       }
       state.selectedIssue = issueId;
@@ -2268,7 +2308,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       }
       if (runningOrRetry) {
         summaryParts.push(formatBudgetSummary(runningOrRetry));
+        summaryParts.push(formatDiagnosticSummary(getDiagnosticSummary(runningOrRetry)));
       }
+      summaryParts.push(
+        diagnostics
+          ? 'Detailed diagnostics: loaded'
+          : diagnosticsLoadFailed
+            ? 'Detailed diagnostics: unavailable'
+            : 'Detailed diagnostics: not loaded'
+      );
       if (state.runtimeResolution && state.runtimeResolution.workspace_root) {
         summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);
       }
@@ -2635,6 +2683,14 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     });
 
     elements.issuePanel.addEventListener('toggle', function () {
+      if (state.suppressIssuePanelToggleLoad) {
+        state.suppressIssuePanelToggleLoad = false;
+        scheduleStateSave();
+        return;
+      }
+      if (elements.issuePanel.open && state.selectedIssue) {
+        void loadIssue(state.selectedIssue, { openPanel: false });
+      }
       scheduleStateSave();
     });
 
