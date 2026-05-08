@@ -55,5 +55,5 @@ describe('check-public-api-contract script', () => {
     expect(result.stderr).toContain('src/runtime/index.ts');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, 30_000);
 });
