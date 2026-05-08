@@ -8,6 +8,7 @@ import { REASON_CODES } from '../observability/reason-codes';
 import { parseDynamicToolCapabilityMismatchDetail } from '../observability/dynamic-tool-capability';
 import { isKnownPhaseMarker, isTerminalPhaseMarker, phaseMarkerOrder, type PhaseMarker, type PhaseMarkerName } from '../observability';
 import { ThroughputTracker } from '../observability/throughput';
+import { redactUnknown } from '../security/redaction';
 import {
   availableGlobalSlots,
   computeFailureBackoffMs,
@@ -393,6 +394,47 @@ function asIso(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
 }
 
+function truncateLogValue(value: string, maxLength = 240): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
+}
+
+function persistenceErrorMessage(error: unknown): string | null {
+  if (error instanceof Error) {
+    return truncateLogValue(String(redactUnknown(error.message)));
+  }
+  if (typeof error === 'string') {
+    return truncateLogValue(String(redactUnknown(error)));
+  }
+  return null;
+}
+
+function persistenceErrorName(error: unknown): string | null {
+  return error instanceof Error ? error.name : null;
+}
+
+function persistenceErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return null;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' || typeof code === 'number' ? String(code) : null;
+}
+
+function classifyPersistenceFailure(error: unknown): string {
+  const message = persistenceErrorMessage(error)?.toLowerCase() ?? '';
+  const code = persistenceErrorCode(error)?.toLowerCase() ?? '';
+  if (message.includes('foreign key') || message.includes('does not exist')) {
+    return 'referential_integrity';
+  }
+  if (message.includes('unique') || message.includes('constraint') || code.includes('constraint')) {
+    return 'constraint_violation';
+  }
+  if (message.includes('monotonic') || message.includes('ended_at')) {
+    return 'timestamp_ordering';
+  }
+  return 'write_failed';
+}
+
 function normalizeStateName(state: string): string {
   return state.trim().toLowerCase();
 }
@@ -443,6 +485,8 @@ export class OrchestratorCore {
   private readonly throughputTracker: ThroughputTracker;
 
   private readonly state: OrchestratorState;
+  private readonly executionGraphPersistenceQueues = new WeakMap<RunningEntry, Promise<void>>();
+  private readonly persistedPhaseSpanKeys = new WeakMap<RunningEntry, Set<string>>();
   private hostRoundRobinIndex: number;
   private serializedOperation: Promise<void>;
 
@@ -991,7 +1035,8 @@ export class OrchestratorCore {
           });
     }
 
-    void this.persistExecutionGraphWorkerEvent(issue_id, runningEntry, workerEvent);
+    const turnAlreadyObserved = this.observeExecutionGraphWorkerTurn(runningEntry, workerEvent);
+    this.queuePersistExecutionGraphWorkerEvent(issue_id, runningEntry, workerEvent, turnAlreadyObserved);
 
     this.logger?.log({
       level: 'info',
@@ -1407,26 +1452,21 @@ export class OrchestratorCore {
   private async persistExecutionGraphWorkerEvent(
     issueId: string,
     runningEntry: RunningEntry,
-    workerEvent: WorkerObservabilityEvent
+    workerEvent: WorkerObservabilityEvent,
+    turnAlreadyObserved: boolean
   ): Promise<void> {
-    const observedTurnId = workerEvent.turn_id ?? runningEntry.turn_id;
-    const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
-    const turnAlreadyObserved = Boolean(observedTurnId && persistedTurnIds.includes(observedTurnId));
-    if (observedTurnId && !turnAlreadyObserved) {
-      persistedTurnIds.push(observedTurnId);
-    }
-
     if (!this.persistence || !runningEntry.issue_run_id || !runningEntry.attempt_id) {
       return;
     }
 
+    let operation = 'unknown';
     try {
       const at = asIso(workerEvent.timestamp_ms);
       const threadId = workerEvent.thread_id ?? runningEntry.thread_id;
       const turnId = workerEvent.turn_id ?? runningEntry.turn_id;
 
       if (threadId && runningEntry.persisted_thread_id !== threadId) {
-        runningEntry.persisted_thread_id = threadId;
+        operation = 'appendThread';
         await this.persistence.appendThread?.({
           attempt_id: runningEntry.attempt_id,
           thread_id: threadId,
@@ -1435,9 +1475,11 @@ export class OrchestratorCore {
           reason_code: REASON_CODES.codexSessionStarted,
           reason_detail: workerEvent.session_id ?? runningEntry.session_id
         });
+        runningEntry.persisted_thread_id = threadId;
       }
 
       if (threadId && turnId && !turnAlreadyObserved) {
+        operation = 'appendTurn';
         await this.persistence.appendTurn?.({
           thread_id: threadId,
           turn_id: turnId,
@@ -1452,19 +1494,26 @@ export class OrchestratorCore {
       if (turnId) {
         const phase = this.phaseSpanNameForWorkerEvent(workerEvent.event);
         if (phase) {
-          await this.persistence.appendPhaseSpan?.({
-            turn_id: turnId,
-            phase,
-            started_at: at,
-            ended_at: at,
-            status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
-            reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
-            reason_detail: workerEvent.detail ?? null
-          });
+          const phaseSpanKey = `${turnId}\0${phase}\0${at}`;
+          const persistedPhaseSpanKeys = this.phaseSpanKeysForRunningEntry(runningEntry);
+          if (!persistedPhaseSpanKeys.has(phaseSpanKey)) {
+            operation = 'appendPhaseSpan';
+            await this.persistence.appendPhaseSpan?.({
+              turn_id: turnId,
+              phase,
+              started_at: at,
+              ended_at: at,
+              status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
+              reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
+              reason_detail: workerEvent.detail ?? null
+            });
+            persistedPhaseSpanKeys.add(phaseSpanKey);
+          }
         }
 
         const toolName = this.toolNameForWorkerEvent(workerEvent);
         if (toolName) {
+          operation = 'appendToolSpan';
           await this.persistence.appendToolSpan?.({
             turn_id: turnId,
             tool_name: toolName,
@@ -1479,6 +1528,7 @@ export class OrchestratorCore {
 
       const toStatus = this.transitionStatusForWorkerEvent(workerEvent.event);
       if (toStatus) {
+        operation = 'appendStateTransition';
         await this.persistence.appendStateTransition?.({
           issue_run_id: runningEntry.issue_run_id,
           attempt_id: runningEntry.attempt_id,
@@ -1492,21 +1542,78 @@ export class OrchestratorCore {
           reason_detail: workerEvent.detail ?? null
         });
       }
-    } catch {
+    } catch (error) {
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
         message: `failed to persist execution graph event for ${runningEntry.identifier}`,
-        context: {
-          issue_id: issueId,
-          issue_identifier: runningEntry.identifier,
-          session_id: runningEntry.session_id,
-          thread_id: runningEntry.thread_id,
-          turn_id: runningEntry.turn_id,
-          event: workerEvent.event
-        }
+        context: this.executionGraphPersistenceFailureContext(issueId, runningEntry, workerEvent, operation, error)
       });
     }
+  }
+
+  private queuePersistExecutionGraphWorkerEvent(
+    issueId: string,
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent,
+    turnAlreadyObserved: boolean
+  ): void {
+    const previous = this.executionGraphPersistenceQueues.get(runningEntry) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.persistExecutionGraphWorkerEvent(issueId, runningEntry, workerEvent, turnAlreadyObserved));
+    this.executionGraphPersistenceQueues.set(runningEntry, next);
+    void next
+      .finally(() => {
+        if (this.executionGraphPersistenceQueues.get(runningEntry) === next) {
+          this.executionGraphPersistenceQueues.delete(runningEntry);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  private phaseSpanKeysForRunningEntry(runningEntry: RunningEntry): Set<string> {
+    let keys = this.persistedPhaseSpanKeys.get(runningEntry);
+    if (!keys) {
+      keys = new Set();
+      this.persistedPhaseSpanKeys.set(runningEntry, keys);
+    }
+    return keys;
+  }
+
+  private observeExecutionGraphWorkerTurn(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
+    const observedTurnId = workerEvent.turn_id ?? runningEntry.turn_id;
+    const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
+    const turnAlreadyObserved = Boolean(observedTurnId && persistedTurnIds.includes(observedTurnId));
+    if (observedTurnId && !turnAlreadyObserved) {
+      persistedTurnIds.push(observedTurnId);
+    }
+    return turnAlreadyObserved;
+  }
+
+  private executionGraphPersistenceFailureContext(
+    issueId: string,
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent,
+    operation: string,
+    error: unknown
+  ): Record<string, string | number | boolean | null> {
+    return {
+      issue_id: issueId,
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id,
+      active_thread_id: runningEntry.thread_id,
+      active_turn_id: runningEntry.turn_id,
+      event_thread_id: workerEvent.thread_id ?? null,
+      event_turn_id: workerEvent.turn_id ?? null,
+      event_timestamp: asIso(workerEvent.timestamp_ms),
+      event: workerEvent.event,
+      persistence_operation: operation,
+      failure_kind: classifyPersistenceFailure(error),
+      error_name: persistenceErrorName(error),
+      error_code: persistenceErrorCode(error),
+      error_message: persistenceErrorMessage(error)
+    };
   }
 
   private executionGraphStatusForWorkerEvent(eventName: string): 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' {

@@ -14,6 +14,7 @@ import type {
 import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
+import { SqlitePersistenceStore } from '../../src/persistence/store';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -5204,6 +5205,136 @@ describe('OrchestratorCore', () => {
       expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'succeeded', reason_code: 'codex_turn_completed' }),
       expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'retrying', reason_code: 'normal_completion' })
     ]));
+  });
+
+  it('persists duplicate-timestamp codex.turn.waiting heartbeats without generic record-failed warnings', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-wait-heartbeats-'));
+    const store = new SqlitePersistenceStore({
+      dbPath: path.join(dir, 'runtime.sqlite'),
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-05-08T12:00:00.000Z')
+    });
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async (params) => store.startRun(params),
+      appendIssueRun: async (params) => store.appendIssueRun(params),
+      appendAttempt: async (params) => store.appendAttempt(params),
+      appendThread: async (params) => store.appendThread(params),
+      appendTurn: async (params) => store.appendTurn(params),
+      appendPhaseSpan: async (params) => store.appendPhaseSpan(params),
+      appendToolSpan: async (params) => store.appendToolSpan(params),
+      appendStateTransition: async (params) => store.appendStateTransition(params),
+      recordSession: async ({ run_id, session_id }) => store.recordSession(run_id, session_id),
+      recordEvent: async (params) => store.recordEvent(params),
+      completeRun: async (params) => store.completeRun(params)
+    };
+    const harness = createHarness({
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+
+    try {
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-wait-graph', identifier: 'ABC-WAIT-GRAPH' })]);
+      await harness.orchestrator.tick('interval');
+      harness.orchestrator.onWorkerEvent('i-wait-graph', {
+        timestamp_ms: harness.now.value + 10,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-wait-graph',
+        turn_id: 'turn-wait-graph',
+        session_id: 'session-wait-graph'
+      });
+      harness.orchestrator.onWorkerEvent('i-wait-graph', {
+        timestamp_ms: harness.now.value + 20,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting heartbeat 1',
+        thread_id: 'thread-wait-graph',
+        turn_id: 'turn-wait-graph',
+        session_id: 'session-wait-graph'
+      });
+      harness.orchestrator.onWorkerEvent('i-wait-graph', {
+        timestamp_ms: harness.now.value + 20,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting heartbeat 2',
+        thread_id: 'thread-wait-graph',
+        turn_id: 'turn-wait-graph',
+        session_id: 'session-wait-graph'
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(logs.filter((entry) => entry.event === CANONICAL_EVENT.persistence.recordEventFailed)).toHaveLength(0);
+      const lineage = store.reconstructThreadLineage('thread-wait-graph');
+      expect(lineage?.turns[0]?.phase_spans).toEqual([
+        expect.objectContaining({
+          phase: 'planning',
+          reason_code: 'codex_turn_waiting',
+          reason_detail: 'waiting heartbeat 1'
+        })
+      ]);
+    } finally {
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('logs typed execution graph persistence failure context without leaking secrets', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-failure-context',
+      appendIssueRun: async () => 'issue-run-failure-context',
+      appendAttempt: async () => 'attempt-failure-context',
+      appendThread: async () => 'thread-failure-context',
+      appendTurn: async () => 'turn-failure-context',
+      appendPhaseSpan: async () => {
+        throw new Error('database locked token=secret-value');
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-failure-context', identifier: 'ABC-FAIL-CONTEXT' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-failure-context', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-failure-context',
+      turn_id: 'turn-failure-context',
+      session_id: 'session-failure-context'
+    });
+    harness.orchestrator.onWorkerEvent('i-failure-context', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat',
+      thread_id: 'thread-failure-context',
+      turn_id: 'turn-failure-context',
+      session_id: 'session-failure-context'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const persistenceFailure = logs.find((entry) => entry.event === CANONICAL_EVENT.persistence.recordEventFailed);
+    expect(persistenceFailure?.context).toEqual(
+      expect.objectContaining({
+        issue_id: 'i-failure-context',
+        issue_identifier: 'ABC-FAIL-CONTEXT',
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        persistence_operation: 'appendPhaseSpan',
+        failure_kind: 'write_failed',
+        error_name: 'Error',
+        error_message: 'database locked token=***REDACTED***',
+        event_thread_id: 'thread-failure-context',
+        event_turn_id: 'turn-failure-context',
+        active_thread_id: 'thread-failure-context',
+        active_turn_id: 'turn-failure-context'
+      })
+    );
   });
 
   it('persists retry timer redispatch attempts under the original issue run', async () => {
