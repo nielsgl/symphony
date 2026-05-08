@@ -1,6 +1,319 @@
+import vm from 'node:vm';
+
 import { describe, expect, it } from 'vitest';
 
 import { renderDashboardClientJs, renderDashboardHtml } from '../../src/api/dashboard-assets';
+
+class FakeClassList {
+  private readonly values = new Set<string>();
+
+  add(...tokens: string[]): void {
+    for (const token of tokens) {
+      this.values.add(token);
+    }
+  }
+
+  remove(...tokens: string[]): void {
+    for (const token of tokens) {
+      this.values.delete(token);
+    }
+  }
+
+  contains(token: string): boolean {
+    return this.values.has(token);
+  }
+
+  setFromClassName(className: string): void {
+    this.values.clear();
+    for (const token of className.split(/\s+/)) {
+      if (token) {
+        this.values.add(token);
+      }
+    }
+  }
+
+  toString(): string {
+    return Array.from(this.values).join(' ');
+  }
+}
+
+class FakeElement {
+  readonly tagName: string;
+  readonly classList = new FakeClassList();
+  readonly listeners = new Map<string, Array<(event: { target?: FakeElement; key?: string; preventDefault(): void }) => void>>();
+  readonly attributes = new Map<string, string>();
+  children: FakeElement[] = [];
+  disabled = false;
+  href = '';
+  id = '';
+  open = true;
+  placeholder = '';
+  title = '';
+  type = '';
+  value = '';
+  private ownText = '';
+  private ownClassName = '';
+
+  constructor(tagName: string) {
+    this.tagName = tagName.toUpperCase();
+  }
+
+  get className(): string {
+    return this.ownClassName;
+  }
+
+  set className(value: string) {
+    this.ownClassName = value;
+    this.classList.setFromClassName(value);
+  }
+
+  get textContent(): string {
+    return this.ownText + this.children.map((child) => child.textContent).join('');
+  }
+
+  set textContent(value: string) {
+    this.ownText = value;
+    this.children = [];
+  }
+
+  append(...nodes: Array<FakeElement | string>): void {
+    for (const node of nodes) {
+      this.appendChild(typeof node === 'string' ? FakeElement.text(node) : node);
+    }
+  }
+
+  appendChild(node: FakeElement): FakeElement {
+    this.children.push(node);
+    return node;
+  }
+
+  replaceChildren(...nodes: FakeElement[]): void {
+    this.ownText = '';
+    this.children = nodes;
+  }
+
+  addEventListener(type: string, handler: (event: { target?: FakeElement; key?: string; preventDefault(): void }) => void): void {
+    const handlers = this.listeners.get(type) || [];
+    handlers.push(handler);
+    this.listeners.set(type, handlers);
+  }
+
+  click(): void {
+    const handlers = this.listeners.get('click') || [];
+    for (const handler of handlers) {
+      handler({ target: this, preventDefault() {} });
+    }
+  }
+
+  focus(): void {
+    // Focus tracking is not needed for these dashboard assertions.
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) || null;
+  }
+
+  static text(value: string): FakeElement {
+    const element = new FakeElement('#text');
+    element.textContent = value;
+    return element;
+  }
+}
+
+class FakeDocument {
+  readonly elements = new Map<string, FakeElement>();
+  readonly listeners = new Map<string, Array<(event: { key?: string; preventDefault(): void }) => void>>();
+  activeElement: FakeElement | null = null;
+
+  constructor(html: string) {
+    const ids = html.matchAll(/id="([^"]+)"/g);
+    for (const match of ids) {
+      const element = new FakeElement('div');
+      element.id = match[1];
+      this.elements.set(match[1], element);
+    }
+  }
+
+  getElementById(id: string): FakeElement {
+    let element = this.elements.get(id);
+    if (!element) {
+      element = new FakeElement('div');
+      element.id = id;
+      this.elements.set(id, element);
+    }
+    return element;
+  }
+
+  createElement(tagName: string): FakeElement {
+    return new FakeElement(tagName);
+  }
+
+  querySelectorAll(_selector: string): FakeElement[] {
+    return [];
+  }
+
+  addEventListener(type: string, handler: (event: { key?: string; preventDefault(): void }) => void): void {
+    const handlers = this.listeners.get(type) || [];
+    handlers.push(handler);
+    this.listeners.set(type, handlers);
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function okJson(payload: unknown) {
+  return {
+    ok: true,
+    async json() {
+      return payload;
+    }
+  };
+}
+
+async function flushPromises(): Promise<void> {
+  for (let index = 0; index < 10; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+function createRuntimeStatePayload() {
+  return {
+    generated_at: '2026-05-08T16:00:00.000Z',
+    counts: {
+      running: 0,
+      retrying: 0,
+      blocked: 0,
+      stopped: 0,
+      running_stalled_waiting_count: 0,
+      running_awaiting_input_count: 0
+    },
+    codex_totals: {
+      total_tokens: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      seconds_running: 0
+    },
+    health: {
+      dispatch_validation: 'ok',
+      last_error: null
+    },
+    rate_limits: null,
+    throughput: null,
+    running: [],
+    retrying: [],
+    blocked: [],
+    stopped_runs: [],
+    recent_events: [],
+    recent_runtime_events: []
+  };
+}
+
+function createStoppedRunRecoveryPayload() {
+  return {
+    counts: {
+      stopped: 1
+    },
+    stopped_runs: [
+      {
+        run_id: 'run-stopped-1',
+        issue_identifier: 'NIE-119',
+        thread_id: 'thread-stopped-1',
+        session_id: 'session-stopped-1',
+        turn_id: 'turn-stopped-1',
+        last_relevant_at: '2026-05-08T15:59:00.000Z',
+        terminal_status: 'stopped',
+        terminal_reason_code: 'capability_mismatch',
+        terminal_reason_detail: 'Stopped after unsupported browser capability.',
+        root_cause_status: 'action_required',
+        root_cause_reason_code: 'missing_tool_output_recovery',
+        root_cause_reason_detail: 'Inspect thread lineage before resume.',
+        recovery_status: 'capability_mismatch',
+        capability_mismatch: true,
+        resume_valid: false,
+        resume_disabled_reason: 'Unsupported browser capability.',
+        capability_warning: {
+          unsupported_capability_message: 'Browser tool was unavailable.',
+          recommended_recovery_action: 'Resume with browser-capable runtime.'
+        },
+        actions: {
+          inspect_forensics_url: '/api/v1/history/run-stopped-1',
+          inspect_thread_url: '/api/v1/threads/thread-stopped-1',
+          copy_thread_id_supported: true,
+          copy_session_id_supported: true
+        }
+      }
+    ]
+  };
+}
+
+function installDashboardClient(fetchImpl: (url: string, init?: unknown) => Promise<{ ok: boolean; json(): Promise<unknown> }>) {
+  const document = new FakeDocument(renderDashboardHtml());
+  const storage = new Map<string, string>();
+  const fetchCalls: string[] = [];
+  const sandbox = {
+    console,
+    document,
+    EventSource: class {
+      close() {}
+    },
+    fetch: (url: string, init?: unknown) => {
+      fetchCalls.push(String(url));
+      return fetchImpl(String(url), init);
+    },
+    localStorage: {
+      getItem(key: string) {
+        return storage.get(key) || null;
+      },
+      setItem(key: string, value: string) {
+        storage.set(key, value);
+      }
+    },
+    setInterval() {
+      return 0;
+    },
+    clearInterval() {},
+    setTimeout() {
+      return 0;
+    },
+    clearTimeout() {},
+    window: {
+      confirm: () => true,
+      localStorage: {
+        getItem(key: string) {
+          return storage.get(key) || null;
+        },
+        setItem(key: string, value: string) {
+          storage.set(key, value);
+        }
+      },
+      open() {},
+      prompt: () => ''
+    }
+  };
+  sandbox.window = { ...sandbox.window, localStorage: sandbox.localStorage };
+  vm.runInNewContext(
+    renderDashboardClientJs({
+      dashboard_enabled: false,
+      refresh_ms: 500,
+      render_interval_ms: 250
+    }),
+    sandbox
+  );
+
+  return { document, fetchCalls };
+}
 
 describe('dashboard assets', () => {
   it('renders client budget display logic for visible status, policy, and stop messages', () => {
@@ -81,25 +394,50 @@ describe('dashboard assets', () => {
     expect(streamBlock).not.toContain('/api/v1/stopped-runs/recovery');
   });
 
-  it('preserves stopped-run recovery loaded before the initial state snapshot', () => {
-    const clientJs = renderDashboardClientJs();
-    const loadBlock = clientJs.slice(
-      clientJs.indexOf('async function loadStoppedRunRecovery()'),
-      clientJs.indexOf('function applyPayload(payload, source)')
-    );
-    const applyBlock = clientJs.slice(
-      clientJs.indexOf('function applyPayload(payload, source)'),
-      clientJs.indexOf('function updateRuntimeClock()')
-    );
+  it('preserves stopped-run recovery loaded before the initial state snapshot', async () => {
+    const stateRequest = deferred<{ ok: boolean; json(): Promise<unknown> }>();
+    const fetchCalls: string[] = [];
+    const runtime = installDashboardClient(async (url) => {
+      fetchCalls.push(url);
+      if (url === '/api/v1/state') {
+        return stateRequest.promise;
+      }
+      if (url === '/api/v1/stopped-runs/recovery') {
+        return okJson(createStoppedRunRecoveryPayload());
+      }
+      if (url === '/api/v1/ui-state') {
+        return okJson({ state: null });
+      }
+      if (url === '/api/v1/diagnostics') {
+        return okJson({ runtime_resolution: null });
+      }
+      if (url === '/api/v1/history?limit=8') {
+        return okJson({ runs: [] });
+      }
+      throw new Error('Unexpected dashboard fetch: ' + url);
+    });
 
-    expect(clientJs).toContain('stoppedRunRecoveryPayload: null');
-    expect(clientJs).toContain('function normalizeStoppedRunRecoveryPayload(recovery)');
-    expect(clientJs).toContain('function mergeStoppedRunRecoveryPayload(payload, recoveryPayload)');
-    expect(loadBlock).toContain('state.stoppedRunRecoveryPayload = normalizeStoppedRunRecoveryPayload(recovery);');
-    expect(loadBlock).toContain('renderStoppedRunRecovery(state.stoppedRunRecoveryPayload);');
-    expect(applyBlock).toContain('state.stoppedRunRecoveryLoaded && state.stoppedRunRecoveryPayload');
-    expect(applyBlock).toContain('payload = mergeStoppedRunRecoveryPayload(payload, state.stoppedRunRecoveryPayload);');
-    expect(applyBlock).not.toContain('state.stoppedRunRecoveryLoaded && state.lastGoodPayload');
+    await flushPromises();
+
+    expect(fetchCalls).toContain('/api/v1/state');
+    expect(fetchCalls).not.toContain('/api/v1/stopped-runs/recovery');
+
+    const recoveryList = runtime.document.getElementById('stopped-run-recovery-list');
+    runtime.document.getElementById('stopped-run-recovery-load').click();
+    await flushPromises();
+
+    expect(fetchCalls.filter((url) => url === '/api/v1/stopped-runs/recovery')).toHaveLength(1);
+    expect(recoveryList.textContent).toContain('NIE-119');
+    expect(recoveryList.textContent).toContain('Capability mismatch');
+    expect(recoveryList.textContent).toContain('Browser tool was unavailable.');
+
+    stateRequest.resolve(okJson(createRuntimeStatePayload()));
+    await flushPromises();
+
+    expect(recoveryList.textContent).toContain('NIE-119');
+    expect(recoveryList.textContent).toContain('Capability mismatch');
+    expect(recoveryList.textContent).toContain('Browser tool was unavailable.');
+    expect(recoveryList.textContent).not.toContain('No recent stopped runs need recovery.');
   });
 
   it('snapshots the stuck drilldown rendering vocabulary', () => {
