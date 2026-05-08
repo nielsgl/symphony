@@ -1203,11 +1203,15 @@ describe('LocalRunnerBridge integration', () => {
       )
     } as unknown as CodexRunner;
 
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
     const bridge = new LocalRunnerBridge({
       workspaceManager,
       codexRunner,
       config: makeConfig(),
-      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      }
     });
 
     const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
@@ -1227,6 +1231,16 @@ describe('LocalRunnerBridge integration', () => {
     expect(signal?.aborted).toBe(true);
     expect(signal?.reason).toBe('operator_cancel_turn');
     expect(cleanupWorkspace).not.toHaveBeenCalled();
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.orchestration.workerTerminated,
+        context: expect.objectContaining({
+          cancel_requested: true,
+          graceful_exit_observed: true,
+          worker_instance_id: expect.any(String)
+        })
+      })
+    );
     await expect((spawned.worker_handle as { promise: Promise<void> }).promise).resolves.toBeUndefined();
   });
 
@@ -1253,11 +1267,15 @@ describe('LocalRunnerBridge integration', () => {
       )
     } as unknown as CodexRunner;
 
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
     const bridge = new LocalRunnerBridge({
       workspaceManager,
       codexRunner,
       config: makeConfig(),
-      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}'
+      promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      }
     });
 
     const spawned = await bridge.spawnWorker({ issue: makeIssue(), attempt: null });
@@ -1281,6 +1299,15 @@ describe('LocalRunnerBridge integration', () => {
 
     expect(cleanupWorkspace).toHaveBeenCalledTimes(1);
     expect(cleanupWorkspace).toHaveBeenCalledWith('ABC-1');
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: CANONICAL_EVENT.workspace.teardownStart }),
+        expect.objectContaining({
+          event: CANONICAL_EVENT.workspace.teardownSuccess,
+          context: expect.objectContaining({ cleanup_succeeded: true })
+        })
+      ])
+    );
   });
 
   it('maps codex startup failure to abnormal worker exit and retry scheduling', async () => {

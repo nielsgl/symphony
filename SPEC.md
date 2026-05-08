@@ -650,18 +650,30 @@ Distinct terminal reasons are important because retry logic and logs differ.
   - Dispatch until slots are exhausted.
 
 - `Worker Exit (normal)`
-  - Remove running entry.
+  - First verify the exiting worker still matches active ownership for the issue.
+  - Matching uses the dispatch-time worker instance/handle plus Codex process, thread, turn, and
+    session identity when available; thread/turn/session identity is not required during the
+    pre-session startup window.
+  - If the worker is stale, superseded, or already released by a terminal/handoff transition, record
+    a stale-exit diagnostic and do not remove, complete, fail, retry, or otherwise mutate the active
+    run.
+  - For a matching worker, remove the running entry.
   - Update aggregate runtime totals.
   - Schedule continuation retry (attempt `1`) after the worker exhausts or finishes its in-process
     turn loop.
 
 - `Worker Exit (abnormal)`
-  - Remove running entry.
+  - Apply the same active-owner check as normal exits.
+  - For a matching worker, remove the running entry.
   - Update aggregate runtime totals.
   - Schedule exponential-backoff retry.
 
 - `Codex Update Event`
-  - Update live session fields, token counters, and rate limits.
+  - Ignore stale events from canceled, inactive, or superseded workers.
+  - Quarantined event diagnostics include issue id/identifier, active run/attempt ids, worker
+    instance id, Codex process id, thread id, turn id, session id, stale reason, and current active
+    owner summary.
+  - Fresh events update live session fields, token counters, and rate limits.
 
 - `Retry Timer Fired`
   - Re-fetch active candidates and attempt re-dispatch, or release claim if no longer eligible.
@@ -676,6 +688,17 @@ Distinct terminal reasons are important because retry logic and logs differ.
 
 - The orchestrator serializes state mutations through one authority to avoid duplicate dispatch.
 - `claimed` and `running` checks are required before launching any worker.
+- Each dispatch creates a stable worker ownership token before Codex session identity exists. Late
+  events and exits from previous same-issue workers are diagnostic-only unless they match the active
+  worker instance or handle.
+- Phase marker monotonicity is scoped to the current run attempt. A new dispatch for the same issue
+  starts a fresh phase timeline so a previous terminal/completed phase cannot suppress fresh
+  dispatch, session, turn, or validation markers.
+- Operator action summaries are scoped to the active run window; stale cancel/requeue/resume action
+  labels from prior same-issue runs must not be projected as the current run's last action.
+- Termination evidence should distinguish cancel requested, graceful exit observed, forced kill
+  evidence when surfaced by the Codex runner, workspace cleanup attempted, and cleanup
+  succeeded/failed.
 - Reconciliation runs before dispatch on every tick.
 - Restart recovery is tracker-driven and filesystem-driven (no durable orchestrator DB required).
 - Startup terminal cleanup removes stale workspaces for issues already in terminal states.

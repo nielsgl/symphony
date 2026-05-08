@@ -1,4 +1,4 @@
-import type { OrchestratorState, RunningEntry } from '../orchestrator';
+import type { OperatorActionRecord, OrchestratorState, RunningEntry } from '../orchestrator';
 import { explainOperatorRuntimeState, REASON_CODES, toOperatorExplainerHint } from '../observability';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
@@ -145,6 +145,14 @@ function projectQuarantinedRunningEvents(entry: RunningEntry) {
     thread_id: event.thread_id,
     turn_id: event.turn_id,
     active_codex_app_server_pid: event.active_codex_app_server_pid,
+    worker_instance_id: event.worker_instance_id ?? null,
+    active_worker_instance_id: event.active_worker_instance_id ?? null,
+    run_id: event.run_id ?? null,
+    issue_run_id: event.issue_run_id ?? null,
+    attempt_id: event.attempt_id ?? null,
+    active_run_id: event.active_run_id ?? null,
+    active_issue_run_id: event.active_issue_run_id ?? null,
+    active_attempt_id: event.active_attempt_id ?? null,
     active_session_id: event.active_session_id,
     active_thread_id: event.active_thread_id,
     active_turn_id: event.active_turn_id,
@@ -318,13 +326,21 @@ function toStateRunningRow(
     ...resolveTokenTelemetryQuality(entry),
     quarantined_event_count: entry.quarantined_event_count ?? 0,
     last_quarantined_event_at: entry.last_quarantined_event_at_ms ? asIsoDate(entry.last_quarantined_event_at_ms) : null,
+    ownership_conflict: entry.ownership_conflict
+      ? {
+          ...entry.ownership_conflict,
+          detected_at: asIsoDate(entry.ownership_conflict.detected_at_ms)
+        }
+      : null,
     current_blocker_class: operatorExplainer.actionability === 'none' ? null : operatorExplainer.classification,
     time_since_progress: timeSinceProgress,
     last_successful_step: resolveLastSuccessfulStep(entry),
     tool_call_ledger: projectToolCallLedger(entry),
     transcript_tool_call_diagnostics: projectTranscriptToolCallDiagnostics(entry),
     ...notBlockedExplainer,
-    operator_actions: (operatorActions?.get(issueId) ?? []).map((action) => ({ ...action })),
+    operator_actions: (operatorActions?.get(issueId) ?? [])
+      .filter((action) => actionBelongsToRunningEntry(action, entry))
+      .map((action) => ({ ...action })),
     tokens: {
       input_tokens: entry.tokens.input_tokens,
       output_tokens: entry.tokens.output_tokens,
@@ -343,6 +359,32 @@ function toStateRunningRow(
     missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
     operator_explainer_hint: toOperatorExplainerHint(operatorExplainer)
   };
+}
+
+function actionBelongsToRunningEntry(action: OperatorActionRecord, entry: RunningEntry): boolean {
+  if (action.requested_at_ms < entry.started_at_ms) {
+    return false;
+  }
+  const target = action.target_identifiers;
+  if (!target) {
+    return true;
+  }
+  if (target.run_id && entry.run_id && target.run_id !== entry.run_id) {
+    return false;
+  }
+  if (target.attempt_id && entry.attempt_id && target.attempt_id !== entry.attempt_id) {
+    return false;
+  }
+  if (target.thread_id && entry.thread_id && target.thread_id !== entry.thread_id) {
+    return false;
+  }
+  if (target.turn_id && entry.turn_id && target.turn_id !== entry.turn_id) {
+    return false;
+  }
+  if (target.session_id && entry.session_id && target.session_id !== entry.session_id) {
+    return false;
+  }
+  return true;
 }
 
 export interface SnapshotServiceOptions {

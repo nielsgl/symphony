@@ -17,6 +17,12 @@ export type WorkerCompletionReason =
 export interface WorkerExitDetails {
   completion_reason?: WorkerCompletionReason;
   refreshed_state?: string | null;
+  worker_handle?: unknown;
+  worker_instance_id?: string | null;
+  codex_app_server_pid?: string | number | null;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  session_id?: string | null;
 }
 export type RetryDelayType = 'continuation' | 'failure';
 export type BudgetHardLimitPolicy = 'block_requires_resume' | 'terminate_attempt';
@@ -44,6 +50,7 @@ export interface RunningEntry {
   issue_run_id?: string | null;
   attempt_id?: string | null;
   worker_handle: unknown;
+  worker_instance_id?: string | null;
   monitor_handle: unknown;
   retry_attempt: number;
   workspace_path: string | null;
@@ -113,6 +120,14 @@ export interface RunningEntry {
     thread_id: string | null;
     turn_id: string | null;
     active_codex_app_server_pid: string | null;
+    worker_instance_id?: string | null;
+    active_worker_instance_id?: string | null;
+    run_id?: string | null;
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    active_run_id?: string | null;
+    active_issue_run_id?: string | null;
+    active_attempt_id?: string | null;
     active_session_id: string | null;
     active_thread_id: string | null;
     active_turn_id: string | null;
@@ -120,6 +135,18 @@ export interface RunningEntry {
   }>;
   quarantined_event_count?: number;
   last_quarantined_event_at_ms?: number | null;
+  ownership_conflict?: {
+    reason: 'pre_session_identity_conflict' | 'ownership_conflict';
+    detected_at_ms: number;
+    event: string;
+    event_codex_app_server_pid: string | null;
+    active_codex_app_server_pid: string | null;
+    event_worker_instance_id: string | null;
+    active_worker_instance_id: string | null;
+    event_thread_id: string | null;
+    event_turn_id: string | null;
+    event_session_id: string | null;
+  } | null;
   started_at_ms: number;
   last_codex_timestamp_ms: number | null;
   current_phase?: PhaseMarkerName | null;
@@ -515,6 +542,7 @@ export interface DispatchPreflightResult {
 export interface SpawnWorkerResultSuccess {
   ok: true;
   worker_handle: unknown;
+  worker_instance_id?: string | null;
   monitor_handle: unknown;
   workspace_path?: string | null;
   worker_host?: string | null;
@@ -732,6 +760,7 @@ export interface WorkerObservabilityEvent {
   turn_id?: string;
   session_id?: string;
   codex_app_server_pid?: number | null;
+  worker_instance_id?: string | null;
   detail?: string;
   usage?: CodexUsageTotals;
   token_telemetry_status?: TokenTelemetryStatus;

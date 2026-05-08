@@ -937,7 +937,7 @@ describe('SnapshotService', () => {
       }
     ]);
     expect(issue.stale_events).toEqual([
-      {
+      expect.objectContaining({
         at: '2026-04-10T10:01:45.000Z',
         event: CANONICAL_EVENT.codex.turnWaiting,
         message: 'late prior-review heartbeat',
@@ -950,8 +950,8 @@ describe('SnapshotService', () => {
         active_turn_id: 'fresh-turn',
         active_session_id: 'fresh-session',
         reason: 'lineage_mismatch'
-      },
-      {
+      }),
+      expect.objectContaining({
         at: '2026-04-10T10:01:50.000Z',
         event: CANONICAL_EVENT.codex.phasePlanning,
         message: 'late planning after task_complete',
@@ -964,7 +964,7 @@ describe('SnapshotService', () => {
         active_turn_id: 'fresh-turn',
         active_session_id: 'fresh-session',
         reason: 'terminal_residue'
-      }
+      })
     ]);
 
     const projectedState = service.projectState(state);
