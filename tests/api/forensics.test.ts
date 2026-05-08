@@ -254,6 +254,7 @@ describe('forensics export bundle', () => {
         issue_identifier: 'ABC-1',
         started_at: '2026-04-11T10:00:00.000Z',
         ended_at: '2026-04-11T10:04:00.000Z',
+        completed_at: '2026-04-11T10:04:00.000Z',
         terminal_status: 'cancelled',
         error_code: 'missing_tool_output_recovery_interrupted',
         terminal_reason_code: 'missing_tool_output_recovery_interrupted',

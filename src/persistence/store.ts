@@ -203,6 +203,7 @@ export class SqlitePersistenceStore {
         issue_identifier TEXT NOT NULL,
         started_at TEXT NOT NULL,
         ended_at TEXT,
+        completed_at TEXT,
         terminal_status TEXT,
         error_code TEXT,
         terminal_reason_code TEXT,
@@ -616,10 +617,12 @@ export class SqlitePersistenceStore {
       ? JSON.stringify(redactUnknown(params.missing_tool_output_recovery))
       : null;
     const terminalReasonCode = params.terminal_reason_code ?? params.error_code ?? null;
+    const completedAt = asIso(this.nowMs());
     this.db
       .prepare(
         `UPDATE runs SET
           ended_at = ?,
+          completed_at = ?,
           terminal_status = ?,
           error_code = ?,
           terminal_reason_code = ?,
@@ -635,7 +638,8 @@ export class SqlitePersistenceStore {
         WHERE run_id = ?`
       )
       .run(
-        asIso(this.nowMs()),
+        completedAt,
+        completedAt,
         params.terminal_status,
         redactedError,
         terminalReasonCode,
@@ -655,7 +659,7 @@ export class SqlitePersistenceStore {
   listRunHistory(limit = 50): DurableRunHistoryRecord[] {
     const rows = this.db
       .prepare(
-        `SELECT run_id, issue_id, issue_identifier, started_at, ended_at, terminal_status, error_code,
+        `SELECT run_id, issue_id, issue_identifier, started_at, ended_at, completed_at, terminal_status, error_code,
           terminal_reason_code, terminal_reason_detail, root_cause_status, root_cause_reason_code,
           root_cause_reason_detail, root_cause_at, session_id, thread_id, turn_id, missing_tool_output_recovery
         FROM runs ORDER BY started_at DESC LIMIT ?`
@@ -666,6 +670,7 @@ export class SqlitePersistenceStore {
       issue_identifier: string;
       started_at: string;
       ended_at: string | null;
+      completed_at: string | null;
       terminal_status: RunTerminalStatus | null;
       error_code: string | null;
       terminal_reason_code: string | null;
@@ -690,6 +695,7 @@ export class SqlitePersistenceStore {
         issue_identifier: row.issue_identifier,
         started_at: row.started_at,
         ended_at: row.ended_at,
+        completed_at: row.completed_at,
         terminal_status: row.terminal_status,
         error_code: row.error_code,
         terminal_reason_code: row.terminal_reason_code ?? row.error_code,
@@ -714,6 +720,7 @@ export class SqlitePersistenceStore {
     const existing = new Set(columns.map((column) => column.name));
     const migrations: Array<[string, string]> = [
       ['terminal_reason_code', 'ALTER TABLE runs ADD COLUMN terminal_reason_code TEXT'],
+      ['completed_at', 'ALTER TABLE runs ADD COLUMN completed_at TEXT'],
       ['terminal_reason_detail', 'ALTER TABLE runs ADD COLUMN terminal_reason_detail TEXT'],
       ['root_cause_status', 'ALTER TABLE runs ADD COLUMN root_cause_status TEXT'],
       ['root_cause_reason_code', 'ALTER TABLE runs ADD COLUMN root_cause_reason_code TEXT'],
@@ -730,6 +737,9 @@ export class SqlitePersistenceStore {
       }
     }
     this.db.exec('UPDATE runs SET terminal_reason_code = error_code WHERE terminal_reason_code IS NULL AND error_code IS NOT NULL;');
+    this.db.exec(
+      'UPDATE runs SET completed_at = ended_at WHERE completed_at IS NULL AND terminal_status IS NOT NULL AND ended_at IS NOT NULL;'
+    );
   }
 
   saveUiState(state: UiContinuityState): void {

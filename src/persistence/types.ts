@@ -78,6 +78,7 @@ export interface DurableRunHistoryRecord {
   issue_identifier: string;
   started_at: string;
   ended_at: string | null;
+  completed_at: string | null;
   terminal_status: RunTerminalStatus | null;
   error_code: string | null;
   terminal_reason_code: string | null;
