@@ -5029,6 +5029,85 @@ describe('OrchestratorCore', () => {
     expect(failureLog?.context).not.toHaveProperty('identifier');
   });
 
+  it('emits typed retry cleanup when a refresh-failure retry is no longer active', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({ logger });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-refresh-cleanup', identifier: 'ABC-CLEANUP' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit(
+      'i-refresh-cleanup',
+      'abnormal',
+      'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed'
+    );
+    const scheduledRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-refresh-cleanup');
+    expect(scheduledRetry?.stop_reason_code).toBe(REASON_CODES.issueStateRefreshFailed);
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-refresh-cleanup', identifier: 'ABC-CLEANUP', state: 'Done' })
+    ]);
+    await harness.orchestrator.onRetryTimer('i-refresh-cleanup');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const cleanupLog = logs.find((entry) => entry.event === CANONICAL_EVENT.tracker.retryCleared);
+    expect(snapshot.retry_attempts.has('i-refresh-cleanup')).toBe(false);
+    expect(snapshot.claimed.has('i-refresh-cleanup')).toBe(false);
+    expect(cleanupLog?.context).toMatchObject({
+      issue_id: 'i-refresh-cleanup',
+      issue_identifier: 'ABC-CLEANUP',
+      previous_retry_reason: REASON_CODES.issueStateRefreshFailed,
+      retry_attempt: 1,
+      observed_tracker_state: 'Done',
+      cleanup_reason: 'tracker_state_terminal'
+    });
+    expect(cleanupLog?.context.due_at_ms).toBe(scheduledRetry?.due_at_ms);
+    expect(
+      snapshot.recent_runtime_events.some(
+        (event) =>
+          event.event === CANONICAL_EVENT.tracker.retryCleared &&
+          event.issue_identifier === 'ABC-CLEANUP' &&
+          event.detail?.includes('cleanup_reason=tracker_state_terminal') &&
+          event.detail?.includes(`due_at_ms=${scheduledRetry?.due_at_ms}`)
+      )
+    ).toBe(true);
+  });
+
+  it('emits typed retry cleanup when a retry disappears from active candidates', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({ logger });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-missing-candidate' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-missing-candidate', 'normal');
+
+    const scheduledRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-missing-candidate');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([]);
+    await harness.orchestrator.onRetryTimer('i-missing-candidate');
+
+    const cleanupLog = logs.find((entry) => entry.event === CANONICAL_EVENT.tracker.retryCleared);
+    expect(harness.orchestrator.getStateSnapshot().retry_attempts.has('i-missing-candidate')).toBe(false);
+    expect(cleanupLog?.context).toMatchObject({
+      issue_id: 'i-missing-candidate',
+      issue_identifier: 'ABC-1',
+      previous_retry_reason: REASON_CODES.normalCompletion,
+      retry_attempt: 1,
+      observed_tracker_state: null,
+      cleanup_reason: 'active_candidate_missing'
+    });
+    expect(cleanupLog?.context.due_at_ms).toBe(scheduledRetry?.due_at_ms);
+  });
+
   it('emits deterministic lifecycle logs for dispatch, retry scheduling, worker exits, and terminal transitions', async () => {
     const logs: Array<{ event: string; message: string; context: Record<string, unknown> }> = [];
     const logger: StructuredLogger = {

@@ -115,6 +115,7 @@ export const CANONICAL_EVENT = {
   tracker: {
     candidateFetchFailed: 'tracker.candidates.fetch_failed',
     retryFetchFailed: 'tracker.retry.fetch_failed',
+    retryCleared: 'tracker.retry.cleared',
     stateRefreshFailed: 'tracker.state.refresh.failed',
     githubIssueLinkMissing: 'tracker.github_issue_link.missing'
   },
@@ -136,6 +137,7 @@ export const CANONICAL_EVENT = {
     serverListening: 'api.server.listening',
     stateRequested: 'api.state.requested',
     stateSnapshotUnavailable: 'api.state.snapshot.unavailable',
+    stateSnapshotDegraded: 'api.state.snapshot.degraded',
     refreshRequested: 'api.refresh.requested',
     issueRequested: 'api.issue.requested',
     routeNotFound: 'api.route.not_found',
