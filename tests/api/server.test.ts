@@ -592,6 +592,155 @@ describe('LocalApiServer', () => {
     expect(JSON.stringify(payload).length).toBeLessThan(25_000);
   });
 
+  it('serves bounded issue runtime diagnostics for running and blocked issues', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            transcript_tool_call_diagnostics: Array.from({ length: 10 }, (_, index) => makeTranscriptDiagnostic(index)),
+            tool_call_ledger: Object.fromEntries(
+              Array.from({ length: 4 }, (_, index) => [
+                `call-active-${index}`,
+                {
+                  call_id: `call-active-${index}`,
+                  tool_name: 'linear_graphql',
+                  thread_id: 'thread-1',
+                  turn_id: 'turn-1',
+                  session_id: 'session-1',
+                  issue_id: 'issue-1',
+                  issue_identifier: 'ABC-1',
+                  run_id: 'run-1',
+                  issue_run_id: 'issue-run-1',
+                  attempt_id: 'attempt-1',
+                  first_seen_at_ms: Date.parse('2026-04-10T10:01:00.000Z') + index * 1000,
+                  last_seen_at_ms: Date.parse('2026-04-10T10:01:30.000Z') + index * 1000,
+                  completed_at_ms: null,
+                  completion_status: 'pending',
+                  evidence_sources: ['session_transcript'],
+                  start_evidence_source: 'session_transcript',
+                  completion_evidence_source: null,
+                  last_agent_message: 'waiting for linear_graphql output'
+                }
+              ])
+            )
+          })
+        ]
+      ]),
+      blocked_inputs: new Map([
+        [
+          'issue-blocked',
+          {
+            issue_id: 'issue-blocked',
+            issue_identifier: 'ABC-BLOCK',
+            attempt: 1,
+            worker_host: null,
+            workspace_path: null,
+            provisioner_type: null,
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: REASON_CODES.missingToolOutput,
+            stop_reason_detail: 'missing Codex tool output',
+            conflict_files: [],
+            resolution_hints: ['Inspect diagnostics'],
+            previous_thread_id: 'thread-blocked',
+            previous_session_id: 'session-blocked',
+            blocked_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+            requires_manual_resume: true,
+            pending_input: null,
+            tool_output_wait: {
+              tool_name: 'linear_graphql',
+              call_id: 'call-blocked',
+              thread_id: 'thread-blocked',
+              turn_id: 'turn-blocked',
+              session_id: 'session-blocked',
+              elapsed_wait_ms: 2000,
+              last_agent_message: 'waiting for output',
+              evidence_source: 'session_transcript',
+              recommended_actions: ['Inspect diagnostics']
+            },
+            transcript_tool_call_diagnostics: [
+              makeTranscriptDiagnostic(0, { lineage: 'active_owned', call_id: 'call-blocked' }),
+              makeTranscriptDiagnostic(1, { lineage: 'prior_stale' }),
+              makeTranscriptDiagnostic(2, { lineage: 'external_manual' }),
+              makeTranscriptDiagnostic(3, { lineage: 'unattributed' })
+            ],
+            session_console: []
+          }
+        ]
+      ])
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const runningResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/diagnostics?limit=3&offset=1`);
+    const runningPayload = (await runningResponse.json()) as {
+      runtime_diagnostics: {
+        status: string;
+        transcript_tool_call_diagnostics: {
+          metadata: { total_available_count: number; included_count: number; limit: number; offset: number; has_more: boolean };
+          records: Array<{ call_id: string; lineage: string }>;
+        };
+        tool_call_ledger: { records: Array<{ call_id: string; completion_status: string }> };
+      };
+    };
+    expect(runningResponse.status).toBe(200);
+    expect(runningPayload.runtime_diagnostics.status).toBe('running');
+    expect(runningPayload.runtime_diagnostics.transcript_tool_call_diagnostics.metadata).toMatchObject({
+      total_available_count: 10,
+      included_count: 3,
+      limit: 3,
+      offset: 1,
+      has_more: true
+    });
+    expect(runningPayload.runtime_diagnostics.transcript_tool_call_diagnostics.records).toHaveLength(3);
+    expect(runningPayload.runtime_diagnostics.tool_call_ledger.records[0]).toMatchObject({
+      call_id: 'call-active-2',
+      completion_status: 'pending'
+    });
+
+    const blockedResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-BLOCK/diagnostics?limit=2`);
+    const blockedPayload = (await blockedResponse.json()) as {
+      runtime_diagnostics: {
+        status: string;
+        missing_tool_output: { call_id: string; evidence_source: string } | null;
+        transcript_tool_call_diagnostics: {
+          metadata: { total_available_count: number; included_count: number; has_more: boolean };
+          records: Array<{ lineage: string }>;
+        };
+      };
+    };
+    expect(blockedResponse.status).toBe(200);
+    expect(blockedPayload.runtime_diagnostics.status).toBe('blocked');
+    expect(blockedPayload.runtime_diagnostics.missing_tool_output).toMatchObject({
+      call_id: 'call-blocked',
+      evidence_source: 'session_transcript'
+    });
+    expect(blockedPayload.runtime_diagnostics.transcript_tool_call_diagnostics.metadata).toMatchObject({
+      total_available_count: 4,
+      included_count: 2,
+      has_more: true
+    });
+    expect(new Set(blockedPayload.runtime_diagnostics.transcript_tool_call_diagnostics.records.map((record) => record.lineage))).toEqual(
+      new Set(['unattributed', 'external_manual'])
+    );
+  });
+
   it('projects recent stopped terminal runs from durable history into state recovery view', async () => {
     server = new LocalApiServer({
       snapshotSource: {

@@ -251,6 +251,7 @@ export interface ApiTranscriptToolCallDiagnostic {
 export interface ApiTranscriptToolCallDiagnosticSummary {
   detailed_diagnostics_available: boolean;
   total_count: number;
+  detail_url: string | null;
   newest_observed_at: string | null;
   newest_observed_at_ms: number | null;
   counts_by_lineage: Record<import('../orchestrator').TranscriptToolCallLineage, number>;
@@ -272,6 +273,48 @@ export interface ApiTranscriptToolCallDiagnosticSummary {
     previous_thread_id: string | null;
     replacement_thread_id: string | null;
   };
+}
+
+export interface ApiDiagnosticPageMetadata {
+  total_available_count: number;
+  included_count: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  truncated: boolean;
+  oldest_observed_at: string | null;
+  oldest_observed_at_ms: number | null;
+  newest_observed_at: string | null;
+  newest_observed_at_ms: number | null;
+}
+
+export interface ApiIssueRuntimeDiagnosticsResponse extends SnapshotFreshnessFields, ApiDegradedFields {
+  issue_identifier: string;
+  issue_id: string;
+  status: 'running' | 'retrying' | 'blocked';
+  generated_at: string;
+  diagnostics_endpoint: string;
+  transcript_tool_call_diagnostics: {
+    metadata: ApiDiagnosticPageMetadata;
+    records: ApiTranscriptToolCallDiagnostic[];
+  };
+  tool_call_ledger: {
+    metadata: ApiDiagnosticPageMetadata;
+    records: ApiToolCallLedgerEntry[];
+  };
+  missing_tool_output: {
+    tool_name: string;
+    call_id: string;
+    thread_id: string | null;
+    turn_id: string | null;
+    session_id: string | null;
+    elapsed_wait_ms: number;
+    last_agent_message: string | null;
+    evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
+    recommended_actions: string[];
+  } | null;
+  recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
+  missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
 }
 
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
@@ -696,6 +739,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
     tool_call_ledger: ApiToolCallLedgerEntry[];
+    transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
     tokens: {
       input_tokens: number;
       output_tokens: number;
@@ -803,7 +847,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
       recommended_actions: string[];
     } | null;
-    transcript_tool_call_diagnostics: ApiTranscriptToolCallDiagnostic[];
+    transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
     last_input_submit: {
       submitted_at: string;
       request_id: string;
