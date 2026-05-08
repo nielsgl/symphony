@@ -606,6 +606,140 @@ describe('LocalApiServer', () => {
     expect(JSON.stringify(payload).length).toBeLessThan(25_000);
   });
 
+  it('records compact control-plane latency and payload health for state snapshots', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry()
+        ]
+      ])
+    });
+    let now = Date.parse('2026-04-10T10:05:00.000Z');
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource(),
+      nowMs: () => {
+        now += 5;
+        return now;
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    expect(stateResponse.status).toBe(200);
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      control_plane: {
+        sample_limit: number;
+        worst_health: string;
+        endpoints: Array<{
+          endpoint: string;
+          transport: string;
+          sample_count: number;
+          last_duration_ms: number | null;
+          last_payload_bytes: number | null;
+          last_projection_duration_ms: number | null;
+          last_enrichment_duration_ms: number | null;
+          last_serialization_duration_ms: number | null;
+          last_snapshot_age_ms: number | null;
+          last_snapshot_freshness_state: string | null;
+        }>;
+      };
+    };
+
+    const stateHealth = diagnosticsPayload.control_plane.endpoints.find((entry) => entry.endpoint === '/api/v1/state');
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.control_plane.sample_limit).toBe(40);
+    expect(stateHealth).toMatchObject({
+      endpoint: '/api/v1/state',
+      transport: 'http',
+      sample_count: 1,
+      last_snapshot_freshness_state: 'fresh'
+    });
+    expect(stateHealth?.last_duration_ms).toBeGreaterThan(0);
+    expect(stateHealth?.last_payload_bytes).toBeGreaterThan(0);
+    expect(stateHealth?.last_projection_duration_ms).toBeGreaterThan(0);
+    expect(stateHealth?.last_enrichment_duration_ms).toBeGreaterThanOrEqual(0);
+    expect(stateHealth?.last_serialization_duration_ms).toBeGreaterThan(0);
+    expect(stateHealth?.last_snapshot_age_ms).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(diagnosticsPayload.control_plane)).not.toContain('samples');
+    expect(JSON.stringify(diagnosticsPayload.control_plane)).not.toContain('transcript_tool_call_diagnostics');
+  });
+
+  it('classifies degraded state payload pressure and emits typed snapshot pressure logs', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: ConstructorParameters<typeof LocalApiServer>[0]['logger'] = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () =>
+          makeState({
+            running: new Map([
+              [
+                'issue-1',
+                makeRunningEntry({
+                  last_message: 'x'.repeat(200)
+                })
+              ]
+            ])
+          })
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource(),
+      logger,
+      controlPlaneHealth: {
+        thresholds: {
+          large_payload_bytes: 1,
+          degraded_payload_bytes: 2
+        }
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      control_plane: {
+        worst_health: string;
+        endpoints: Array<{ endpoint: string; health: string; last_payload_bytes: number | null }>;
+      };
+    };
+
+    const pressureLog = logs.find((entry) => entry.event === CANONICAL_EVENT.api.stateSnapshotDegraded);
+    const stateHealth = diagnosticsPayload.control_plane.endpoints.find((entry) => entry.endpoint === '/api/v1/state');
+    expect(stateResponse.status).toBe(200);
+    expect(diagnosticsPayload.control_plane.worst_health).toBe('degraded');
+    expect(stateHealth?.health).toBe('degraded');
+    expect(stateHealth?.last_payload_bytes).toBeGreaterThan(2);
+    expect(pressureLog?.context).toMatchObject({
+      endpoint: '/api/v1/state',
+      transport: 'http',
+      health: 'degraded'
+    });
+    expect(pressureLog?.context.payload_bytes).toBeGreaterThan(2);
+    expect(pressureLog?.context).toHaveProperty('duration_ms');
+    expect(pressureLog?.context).toHaveProperty('projection_duration_ms');
+    expect(pressureLog?.context).toHaveProperty('serialization_duration_ms');
+  });
+
   it('serves bounded issue runtime diagnostics for running and blocked issues', async () => {
     const state = makeState({
       running: new Map([
@@ -2442,6 +2576,22 @@ describe('LocalApiServer', () => {
     expect(JSON.stringify(payload.state)).not.toContain('transcript_tool_call_diagnostics');
     expect(JSON.stringify(payload.state)).not.toContain('active_issue_id');
     expect(payload.state?.running?.[0]).toHaveProperty('transcript_tool_call_diagnostic_summary');
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      control_plane: {
+        endpoints: Array<{ endpoint: string; transport: string; last_payload_bytes: number | null; last_broadcast_client_count: number | null }>;
+      };
+    };
+    const sseHealth = diagnosticsPayload.control_plane.endpoints.find(
+      (entry) => entry.endpoint === '/api/v1/events:state_snapshot'
+    );
+    expect(sseHealth).toMatchObject({
+      endpoint: '/api/v1/events:state_snapshot',
+      transport: 'sse',
+      last_broadcast_client_count: 1
+    });
+    expect(sseHealth?.last_payload_bytes).toBeGreaterThan(0);
   });
 
   it('emits refresh_accepted event envelopes on POST /api/v1/refresh', async () => {
