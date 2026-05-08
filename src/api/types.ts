@@ -1,4 +1,5 @@
 import type { OrchestratorState, StateSnapshotOptions, TickReason, ToolCallEvidenceSource, ToolCallCompletionStatus } from '../orchestrator';
+import type { CodexAppServerThreadActivitySource } from '../codex/app-server-protocol';
 import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { StructuredLogger } from '../observability';
@@ -181,6 +182,22 @@ export interface ApiBudgetProjection {
   budget_status: 'ok' | 'warning' | 'hard_limited' | 'telemetry_unavailable';
   budget_policy: 'block_requires_resume' | 'terminate_attempt' | null;
   budget_message?: string | null;
+}
+
+export interface ApiPhaseTimingProjection {
+  phase_started_at: string | null;
+  phase_elapsed_ms: number | null;
+  source: 'symphony_phase_marker' | null;
+}
+
+export interface ApiCodexThreadActivityProjection {
+  thread_id: string | null;
+  updated_at: string | null;
+  updated_at_ms: number | null;
+  age_ms: number | null;
+  source: CodexAppServerThreadActivitySource | null;
+  status: 'available' | 'unavailable';
+  thread_status: string | null;
 }
 
 export interface ApiBlockedRootCauseProjection {
@@ -371,9 +388,11 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     current_phase: PhaseMarkerName | null;
     current_phase_at: string | null;
     phase_elapsed_ms: number | null;
+    phase_timing: ApiPhaseTimingProjection;
     phase_detail: string | null;
     started_at: string;
     last_event_at: string | null;
+    codex_thread_activity: ApiCodexThreadActivityProjection;
     token_telemetry_status: 'unavailable' | 'pending' | 'available';
     token_telemetry_last_source: string | null;
     token_telemetry_last_at_ms: number | null;
@@ -719,8 +738,10 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     current_phase: PhaseMarkerName | null;
     current_phase_at: string | null;
     phase_elapsed_ms: number | null;
+    phase_timing: ApiPhaseTimingProjection;
     phase_detail: string | null;
     last_event_at: string | null;
+    codex_thread_activity: ApiCodexThreadActivityProjection;
     token_telemetry_status: 'unavailable' | 'pending' | 'available';
     token_telemetry_last_source: string | null;
     token_telemetry_last_at_ms: number | null;

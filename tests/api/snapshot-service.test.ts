@@ -228,6 +228,20 @@ describe('SnapshotService', () => {
     expect(projected.running[0]?.codex_app_server_pid).toBe('12345');
     expect(projected.running[0]?.last_event_summary).toBe('codex turn completed: done');
     expect(projected.running[0]?.turn_count).toBe(3);
+    expect(projected.running[0]?.phase_timing).toEqual({
+      phase_started_at: null,
+      phase_elapsed_ms: null,
+      source: null
+    });
+    expect(projected.running[0]?.codex_thread_activity).toEqual({
+      thread_id: 'thread-1',
+      updated_at: null,
+      updated_at_ms: null,
+      age_ms: null,
+      source: null,
+      status: 'unavailable',
+      thread_status: null
+    });
     expect(projected.running[0]?.awaiting_input).toBe(false);
     expect(projected.running[0]?.pending_input_preview).toBeNull();
     expect(projected.running[0]?.stalled_waiting).toBe(false);
@@ -278,6 +292,47 @@ describe('SnapshotService', () => {
       newest_observed_at: null,
       active_missing_tool_output: { active: false },
       recovery: { active: false, status: null, attempt_count: 0 }
+    });
+  });
+
+  it('separates Symphony phase age from Codex app-server thread activity age', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            current_phase: 'implementation',
+            current_phase_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+            phase_detail: 'editing files',
+            last_codex_timestamp_ms: Date.parse('2026-04-10T10:04:30.000Z'),
+            codex_thread_activity_at_ms: Date.parse('2026-04-10T10:04:45.000Z'),
+            codex_thread_activity_source: 'app_server_protocol_thread_updated_at',
+            codex_thread_activity_status: 'running'
+          })
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+
+    expect(projected.running[0]?.current_phase).toBe('implementation');
+    expect(projected.running[0]?.phase_timing).toEqual({
+      phase_started_at: '2026-04-10T10:01:00.000Z',
+      phase_elapsed_ms: 240_000,
+      source: 'symphony_phase_marker'
+    });
+    expect(projected.running[0]?.last_event_at).toBe('2026-04-10T10:04:30.000Z');
+    expect(projected.running[0]?.codex_thread_activity).toEqual({
+      thread_id: 'thread-1',
+      updated_at: '2026-04-10T10:04:45.000Z',
+      updated_at_ms: Date.parse('2026-04-10T10:04:45.000Z'),
+      age_ms: 15_000,
+      source: 'app_server_protocol_thread_updated_at',
+      status: 'available',
+      thread_status: 'running'
     });
   });
 

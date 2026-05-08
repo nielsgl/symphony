@@ -318,6 +318,9 @@ function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotO
     last_heartbeat_at_ms: entry.last_heartbeat_at_ms ?? null,
     heartbeat_only_event_emitted: entry.heartbeat_only_event_emitted ?? false,
     running_wait_stall_event_emitted: entry.running_wait_stall_event_emitted ?? false,
+    codex_thread_activity_at_ms: entry.codex_thread_activity_at_ms ?? null,
+    codex_thread_activity_source: entry.codex_thread_activity_source ?? null,
+    codex_thread_activity_status: entry.codex_thread_activity_status ?? null,
     current_phase: entry.current_phase,
     current_phase_at_ms: entry.current_phase_at_ms,
     phase_detail: entry.phase_detail,
@@ -1198,6 +1201,15 @@ export class OrchestratorCore {
     runningEntry.last_event = workerEvent.event;
     runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
     runningEntry.last_message = workerEvent.detail ?? null;
+    if (
+      workerEvent.codex_thread_activity_at_ms !== undefined &&
+      workerEvent.codex_thread_activity_at_ms !== null &&
+      (!workerEvent.thread_id || !runningEntry.thread_id || workerEvent.thread_id === runningEntry.thread_id)
+    ) {
+      runningEntry.codex_thread_activity_at_ms = workerEvent.codex_thread_activity_at_ms;
+      runningEntry.codex_thread_activity_source = workerEvent.codex_thread_activity_source ?? 'app_server_protocol_thread_updated_at';
+      runningEntry.codex_thread_activity_status = workerEvent.codex_thread_activity_status ?? null;
+    }
     if (workerEvent.event === CANONICAL_EVENT.codex.turnInputRequired) {
       runningEntry.awaiting_input_since_ms = workerEvent.timestamp_ms;
       runningEntry.pending_input_preview = {
@@ -4154,6 +4166,9 @@ export class OrchestratorCore {
       ownership_conflict: null,
       started_at_ms: startedAtMs,
       last_codex_timestamp_ms: null,
+      codex_thread_activity_at_ms: null,
+      codex_thread_activity_source: null,
+      codex_thread_activity_status: null,
       current_phase: null,
       current_phase_at_ms: null,
       phase_detail: null,

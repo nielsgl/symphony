@@ -10,6 +10,11 @@ import {
   extractUnsupportedDynamicToolConsoleMessage,
   serializeDynamicToolCapabilityMismatchDetail
 } from '../observability/dynamic-tool-capability';
+import {
+  extractCodexAppServerThreadActivity,
+  type CodexAppServerThreadReadParamsV2,
+  type CodexAppServerThreadReadResponseV2
+} from './app-server-protocol';
 import { CodexRunnerError } from './errors';
 import { createDefaultDynamicToolExecutor, type DynamicToolExecutor, type DynamicToolSpec } from './dynamic-tools';
 import { buildSshSpawnArgs } from './ssh-target';
@@ -1025,6 +1030,7 @@ export class CodexRunner {
       }
 
       emit({ event: CANONICAL_EVENT.codex.sessionStarted, thread_id });
+      protocol.emitThreadActivity(threadResponse, thread_id, emit);
 
       const maxTurns = Math.max(1, input.maxTurns ?? 1);
       let turnsCompleted = 0;
@@ -1074,6 +1080,7 @@ export class CodexRunner {
           turn_id,
           session_id: `${thread_id}-${turn_id}`
         });
+        void protocol.refreshThreadActivity(thread_id, input.readTimeoutMs, emit);
 
         const waitResult = await cancellation.withCancellation(protocol.waitForTurnTerminal(input.turnTimeoutMs, emit));
         const session_id = `${thread_id}-${turn_id}`;
@@ -1568,11 +1575,49 @@ class ProtocolClient {
     this.activeTurnContext = context;
   }
 
+  emitThreadActivity(
+    payload: unknown,
+    threadId: string | null | undefined,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): void {
+    const activity = extractCodexAppServerThreadActivity(payload, threadId);
+    if (!activity) {
+      return;
+    }
+
+    emit({
+      event: CANONICAL_EVENT.codex.threadActivityUpdated,
+      thread_id: activity.thread_id,
+      codex_thread_activity_at_ms: activity.updated_at_ms,
+      codex_thread_activity_source: activity.source,
+      codex_thread_activity_status: activity.status
+    });
+  }
+
+  async refreshThreadActivity(
+    threadId: string,
+    timeoutMs: number,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): Promise<void> {
+    const params: CodexAppServerThreadReadParamsV2 = { threadId, includeTurns: false };
+    try {
+      const response = (await this.request('thread/read', params, timeoutMs, { unrefTimer: true })) as CodexAppServerThreadReadResponseV2;
+      this.emitThreadActivity(response, threadId, emit);
+    } catch {
+      // Thread metadata is diagnostic dashboard data; absence must not fail the run.
+    }
+  }
+
   notify(method: string, params: Record<string, unknown>): void {
     this.write({ method, params });
   }
 
-  request(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<Record<string, unknown>> {
+  request(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+    options: { unrefTimer?: boolean } = {}
+  ): Promise<Record<string, unknown>> {
     const id = this.nextId++;
 
     return new Promise((resolve, reject) => {
@@ -1580,6 +1625,9 @@ class ProtocolClient {
         this.pending.delete(id);
         reject(new CodexRunnerError('response_timeout', `Timed out waiting for ${method} response`));
       }, timeoutMs);
+      if (options.unrefTimer) {
+        timer.unref?.();
+      }
 
       this.pending.set(id, {
         resolve: (value) => {
@@ -1620,6 +1668,7 @@ class ProtocolClient {
       while (this.nextNotificationIndex < this.notifications.length) {
         const message = this.notifications[this.nextNotificationIndex++];
         this.usageTracker.observe(message);
+        this.emitThreadActivity(message.params, this.activeTurnContext?.thread_id, emit);
 
         const rateLimits = this.extractRateLimits(message);
         if (rateLimits) {
