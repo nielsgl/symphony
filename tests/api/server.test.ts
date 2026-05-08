@@ -735,6 +735,7 @@ describe('LocalApiServer', () => {
         };
       }>;
       stopped_runs: unknown[];
+      counts: { stopped: number };
     };
     const secondStateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
     const secondStateBody = await secondStateResponse.text();
@@ -759,8 +760,22 @@ describe('LocalApiServer', () => {
       }
     });
     expect(firstStatePayload.running[3]?.tokens.total_tokens).toBe(375_003);
-    expect(firstStatePayload.stopped_runs.length).toBeLessThanOrEqual(25);
+    expect(firstStatePayload.stopped_runs).toEqual([]);
+    expect(firstStatePayload.counts.stopped).toBe(0);
+    expect(listRunHistory).not.toHaveBeenCalled();
+    expect(reconstructThreadLineage).not.toHaveBeenCalled();
+
+    const stoppedRunRecoveryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/stopped-runs/recovery`);
+    const stoppedRunRecoveryPayload = (await stoppedRunRecoveryResponse.json()) as {
+      stopped_runs: unknown[];
+      counts: { stopped: number };
+    };
+    expect(stoppedRunRecoveryResponse.status).toBe(200);
+    expect(stoppedRunRecoveryPayload.stopped_runs.length).toBeLessThanOrEqual(25);
+    expect(stoppedRunRecoveryPayload.counts.stopped).toBe(stoppedRunRecoveryPayload.stopped_runs.length);
+    expect(listRunHistory).toHaveBeenCalledTimes(1);
     expect(listRunHistory).toHaveBeenCalledWith(25);
+    expect(reconstructThreadLineage).toHaveBeenCalledTimes(25);
 
     const snapshotCallsBeforeRefresh = getStateSnapshot.mock.calls.length;
     const refreshResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
@@ -1246,7 +1261,30 @@ describe('LocalApiServer', () => {
     expect(payload.runtime_diagnostics).toBeNull();
   });
 
-  it('projects recent stopped terminal runs from durable history into state recovery view', async () => {
+  it('projects recent stopped terminal runs from durable history through explicit recovery endpoint', async () => {
+    const listRunHistory = vi.fn(() => [
+      {
+        run_id: 'run-nie-68',
+        issue_id: 'issue-nie-68',
+        issue_identifier: 'NIE-68',
+        started_at: '2026-05-05T10:00:00.000Z',
+        ended_at: '2026-05-05T10:10:00.000Z',
+        terminal_status: 'cancelled',
+        error_code: 'non_active_state_transition',
+        terminal_reason_code: 'non_active_state_transition',
+        terminal_reason_detail: 'Issue left active states during reconciliation.',
+        root_cause_status: 'blocked',
+        root_cause_reason_code: REASON_CODES.missingToolOutput,
+        root_cause_reason_detail: 'missing Codex tool output for call_123',
+        root_cause_at: '2026-05-05T10:05:00.000Z',
+        session_id: 'session-nie-68',
+        thread_id: 'thread-nie-68',
+        turn_id: 'turn-nie-68',
+        session_ids: ['session-nie-68']
+      }
+    ]);
+    const reconstructThreadLineage = vi.fn(() => null);
+
     server = new LocalApiServer({
       snapshotSource: {
         getStateSnapshot: () => makeState()
@@ -1255,35 +1293,26 @@ describe('LocalApiServer', () => {
         tick: vi.fn(async () => undefined)
       },
       diagnosticsSource: makeDiagnosticsSource({
-        listRunHistory: () => [
-          {
-            run_id: 'run-nie-68',
-            issue_id: 'issue-nie-68',
-            issue_identifier: 'NIE-68',
-            started_at: '2026-05-05T10:00:00.000Z',
-            ended_at: '2026-05-05T10:10:00.000Z',
-            terminal_status: 'cancelled',
-            error_code: 'non_active_state_transition',
-            terminal_reason_code: 'non_active_state_transition',
-            terminal_reason_detail: 'Issue left active states during reconciliation.',
-            root_cause_status: 'blocked',
-            root_cause_reason_code: REASON_CODES.missingToolOutput,
-            root_cause_reason_detail: 'missing Codex tool output for call_123',
-            root_cause_at: '2026-05-05T10:05:00.000Z',
-            session_id: 'session-nie-68',
-            thread_id: 'thread-nie-68',
-            turn_id: 'turn-nie-68',
-            session_ids: ['session-nie-68']
-          }
-        ],
-        reconstructThreadLineage: () => null
+        listRunHistory,
+        reconstructThreadLineage
       })
     });
 
     await server.listen();
     const address = server.address();
 
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as {
+      counts: { stopped: number };
+      stopped_runs: unknown[];
+    };
+    expect(stateResponse.status).toBe(200);
+    expect(statePayload.counts.stopped).toBe(0);
+    expect(statePayload.stopped_runs).toEqual([]);
+    expect(listRunHistory).not.toHaveBeenCalled();
+    expect(reconstructThreadLineage).not.toHaveBeenCalled();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/stopped-runs/recovery`);
     const payload = (await response.json()) as {
       counts: { running: number; blocked: number; stopped: number };
       stopped_runs: Array<{
@@ -1301,8 +1330,6 @@ describe('LocalApiServer', () => {
     };
 
     expect(response.status).toBe(200);
-    expect(payload.counts.running).toBe(0);
-    expect(payload.counts.blocked).toBe(0);
     expect(payload.counts.stopped).toBe(1);
     expect(payload.stopped_runs[0]).toMatchObject({
       issue_identifier: 'NIE-68',
@@ -1316,6 +1343,8 @@ describe('LocalApiServer', () => {
       thread_id: 'thread-nie-68',
       session_id: 'session-nie-68'
     });
+    expect(listRunHistory).toHaveBeenCalledWith(25);
+    expect(reconstructThreadLineage).toHaveBeenCalledWith('thread-nie-68');
   });
 
   it('fills running total tokens from CODEX_HOME state sqlite when protocol totals are absent', async () => {

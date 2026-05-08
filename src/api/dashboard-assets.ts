@@ -185,6 +185,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     <section class="panel panel-wide">
       <div class="panel-head">
         <h2>Stopped Run Recovery</h2>
+        <button id="stopped-run-recovery-load" type="button">Load Recovery</button>
       </div>
       <p class="muted">Use these cards when a run has already stopped and no longer appears in running, retrying, or blocked state. Inspect forensics first, then resume only when the API marks resume valid.</p>
       <div id="stopped-run-recovery-list" class="recovery-list">
@@ -337,6 +338,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     eventSource: null,
     uiStateLoaded: false,
     uiStateSaveTimer: null,
+    stoppedRunRecoveryLoaded: false,
+    stoppedRunRecoveryLoading: false,
     filter: {
       query: '',
       status: 'all',
@@ -376,6 +379,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     retryRows: document.getElementById('retry-rows'),
     blockedRows: document.getElementById('blocked-rows'),
     stoppedRunRecoveryList: document.getElementById('stopped-run-recovery-list'),
+    stoppedRunRecoveryLoad: document.getElementById('stopped-run-recovery-load'),
     statusFilter: document.getElementById('status-filter'),
     runningFilter: document.getElementById('running-filter'),
     issuePanel: document.getElementById('issue-panel'),
@@ -1979,6 +1983,14 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   }
 
   function renderStoppedRunRecovery(payload) {
+    if (!state.stoppedRunRecoveryLoaded) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'Stopped-run recovery detail loads on demand.';
+      elements.stoppedRunRecoveryList.replaceChildren(empty);
+      return;
+    }
+
     const acknowledged = new Set(JSON.parse(window.localStorage.getItem('symphony.stoppedRunAcknowledged') || '[]'));
     const entries = (payload.stopped_runs || []).filter(function (entry) {
       return !acknowledged.has(entry.run_id);
@@ -2077,6 +2089,41 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.stoppedRunRecoveryList.replaceChildren(...cards);
   }
 
+  async function loadStoppedRunRecovery() {
+    if (state.stoppedRunRecoveryLoading) {
+      return;
+    }
+    state.stoppedRunRecoveryLoading = true;
+    if (elements.stoppedRunRecoveryLoad) {
+      elements.stoppedRunRecoveryLoad.disabled = true;
+    }
+    try {
+      const recovery = await fetchJson('/api/v1/stopped-runs/recovery');
+      state.stoppedRunRecoveryLoaded = true;
+      if (state.payload) {
+        state.payload = {
+          ...state.payload,
+          stopped_runs: recovery.stopped_runs || [],
+          counts: {
+            ...state.payload.counts,
+            stopped: recovery.counts && typeof recovery.counts.stopped === 'number' ? recovery.counts.stopped : 0
+          }
+        };
+        state.lastGoodPayload = state.payload;
+        renderOverview(state.payload);
+        renderStoppedRunRecovery(state.payload);
+      }
+      setRefreshStatus('Stopped-run recovery loaded', false);
+    } catch (error) {
+      setRefreshStatus('Stopped-run recovery load failed: ' + String(error), true);
+    } finally {
+      state.stoppedRunRecoveryLoading = false;
+      if (elements.stoppedRunRecoveryLoad) {
+        elements.stoppedRunRecoveryLoad.disabled = false;
+      }
+    }
+  }
+
   function applyPayload(payload, source) {
     if (payload && payload.error) {
       renderSnapshotError(payload.error);
@@ -2085,6 +2132,16 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     }
 
     clearSnapshotError();
+    if (state.stoppedRunRecoveryLoaded && state.lastGoodPayload) {
+      payload = {
+        ...payload,
+        stopped_runs: state.lastGoodPayload.stopped_runs || [],
+        counts: {
+          ...payload.counts,
+          stopped: state.lastGoodPayload.counts ? state.lastGoodPayload.counts.stopped || 0 : 0
+        }
+      };
+    }
     state.payload = payload;
     state.lastGoodPayload = payload;
     renderOverview(payload);
@@ -2635,6 +2692,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.issueLoad.addEventListener('click', function () {
       void loadIssue(elements.issueInput.value);
     });
+
+    if (elements.stoppedRunRecoveryLoad) {
+      elements.stoppedRunRecoveryLoad.addEventListener('click', function () {
+        void loadStoppedRunRecovery();
+      });
+    }
 
     elements.issueInput.addEventListener('keydown', function (event) {
       if (event.key === 'Enter') {

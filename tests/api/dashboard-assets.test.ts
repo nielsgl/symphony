@@ -67,6 +67,20 @@ describe('dashboard assets', () => {
     expect(streamBlock).not.toContain('/diagnostics');
   });
 
+  it('lazy-loads stopped-run recovery details only on operator request', () => {
+    const html = renderDashboardHtml();
+    const clientJs = renderDashboardClientJs();
+    const pollBlock = clientJs.slice(clientJs.indexOf('async function loadStateViaPoll()'), clientJs.indexOf('function scheduleStateSave()'));
+    const streamBlock = clientJs.slice(clientJs.indexOf('function handleSseEnvelope'), clientJs.indexOf('function connectStream'));
+
+    expect(html).toContain('id="stopped-run-recovery-load"');
+    expect(clientJs).toContain("fetchJson('/api/v1/stopped-runs/recovery')");
+    expect(clientJs).toContain("elements.stoppedRunRecoveryLoad.addEventListener('click'");
+    expect(clientJs).toContain('Stopped-run recovery detail loads on demand.');
+    expect(pollBlock).not.toContain('/api/v1/stopped-runs/recovery');
+    expect(streamBlock).not.toContain('/api/v1/stopped-runs/recovery');
+  });
+
   it('snapshots the stuck drilldown rendering vocabulary', () => {
     const clientJs = renderDashboardClientJs();
     const stuckVocabulary = [
