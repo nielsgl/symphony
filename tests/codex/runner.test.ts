@@ -174,6 +174,88 @@ describe('CodexRunner', () => {
     }
   });
 
+  it('preserves graceful cancellation outcome when process exit races protocol port_exit', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = new FakeProcess();
+      const originalKill = fake.kill.bind(fake);
+      fake.kill = (signal?: NodeJS.Signals | number): void => {
+        originalKill(signal);
+        if (signal === 'SIGTERM') {
+          setTimeout(() => fake.emitExit(0), 0);
+        }
+      };
+      const workspaceCwd = makeWorkspace();
+      const controller = new AbortController();
+      const runner = new CodexRunner({
+        spawnProcess: () => fake
+      });
+
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          cancellationSignal: controller.signal
+        })
+      );
+
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+
+      const assertion = expect(promise).rejects.toMatchObject({
+        code: 'turn_cancelled',
+        message: 'worker_cancelled:operator_cancel_turn:graceful_exit'
+      });
+      controller.abort('operator_cancel_turn');
+      await vi.advanceTimersByTimeAsync(1);
+
+      await assertion;
+      expect(fake.signals).toEqual(['SIGTERM']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves forced-kill-exited cancellation outcome when process exit races protocol port_exit', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = new FakeProcess();
+      const originalKill = fake.kill.bind(fake);
+      fake.kill = (signal?: NodeJS.Signals | number): void => {
+        originalKill(signal);
+        if (signal === 'SIGKILL') {
+          setTimeout(() => fake.emitExit(0), 0);
+        }
+      };
+      const workspaceCwd = makeWorkspace();
+      const controller = new AbortController();
+      const runner = new CodexRunner({
+        spawnProcess: () => fake
+      });
+
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          cancellationSignal: controller.signal
+        })
+      );
+
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+
+      const assertion = expect(promise).rejects.toMatchObject({
+        code: 'turn_cancelled',
+        message: 'worker_cancelled:operator_cancel_turn:forced_kill_exited'
+      });
+      controller.abort('operator_cancel_turn');
+      await vi.advanceTimersByTimeAsync(600);
+
+      await assertion;
+      expect(fake.signals).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('launches typed commands with native args and env instead of bash interpolation', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

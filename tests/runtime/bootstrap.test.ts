@@ -5,7 +5,8 @@ import { promises as fs } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CANONICAL_EVENT } from '../../src/observability/events';
-import { createRuntimeEnvironment } from '../../src/runtime';
+import { REASON_CODES } from '../../src/observability/reason-codes';
+import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort } from '../../src/runtime';
 import { SqlitePersistenceStore } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
 
@@ -106,6 +107,38 @@ describe('createRuntimeEnvironment', () => {
         await fs.rm(dir, { recursive: true, force: true });
       }
     }
+  });
+
+  it('forwards terminateWorker reasons through the runtime bridge adapter', async () => {
+    const workerHandle = { worker: 'handle' };
+    const terminateWorker = vi.fn(async (params) => ({
+      cancellation_supported: true,
+      cancellation_requested: true,
+      worker_settled: true,
+      graceful_exit_observed: true,
+      forced_kill_requested: false,
+      forced_kill_settled: null,
+      cleanup_requested: params.cleanup_workspace,
+      cleanup_succeeded: null,
+      result: 'succeeded' as const,
+      reason_code: REASON_CODES.workerCancelGracefulExit,
+      detail: null
+    }));
+    const port = createRuntimeTerminateWorkerPort({ terminateWorker });
+
+    await port({
+      issue_id: 'issue-1',
+      worker_handle: workerHandle,
+      cleanup_workspace: false,
+      reason: REASON_CODES.missingToolOutputRecoveryInterrupted
+    });
+
+    expect(terminateWorker).toHaveBeenCalledWith({
+      issue_id: 'issue-1',
+      worker_handle: workerHandle,
+      cleanup_workspace: false,
+      reason: REASON_CODES.missingToolOutputRecoveryInterrupted
+    });
   });
 
   it('starts live runtime and serves orchestrator-backed state endpoint', async () => {

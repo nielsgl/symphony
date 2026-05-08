@@ -50,6 +50,16 @@ export const REASON_CODES = {
   missingToolOutputRecoveryExhausted: 'missing_tool_output_recovery_exhausted',
   missingToolOutputRecoveryStartFailed: 'missing_tool_output_recovery_start_failed',
   missingToolOutputRecoveryUnsafe: 'missing_tool_output_recovery_unsafe',
+  workerHandleMissing: 'worker_handle_missing',
+  workerCancelFailed: 'worker_cancel_failed',
+  workerCancelUnsupported: 'worker_cancel_unsupported',
+  workerCancelGracefulExit: 'worker_cancel_graceful_exit',
+  workerCancelForcedKillExited: 'worker_cancel_forced_kill_exited',
+  workerCancelForcedKillUnconfirmed: 'worker_cancel_forced_kill_unconfirmed',
+  workerCancelRequested: 'worker_cancel_requested',
+  workerCancelSettledWithoutOutcome: 'worker_cancel_settled_without_outcome',
+  workerCancelUnknown: 'worker_cancel_unknown',
+  workspaceCleanupFailed: 'workspace_cleanup_failed',
   operatorWorkspaceConflict: 'operator_action_required_workspace_conflict',
   operatorNoProgressRedispatchBlocked: 'operator_action_required_no_progress_redispatch_blocked',
   operatorBudgetLimitExceeded: 'operator_action_required_budget_limit_exceeded',
@@ -324,6 +334,106 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     label: 'Missing Tool Output Recovery Unsafe',
     headline: 'Run is blocked on ambiguous recovery state',
     detail: 'The recovering agent reported that the indeterminate tool action could not be verified safely.',
+    expected_transition: null
+  },
+  [REASON_CODES.workerHandleMissing]: {
+    reason_code: REASON_CODES.workerHandleMissing,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Inspect worker lifecycle state', 'Confirm the active worker handle before retrying termination'],
+    label: 'Worker Handle Missing',
+    headline: 'Worker termination could not inspect a valid handle',
+    detail: 'The orchestrator attempted worker termination but the handle did not include the required identity fields.',
+    expected_transition: null
+  },
+  [REASON_CODES.workerCancelFailed]: {
+    reason_code: REASON_CODES.workerCancelFailed,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Inspect worker cancellation logs', 'Verify whether the worker process is still running'],
+    label: 'Worker Cancel Failed',
+    headline: 'Worker cancellation failed',
+    detail: 'The worker cancellation operation threw before a safe interruption outcome could be confirmed.',
+    expected_transition: null
+  },
+  [REASON_CODES.workerCancelUnsupported]: {
+    reason_code: REASON_CODES.workerCancelUnsupported,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Inspect worker handle origin', 'Use a runner that supports cancellation before automatic recovery'],
+    label: 'Worker Cancel Unsupported',
+    headline: 'Worker cancellation is unsupported',
+    detail: 'The worker handle did not expose the cancellation contract required to safely interrupt the active worker.',
+    expected_transition: null
+  },
+  [REASON_CODES.workerCancelGracefulExit]: {
+    reason_code: REASON_CODES.workerCancelGracefulExit,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Worker Cancel Graceful Exit',
+    headline: 'Worker exited after graceful cancellation',
+    detail: 'The worker process exited after the cancellation request without requiring forced kill.',
+    expected_transition: 'The orchestrator may continue with the stop or recovery path that requested cancellation'
+  },
+  [REASON_CODES.workerCancelForcedKillExited]: {
+    reason_code: REASON_CODES.workerCancelForcedKillExited,
+    classification: 'healthy',
+    actionability: 'recommended',
+    recommended_actions: ['Review cancellation logs for repeated forced-kill patterns'],
+    label: 'Worker Cancel Forced Kill Exited',
+    headline: 'Worker exited after forced kill',
+    detail: 'Graceful cancellation did not settle in time, but the forced kill request confirmed process exit.',
+    expected_transition: 'The orchestrator may continue with the stop or recovery path that requested cancellation'
+  },
+  [REASON_CODES.workerCancelForcedKillUnconfirmed]: {
+    reason_code: REASON_CODES.workerCancelForcedKillUnconfirmed,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Inspect host process table', 'Manually verify whether the worker process is still alive'],
+    label: 'Worker Cancel Forced Kill Unconfirmed',
+    headline: 'Forced kill did not confirm worker exit',
+    detail: 'The worker required forced kill, but process exit was not confirmed within the cancellation settle window.',
+    expected_transition: null
+  },
+  [REASON_CODES.workerCancelRequested]: {
+    reason_code: REASON_CODES.workerCancelRequested,
+    classification: 'stalled_waiting',
+    actionability: 'required',
+    recommended_actions: ['Inspect worker process state', 'Wait for or manually confirm worker exit'],
+    label: 'Worker Cancel Requested',
+    headline: 'Worker cancellation was requested',
+    detail: 'Cancellation was requested but the runtime did not provide confirmed settlement evidence.',
+    expected_transition: null
+  },
+  [REASON_CODES.workerCancelSettledWithoutOutcome]: {
+    reason_code: REASON_CODES.workerCancelSettledWithoutOutcome,
+    classification: 'healthy',
+    actionability: 'recommended',
+    recommended_actions: ['Upgrade runner cancellation reporting if graceful/forced detail is needed'],
+    label: 'Worker Cancel Settled Without Outcome',
+    headline: 'Worker settled after cancellation',
+    detail: 'The worker settled after cancellation, but the runner did not report whether the exit was graceful or forced.',
+    expected_transition: 'The orchestrator may continue when settlement is sufficient for the stop path'
+  },
+  [REASON_CODES.workerCancelUnknown]: {
+    reason_code: REASON_CODES.workerCancelUnknown,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Inspect worker process state', 'Do not start automatic recovery until interruption is confirmed'],
+    label: 'Worker Cancel Unknown',
+    headline: 'Worker cancellation outcome is unknown',
+    detail: 'The worker cancellation request did not produce enough evidence to confirm safe interruption.',
+    expected_transition: null
+  },
+  [REASON_CODES.workspaceCleanupFailed]: {
+    reason_code: REASON_CODES.workspaceCleanupFailed,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Inspect workspace cleanup logs', 'Manually clean or preserve the workspace before retrying'],
+    label: 'Workspace Cleanup Failed',
+    headline: 'Workspace cleanup failed',
+    detail: 'Worker cancellation may have settled, but the requested workspace cleanup did not succeed.',
     expected_transition: null
   },
   [REASON_CODES.operatorWorkspaceConflict]: {

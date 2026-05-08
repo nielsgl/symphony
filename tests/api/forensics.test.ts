@@ -270,6 +270,24 @@ describe('forensics export bundle', () => {
           status: 'succeeded',
           original_tool_name: 'linear_graphql',
           original_call_id: 'call-1',
+          interrupt_cancel_result: {
+            status: 'failed',
+            reason_code: 'worker_cancel_unsupported',
+            detail: 'foreign worker handle secret=super-secret-token',
+            termination_result: {
+              cancellation_supported: false,
+              cancellation_requested: false,
+              worker_settled: null,
+              graceful_exit_observed: null,
+              forced_kill_requested: false,
+              forced_kill_settled: null,
+              cleanup_requested: false,
+              cleanup_succeeded: null,
+              result: 'unsupported',
+              reason_code: 'worker_cancel_unsupported',
+              detail: 'foreign worker handle secret=super-secret-token'
+            }
+          },
           replacement_turn: {
             thread_id: 'thread-1',
             turn_id: 'turn-recovery',
@@ -288,6 +306,16 @@ describe('forensics export bundle', () => {
       status: 'succeeded',
       original_tool_name: 'linear_graphql',
       original_call_id: 'call-1',
+      interrupt_cancel_result: {
+        status: 'failed',
+        reason_code: 'worker_cancel_unsupported',
+        detail: 'foreign worker handle secret=***REDACTED***',
+        termination_result: {
+          result: 'unsupported',
+          reason_code: 'worker_cancel_unsupported',
+          detail: 'foreign worker handle secret=***REDACTED***'
+        }
+      },
       replacement_turn: {
         thread_id: 'thread-1',
         turn_id: 'turn-recovery',

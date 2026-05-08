@@ -5,7 +5,12 @@ import path from 'node:path';
 
 import { OrchestratorCore } from '../../src/orchestrator/core';
 import { SnapshotService } from '../../src/api/snapshot-service';
-import type { OrchestratorConfig, OrchestratorPersistencePort, OrchestratorPorts } from '../../src/orchestrator/types';
+import type {
+  OrchestratorConfig,
+  OrchestratorPersistencePort,
+  OrchestratorPorts,
+  WorkerTerminationResult
+} from '../../src/orchestrator/types';
 import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
@@ -42,6 +47,23 @@ function makeTracker(): TrackerAdapter & {
     fetch_issue_states_by_ids: vi.fn(async () => []),
     create_comment: vi.fn(async () => undefined),
     update_issue_state: vi.fn(async () => undefined)
+  };
+}
+
+function makeTerminationResult(overrides: Partial<WorkerTerminationResult> = {}): WorkerTerminationResult {
+  return {
+    cancellation_supported: true,
+    cancellation_requested: true,
+    worker_settled: true,
+    graceful_exit_observed: true,
+    forced_kill_requested: false,
+    forced_kill_settled: null,
+    cleanup_requested: false,
+    cleanup_succeeded: null,
+    result: 'succeeded',
+    reason_code: 'worker_cancel_graceful_exit',
+    detail: 'worker process exited after graceful cancellation',
+    ...overrides
   };
 }
 
@@ -129,6 +151,7 @@ function createHarness(options: {
         options.terminateWorker ??
         (async ({ issue_id, cleanup_workspace, reason }) => {
           terminated.push({ issue_id, cleanup_workspace, reason });
+          return makeTerminationResult({ cleanup_requested: cleanup_workspace, cleanup_succeeded: cleanup_workspace ? true : null });
         }),
       scheduleRetryTimer: ({ issue_id, due_at_ms, callback }) => {
         const handle = { issue_id };
@@ -710,6 +733,7 @@ describe('OrchestratorCore', () => {
           turn_id: releasing?.turn_id,
           session_id: releasing?.session_id
         });
+        return makeTerminationResult({ cleanup_requested: cleanup_workspace, cleanup_succeeded: cleanup_workspace ? true : null });
       }
     });
 
@@ -803,6 +827,70 @@ describe('OrchestratorCore', () => {
     expect(harness.terminated).toEqual([
       { issue_id: 'i-terminal', cleanup_workspace: true, reason: 'terminal_state_transition' }
     ]);
+  });
+
+  it('records typed terminal cleanup termination evidence on terminal completion', async () => {
+    const completedRuns: Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0][] = [];
+    const stateTransitions: Parameters<NonNullable<OrchestratorPersistencePort['appendStateTransition']>>[0][] = [];
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-terminal-cleanup',
+      appendIssueRun: async () => 'issue-run-terminal-cleanup',
+      appendAttempt: async () => 'attempt-terminal-cleanup',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      appendStateTransition: async (params) => {
+        stateTransitions.push(params);
+        return `transition-${stateTransitions.length}`;
+      },
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const harness = createHarness({
+      persistence,
+      logger: { log: ({ event, context }) => logs.push({ event, context: context ?? {} }) },
+      terminateWorker: async ({ cleanup_workspace }) =>
+        makeTerminationResult({
+          cleanup_requested: cleanup_workspace,
+          cleanup_succeeded: true,
+          result: 'unsupported',
+          cancellation_supported: false,
+          cancellation_requested: false,
+          worker_settled: null,
+          graceful_exit_observed: null,
+          reason_code: 'worker_cancel_unsupported',
+          detail: 'worker handle does not support cancellation'
+        })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-terminal-evidence' })]);
+    await harness.orchestrator.tick('interval');
+
+    await harness.orchestrator.onWorkerExit('i-terminal-evidence', 'normal', undefined, {
+      completion_reason: 'terminal_state_reached',
+      refreshed_state: 'Done'
+    });
+
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        terminal_status: 'succeeded',
+        terminal_reason_code: REASON_CODES.terminalStateReached,
+        terminal_reason_detail: expect.stringContaining('termination_result=unsupported')
+      })
+    ]);
+    expect(stateTransitions.at(-1)).toEqual(
+      expect.objectContaining({
+        reason_code: REASON_CODES.terminalStateReached,
+        reason_detail: expect.stringContaining('termination_reason_code=worker_cancel_unsupported')
+      })
+    );
+    expect(logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerExitHandled)?.context).toEqual(
+      expect.objectContaining({
+        worker_termination_result: 'unsupported',
+        worker_termination_reason_code: 'worker_cancel_unsupported',
+        graceful_exit_observed: null
+      })
+    );
   });
 
   it('moves abnormal retry to blocked no-progress state when redispatch gate fails', async () => {
@@ -2050,8 +2138,13 @@ describe('OrchestratorCore', () => {
       last_call_id: 'call_recover',
       interrupt_cancel_result: {
         status: 'succeeded',
-        reason_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
-        detail: 'interrupted previous turn turn-old on thread thread-recover'
+        reason_code: 'worker_cancel_graceful_exit',
+        detail: 'worker process exited after graceful cancellation',
+        termination_result: expect.objectContaining({
+          result: 'succeeded',
+          cancellation_supported: true,
+          worker_settled: true
+        })
       }
     });
     expect(running?.quarantined_event_count).toBe(1);
@@ -2335,6 +2428,15 @@ describe('OrchestratorCore', () => {
         error_code: REASON_CODES.missingToolOutputRecoveryInterrupted,
         missing_tool_output_recovery: expect.objectContaining({
           status: 'in_progress',
+          interrupt_cancel_result: expect.objectContaining({
+            status: 'succeeded',
+            termination_result: expect.objectContaining({
+              result: 'succeeded',
+              reason_code: 'worker_cancel_graceful_exit',
+              worker_settled: true,
+              graceful_exit_observed: true
+            })
+          }),
           final_outcome: expect.objectContaining({ result: 'started' })
         })
       }),
@@ -2348,6 +2450,15 @@ describe('OrchestratorCore', () => {
           status: 'succeeded',
           original_tool_name: 'linear_graphql',
           original_call_id: 'call_recover_success',
+          interrupt_cancel_result: expect.objectContaining({
+            status: 'succeeded',
+            termination_result: expect.objectContaining({
+              result: 'succeeded',
+              reason_code: 'worker_cancel_graceful_exit',
+              worker_settled: true,
+              graceful_exit_observed: true
+            })
+          }),
           replacement_turn: expect.objectContaining({
             thread_id: 'thread-recover-success',
             turn_id: 'turn-replacement-success',
@@ -2360,6 +2471,101 @@ describe('OrchestratorCore', () => {
         })
       })
     ]);
+  });
+
+  it.each([
+    [
+      'unsupported',
+      makeTerminationResult({
+        cancellation_supported: false,
+        cancellation_requested: false,
+        worker_settled: null,
+        graceful_exit_observed: null,
+        result: 'unsupported',
+        reason_code: 'worker_cancel_unsupported',
+        detail: 'worker handle does not implement cancel(reason)'
+      })
+    ],
+    [
+      'failed',
+      makeTerminationResult({
+        worker_settled: null,
+        graceful_exit_observed: null,
+        result: 'failed',
+        reason_code: 'worker_cancel_failed',
+        detail: 'termination timed out'
+      })
+    ],
+    [
+      'unknown',
+      makeTerminationResult({
+        worker_settled: false,
+        graceful_exit_observed: false,
+        forced_kill_requested: true,
+        forced_kill_settled: false,
+        result: 'unknown',
+        reason_code: 'worker_cancel_forced_kill_unconfirmed',
+        detail: 'forced kill was requested but process exit was not confirmed'
+      })
+    ]
+  ])('blocks guarded recovery when worker termination result is %s', async (_name, terminationResult) => {
+    const recover = vi.fn<NonNullable<OrchestratorPorts['recoverMissingToolOutput']>>();
+    let harness: Harness;
+    harness = createHarness({
+      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+      recoverMissingToolOutput: recover,
+      terminateWorker: async ({ issue_id, cleanup_workspace, reason }) => {
+        harness.terminated.push({ issue_id, cleanup_workspace, reason });
+        return terminationResult;
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-recover-blocked', identifier: 'ABC-RECOVER-BLOCKED' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-recover-blocked', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-recover-blocked',
+      turn_id: 'turn-old-blocked',
+      session_id: 'session-old-blocked'
+    });
+    harness.orchestrator.onWorkerEvent('i-recover-blocked', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.toolCallStarted,
+      tool_name: 'linear_graphql',
+      tool_call_id: 'call_recover_blocked',
+      thread_id: 'thread-recover-blocked',
+      turn_id: 'turn-old-blocked',
+      session_id: 'session-old-blocked'
+    });
+    harness.now.value += 2_000;
+    await harness.orchestrator.tick('interval');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(recover).not.toHaveBeenCalled();
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-recover-blocked',
+        cleanup_workspace: false,
+        reason: REASON_CODES.missingToolOutputRecoveryInterrupted
+      }
+    ]);
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-recover-blocked')).toMatchObject({
+      stop_reason_code: REASON_CODES.missingToolOutputRecoveryStartFailed,
+      recovery: {
+        last_result: 'failed',
+        last_result_reason_code: terminationResult.reason_code,
+        last_result_detail: terminationResult.detail,
+        last_tool_name: 'linear_graphql',
+        last_call_id: 'call_recover_blocked',
+        interrupt_cancel_result: {
+          status: terminationResult.result === 'unknown' ? 'unknown' : 'failed',
+          reason_code: terminationResult.reason_code,
+          detail: terminationResult.detail,
+          termination_result: terminationResult
+        }
+      }
+    });
   });
 
   it('preserves replacement lineage when a guarded recovery turn fails after starting', async () => {
@@ -3763,6 +3969,7 @@ describe('OrchestratorCore', () => {
           worker_instance_id: harness.orchestrator.getStateSnapshot().running.get(issue_id)?.worker_instance_id,
           session_id: 'implementation-session'
         });
+        return makeTerminationResult({ cleanup_requested: cleanup_workspace, cleanup_succeeded: cleanup_workspace ? true : null });
       },
       logger: {
         log: ({ event, context }) => logs.push({ event, context: context ?? {} })
@@ -3886,6 +4093,7 @@ describe('OrchestratorCore', () => {
           session_id: 'other-session'
         });
         expect(harness.orchestrator.getStateSnapshot().running.get(issue_id)?.termination?.state).toBe('requested');
+        return makeTerminationResult({ cleanup_requested: cleanup_workspace, cleanup_succeeded: cleanup_workspace ? true : null });
       },
       logger: {
         log: ({ event, context }) => logs.push({ event, context: context ?? {} })
@@ -3959,6 +4167,7 @@ describe('OrchestratorCore', () => {
           worker_instance_id: harness.orchestrator.getStateSnapshot().running.get(issue_id)?.worker_instance_id,
           session_id: 'cleanup-session'
         });
+        return makeTerminationResult({ cleanup_requested: cleanup_workspace, cleanup_succeeded: cleanup_workspace ? true : null });
       },
       persistence
     });
@@ -4518,6 +4727,72 @@ describe('OrchestratorCore', () => {
     expect(harness.orchestrator.getStateSnapshot().running.has('i-nonactive-stalled')).toBe(false);
   });
 
+  it('records unsupported typed termination evidence when non-active reconciliation cancels a run', async () => {
+    const completedRuns: Array<Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0]> = [];
+    const stateTransitions: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendStateTransition']>>[0]> = [];
+    const logs: Array<{ event: string; message: string; context: Record<string, unknown> }> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-nonactive-unsupported',
+      appendIssueRun: async () => 'issue-run-nonactive-unsupported',
+      appendAttempt: async () => 'attempt-nonactive-unsupported',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      appendStateTransition: async (params) => {
+        stateTransitions.push(params);
+        return `transition-${stateTransitions.length}`;
+      },
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const harness = createHarness({
+      persistence,
+      logger: {
+        log: ({ event, message, context }) => logs.push({ event, message, context: context ?? {} })
+      },
+      terminateWorker: async () =>
+        makeTerminationResult({
+          result: 'unsupported',
+          cancellation_supported: false,
+          cancellation_requested: false,
+          worker_settled: null,
+          graceful_exit_observed: null,
+          reason_code: 'worker_cancel_unsupported',
+          detail: 'foreign worker handle does not expose cancel'
+        })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-nonactive-unsupported' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-nonactive-unsupported', state: 'Backlog' })
+    ]);
+    await harness.orchestrator.reconcileRunningIssues();
+
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        terminal_status: 'cancelled',
+        terminal_reason_code: 'non_active_state_transition',
+        terminal_reason_detail: expect.stringContaining('termination_result=unsupported')
+      })
+    ]);
+    expect(stateTransitions.at(-1)).toEqual(
+      expect.objectContaining({
+        reason_code: 'non_active_state_transition',
+        reason_detail: expect.stringContaining('termination_reason_code=worker_cancel_unsupported')
+      })
+    );
+    const finalized = logs.find((entry) => entry.message === 'worker termination finalized: non_active_state_transition');
+    expect(finalized?.context).toEqual(
+      expect.objectContaining({
+        worker_termination_result: 'unsupported',
+        worker_termination_reason_code: 'worker_cancel_unsupported',
+        graceful_exit_observed: null,
+        worker_termination_requested: true
+      })
+    );
+  });
+
   it('stops running worker with cleanup when state becomes terminal', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-terminal' })]);
@@ -4592,6 +4867,47 @@ describe('OrchestratorCore', () => {
     expect(stalled?.context.issue_identifier).toBe('ABC-1');
   });
 
+  it('records unknown typed termination evidence when stalled sessions are retried', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const harness = createHarness({
+      configOverrides: { stall_timeout_ms: 10 },
+      logger: {
+        log: ({ event, context }) => {
+          logs.push({ event, context: context ?? {} });
+        }
+      },
+      terminateWorker: async () =>
+        makeTerminationResult({
+          result: 'unknown',
+          worker_settled: null,
+          graceful_exit_observed: null,
+          forced_kill_requested: true,
+          forced_kill_settled: false,
+          reason_code: 'worker_cancel_forced_kill_unconfirmed',
+          detail: 'forced kill was requested but process exit was not confirmed'
+        })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stall-unknown' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.now.value += 3200;
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([]);
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const retryEntry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-stall-unknown');
+    expect(retryEntry?.error).toBe('worker stalled');
+    expect(retryEntry?.stop_reason_detail).toContain('termination_result=unknown');
+    expect(retryEntry?.stop_reason_detail).toContain('termination_reason_code=worker_cancel_forced_kill_unconfirmed');
+    expect(logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerStalled)?.context).toEqual(
+      expect.objectContaining({
+        worker_termination_result: 'unknown',
+        worker_termination_reason_code: 'worker_cancel_forced_kill_unconfirmed',
+        forced_kill_requested: true,
+        forced_kill_settled: false
+      })
+    );
+  });
+
   it('tracks failed dispatch validation in health state', async () => {
     const harness = createHarness();
     const dispatchDenied = new OrchestratorCore({
@@ -4608,7 +4924,7 @@ describe('OrchestratorCore', () => {
         tracker: harness.tracker,
         dispatchPreflight: () => ({ dispatch_allowed: false, reason: 'missing runtime token' }),
         spawnWorker: async () => ({ ok: false, error: 'blocked' }),
-        terminateWorker: async () => undefined,
+        terminateWorker: async () => makeTerminationResult(),
         scheduleRetryTimer: () => ({}),
         cancelRetryTimer: () => undefined,
         notifyObservers: () => undefined
@@ -4650,7 +4966,7 @@ describe('OrchestratorCore', () => {
             ? { dispatch_allowed: true }
             : { dispatch_allowed: false, reason: 'missing runtime token' },
         spawnWorker: async () => ({ ok: false, error: 'blocked' }),
-        terminateWorker: async () => undefined,
+        terminateWorker: async () => makeTerminationResult(),
         scheduleRetryTimer: () => ({}),
         cancelRetryTimer: () => undefined,
         notifyObservers: () => undefined
@@ -5606,6 +5922,62 @@ describe('OrchestratorCore', () => {
       { issue_id: 'i-budget-terminate', cleanup_workspace: false, reason: 'attempt_terminated_budget_limit_exceeded' }
     ]);
     expect(snapshot.health.last_error).toContain('Attempt terminated by budget policy');
+  });
+
+  it('records failed typed termination evidence when budget policy terminates attempts', async () => {
+    const completedRuns: Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0][] = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'run-budget-failed-termination',
+      appendIssueRun: async () => 'issue-run-budget-failed-termination',
+      appendAttempt: async () => 'attempt-budget-failed-termination',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const harness = createHarness({
+      persistence,
+      configOverrides: {
+        budget: {
+          per_run_total_tokens: 50,
+          rolling_window_minutes: 1440,
+          warning_threshold_ratio: 0.8,
+          hard_limit_policy: 'terminate_attempt'
+        }
+      },
+      terminateWorker: async () =>
+        makeTerminationResult({
+          result: 'failed',
+          worker_settled: false,
+          graceful_exit_observed: false,
+          reason_code: 'worker_cancel_failed',
+          detail: 'worker cancellation command failed'
+        })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-budget-failed-termination' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-budget-failed-termination', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      usage: {
+        input_tokens: 30,
+        output_tokens: 25,
+        total_tokens: 55
+      },
+      token_telemetry_status: 'available'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        terminal_status: 'failed',
+        terminal_reason_code: REASON_CODES.attemptTerminatedBudgetLimitExceeded,
+        terminal_reason_detail: expect.stringContaining('termination_result=failed')
+      })
+    ]);
+    expect(completedRuns[0]?.terminal_reason_detail).toContain('termination_reason_code=worker_cancel_failed');
   });
 
   it('emits budget telemetry unavailable warning without zero accounting', async () => {

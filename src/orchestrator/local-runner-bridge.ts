@@ -1,5 +1,6 @@
 import type { CodexRunner } from '../codex';
 import type { CodexRunnerEvent } from '../codex';
+import type { CodexCancellationOutcome } from '../codex/types';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
@@ -7,7 +8,7 @@ import type { Issue } from '../tracker';
 import { TemplateEngine, type Template } from '../workflow';
 import type { EffectiveConfig } from '../workflow';
 import type { WorkspaceManager } from '../workspace';
-import type { SpawnWorkerResult, WorkerExitDetails } from './types';
+import type { SpawnWorkerResult, WorkerExitDetails, WorkerTerminationResult } from './types';
 import { runLocalWorkerAttempt, runLocalWorkerRecoveryAttempt } from './local-worker-runner';
 
 interface WorkerHandle {
@@ -16,8 +17,18 @@ interface WorkerHandle {
   worker_instance_id: string;
   worker_host: string | null;
   promise: Promise<void>;
-  cancel: (reason: string) => Promise<void>;
+  cancel: (reason: string) => Promise<WorkerCancellationAttemptResult>;
   cleanup_workspace_promise?: Promise<boolean>;
+}
+
+interface WorkerCancellationAttemptResult {
+  cancellation_requested: boolean;
+  worker_settled: boolean | null;
+  graceful_exit_observed: boolean | null;
+  forced_kill_requested: boolean;
+  forced_kill_settled: boolean | null;
+  reason_code: string;
+  detail: string | null;
 }
 
 export interface LocalRunnerBridgeOptions {
@@ -90,6 +101,7 @@ export class LocalRunnerBridge {
     const cancellationController = new AbortController();
     const workerInstanceId = this.createWorkerInstanceId(params.issue.id);
     let runnerSettled = false;
+    let cancellationOutcome: CodexCancellationOutcome | null = null;
     const workerPromise = this.startWorker(
       params.issue,
       params.attempt,
@@ -97,7 +109,8 @@ export class LocalRunnerBridge {
       params.resume_context ?? null,
       workerInstanceId,
       cancellationController.signal,
-      () => {
+      (outcome) => {
+        cancellationOutcome = outcome;
         runnerSettled = true;
       }
     );
@@ -113,7 +126,8 @@ export class LocalRunnerBridge {
         worker_host: workerHost,
         controller: cancellationController,
         workerPromise,
-        isRunnerSettled: () => runnerSettled
+        isRunnerSettled: () => runnerSettled,
+        getCancellationOutcome: () => cancellationOutcome
       })
     };
 
@@ -159,7 +173,9 @@ export class LocalRunnerBridge {
     const cancellationController = new AbortController();
     const workerInstanceId = this.createWorkerInstanceId(params.issue.id);
     let runnerSettled = false;
-    const workerPromise = this.startRecoveryWorker(params, workerHost, workerInstanceId, cancellationController.signal, () => {
+    let cancellationOutcome: CodexCancellationOutcome | null = null;
+    const workerPromise = this.startRecoveryWorker(params, workerHost, workerInstanceId, cancellationController.signal, (outcome) => {
+      cancellationOutcome = outcome;
       runnerSettled = true;
     });
     const worker_handle: WorkerHandle = {
@@ -174,7 +190,8 @@ export class LocalRunnerBridge {
         worker_host: workerHost,
         controller: cancellationController,
         workerPromise,
-        isRunnerSettled: () => runnerSettled
+        isRunnerSettled: () => runnerSettled,
+        getCancellationOutcome: () => cancellationOutcome
       })
     };
 
@@ -203,16 +220,42 @@ export class LocalRunnerBridge {
     worker_handle: unknown;
     cleanup_workspace: boolean;
     reason?: string;
-  }): Promise<void> {
+  }): Promise<WorkerTerminationResult> {
+    const reason = params.reason ?? 'worker_terminated';
     const workerHandle = params.worker_handle as WorkerHandle | null;
     if (!workerHandle?.issue_identifier) {
-      return;
+      return {
+        cancellation_supported: false,
+        cancellation_requested: false,
+        worker_settled: null,
+        graceful_exit_observed: null,
+        forced_kill_requested: false,
+        forced_kill_settled: null,
+        cleanup_requested: params.cleanup_workspace,
+        cleanup_succeeded: null,
+        result: 'unsupported',
+        reason_code: REASON_CODES.workerHandleMissing,
+        detail: 'worker handle missing issue identifier'
+      };
     }
 
+    let cancellation: WorkerCancellationAttemptResult;
     if (typeof workerHandle.cancel === 'function') {
-      await workerHandle.cancel(params.reason ?? 'worker_terminated');
+      try {
+        cancellation = await workerHandle.cancel(reason);
+      } catch (error) {
+        cancellation = {
+          cancellation_requested: true,
+          worker_settled: null,
+          graceful_exit_observed: null,
+          forced_kill_requested: false,
+          forced_kill_settled: null,
+          reason_code: REASON_CODES.workerCancelFailed,
+          detail: error instanceof Error ? error.message : 'worker cancellation failed'
+        };
+      }
       this.logger?.log({
-        level: 'info',
+        level: cancellation.worker_settled === true ? 'info' : 'warn',
         event: CANONICAL_EVENT.orchestration.workerTerminated,
         message: 'worker process cancellation requested',
         context: {
@@ -220,14 +263,28 @@ export class LocalRunnerBridge {
           issue_identifier: workerHandle.issue_identifier,
           worker_instance_id: workerHandle.worker_instance_id,
           cleanup_workspace: params.cleanup_workspace,
-          reason: params.reason ?? 'worker_terminated',
+          reason,
           worker_host: workerHandle.worker_host,
           cancellation_contract: 'supported',
-          cancel_requested: true,
-          graceful_exit_observed: true
+          cancel_requested: cancellation.cancellation_requested,
+          worker_settled: cancellation.worker_settled,
+          graceful_exit_observed: cancellation.graceful_exit_observed,
+          forced_kill_requested: cancellation.forced_kill_requested,
+          forced_kill_settled: cancellation.forced_kill_settled,
+          cancellation_reason_code: cancellation.reason_code,
+          cancellation_detail: cancellation.detail
         }
       });
     } else {
+      cancellation = {
+        cancellation_requested: false,
+        worker_settled: null,
+        graceful_exit_observed: null,
+        forced_kill_requested: false,
+        forced_kill_settled: null,
+        reason_code: REASON_CODES.workerCancelUnsupported,
+        detail: 'worker handle does not implement cancel(reason)'
+      };
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.orchestration.workerTerminated,
@@ -237,13 +294,19 @@ export class LocalRunnerBridge {
           issue_identifier: workerHandle.issue_identifier,
           worker_instance_id: workerHandle.worker_instance_id,
           cleanup_workspace: params.cleanup_workspace,
-          reason: params.reason ?? 'worker_terminated',
+          reason,
           worker_host: workerHandle.worker_host,
-          cancellation_contract: 'unsupported'
+          cancellation_contract: 'unsupported',
+          cancel_requested: false,
+          worker_settled: null,
+          graceful_exit_observed: null,
+          forced_kill_requested: false,
+          forced_kill_settled: null
         }
       });
     }
 
+    let cleanupSucceeded: boolean | null = null;
     if (params.cleanup_workspace) {
       this.logger?.log({
         level: 'info',
@@ -253,11 +316,15 @@ export class LocalRunnerBridge {
           issue_id: params.issue_id,
           issue_identifier: workerHandle.issue_identifier,
           worker_instance_id: workerHandle.worker_instance_id,
-          reason: params.reason ?? 'worker_terminated'
+          reason
         }
       });
-      workerHandle.cleanup_workspace_promise ??= this.workspaceManager.cleanupWorkspace(workerHandle.issue_identifier);
-      const cleanupSucceeded = await workerHandle.cleanup_workspace_promise;
+      try {
+        workerHandle.cleanup_workspace_promise ??= this.workspaceManager.cleanupWorkspace(workerHandle.issue_identifier);
+        cleanupSucceeded = await workerHandle.cleanup_workspace_promise;
+      } catch {
+        cleanupSucceeded = false;
+      }
       this.logger?.log({
         level: cleanupSucceeded ? 'info' : 'warn',
         event: cleanupSucceeded ? CANONICAL_EVENT.workspace.teardownSuccess : CANONICAL_EVENT.workspace.teardownFailed,
@@ -266,11 +333,32 @@ export class LocalRunnerBridge {
           issue_id: params.issue_id,
           issue_identifier: workerHandle.issue_identifier,
           worker_instance_id: workerHandle.worker_instance_id,
-          reason: params.reason ?? 'worker_terminated',
+          reason,
           cleanup_succeeded: cleanupSucceeded
         }
       });
     }
+
+    const result = workerTerminationResult({
+      cancellation_supported: typeof workerHandle.cancel === 'function',
+      cancellation,
+      cleanup_requested: params.cleanup_workspace,
+      cleanup_succeeded: cleanupSucceeded
+    });
+    this.logger?.log({
+      level: result.result === 'succeeded' ? 'info' : 'warn',
+      event: CANONICAL_EVENT.orchestration.workerTerminated,
+      message: 'worker termination outcome recorded',
+      context: {
+        issue_id: params.issue_id,
+        issue_identifier: workerHandle.issue_identifier,
+        worker_instance_id: workerHandle.worker_instance_id,
+        worker_host: workerHandle.worker_host,
+        reason,
+        ...result
+      }
+    });
+    return result;
   }
 
   private async startWorker(
@@ -280,7 +368,7 @@ export class LocalRunnerBridge {
     resume_context: string | null,
     workerInstanceId: string,
     cancellationSignal: AbortSignal,
-    onRunnerSettled: () => void
+    onRunnerSettled: (cancellationOutcome: CodexCancellationOutcome | null) => void
   ): Promise<void> {
     this.logger?.log({
       level: 'info',
@@ -308,7 +396,7 @@ export class LocalRunnerBridge {
         this.onWorkerEvent?.({ issue_id: issue.id, event: { ...event, worker_instance_id: workerInstanceId } });
       }
     });
-    onRunnerSettled();
+    onRunnerSettled(result.cancellation_outcome ?? null);
     if (result.reason === 'normal') {
       this.logger?.log({
         level: 'info',
@@ -359,7 +447,7 @@ export class LocalRunnerBridge {
     worker_host: string | null,
     workerInstanceId: string,
     cancellationSignal: AbortSignal,
-    onRunnerSettled: () => void
+    onRunnerSettled: (cancellationOutcome: CodexCancellationOutcome | null) => void
   ): Promise<void> {
     this.logger?.log({
       level: 'info',
@@ -393,7 +481,7 @@ export class LocalRunnerBridge {
         this.onWorkerEvent?.({ issue_id: params.issue.id, event: { ...event, worker_instance_id: workerInstanceId } });
       }
     });
-    onRunnerSettled();
+    onRunnerSettled(result.cancellation_outcome ?? null);
     await this.onWorkerExit?.({
       issue_id: params.issue.id,
       reason: result.reason,
@@ -418,9 +506,10 @@ function createWorkerCancel(params: {
   controller: AbortController;
   workerPromise: Promise<void>;
   isRunnerSettled: () => boolean;
-}): (reason: string) => Promise<void> {
+  getCancellationOutcome: () => CodexCancellationOutcome | null;
+}): (reason: string) => Promise<WorkerCancellationAttemptResult> {
   let cancellationPromise: Promise<void> | null = null;
-  return async (reason: string): Promise<void> => {
+  return async (reason: string): Promise<WorkerCancellationAttemptResult> => {
     if (!params.controller.signal.aborted) {
       params.controller.abort(reason);
     }
@@ -429,5 +518,107 @@ function createWorkerCancel(params: {
     if (!params.isRunnerSettled()) {
       await cancellationPromise;
     }
+    return cancellationAttemptResult(params.getCancellationOutcome(), params.isRunnerSettled());
+  };
+}
+
+function cancellationAttemptResult(
+  outcome: CodexCancellationOutcome | null,
+  runnerSettled: boolean
+): WorkerCancellationAttemptResult {
+  if (outcome === 'graceful_exit') {
+    return {
+      cancellation_requested: true,
+      worker_settled: true,
+      graceful_exit_observed: true,
+      forced_kill_requested: false,
+      forced_kill_settled: null,
+      reason_code: REASON_CODES.workerCancelGracefulExit,
+      detail: 'worker process exited after graceful cancellation'
+    };
+  }
+  if (outcome === 'forced_kill_exited') {
+    return {
+      cancellation_requested: true,
+      worker_settled: true,
+      graceful_exit_observed: false,
+      forced_kill_requested: true,
+      forced_kill_settled: true,
+      reason_code: REASON_CODES.workerCancelForcedKillExited,
+      detail: 'worker process exited after forced kill'
+    };
+  }
+  if (outcome === 'forced_kill_requested') {
+    return {
+      cancellation_requested: true,
+      worker_settled: false,
+      graceful_exit_observed: false,
+      forced_kill_requested: true,
+      forced_kill_settled: false,
+      reason_code: REASON_CODES.workerCancelForcedKillUnconfirmed,
+      detail: 'forced kill was requested but process exit was not confirmed'
+    };
+  }
+  if (outcome === 'requested') {
+    return {
+      cancellation_requested: true,
+      worker_settled: null,
+      graceful_exit_observed: null,
+      forced_kill_requested: false,
+      forced_kill_settled: null,
+      reason_code: REASON_CODES.workerCancelRequested,
+      detail: 'worker cancellation was requested but settlement was not confirmed'
+    };
+  }
+  return {
+    cancellation_requested: true,
+    worker_settled: runnerSettled ? true : null,
+    graceful_exit_observed: null,
+    forced_kill_requested: false,
+    forced_kill_settled: null,
+    reason_code: runnerSettled ? REASON_CODES.workerCancelSettledWithoutOutcome : REASON_CODES.workerCancelUnknown,
+    detail: runnerSettled
+      ? 'worker settled after cancellation but runner did not report graceful or forced outcome'
+      : 'worker cancellation outcome is unknown'
+  };
+}
+
+function workerTerminationResult(params: {
+  cancellation_supported: boolean;
+  cancellation: WorkerCancellationAttemptResult;
+  cleanup_requested: boolean;
+  cleanup_succeeded: boolean | null;
+}): WorkerTerminationResult {
+  let result: WorkerTerminationResult['result'];
+  if (!params.cancellation_supported) {
+    result = 'unsupported';
+  } else if (params.cleanup_requested && params.cleanup_succeeded !== true) {
+    result = 'failed';
+  } else if (params.cancellation.worker_settled === true) {
+    result = 'succeeded';
+  } else if (params.cancellation.worker_settled === false) {
+    result = 'unknown';
+  } else {
+    result = params.cancellation.reason_code === REASON_CODES.workerCancelFailed ? 'failed' : 'unknown';
+  }
+
+  return {
+    cancellation_supported: params.cancellation_supported,
+    cancellation_requested: params.cancellation.cancellation_requested,
+    worker_settled: params.cancellation.worker_settled,
+    graceful_exit_observed: params.cancellation.graceful_exit_observed,
+    forced_kill_requested: params.cancellation.forced_kill_requested,
+    forced_kill_settled: params.cancellation.forced_kill_settled,
+    cleanup_requested: params.cleanup_requested,
+    cleanup_succeeded: params.cleanup_requested ? params.cleanup_succeeded : null,
+    result,
+    reason_code:
+      params.cleanup_requested && params.cleanup_succeeded !== true
+        ? REASON_CODES.workspaceCleanupFailed
+        : params.cancellation.reason_code,
+    detail:
+      params.cleanup_requested && params.cleanup_succeeded !== true
+        ? 'workspace cleanup did not succeed'
+        : params.cancellation.detail
   };
 }
