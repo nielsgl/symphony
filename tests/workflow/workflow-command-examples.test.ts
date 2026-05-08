@@ -48,6 +48,20 @@ describe('workflow command examples', () => {
     expect(workflow).toContain('Routing: Merging');
   });
 
+  it('requires propagation-matrix review for cross-cutting contract changes', () => {
+    const workflowPath = path.join(process.cwd(), 'WORKFLOW.md');
+    const workflow = readFileSync(workflowPath, 'utf8');
+
+    expect(workflow).toContain('Run the cross-cutting contract propagation protocol');
+    expect(workflow).toContain('typed contract, lifecycle invariant, state');
+    expect(workflow).toContain('`Propagation matrix: not required`');
+    expect(workflow).toContain('Build the matrix from current code reality');
+    expect(workflow).toContain('real implementation path behind');
+    expect(workflow).toContain('continue adjacent scanning far enough to batch');
+    expect(workflow).toContain('immediate P1 safety issue');
+    expect(workflow).toContain('| Surface | Checked reality | Result |');
+  });
+
   it('keeps SPEC.ext.md aligned with implemented handoff runtime semantics', () => {
     const specPath = path.join(process.cwd(), 'SPEC.ext.md');
     const spec = readFileSync(specPath, 'utf8');
