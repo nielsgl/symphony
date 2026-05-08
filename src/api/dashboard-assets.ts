@@ -334,6 +334,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     pollDelayMs: DASHBOARD_CONFIG.refresh_ms,
     streamRetryMs: 1000,
     streamConnected: false,
+    streamSnapshotHealthy: false,
     eventSource: null,
     uiStateLoaded: false,
     uiStateSaveTimer: null,
@@ -521,6 +522,23 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   function setRefreshStatus(message, isError) {
     elements.refreshStatus.textContent = message;
     elements.refreshStatus.className = isError ? 'status-error' : 'status-ok';
+  }
+
+  function isStreamHealthy() {
+    return state.streamConnected && state.streamSnapshotHealthy;
+  }
+
+  function clearPollTimer() {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+
+  function schedulePollingFallback() {
+    clearPollTimer();
+    if (isStreamHealthy()) {
+      return;
+    }
+    state.pollTimer = setTimeout(loadStateViaPoll, state.pollDelayMs);
   }
 
   function getActionRequiredLabel(code) {
@@ -2098,8 +2116,10 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     renderRuntimeEvents(payload);
     setLastUpdated(payload.generated_at || new Date().toISOString());
     if (source === 'stream') {
+      state.streamSnapshotHealthy = true;
       setConnectionStatus('live', 'Streaming updates connected');
       state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
+      clearPollTimer();
     }
   }
 
@@ -2127,15 +2147,14 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     try {
       const payload = await fetchJson('/api/v1/state');
       applyPayload(payload, 'poll');
-      setConnectionStatus(state.streamConnected ? 'live' : 'offline', state.streamConnected ? 'Streaming updates connected' : 'Polling fallback active');
+      setConnectionStatus(isStreamHealthy() ? 'live' : 'offline', isStreamHealthy() ? 'Streaming updates connected' : 'Polling fallback active');
       state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
     } catch (error) {
       setConnectionStatus('offline', 'Polling failed');
       setRefreshStatus('Polling failed: ' + String(error), true);
       state.pollDelayMs = Math.min(state.pollDelayMs * 2, 30000);
     } finally {
-      clearTimeout(state.pollTimer);
-      state.pollTimer = setTimeout(loadStateViaPoll, state.pollDelayMs);
+      schedulePollingFallback();
     }
   }
 
@@ -2604,8 +2623,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
     stream.onopen = function () {
       state.streamConnected = true;
+      state.streamSnapshotHealthy = false;
       state.streamRetryMs = 1000;
-      setConnectionStatus('live', 'Streaming updates connected');
+      setConnectionStatus('live', 'Streaming connected; polling fallback active until first snapshot');
     };
 
     stream.onmessage = function (event) {
@@ -2619,9 +2639,11 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
     stream.onerror = function () {
       state.streamConnected = false;
+      state.streamSnapshotHealthy = false;
       setConnectionStatus('offline', 'Stream disconnected; retrying with polling fallback');
       stream.close();
       state.eventSource = null;
+      void loadStateViaPoll();
       setTimeout(connectStream, state.streamRetryMs);
       state.streamRetryMs = Math.min(state.streamRetryMs * 2, 15000);
     };
