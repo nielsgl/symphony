@@ -741,6 +741,10 @@ describe('LocalApiServer', () => {
 
     expect(firstStateResponse.status).toBe(200);
     expect(secondStateResponse.status).toBe(200);
+    expect(getStateSnapshot.mock.calls.slice(0, 2)).toEqual([
+      [{ includeTranscriptToolCallDiagnostics: false }],
+      [{ includeTranscriptToolCallDiagnostics: false }]
+    ]);
     expect(Buffer.byteLength(firstStateBody, 'utf8')).toBeLessThan(120_000);
     expect(Buffer.byteLength(secondStateBody, 'utf8')).toBeLessThan(120_000);
     expect(firstStateBody).not.toContain('transcript_tool_call_diagnostics');
@@ -779,6 +783,8 @@ describe('LocalApiServer', () => {
       };
     };
     expect(detailResponse.status).toBe(200);
+    expect(getStateSnapshot.mock.calls.at(-2)).toEqual([]);
+    expect(getStateSnapshot.mock.calls.at(-1)).toEqual([]);
     expect(detailPayload.runtime_diagnostics.missing_tool_output).toMatchObject({ call_id: 'call-overload-1' });
     expect(detailPayload.runtime_diagnostics.transcript_tool_call_diagnostics.metadata).toMatchObject({
       total_available_count: diagnosticsPerRun,
@@ -799,6 +805,7 @@ describe('LocalApiServer', () => {
     const stateSnapshotEvent = events.find((entry) => entry.data.type === 'state_snapshot');
     const sseStateBody = JSON.stringify(stateSnapshotEvent?.data.payload);
     expect(streamResponse.status).toBe(200);
+    expect(getStateSnapshot.mock.calls.at(-1)).toEqual([{ includeTranscriptToolCallDiagnostics: false }]);
     expect(sseStateBody).not.toContain('transcript_tool_call_diagnostics');
     expect(sseStateBody).not.toContain('active_issue_id');
     expect(listRunHistory).toHaveBeenCalledTimes(runHistoryCallsBeforeSse);
@@ -806,6 +813,7 @@ describe('LocalApiServer', () => {
     const telemetryResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/telemetry/summary?limit=10`);
     const telemetryPayload = (await telemetryResponse.json()) as { sample_count: number; token_burn_rate: number };
     expect(telemetryResponse.status).toBe(200);
+    expect(getStateSnapshot.mock.calls.at(-1)).toEqual([{ includeTranscriptToolCallDiagnostics: false }]);
     expect(telemetryPayload.sample_count).toBeGreaterThanOrEqual(4);
     expect(telemetryPayload.token_burn_rate).toBeGreaterThan(0);
     expect(JSON.stringify(telemetryPayload)).not.toContain('transcript_tool_call_diagnostics');
@@ -817,6 +825,7 @@ describe('LocalApiServer', () => {
       };
     };
     expect(diagnosticsResponse.status).toBe(200);
+    expect(getStateSnapshot.mock.calls.at(-1)).toEqual([{ includeTranscriptToolCallDiagnostics: false }]);
     expect(diagnosticsPayload.control_plane.endpoints.find((entry) => entry.endpoint === '/api/v1/state')?.last_payload_bytes).toBeLessThan(120_000);
     expect(JSON.stringify(diagnosticsPayload.control_plane)).not.toContain('transcript_tool_call_diagnostics');
   });
