@@ -39,8 +39,19 @@ For each scenario, include expected status, mode, and reason code:
 - [ ] Lifecycle events emitted for requested/applied/fallback/failure transitions.
 - [ ] Request lineage fields are persisted and exposed where required.
 - [ ] Operator-visible state clearly distinguishes warning fallback vs hard failure.
+- [ ] Linear workflow operations use MCP for routine issue lookup, comments/workpads,
+  state/metadata updates, and ordinary links when MCP can express the operation.
+- [ ] Any raw `linear_graphql` use is justified as GraphQL-only or script-backed,
+  and the operation is narrow enough to be obvious in logs and diagnostics.
 
-## 6) Review outcome gate
+## 6) UI evidence gate
+
+- [ ] UI-affecting changes include rendered Linear rich media evidence.
+- [ ] Local `output/playwright/*` paths, markdown-only video links, base64 payloads,
+  issue attachments, and `output/playwright/ui-evidence.json` are not accepted
+  as sufficient review evidence.
+
+## 7) Review outcome gate
 
 Before approving:
 
