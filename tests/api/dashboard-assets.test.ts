@@ -2,7 +2,7 @@ import vm from 'node:vm';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderDashboardClientJs, renderDashboardHtml } from '../../src/api/dashboard-assets';
+import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from '../../src/api/dashboard-assets';
 
 const ORIGINAL_GLOBALS = {
   document: globalThis.document,
@@ -457,6 +457,19 @@ afterEach(() => {
 });
 
 describe('dashboard assets', () => {
+  it('renders Refresh Now with the yellow button treatment', () => {
+    const css = renderDashboardStylesCss();
+    const refreshButtonBlock = css.slice(
+      css.indexOf('.refresh-now-button {'),
+      css.indexOf('.ghost-button {')
+    );
+
+    expect(refreshButtonBlock).toContain('background: #facc15;');
+    expect(refreshButtonBlock).toContain('color: #3f2f00;');
+    expect(refreshButtonBlock).toContain('background: #eab308;');
+    expect(refreshButtonBlock).toContain('outline: 2px solid #fde68a;');
+  });
+
   it('renders client budget display logic for visible status, policy, and stop messages', () => {
     const clientJs = renderDashboardClientJs();
 
