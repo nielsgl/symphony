@@ -18,6 +18,7 @@ import {
   parseTelemetryQuery,
   TelemetryQueryError
 } from './telemetry';
+import { buildProjectHistoryListResponse, buildProjectHistoryTicketDetailResponse } from './project-history';
 import {
   buildThreadDiagnosticsByIssueIdentifier,
   buildThreadDiagnosticsByThreadId,
@@ -192,6 +193,27 @@ function sendError(res: ServerResponse, statusCode: number, code: string, messag
     }
   };
   sendJson(res, statusCode, payload);
+}
+
+function parseBoundedPositiveInteger(value: string | null, fallback: number, max: number): number {
+  if (!value) {
+    return fallback;
+  }
+  if (!/^\d+$/.test(value)) {
+    throw new LocalApiError('invalid_pagination', 'Pagination parameters must be positive integers', 400);
+  }
+  const parsed = Number.parseInt(value, 10);
+  return parsed > 0 ? Math.min(parsed, max) : fallback;
+}
+
+function parseNonNegativeInteger(value: string | null): number {
+  if (!value) {
+    return 0;
+  }
+  if (!/^\d+$/.test(value)) {
+    throw new LocalApiError('invalid_pagination', 'Pagination parameters must be non-negative integers', 400);
+  }
+  return Number.parseInt(value, 10);
 }
 
 interface OperatorActionBody {
@@ -1256,6 +1278,63 @@ export class LocalApiServer {
               sendJson(response, 200, {
                 lineage
               });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/projects\/([^/]+)\/history\/tickets$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (request, response, match) => {
+              if (!this.diagnosticsSource?.listProjectTicketIdentities || !this.diagnosticsSource.reconstructTicketTimeline) {
+                throw new LocalApiError('project_history_unavailable', 'Project ticket history source is not configured', 503);
+              }
+
+              const projectKey = decodeURIComponent(match[1]);
+              const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+              const limit = parseBoundedPositiveInteger(requestUrl.searchParams.get('limit'), 50, 100);
+              const offset = parseNonNegativeInteger(requestUrl.searchParams.get('offset'));
+              const page = this.diagnosticsSource.listProjectTicketIdentities(projectKey, { limit, offset });
+              const timelines = page.items.map((identity) => this.diagnosticsSource!.reconstructTicketTimeline!(identity));
+
+              sendJson(response, 200, buildProjectHistoryListResponse({
+                projectKey,
+                timelines,
+                page: {
+                  limit: page.limit,
+                  offset: page.offset,
+                  has_more: page.has_more,
+                  total: page.total
+                },
+                historySchemaHealth: this.diagnosticsSource.getPersistenceHealth().history_schema ?? null
+              }));
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/projects\/([^/]+)\/history\/tickets\/([^/]+)$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response, match) => {
+              if (!this.diagnosticsSource?.getProjectTicketIdentity || !this.diagnosticsSource.reconstructTicketTimeline) {
+                throw new LocalApiError('project_history_unavailable', 'Project ticket history source is not configured', 503);
+              }
+
+              const projectKey = decodeURIComponent(match[1]);
+              const ticketKey = decodeURIComponent(match[2]);
+              const identity = this.diagnosticsSource.getProjectTicketIdentity(projectKey, ticketKey);
+              if (!identity) {
+                throw new LocalApiError('project_history_ticket_not_found', `Ticket ${ticketKey} was not found for project ${projectKey}`, 404);
+              }
+
+              sendJson(response, 200, buildProjectHistoryTicketDetailResponse(
+                this.diagnosticsSource.reconstructTicketTimeline(identity),
+                this.diagnosticsSource.getPersistenceHealth().history_schema ?? null
+              ));
             }
           }
         ]

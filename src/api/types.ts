@@ -4,7 +4,14 @@ import type { CodexAppServerThreadActivitySource } from '../codex/app-server-pro
 import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { StructuredLogger } from '../observability';
-import type { DurableRunHistoryRecord, ExecutionGraphThreadLineage, PersistenceHealth, UiContinuityState } from '../persistence';
+import type {
+  DurableIdentity,
+  DurableRunHistoryRecord,
+  ExecutionGraphThreadLineage,
+  PersistenceHealth,
+  TicketTimelineRecord,
+  UiContinuityState
+} from '../persistence';
 import type { SecurityProfile } from '../security';
 import type { ControlPlaneHealthRecorder, ControlPlaneHealthSummary, ControlPlaneThresholds } from './control-plane-health';
 
@@ -81,6 +88,12 @@ export interface DiagnosticsSource {
   listRunHistory(limit?: number): DurableRunHistoryRecord[];
   reconstructThreadLineage?: (threadId: string) => ExecutionGraphThreadLineage | null;
   reconstructLatestThreadLineageByIssueIdentifier?: (issueIdentifier: string) => ExecutionGraphThreadLineage | null;
+  listProjectTicketIdentities?: (
+    projectKey: string,
+    options?: { limit?: number; offset?: number }
+  ) => { items: DurableIdentity[]; limit: number; offset: number; has_more: boolean; total: number };
+  getProjectTicketIdentity?: (projectKey: string, ticketKey: string) => DurableIdentity | null;
+  reconstructTicketTimeline?: (identity: DurableIdentity) => TicketTimelineRecord;
   getLoggingHealth(): {
     root: string;
     active_file: string;

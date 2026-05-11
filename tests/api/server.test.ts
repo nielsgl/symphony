@@ -9,7 +9,7 @@ import { replayForensicsBundle, type ForensicsBundle } from '../../src/api/foren
 import type { OrchestratorState, TranscriptToolCallDiagnostic, TranscriptToolCallLineage } from '../../src/orchestrator';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
-import type { ExecutionGraphThreadLineage } from '../../src/persistence';
+import type { DurableIdentity, ExecutionGraphThreadLineage, TicketTimelineRecord } from '../../src/persistence';
 import type { Issue } from '../../src/tracker';
 
 function makeRunningEntry(overrides: Record<string, unknown> = {}) {
@@ -83,6 +83,169 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     blocked_by: [],
     created_at: new Date('2026-04-10T10:00:00.000Z'),
     updated_at: new Date('2026-04-10T10:00:00.000Z'),
+    ...overrides
+  };
+}
+
+function makeProjectHistoryIdentity(overrides: {
+  projectKey?: string;
+  ticketKey?: string;
+  remoteIssueId?: string;
+  humanIssueIdentifier?: string;
+} = {}): DurableIdentity {
+  return {
+    project: {
+      key: overrides.projectKey ?? 'project-main',
+      project_root: '/repo/main',
+      workflow_path: '/repo/main/WORKFLOW.md',
+      workflow_hash: { status: 'present', value: 'workflow-hash' },
+      repository_remote: { status: 'present', value: 'git@github.com:nielsgl/symphony.git' }
+    },
+    ticket: {
+      key: overrides.ticketKey ?? 'ticket-abc-1',
+      tracker_kind: 'linear',
+      tracker_scope: { status: 'present', value: 'symphony' },
+      remote_issue_id: overrides.remoteIssueId ?? 'remote-abc-1',
+      human_issue_identifier: overrides.humanIssueIdentifier ?? 'ABC-1'
+    }
+  };
+}
+
+function makeProjectHistoryTimeline(identity: DurableIdentity, overrides: Partial<TicketTimelineRecord> = {}): TicketTimelineRecord {
+  const issueRunId = `${identity.ticket.key}-issue-run`;
+  const attemptId = `${identity.ticket.key}-attempt-0`;
+  const threadId = `${identity.ticket.key}-thread`;
+  const turnId = `${identity.ticket.key}-turn`;
+  return {
+    identity,
+    issue_runs: [
+      {
+        issue_run_id: issueRunId,
+        issue_id: identity.ticket.remote_issue_id,
+        issue_identifier: identity.ticket.human_issue_identifier,
+        identity,
+        started_at: '2026-04-10T10:00:00.000Z',
+        ended_at: '2026-04-10T10:20:00.000Z',
+        status: 'succeeded',
+        reason_code: null,
+        reason_detail: null
+      }
+    ],
+    attempts: [
+      {
+        attempt_id: attemptId,
+        issue_run_id: issueRunId,
+        attempt_number: 0,
+        started_at: '2026-04-10T10:00:01.000Z',
+        ended_at: '2026-04-10T10:20:00.000Z',
+        status: 'succeeded',
+        reason_code: null,
+        reason_detail: null
+      }
+    ],
+    threads: [
+      {
+        thread_id: threadId,
+        attempt_id: attemptId,
+        started_at: '2026-04-10T10:00:02.000Z',
+        ended_at: '2026-04-10T10:18:00.000Z',
+        status: 'succeeded',
+        reason_code: null,
+        reason_detail: null
+      }
+    ],
+    turns: [
+      {
+        turn_id: turnId,
+        thread_id: threadId,
+        turn_index: 0,
+        started_at: '2026-04-10T10:00:03.000Z',
+        ended_at: '2026-04-10T10:10:00.000Z',
+        status: 'succeeded',
+        reason_code: null,
+        reason_detail: null
+      }
+    ],
+    phase_spans: [
+      {
+        phase_span_id: `${identity.ticket.key}-phase`,
+        turn_id: turnId,
+        phase: 'implementation',
+        started_at: '2026-04-10T10:01:00.000Z',
+        ended_at: '2026-04-10T10:09:00.000Z',
+        status: 'succeeded',
+        reason_code: null,
+        reason_detail: null
+      }
+    ],
+    state_transitions: [
+      {
+        state_transition_id: `${identity.ticket.key}-state`,
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: null,
+        from_status: 'In Progress',
+        to_status: 'Agent Review',
+        transitioned_at: '2026-04-10T10:19:00.000Z',
+        status: 'succeeded',
+        reason_code: 'review_ready',
+        reason_detail: null
+      }
+    ],
+    terminal_outcomes: [
+      {
+        terminal_outcome_id: `${identity.ticket.key}-outcome`,
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: turnId,
+        outcome: 'succeeded',
+        reason_code: 'agent_review_ready',
+        reason_detail: null,
+        recorded_at: '2026-04-10T10:20:00.000Z'
+      }
+    ],
+    blockers: [],
+    evidence_references: [],
+    tracker_snapshots: [
+      {
+        tracker_snapshot_id: `${identity.ticket.key}-tracker`,
+        project_key: identity.project.key,
+        ticket_key: identity.ticket.key,
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: turnId,
+        tracker_kind: 'linear',
+        tracker_scope_status: 'present',
+        tracker_scope_value: 'symphony',
+        tracker_scope_reason: null,
+        remote_issue_id: identity.ticket.remote_issue_id,
+        human_issue_identifier: identity.ticket.human_issue_identifier,
+        title: `Ticket ${identity.ticket.human_issue_identifier}`,
+        tracker_status: 'Agent Review',
+        assignee_status: 'unknown',
+        assignee_identifier: null,
+        assignee_reason: null,
+        labels: ['ready-for-agent'],
+        project_status: 'available',
+        project_identifier: identity.project.key,
+        project_reason: null,
+        team_status: 'available',
+        team_identifier: 'Nielsgl',
+        team_reason: null,
+        observed_at: '2026-04-10T10:20:00.000Z',
+        observation_hash: `${identity.ticket.key}-tracker-hash`,
+        duplicate_count: 1,
+        last_observed_at: '2026-04-10T10:20:00.000Z'
+      }
+    ],
+    ticket_references: [],
+    operator_actions: [],
+    blocked_input_events: [],
+    app_server_events: [],
+    token_model_facts: [],
     ...overrides
   };
 }
@@ -3545,6 +3708,267 @@ describe('LocalApiServer', () => {
       },
       panel_state: { issue_detail_open: true }
     });
+  });
+
+  it('serves bounded project history ticket rows and detail timelines', async () => {
+    const completedIdentity = makeProjectHistoryIdentity();
+    const activeIdentity = makeProjectHistoryIdentity({
+      ticketKey: 'ticket-abc-active',
+      remoteIssueId: 'remote-active',
+      humanIssueIdentifier: 'ABC-ACTIVE'
+    });
+    const completedTimeline = makeProjectHistoryTimeline(completedIdentity, {
+      blockers: [
+        {
+          blocker_id: 'blocker-1',
+          issue_run_id: 'ticket-abc-1-issue-run',
+          attempt_id: 'ticket-abc-1-attempt-0',
+          thread_id: 'ticket-abc-1-thread',
+          turn_id: 'ticket-abc-1-turn',
+          blocker_type: 'tool_output',
+          status: 'resolved',
+          reason_code: 'missing_tool_output',
+          reason_detail: 'recovered',
+          blocked_at: '2026-04-10T10:05:00.000Z',
+          resolved_at: '2026-04-10T10:06:00.000Z'
+        }
+      ],
+      evidence_references: [
+        {
+          evidence_reference_id: 'evidence-1',
+          issue_run_id: 'ticket-abc-1-issue-run',
+          attempt_id: 'ticket-abc-1-attempt-0',
+          thread_id: 'ticket-abc-1-thread',
+          turn_id: 'ticket-abc-1-turn',
+          evidence_kind: 'test_output',
+          uri: 'file://validation/project-history.txt',
+          title: 'project history proof',
+          metadata: { command: 'npm test -- tests/api/server.test.ts' },
+          recorded_at: '2026-04-10T10:19:30.000Z'
+        }
+      ],
+      ticket_references: [
+        {
+          ticket_reference_id: 'pr-1',
+          project_key: 'project-main',
+          ticket_key: 'ticket-abc-1',
+          issue_run_id: 'ticket-abc-1-issue-run',
+          attempt_id: 'ticket-abc-1-attempt-0',
+          thread_id: 'ticket-abc-1-thread',
+          turn_id: 'ticket-abc-1-turn',
+          reference_kind: 'pull_request',
+          availability: 'available',
+          uri: 'https://github.com/nielsgl/symphony/pull/230',
+          label: 'PR #230',
+          external_id: '230',
+          state: 'open',
+          metadata: { check: 'green' },
+          observed_at: '2026-04-10T10:19:45.000Z',
+          observation_hash: 'pr-hash',
+          duplicate_count: 1,
+          last_observed_at: '2026-04-10T10:19:45.000Z'
+        }
+      ],
+      operator_actions: [
+        {
+          operator_action_id: 'operator-1',
+          project_key: 'project-main',
+          ticket_key: 'ticket-abc-1',
+          issue_run_id: 'ticket-abc-1-issue-run',
+          attempt_id: 'ticket-abc-1-attempt-0',
+          thread_id: 'ticket-abc-1-thread',
+          turn_id: 'ticket-abc-1-turn',
+          action: 'resume',
+          actor: 'operator',
+          result: 'accepted',
+          result_code: null,
+          message: 'operator answer accepted',
+          reason_note: 'continue',
+          phase: 'implementation',
+          state_context: { from: 'blocked' },
+          requested_at: '2026-04-10T10:06:00.000Z',
+          observed_at: '2026-04-10T10:06:01.000Z',
+          observation_hash: 'operator-hash',
+          duplicate_count: 1,
+          last_observed_at: '2026-04-10T10:06:01.000Z'
+        }
+      ],
+      app_server_events: [
+        {
+          app_server_event_id: 'app-event-1',
+          issue_run_id: 'ticket-abc-1-issue-run',
+          attempt_id: 'ticket-abc-1-attempt-0',
+          thread_id: 'ticket-abc-1-thread',
+          turn_id: 'ticket-abc-1-turn',
+          observed_at: '2026-04-10T10:07:00.000Z',
+          source_event_id: 'event-1',
+          source_event_name: 'thread/tokenUsage/updated',
+          policy_version: 1,
+          payload_class: 'protocol_lifecycle',
+          detail_status: 'redacted_truncated_excerpt',
+          redaction_status: 'redacted',
+          summary: 'token update',
+          summary_fields: { total_tokens: 42 },
+          redacted_excerpt: 'token=***REDACTED***',
+          truncation: { truncated: true, original_bytes: 1024, excerpt_bytes: 64, max_excerpt_bytes: 64 },
+          unavailable_reason_code: null,
+          full_payload_stored: false
+        }
+      ],
+      token_model_facts: [
+        {
+          token_model_fact_id: 'token-1',
+          issue_run_id: 'ticket-abc-1-issue-run',
+          attempt_id: 'ticket-abc-1-attempt-0',
+          thread_id: 'ticket-abc-1-thread',
+          turn_id: 'ticket-abc-1-turn',
+          requested_model: 'gpt-5.4',
+          effective_model: 'gpt-5.4',
+          model_source: 'terminal_turn_summary',
+          input_tokens: 20,
+          output_tokens: 22,
+          cached_input_tokens: null,
+          reasoning_output_tokens: null,
+          total_tokens: 42,
+          model_context_window: null,
+          telemetry_confidence: 'observed_live',
+          observed_at: '2026-04-10T10:07:00.000Z'
+        }
+      ]
+    });
+    const activeTimeline = makeProjectHistoryTimeline(activeIdentity, {
+      issue_runs: [
+        {
+          issue_run_id: 'ticket-abc-active-issue-run',
+          issue_id: 'remote-active',
+          issue_identifier: 'ABC-ACTIVE',
+          identity: activeIdentity,
+          started_at: '2026-04-10T11:00:00.000Z',
+          ended_at: null,
+          status: 'running',
+          reason_code: 'dispatch_started',
+          reason_detail: null
+        }
+      ],
+      attempts: [],
+      threads: [],
+      turns: [],
+      phase_spans: [],
+      state_transitions: [],
+      terminal_outcomes: [],
+      tracker_snapshots: [],
+      app_server_events: [],
+      token_model_facts: []
+    });
+    const timelines = new Map([
+      [completedIdentity.ticket.key, completedTimeline],
+      [activeIdentity.ticket.key, activeTimeline]
+    ]);
+
+    server = new LocalApiServer({
+      snapshotSource: { getStateSnapshot: () => makeState() },
+      refreshSource: { tick: vi.fn(async () => undefined) },
+      diagnosticsSource: makeDiagnosticsSource({
+        getPersistenceHealth: () => ({
+          enabled: true,
+          db_path: '/tmp/runtime.sqlite',
+          retention_days: 14,
+          run_count: 2,
+          last_pruned_at: null,
+          integrity_ok: true,
+          history_schema: {
+            schema_name: 'project_execution_history',
+            target_version: 6,
+            applied_version: 6,
+            status: 'degraded',
+            degraded_reason_code: 'history_write_failed',
+            degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed',
+            updated_at: '2026-04-10T10:00:00.000Z',
+            migrations: []
+          }
+        }),
+        listProjectTicketIdentities: (_projectKey: string, page: { limit?: number; offset?: number } = {}) => ({
+          items: [completedIdentity, activeIdentity].slice(page.offset ?? 0, (page.offset ?? 0) + (page.limit ?? 50)),
+          limit: page.limit ?? 50,
+          offset: page.offset ?? 0,
+          has_more: (page.offset ?? 0) + (page.limit ?? 50) < 2,
+          total: 2
+        }),
+        getProjectTicketIdentity: (_projectKey: string, ticketKey: string) =>
+          ticketKey === completedIdentity.ticket.key ? completedIdentity : null,
+        reconstructTicketTimeline: (identity: DurableIdentity) => {
+          const timeline = timelines.get(identity.ticket.key);
+          if (!timeline) {
+            throw new Error(`missing timeline for ${identity.ticket.key}`);
+          }
+          return timeline;
+        }
+      })
+    });
+    await server.listen();
+    const address = server.address();
+
+    const listResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets?limit=1`);
+    const listPayload = (await listResponse.json()) as {
+      page: { limit: number; has_more: boolean; total: number };
+      tickets: Array<{ state: string; summary: { attempt_count: number; total_tokens: number | null }; facts: Array<{ status: string }> }>;
+    };
+    expect(listResponse.status).toBe(200);
+    expect(listPayload.page).toMatchObject({ limit: 1, has_more: true, total: 2 });
+    expect(listPayload.tickets).toHaveLength(1);
+    expect(listPayload.tickets[0]).toMatchObject({
+      state: 'completed',
+      summary: { attempt_count: 1, total_tokens: 42 }
+    });
+    expect(listPayload.tickets[0].facts.map((fact) => fact.status)).toEqual(expect.arrayContaining(['degraded', 'present', 'redacted', 'truncated']));
+
+    const activeListResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets?limit=1&offset=1`);
+    const activeListPayload = (await activeListResponse.json()) as {
+      tickets: Array<{ state: string; facts: Array<{ status: string; reason_code: string | null }> }>;
+    };
+    expect(activeListResponse.status).toBe(200);
+    expect(activeListPayload.tickets[0].state).toBe('active');
+    expect(activeListPayload.tickets[0].facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 'missing', reason_code: 'project_history_terminal_outcome_missing' }),
+        expect.objectContaining({ status: 'missing', reason_code: 'project_history_app_server_lite_summaries_missing' })
+      ])
+    );
+
+    const detailResponse = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets/${completedIdentity.ticket.key}`
+    );
+    const detailPayload = (await detailResponse.json()) as {
+      ticket_identity: { key: string };
+      attempts: unknown[];
+      phases: unknown[];
+      state_transitions: unknown[];
+      thread_references: unknown[];
+      turn_references: unknown[];
+      outcomes: unknown[];
+      blockers: unknown[];
+      evidence_references: unknown[];
+      tracker_facts: unknown[];
+      pr_and_reference_facts: unknown[];
+      operator_facts: unknown[];
+      app_server_lite_summaries: unknown[];
+      token_model_summaries: unknown[];
+    };
+    expect(detailResponse.status).toBe(200);
+    expect(detailPayload.ticket_identity.key).toBe(completedIdentity.ticket.key);
+    expect(detailPayload.attempts).toHaveLength(1);
+    expect(detailPayload.phases).toHaveLength(1);
+    expect(detailPayload.state_transitions).toHaveLength(1);
+    expect(detailPayload.thread_references).toHaveLength(1);
+    expect(detailPayload.turn_references).toHaveLength(1);
+    expect(detailPayload.outcomes).toHaveLength(1);
+    expect(detailPayload.blockers).toHaveLength(1);
+    expect(detailPayload.evidence_references).toHaveLength(1);
+    expect(detailPayload.tracker_facts).toHaveLength(1);
+    expect(detailPayload.pr_and_reference_facts).toHaveLength(1);
+    expect(detailPayload.operator_facts).toHaveLength(1);
+    expect(detailPayload.app_server_lite_summaries).toHaveLength(1);
+    expect(detailPayload.token_model_summaries).toHaveLength(1);
   });
 
   it('serves canonical active thread diagnostics by thread id and issue identifier', async () => {
