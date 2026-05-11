@@ -34,6 +34,21 @@ describe('secret redaction', () => {
     expect(redacted.runs[0].error_code).toContain(REDACTED);
   });
 
+  it('redacts free-form authorization scheme credentials', () => {
+    const message = [
+      'Authorization: Bearer sk-live-secret-value',
+      'bearer sk-another-secret-value',
+      'proxy-authorization=Basic dXNlcjpzZWNyZXQ='
+    ].join(' ');
+
+    const redacted = redactUnknown(message) as string;
+
+    expect(redacted).toContain(REDACTED);
+    expect(redacted).not.toContain('sk-live-secret-value');
+    expect(redacted).not.toContain('sk-another-secret-value');
+    expect(redacted).not.toContain('dXNlcjpzZWNyZXQ=');
+  });
+
   it('preserves telemetry token counters that are not secrets', () => {
     const payload = {
       tokens: {

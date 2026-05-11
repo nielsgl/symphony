@@ -32,6 +32,26 @@ describe('history payload policy', () => {
     expect(details.truncation.excerpt_bytes).toBeLessThanOrEqual(HISTORY_PAYLOAD_EXCERPT_MAX_BYTES);
   });
 
+  it('removes bearer credentials from free-form persisted excerpts', () => {
+    const details = buildHistoryPayloadDetails({
+      payloadClass: 'command_output',
+      sourceEventId: 'event-bearer',
+      sourceEventName: 'exec_command/output',
+      rawPayload:
+        'request failed with Authorization: Bearer sk-live-secret-value and retry used bearer ghp_another-secret',
+      summary: 'command failed after authenticated request'
+    });
+
+    expect(details).toMatchObject({
+      detail_status: 'redacted_excerpt',
+      redaction_status: 'redacted',
+      full_payload_stored: false
+    });
+    expect(details.redacted_excerpt).toContain('***REDACTED***');
+    expect(details.redacted_excerpt).not.toContain('sk-live-secret-value');
+    expect(details.redacted_excerpt).not.toContain('ghp_another-secret');
+  });
+
   it('keeps transcript and tool payload details unavailable by policy', () => {
     const transcript = buildHistoryPayloadDetails({
       payloadClass: 'conversation_transcript',

@@ -1,10 +1,15 @@
 const REDACTED = '***REDACTED***';
 const SECRET_KEY_PATTERN =
   /^(authorization|proxy-authorization|x-api-key|api[_-]?key|secret|password|passphrase|access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token)$/i;
+const AUTHORIZATION_HEADER_PATTERN = /\b((?:proxy-)?authorization)\s*[:=]\s*[A-Z][A-Z0-9_-]*\s+[^\s,;]+/gi;
+const AUTHORIZATION_SCHEME_PATTERN = /\b(bearer|basic)\s+[^\s,;]+/gi;
 const INLINE_SECRET_PATTERN = /(token|secret|api[_-]?key|authorization|password)\s*[:=]\s*([^\s,;]+)/gi;
 
 function redactStringValue(input: string): string {
-  return input.replace(INLINE_SECRET_PATTERN, (_match, key) => `${key}=${REDACTED}`);
+  return input
+    .replace(AUTHORIZATION_HEADER_PATTERN, (_match, key) => `${key}=${REDACTED}`)
+    .replace(INLINE_SECRET_PATTERN, (_match, key) => `${key}=${REDACTED}`)
+    .replace(AUTHORIZATION_SCHEME_PATTERN, (_match, scheme) => `${scheme} ${REDACTED}`);
 }
 
 function redactByKey(key: string, value: unknown): unknown {
