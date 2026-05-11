@@ -165,7 +165,9 @@ Expected behavior:
 - No files are generated.
 - The workflow path defaults to `$PWD/WORKFLOW.md`.
 - The local checkout path is hidden behind the `symphony` command.
-- The high-trust acknowledgement can be supplied by CLI or user-global local config, never by the project.
+- If the workflow requires high-trust local execution, `symphony setup` or
+  `symphony doctor --fix` collects user-local consent; project files can require
+  the posture but cannot grant the consent.
 
 ### New Local Project Bootstrap
 
@@ -244,8 +246,9 @@ Default behavior:
 - Load `./WORKFLOW.md`.
 - Load `.env` from the current project unless `--env-file` is provided.
 - Use `--port 0` by default for project mode to avoid collisions.
-- Require explicit high-trust acknowledgement unless a user-global config has opted in.
-- Never allow a project-committed config file to suppress the high-trust acknowledgement.
+- Require high-trust local execution consent when the effective workflow needs
+  it and no user-local consent record exists.
+- Never allow a project-committed file to suppress the high-trust acknowledgement.
 
 Candidate flags:
 
@@ -254,7 +257,7 @@ symphony dashboard
 symphony dashboard --workflow ./WORKFLOW.md
 symphony dashboard --port 61026
 symphony dashboard --offline
-symphony dashboard --logs-root ./.symphony/logs
+symphony dashboard --logs-root ./.symphony/system/logs
 symphony dashboard --allow-high-trust-local-run
 ```
 
@@ -275,7 +278,8 @@ Responsibilities:
 - Detect GitHub owner/repo from remote.
 - Prompt for tracker choice when not provided.
 - Generate `WORKFLOW.md` from a built-in profile.
-- Optionally generate `.worktreeinclude`, `.env.example`, and `.symphony/config.yaml`.
+- Optionally generate `.worktreeinclude` and `.env.example`.
+- Ensure `.symphony/system/` is ignored for runtime-owned state.
 - Never overwrite existing files without confirmation or `--force`.
 
 Candidate flags:
@@ -337,6 +341,18 @@ symphony doctor --json
 symphony doctor --ci
 ```
 
+### `symphony setup`
+
+Local machine setup command.
+
+Responsibilities:
+
+- Ask for high-trust local execution consent when the workflow requires it.
+- Store trust consent in user-local state keyed to the project/workflow identity.
+- Never write trust consent into project files.
+- Offer safe local fixes such as `link-local` guidance and `.gitignore`
+  updates for `.symphony/system/`.
+
 ### `symphony profile`
 
 Discoverable project profiles.
@@ -360,30 +376,36 @@ Recommended precedence, highest wins:
 1. CLI flags for one runtime invocation.
 2. Environment variables.
 3. Project `WORKFLOW.md`.
-4. Project-local `.symphony/config.yaml` for CLI-only preferences.
-5. User-global `~/.config/symphony/config.yaml`.
-6. Built-in profile defaults.
-7. Runtime defaults from resolver.
+4. User-global `~/.config/symphony/config.yaml`.
+5. Built-in profile defaults.
+6. Runtime defaults from resolver.
 
 Important distinction:
 
 - `WORKFLOW.md` remains the runtime contract.
-- `.symphony/config.yaml` should configure CLI ergonomics only, such as default port, preferred profile, and init choices.
 - Runtime-critical policy should stay in `WORKFLOW.md` so it is versioned with the project.
-- High-trust local-run acknowledgement is not a project setting. It must be passed on the CLI or stored in user-global config only.
+- Do not introduce project-local `.symphony/config.yaml` in the MVP.
+- High-trust local-run consent is not a project setting. `WORKFLOW.md` may
+  require the posture, but only CLI/setup/user-local state can grant consent.
 
 ### Profiles
 
-Profiles should be templates that generate or identify a full `WORKFLOW.md`.
+Profiles should be composable packs that generate or identify a full `WORKFLOW.md`.
 
-Initial built-ins:
+Initial pack dimensions:
 
-- `symphony-internal`
-- `linear-generic`
-- `linear-node`
-- `github-generic`
-- `github-node`
-- `memory-demo`
+- Tracker packs: `tracker:linear`, `tracker:github`, `tracker:memory`.
+- Workspace packs: `workspace:worktree`, `workspace:clone`, `workspace:none`.
+- Toolchain packs: `toolchain:node`, `toolchain:generic`.
+- Workflow packs: `workflow:solo-local`, `workflow:team-review`,
+  `workflow:symphony-internal`.
+
+Convenience bundles may still exist, for example:
+
+- `linear-node` = `tracker:linear` + `workspace:worktree` +
+  `toolchain:node` + `workflow:team-review`.
+- `github-node` = `tracker:github` + `workspace:worktree` +
+  `toolchain:node` + `workflow:team-review`.
 
 Future built-ins:
 
@@ -432,10 +454,34 @@ Do not customize:
 There are three separate surfaces:
 
 1. Runtime contract: `WORKFLOW.md`.
-2. CLI ergonomics: user-global config and optional project-local `.symphony/config.yaml`.
+2. CLI ergonomics: user-global config and setup-managed user-local state.
 3. Profile templates: source material used by `init` or `profile materialize`.
 
 Runtime must only consume the effective `WORKFLOW.md` plus existing env/CLI overrides. It should not re-read profile templates during execution. This keeps debugging honest: when a run behaves strangely, the operator inspects the workflow file that was actually used.
+
+### Project Layout
+
+Recommended MVP layout:
+
+```text
+WORKFLOW.md
+.symphony/
+  skills/
+  prompts/
+  system/
+    workspaces/
+    logs/
+    runtime.sqlite
+```
+
+Rules:
+
+- `WORKFLOW.md` stays at the project root and remains the only MVP project
+  configuration file.
+- `.symphony/system/` is runtime-owned and should be ignored.
+- `.symphony/skills/` and `.symphony/prompts/` are reserved for future
+  versioned project-owned customization.
+- Setup/init should add `.symphony/system/` to `.gitignore` when needed.
 
 ### User-Local Overrides
 
@@ -444,7 +490,8 @@ Use user-local config for preferences that should not be committed:
 - Default port behavior.
 - Default Codex home.
 - Preferred model/reasoning.
-- Whether high-trust local startup acknowledgement has been accepted for this machine.
+- Whether high-trust local startup consent has been accepted for this
+  project/workflow on this machine.
 - Default logs root.
 - Preferred tracker credential env var names.
 
@@ -697,8 +744,8 @@ Acceptance criteria:
 - From another repo, `symphony dashboard --workflow ./WORKFLOW.md --port 0` starts the dashboard.
 - `symphony dashboard` defaults to `./WORKFLOW.md`.
 - From the Symphony repo, `symphony dashboard --profile symphony-internal` preserves current behavior.
-- Guardrail acknowledgement is handled by an explicit CLI flag or user-global config with clear diagnostics.
-- Project-local config cannot suppress high-trust acknowledgement.
+- High-trust consent is handled by explicit CLI/setup/user-local state with clear diagnostics.
+- Project files cannot grant high-trust consent.
 - Local linked CLI can depend on the source checkout, but it must not require the user to remember `npm --prefix`.
 - `npm run build`, `npm test`, and `git diff --check` pass.
 
@@ -708,15 +755,16 @@ Deliverables:
 
 - Built-in profile registry.
 - `symphony init` dry-run and materialize modes.
-- Generated `WORKFLOW.md` for Linear/GitHub generic and Node profiles.
+- Generated `WORKFLOW.md` from composable tracker/workspace/toolchain/workflow packs.
 - `.env.example` and `.worktreeinclude` optional generation.
+- `.gitignore` update for `.symphony/system/`.
 - Git remote detection for GitHub defaults.
 - Clear distinction between `symphony-internal` and generic project profiles.
 
 Acceptance criteria:
 
-- Running `symphony init --tracker github --profile node --dry-run` shows a complete proposed file set.
-- Running `symphony init --tracker linear --project-slug APP` creates a valid workflow.
+- Running `symphony init --tracker github --toolchain node --dry-run` shows a complete proposed file set.
+- Running `symphony init --tracker linear --toolchain node --project-slug APP` creates a valid workflow.
 - Existing `WORKFLOW.md` is not overwritten without explicit confirmation/force.
 - Generated generic workflows do not include Symphony-internal lifecycle states unless requested.
 
@@ -865,9 +913,9 @@ Increase Symphony's usefulness beyond its own repository by making the local che
 | LOCAL-00 | Add local `symphony` command | Add package `bin` and local link/install script for this checkout. | `npm run link:local` makes `symphony --help` work without `npm --prefix`. |
 | LOCAL-01 | Preserve `symphony-internal` profile | Model current repository workflow as a golden internal profile. | Tests prove `symphony-internal` maps to checked-in `WORKFLOW.md` and preserves internal states/skill expectations. |
 | LOCAL-02 | Implement `symphony dashboard` project defaults | Default workflow to `./WORKFLOW.md`, project `.env`, port handling, guardrail flag/config. | Starts against another repo without `npm --prefix`; prints URL and workflow path. |
-| LOCAL-03 | Create profile registry | Move example workflows into loadable local profiles with metadata. | `symphony profile list/show` returns `symphony-internal`, Linear/GitHub generic, and Node profiles. |
+| LOCAL-03 | Create profile registry | Move example workflows into composable tracker/workspace/toolchain/workflow packs with metadata. | `symphony profile list/show` returns `symphony-internal`, `tracker:linear`, `tracker:github`, `tracker:memory`, and initial workspace/toolchain/workflow packs. |
 | LOCAL-04 | Implement `symphony init --dry-run` | Detect git root/toolchain/tracker inputs and render proposed files. | Dry-run prints complete `WORKFLOW.md` without writing. |
-| LOCAL-05 | Implement safe `symphony init` writes | Materialize `WORKFLOW.md`, optional `.env.example`, `.worktreeinclude`, with overwrite protection. | Existing files are preserved unless `--force`; generated workflow validates. |
+| LOCAL-05 | Implement safe `symphony init` writes | Materialize `WORKFLOW.md`, optional `.env.example`, `.worktreeinclude`, and `.gitignore` entry for `.symphony/system/`, with overwrite protection. | Existing files are preserved unless `--force`; generated workflow validates. |
 | LOCAL-06 | Add `symphony doctor` workflow/env checks | Validate workflow parse/config/env/Codex command/git readiness. | Missing env vars and invalid config produce actionable errors and non-zero CI exit. |
 | LOCAL-07 | Add `doctor --json` contract | Stable JSON diagnostics for CI/desktop. | Tests assert schema for pass/fail cases. |
 | LOCAL-08 | Package generic prompt/skill packs for local profiles | Provide reusable prompt sections for commit, PR, Linear workpad, GitHub flow. | Generated non-Symphony workflow contains no internal Symphony-only lifecycle unless selected. |
@@ -885,10 +933,10 @@ Increase Symphony's usefulness beyond its own repository by making the local che
 
 1. Local command strategy: `npm link`, custom shim, or both.
 2. Exact shape of `symphony-internal` profile and its regression tests.
-3. Name of the high-trust acknowledgement flag/config.
-4. Whether `symphony init` should create `.symphony/config.yaml` in MVP.
-5. Whether profiles should be pure generated workflows in MVP or introduce workflow inheritance.
-6. Whether local skill packs should be copied into projects or referenced from the Symphony checkout.
+3. Exact user-local keying model for high-trust consent records.
+4. Exact CLI spelling for composable pack selection.
+5. Whether local skill packs should be copied into projects or referenced from the Symphony checkout.
+6. How `.symphony/system/` migration should be communicated for the current Symphony repo.
 7. How strongly to support non-Node projects before distribution is complete.
 8. First public install target later: npm global, npm devDependency, or both.
 9. Final scoped npm package name later.
@@ -898,13 +946,15 @@ Increase Symphony's usefulness beyond its own repository by making the local che
 Recommended defaults:
 
 - Build a local linked `symphony` command before public package work.
-- Treat `symphony-internal` as a protected profile.
+- Treat `symphony-internal` as a protected alias to the checked-in `WORKFLOW.md`.
 - Support both `npm install -g @nielsgalen/symphony` and `npm add -D @nielsgalen/symphony` later, once package-ready.
 - Keep generated full `WORKFLOW.md` for MVP.
+- Do not create project-local `.symphony/config.yaml` in MVP.
+- Use `.symphony/system/` for ignored runtime state.
 - Defer inheritance until repeated generated sections become painful.
 - Use `doctor` as the enforcement surface for skill availability rather than runtime magic.
 - Make Homebrew install a standalone binary, not an npm shim.
-- Do not let project-local config acknowledge high-trust execution.
+- Do not let project files grant high-trust execution consent.
 
 ## Risks and Mitigations
 
