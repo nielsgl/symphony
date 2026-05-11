@@ -64,6 +64,10 @@ _Avoid_: Issue identifier alone
 The **Project Execution History** view that groups all run attempts, phases, validation evidence, PR state, blockers, costs, and outcomes for one tracker ticket.
 _Avoid_: Codex thread history
 
+**Project History Consumer Summary**:
+A compact read-only **Project Execution History** projection for review and future workflow consumers, derived from durable ticket/run facts without triggering validation reuse, handoff packets, drain mode, or operator steering.
+_Avoid_: Phase Handoff Packet, Validation Ledger behavior
+
 **Validation Ledger**:
 The **Project Execution History** record of validation commands, evidence identities, results, reuse decisions, and invalidation reasons.
 _Avoid_: Test cache when referring to auditable validation evidence

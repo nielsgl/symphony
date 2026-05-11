@@ -515,3 +515,33 @@ Hot-path constraints:
   dashboard APIs to decide whether to write Project Execution History.
 - Restart recovery reads the durable SQLite tables. Live memory can enrich the
   current process view, but it is not proof of persisted ticket history.
+
+## 15. Project History Consumer Summary
+
+The Project History Consumer Summary is a compact read-only projection derived
+from Project Execution History ticket timelines. It exists so review automation
+and later workflow consumers can read durable facts without depending on the
+larger ticket detail payload or implementing later workflow features early.
+
+The v1 summary schema is
+`symphony.project_history.consumer_summary.v1` and is exposed at
+`GET /api/v1/projects/:projectKey/history/tickets/:ticketKey/consumer-summary`.
+
+The summary includes:
+
+- Current ticket state, current/last known tracker status, latest observation
+  time, and fact health/degradation markers.
+- Attempt totals, repeated-attempt flag, latest attempt, and recent attempts.
+- Recent phase spans.
+- Active/resolved blocker counts and recent blocker facts.
+- Token and Effective Model facts, including total tokens, requested/effective
+  models, telemetry confidence, and recent token observations.
+- App Server Event Ledger Lite excerpts using bounded summaries/redacted
+  excerpts only.
+- Evidence references.
+
+The summary is explicitly read-only. It must not mutate history, refresh
+tracker state, call validation commands, reuse validation evidence, generate
+Phase Handoff Packets, enter or inspect Drain Mode beyond already persisted
+facts, or steer operator actions. Those capabilities remain owned by their
+later SWP slices.

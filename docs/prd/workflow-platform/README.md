@@ -265,6 +265,8 @@ Initial scope:
 - App Server Event Ledger Lite with bounded summaries and typed high-value fields.
 - Token and Effective Model facts persisted.
 - Project History View with ticket table and ticket detail timeline.
+- Project History Consumer Summary: compact read-only ticket/run facts for
+  review automation and future workflow consumers.
 - Retention knobs for operational and app-server-lite data.
 
 Out of scope:
@@ -273,6 +275,7 @@ Out of scope:
 - Cost analytics beyond cost-ready token/effective-model fields.
 - Validation reuse.
 - Phase handoff packet generation.
+- Drain mode decisions and operator steering.
 - Cohort analytics dashboards.
 
 ### SWP-003: Safe Runtime Upgrade and Drain Mode
