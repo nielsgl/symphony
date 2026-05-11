@@ -126,7 +126,17 @@ function makeApiDiagnostics(): ApiDiagnosticsResponse {
       turn_sandbox_policy: { type: 'workspace-write' },
       user_input_policy: 'fail_attempt'
     },
-    persistence: { enabled: true, db_path: '/tmp/symphony.sqlite', retention_days: 14, run_count: 1, last_pruned_at: null, integrity_ok: true },
+    persistence: {
+      enabled: true,
+      db_path: '/tmp/symphony.sqlite',
+      retention_days: 14,
+      run_count: 1,
+      last_pruned_at: null,
+      last_prune_failure_at: null,
+      last_prune_failure_reason: null,
+      last_prune_failure_detail: null,
+      integrity_ok: true
+    },
     logging: { root: '/tmp/logs', active_file: '/tmp/logs/symphony.log', rotation: { max_bytes: 1000, max_files: 2 }, sinks: ['stderr'] },
     event_vocabulary_version: 'v2',
     token_accounting: {

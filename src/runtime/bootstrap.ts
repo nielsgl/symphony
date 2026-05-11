@@ -1034,6 +1034,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
                     retention_days: effectiveConfig.persistence.retention_days,
                     run_count: 0,
                     last_pruned_at: null,
+                    last_prune_failure_at: null,
+                    last_prune_failure_reason: null,
+                    last_prune_failure_detail: null,
                     integrity_ok: true
                   },
             listRunHistory: (limit) => (persistenceStore ? persistenceStore.listRunHistory(limit) : []),
@@ -1323,16 +1326,31 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     }
 
     if (persistenceStore) {
-      const pruned = persistenceStore.pruneExpiredRuns();
-      logger.log({
-        level: 'info',
-        event: CANONICAL_EVENT.persistence.pruned,
-        message: `pruned ${pruned} expired run records`,
-        context: {
-          pruned,
-          retention_days: effectiveConfig.persistence.retention_days
-        }
-      });
+      try {
+        const pruned = persistenceStore.pruneExpiredRuns();
+        logger.log({
+          level: 'info',
+          event: CANONICAL_EVENT.persistence.pruned,
+          message: `pruned ${pruned} expired run records`,
+          context: {
+            pruned,
+            retention_days: effectiveConfig.persistence.retention_days
+          }
+        });
+      } catch (error) {
+        const health = persistenceStore.health();
+        logger.log({
+          level: 'warn',
+          event: CANONICAL_EVENT.persistence.pruneFailed,
+          message: error instanceof Error ? error.message : 'retention pruning failed',
+          context: {
+            retention_days: effectiveConfig.persistence.retention_days,
+            last_prune_failure_at: health.last_prune_failure_at,
+            last_prune_failure_reason: health.last_prune_failure_reason,
+            last_prune_failure_detail: health.last_prune_failure_detail
+          }
+        });
+      }
     }
 
     try {

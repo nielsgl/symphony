@@ -401,6 +401,9 @@ export interface PersistenceHealth {
   retention_days: number;
   run_count: number;
   last_pruned_at: string | null;
+  last_prune_failure_at: string | null;
+  last_prune_failure_reason: string | null;
+  last_prune_failure_detail: string | null;
   integrity_ok: boolean;
   history_schema?: HistorySchemaHealth;
 }
