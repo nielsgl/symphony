@@ -2259,6 +2259,101 @@ describe('SqlitePersistenceStore', () => {
     expect(secondPrune.health().last_pruned_at).toBe('2026-04-13T12:01:00.000Z');
   });
 
+  it('prunes terminal expired app-server-lite history with retention tombstone metadata', async () => {
+    const base = Date.parse('2026-04-11T12:00:00.000Z');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-retention-app-server-prune-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base });
+    stores.push(store);
+    const issueRunId = store.appendIssueRun({
+      issue_id: 'expired-app-server-lite',
+      issue_identifier: 'EXP-LEDGER-1',
+      identity: identity({ issue_id: 'expired-app-server-lite', issue_identifier: 'EXP-LEDGER-1' }),
+      started_at: '2026-04-10T10:00:00.000Z',
+      ended_at: '2026-04-10T10:30:00.000Z',
+      status: 'succeeded'
+    });
+    const attemptId = store.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-10T10:00:01.000Z',
+      ended_at: '2026-04-10T10:30:00.000Z',
+      status: 'succeeded'
+    });
+    const threadId = store.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'expired-app-server-thread',
+      started_at: '2026-04-10T10:00:02.000Z',
+      ended_at: '2026-04-10T10:30:00.000Z',
+      status: 'succeeded'
+    });
+    const turnId = store.appendTurn({
+      thread_id: threadId,
+      turn_id: 'expired-app-server-turn',
+      turn_index: 0,
+      started_at: '2026-04-10T10:00:03.000Z',
+      ended_at: '2026-04-10T10:30:00.000Z',
+      status: 'succeeded'
+    });
+    store.appendAppServerEvent({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      observed_at: '2026-04-10T10:00:04.000Z',
+      source_event_id: 'expired-app-server-event',
+      source_event_name: 'rawResponseItem/completed',
+      payload_class: 'protocol_request_response',
+      raw_payload: { message: 'expired protocol evidence' },
+      summary: 'expired protocol evidence'
+    });
+
+    const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
+    stores.push(lateStore);
+    expect(lateStore.listAppServerEventLedger(issueRunId)).toHaveLength(1);
+
+    expect(lateStore.pruneExpiredRuns()).toBe(1);
+
+    expect(lateStore.listAppServerEventLedger(issueRunId)).toEqual([]);
+    expect(lateStore.reconstructThreadLineage(threadId)).toBeNull();
+    const db = openDatabase(dbPath);
+    try {
+      const appServerRows = db
+        .prepare('SELECT COUNT(*) AS count FROM history_app_server_event WHERE issue_run_id = ?')
+        .get(issueRunId) as { count: number };
+      expect(appServerRows.count).toBe(0);
+      const tombstone = db
+        .prepare(
+          `SELECT source_table, source_id, reason_code, pruned_record_count, metadata
+           FROM history_retention_prune_record
+           WHERE source_table = 'issue_run' AND source_id = ?`
+        )
+        .get(issueRunId) as
+        | {
+            source_table: string;
+            source_id: string;
+            reason_code: string;
+            pruned_record_count: number;
+            metadata: string;
+          }
+        | undefined;
+      expect(tombstone).toMatchObject({
+        source_table: 'issue_run',
+        source_id: issueRunId,
+        reason_code: 'retention_policy_expired_completed_history',
+        pruned_record_count: 5
+      });
+      expect(JSON.parse(tombstone?.metadata ?? '{}')).toMatchObject({
+        status: 'succeeded',
+        pruned_tables: expect.arrayContaining(['history_app_server_event', 'turn', 'thread', 'attempt', 'issue_run'])
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it('records retention prune failures in persistence health evidence', async () => {
     const base = Date.parse('2026-04-11T12:00:00.000Z');
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-retention-failure-'));
