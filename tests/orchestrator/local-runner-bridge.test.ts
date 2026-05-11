@@ -609,15 +609,15 @@ describe('LocalRunnerBridge integration', () => {
     const issueStateFetcher = vi.fn(async () => {
       throw new Error('Linear unavailable');
     });
-    const exits: Array<{ reason: string; error?: string }> = [];
+    const exits: Array<{ reason: string; error?: string; completion_reason?: string }> = [];
     const bridge = new LocalRunnerBridge({
       workspaceManager: { ensureWorkspace, prepareAttempt, finalizeAttempt, cleanupWorkspace } as unknown as WorkspaceManager,
       codexRunner: { startSessionAndRunTurn } as unknown as CodexRunner,
       config: { ...makeConfig(), agent: { ...makeConfig().agent, max_turns: 5 } },
       issueStateFetcher,
       promptTemplate: 'Issue {{ issue.identifier }} attempt {{ attempt }}',
-      onWorkerExit: ({ reason, error }) => {
-        exits.push({ reason, error });
+      onWorkerExit: ({ reason, error, completion_reason }) => {
+        exits.push({ reason, error, completion_reason });
       }
     });
 
@@ -629,7 +629,13 @@ describe('LocalRunnerBridge integration', () => {
     await (spawned.worker_handle as { promise: Promise<void> }).promise;
 
     expect(startSessionAndRunTurn).toHaveBeenCalledTimes(1);
-    expect(exits).toEqual([{ reason: 'abnormal', error: 'issue_state_refresh_failed: Linear unavailable' }]);
+    expect(exits).toEqual([
+      {
+        reason: 'normal',
+        error: 'issue_state_refresh_failed: Linear unavailable',
+        completion_reason: REASON_CODES.issueStateRefreshFailed
+      }
+    ]);
     expect(finalizeAttempt).toHaveBeenCalledWith('/tmp/symphony/ABC-1');
   });
 

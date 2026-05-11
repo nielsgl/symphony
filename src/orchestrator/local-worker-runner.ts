@@ -140,8 +140,9 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
         refreshedIssues = await input.issueStateFetcher([currentIssue.id]);
       } catch (error) {
         return {
-          reason: 'abnormal',
+          reason: 'normal',
           session_id: lastSessionId,
+          completion_reason: REASON_CODES.issueStateRefreshFailed,
           error: `issue_state_refresh_failed: ${error instanceof Error ? error.message : 'unknown'}`
         };
       }
@@ -299,8 +300,9 @@ export async function runLocalWorkerRecoveryAttempt(
       refreshedIssues = await input.issueStateFetcher([input.issue.id]);
     } catch (error) {
       return {
-        reason: 'abnormal',
+        reason: 'normal',
         session_id: turnResult.session_id,
+        completion_reason: REASON_CODES.issueStateRefreshFailed,
         error: `issue_state_refresh_failed: ${error instanceof Error ? error.message : 'unknown'}`
       };
     }

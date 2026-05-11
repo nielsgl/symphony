@@ -2127,6 +2127,7 @@ export class OrchestratorCore {
           cleanup_workspace: true
         };
       case REASON_CODES.maxTurnsReached:
+      case REASON_CODES.issueStateRefreshFailed:
       case null:
         return null;
     }
@@ -2899,6 +2900,70 @@ export class OrchestratorCore {
           detail: `result=succeeded completion_reason=${completionReason ?? REASON_CODES.normalCompletion} refreshed_state=${details.refreshed_state ?? 'unknown'}`
         });
       }
+      if (completionReason === REASON_CODES.issueStateRefreshFailed) {
+        const stopReasonDetail = error ?? 'tracker state refresh failed after completed turn';
+        this.emitPhaseMarker(issue_id, {
+          phase: 'completed',
+          detail: 'worker exited normally; tracker refresh pending',
+          attempt: running.retry_attempt,
+          thread_id: running.thread_id,
+          session_id: running.session_id
+        });
+        await this.completeRunRecord(running, 'succeeded', REASON_CODES.issueStateRefreshFailed, null, stopReasonDetail);
+        await this.persistExecutionGraphStateTransition(
+          running,
+          'retrying',
+          'retrying',
+          REASON_CODES.issueStateRefreshFailed,
+          stopReasonDetail
+        );
+        this.state.completed.add(issue_id);
+        await this.scheduleRetry({
+          issue_id,
+          identifier: running.identifier,
+          attempt: 1,
+          issue_run_id: running.issue_run_id ?? null,
+          previous_attempt_id: running.attempt_id ?? null,
+          delay_type: 'failure',
+          error: 'tracker state refresh pending',
+          worker_host: running.worker_host ?? null,
+          workspace_path: running.workspace_path ?? null,
+          provisioner_type: running.provisioner_type ?? null,
+          branch_name: running.branch_name ?? null,
+          repo_root: running.repo_root ?? null,
+          workspace_exists: running.workspace_exists,
+          workspace_git_status: running.workspace_git_status,
+          workspace_provisioned: running.workspace_provisioned,
+          workspace_is_git_worktree: running.workspace_is_git_worktree,
+          copy_ignored_applied: running.copy_ignored_applied,
+          copy_ignored_status: running.copy_ignored_status,
+          copy_ignored_summary: running.copy_ignored_summary,
+          stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+          stop_reason_detail: stopReasonDetail,
+          previous_thread_id: running.thread_id,
+          previous_session_id: running.session_id,
+          issue_snapshot: running.issue,
+          budget: running.budget,
+          recovery: running.recovery ? { ...running.recovery } : null
+        });
+        this.logger?.log({
+          level: 'warn',
+          event: CANONICAL_EVENT.orchestration.workerExitHandled,
+          message: 'worker exit handled: completed; tracker refresh retry pending',
+          context: {
+            issue_id,
+            issue_identifier: running.identifier,
+            session_id: running.session_id,
+            reason,
+            outcome: 'tracker_refresh_pending',
+            retry_attempt: 1,
+            stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+            error: stopReasonDetail
+          }
+        });
+        this.ports.notifyObservers?.();
+        return;
+      }
       const normalStop = this.normalStopForWorkerCompletion(completionReason, details.refreshed_state ?? null);
       if (normalStop) {
         this.emitPhaseMarker(issue_id, {
@@ -3339,6 +3404,11 @@ export class OrchestratorCore {
 
     this.state.retry_attempts.delete(issue_id);
 
+    if (retryEntry.stop_reason_code === REASON_CODES.issueStateRefreshFailed) {
+      await this.onTrackerRefreshRetryTimer(issue_id, retryEntry);
+      return;
+    }
+
     let candidates: Issue[];
     try {
       candidates = await this.ports.tracker.fetch_candidate_issues();
@@ -3584,6 +3654,118 @@ export class OrchestratorCore {
     await this.dispatchIssue(issue, retryEntry.attempt, null, {
       issue_run_id: retryEntry.issue_run_id,
       previous_attempt_id: retryEntry.previous_attempt_id
+    });
+  }
+
+  private async onTrackerRefreshRetryTimer(issue_id: string, retryEntry: RetryEntry): Promise<void> {
+    let refreshedIssues: Issue[];
+    try {
+      refreshedIssues = await this.ports.tracker.fetch_issue_states_by_ids([issue_id]);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown';
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+        message: 'failed to refresh issue state for completed turn retry',
+        context: {
+          issue_id,
+          issue_identifier: retryEntry.identifier,
+          attempt: retryEntry.attempt,
+          error: detail,
+          stop_reason_code: REASON_CODES.issueStateRefreshFailed
+        }
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+        severity: 'warn',
+        issue_identifier: retryEntry.identifier,
+        detail
+      });
+      await this.scheduleRetry({
+        issue_id,
+        identifier: retryEntry.identifier,
+        attempt: retryEntry.attempt + 1,
+        issue_run_id: retryEntry.issue_run_id,
+        previous_attempt_id: retryEntry.previous_attempt_id,
+        delay_type: 'failure',
+        error: 'tracker state refresh retry failed',
+        worker_host: retryEntry.worker_host ?? null,
+        workspace_path: retryEntry.workspace_path ?? null,
+        provisioner_type: retryEntry.provisioner_type ?? null,
+        branch_name: retryEntry.branch_name ?? null,
+        repo_root: retryEntry.repo_root ?? null,
+        workspace_exists: retryEntry.workspace_exists,
+        workspace_git_status: retryEntry.workspace_git_status,
+        workspace_provisioned: retryEntry.workspace_provisioned,
+        workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
+        copy_ignored_applied: retryEntry.copy_ignored_applied,
+        copy_ignored_status: retryEntry.copy_ignored_status,
+        copy_ignored_summary: retryEntry.copy_ignored_summary,
+        stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+        stop_reason_detail: detail,
+        previous_thread_id: retryEntry.previous_thread_id ?? null,
+        previous_session_id: retryEntry.previous_session_id ?? null,
+        issue_snapshot: null,
+        progress_signals: retryEntry.progress_signals,
+        budget: retryEntry.budget,
+        recovery: retryEntry.recovery ? { ...retryEntry.recovery } : null
+      });
+      return;
+    }
+
+    const issue = refreshedIssues.find((candidate) => candidate.id === issue_id);
+    if (!issue) {
+      this.recordRetryCleared(retryEntry, {
+        cleanup_reason: 'active_candidate_missing',
+        observed_tracker_state: null
+      });
+      this.state.claimed.delete(issue_id);
+      return;
+    }
+
+    if (!isActiveState(issue.state, this.config)) {
+      this.recordRetryCleared(retryEntry, {
+        cleanup_reason: isTerminalState(issue.state, this.config) ? 'tracker_state_terminal' : 'tracker_state_non_active',
+        observed_tracker_state: issue.state
+      });
+      this.state.claimed.delete(issue_id);
+      return;
+    }
+
+    if (this.isFreshDispatchState(issue.state)) {
+      this.state.claimed.delete(issue_id);
+      await this.dispatchIssue(issue, null);
+      return;
+    }
+
+    await this.scheduleRetry({
+      issue_id,
+      identifier: issue.identifier,
+      attempt: retryEntry.attempt,
+      issue_run_id: retryEntry.issue_run_id,
+      previous_attempt_id: retryEntry.previous_attempt_id,
+      delay_type: 'continuation',
+      error: null,
+      worker_host: retryEntry.worker_host ?? null,
+      workspace_path: retryEntry.workspace_path ?? null,
+      provisioner_type: retryEntry.provisioner_type ?? null,
+      branch_name: retryEntry.branch_name ?? null,
+      repo_root: retryEntry.repo_root ?? null,
+      workspace_exists: retryEntry.workspace_exists,
+      workspace_git_status: retryEntry.workspace_git_status,
+      workspace_provisioned: retryEntry.workspace_provisioned,
+      workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
+      copy_ignored_applied: retryEntry.copy_ignored_applied,
+      copy_ignored_status: retryEntry.copy_ignored_status,
+      copy_ignored_summary: retryEntry.copy_ignored_summary,
+      stop_reason_code: REASON_CODES.normalCompletion,
+      stop_reason_detail: 'tracker state refresh succeeded; continuing while issue is active',
+      previous_thread_id: retryEntry.previous_thread_id ?? null,
+      previous_session_id: retryEntry.previous_session_id ?? null,
+      issue_snapshot: issue,
+      progress_signals: retryEntry.progress_signals,
+      budget: retryEntry.budget,
+      recovery: retryEntry.recovery ? { ...retryEntry.recovery } : null
     });
   }
 

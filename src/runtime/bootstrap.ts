@@ -879,7 +879,19 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       scheduleRetryTimer: ({ issue_id, due_at_ms, callback }) => {
         const delayMs = Math.max(0, due_at_ms - nowMs());
         const timeout = setTimeout(() => {
-          void callback();
+          void callback().catch((error) => {
+            logger.log({
+              level: 'error',
+              event: CANONICAL_EVENT.orchestration.retryTimerCallbackFailed,
+              message: 'retry timer callback failed',
+              context: {
+                issue_id,
+                due_at_ms,
+                error: error instanceof Error ? error.message : 'unknown'
+              }
+            });
+            apiServer?.notifyStateChanged('retry_timer_callback_failed');
+          });
         }, delayMs);
         retryTimers.set(issue_id, { timeout });
         return timeout;
