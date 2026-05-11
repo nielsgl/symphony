@@ -3978,6 +3978,62 @@ describe('LocalApiServer', () => {
     expect(detailPayload.operator_facts).toHaveLength(1);
     expect(detailPayload.app_server_lite_summaries).toHaveLength(1);
     expect(detailPayload.token_model_summaries).toHaveLength(1);
+
+    const consumerSummaryResponse = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets/${completedIdentity.ticket.key}/consumer-summary`
+    );
+    const consumerSummaryPayload = (await consumerSummaryResponse.json()) as {
+      schema_version: string;
+      read_only: boolean;
+      deferred_capabilities: string[];
+      current_ticket_state: { state: string; current_status: string };
+      attempts: { total: number; repeated: boolean };
+      recent_phases: unknown[];
+      blockers: { resolved_count: number };
+      token_model: { status: string; total_tokens: number | null; effective_models: string[] };
+      app_server_lite: { status: string; excerpts: unknown[] };
+      evidence_references: unknown[];
+    };
+    expect(consumerSummaryResponse.status).toBe(200);
+    expect(consumerSummaryPayload).toMatchObject({
+      schema_version: 'symphony.project_history.consumer_summary.v1',
+      read_only: true,
+      deferred_capabilities: ['validation_reuse', 'phase_handoff_packets', 'drain_mode', 'operator_steering'],
+      current_ticket_state: { state: 'completed', current_status: 'Agent Review' },
+      attempts: { total: 1, repeated: false },
+      blockers: { resolved_count: 1 },
+      token_model: { status: 'present', total_tokens: 42, effective_models: ['gpt-5.4'] },
+      app_server_lite: { status: 'degraded' }
+    });
+    expect(consumerSummaryPayload.recent_phases).toHaveLength(1);
+    expect(consumerSummaryPayload.app_server_lite.excerpts).toHaveLength(1);
+    expect(consumerSummaryPayload.evidence_references).toHaveLength(1);
+
+    const missingSummaryResponse = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets/missing-ticket/consumer-summary`
+    );
+    const missingSummaryPayload = (await missingSummaryResponse.json()) as { error: { code: string } };
+    expect(missingSummaryResponse.status).toBe(404);
+    expect(missingSummaryPayload.error.code).toBe('project_history_ticket_not_found');
+  });
+
+  it('returns a typed error when project history consumer summaries are unavailable', async () => {
+    server = new LocalApiServer({
+      snapshotSource: { getStateSnapshot: () => makeState() },
+      refreshSource: { tick: vi.fn(async () => undefined) },
+      diagnosticsSource: makeDiagnosticsSource({
+        getProjectTicketIdentity: undefined,
+        reconstructTicketTimeline: undefined
+      })
+    });
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets/ticket-abc-1/consumer-summary`);
+    const payload = (await response.json()) as { error: { code: string } };
+
+    expect(response.status).toBe(503);
+    expect(payload.error.code).toBe('project_history_unavailable');
   });
 
   it('serves canonical active thread diagnostics by thread id and issue identifier', async () => {

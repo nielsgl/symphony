@@ -88,6 +88,99 @@ export interface ProjectHistoryTicketDetailResponse extends ProjectHistoryTicket
   token_model_summaries: TicketTimelineRecord['token_model_facts'];
 }
 
+export interface ProjectHistoryConsumerSummaryResponse {
+  schema_version: 'symphony.project_history.consumer_summary.v1';
+  read_only: true;
+  deferred_capabilities: Array<'validation_reuse' | 'phase_handoff_packets' | 'drain_mode' | 'operator_steering'>;
+  project_identity: DurableIdentity['project'];
+  ticket_identity: DurableIdentity['ticket'];
+  current_ticket_state: {
+    state: ProjectHistoryTicketRow['state'];
+    current_status: string;
+    last_known_status: string;
+    latest_observed_at: string | null;
+    facts: ProjectHistoryFactState[];
+  };
+  attempts: {
+    total: number;
+    repeated: boolean;
+    latest: ProjectHistoryTicketRow['latest_attempt'];
+    recent: Array<{
+      attempt_id: string;
+      attempt_number: number;
+      status: ExecutionGraphEntityStatus;
+      started_at: string;
+      ended_at: string | null;
+      reason_code: string | null;
+      reason_detail: string | null;
+    }>;
+  };
+  recent_phases: Array<{
+    phase: string;
+    status: ExecutionGraphEntityStatus;
+    started_at: string;
+    ended_at: string | null;
+    reason_code: string | null;
+    reason_detail: string | null;
+  }>;
+  blockers: {
+    active_count: number;
+    resolved_count: number;
+    recent: Array<{
+      blocker_type: string;
+      status: 'active' | 'resolved';
+      reason_code: string;
+      reason_detail: string | null;
+      blocked_at: string;
+      resolved_at: string | null;
+    }>;
+  };
+  token_model: {
+    status: 'present' | 'missing';
+    total_tokens: number | null;
+    requested_models: string[];
+    effective_models: string[];
+    telemetry_confidences: string[];
+    recent: Array<{
+      requested_model: string | null;
+      effective_model: string | null;
+      model_source: string | null;
+      input_tokens: number | null;
+      output_tokens: number | null;
+      cached_input_tokens: number | null;
+      reasoning_output_tokens: number | null;
+      total_tokens: number | null;
+      model_context_window: number | null;
+      telemetry_confidence: string;
+      observed_at: string;
+    }>;
+  };
+  app_server_lite: {
+    status: 'present' | 'missing' | 'degraded';
+    excerpts: Array<{
+      source_event_id: string;
+      source_event_name: string;
+      observed_at: string;
+      payload_class: string;
+      detail_status: string;
+      redaction_status: string;
+      summary: string | null;
+      summary_fields: Record<string, unknown>;
+      redacted_excerpt: string | null;
+      unavailable_reason_code: string | null;
+      truncated: boolean;
+      full_payload_stored: boolean;
+    }>;
+  };
+  evidence_references: Array<{
+    evidence_kind: string;
+    uri: string;
+    title: string | null;
+    recorded_at: string;
+    metadata: Record<string, unknown> | null;
+  }>;
+}
+
 export function buildProjectHistoryListResponse(params: {
   projectKey: string;
   timelines: TicketTimelineRecord[];
@@ -139,6 +232,116 @@ export function buildProjectHistoryTicketDetailResponse(
     blocked_input_events: timeline.blocked_input_events,
     app_server_lite_summaries: timeline.app_server_events,
     token_model_summaries: timeline.token_model_facts
+  };
+}
+
+export function buildProjectHistoryConsumerSummaryResponse(
+  timeline: TicketTimelineRecord,
+  historySchemaHealth?: HistorySchemaHealth | null
+): ProjectHistoryConsumerSummaryResponse {
+  const row = buildProjectHistoryTicketRow(timeline, historySchemaHealth);
+  const recentAttempts = latestItems(timeline.attempts, (attempt) => attempt.started_at, 5).map((attempt) => ({
+    attempt_id: attempt.attempt_id,
+    attempt_number: attempt.attempt_number,
+    status: attempt.status,
+    started_at: attempt.started_at,
+    ended_at: attempt.ended_at,
+    reason_code: attempt.reason_code,
+    reason_detail: attempt.reason_detail
+  }));
+  const recentPhases = latestItems(timeline.phase_spans, (phase) => phase.started_at, 8).map((phase) => ({
+    phase: phase.phase,
+    status: phase.status,
+    started_at: phase.started_at,
+    ended_at: phase.ended_at,
+    reason_code: phase.reason_code,
+    reason_detail: phase.reason_detail
+  }));
+  const recentBlockers = latestItems(timeline.blockers, (blocker) => blocker.blocked_at, 5).map((blocker) => ({
+    blocker_type: blocker.blocker_type,
+    status: blocker.status,
+    reason_code: blocker.reason_code,
+    reason_detail: blocker.reason_detail,
+    blocked_at: blocker.blocked_at,
+    resolved_at: blocker.resolved_at
+  }));
+  const recentTokenFacts = latestItems(timeline.token_model_facts, (fact) => fact.observed_at, 5);
+  const appServerExcerpts = latestItems(timeline.app_server_events, (event) => event.observed_at, 5).map((event) => ({
+    source_event_id: event.source_event_id,
+    source_event_name: event.source_event_name,
+    observed_at: event.observed_at,
+    payload_class: event.payload_class,
+    detail_status: event.detail_status,
+    redaction_status: event.redaction_status,
+    summary: event.summary,
+    summary_fields: event.summary_fields,
+    redacted_excerpt: event.redacted_excerpt,
+    unavailable_reason_code: event.unavailable_reason_code,
+    truncated: event.truncation.truncated,
+    full_payload_stored: event.full_payload_stored
+  }));
+
+  return {
+    schema_version: 'symphony.project_history.consumer_summary.v1',
+    read_only: true,
+    deferred_capabilities: ['validation_reuse', 'phase_handoff_packets', 'drain_mode', 'operator_steering'],
+    project_identity: row.project_identity,
+    ticket_identity: row.ticket_identity,
+    current_ticket_state: {
+      state: row.state,
+      current_status: row.current_status,
+      last_known_status: row.last_known_status,
+      latest_observed_at: row.latest_observed_at,
+      facts: row.facts
+    },
+    attempts: {
+      total: row.summary.attempt_count,
+      repeated: row.summary.attempt_count > 1,
+      latest: row.latest_attempt,
+      recent: recentAttempts
+    },
+    recent_phases: recentPhases,
+    blockers: {
+      active_count: row.summary.active_blocker_count,
+      resolved_count: row.summary.resolved_blocker_count,
+      recent: recentBlockers
+    },
+    token_model: {
+      status: timeline.token_model_facts.length > 0 ? 'present' : 'missing',
+      total_tokens: row.summary.total_tokens,
+      requested_models: uniqueStrings(timeline.token_model_facts.map((fact) => fact.requested_model)),
+      effective_models: uniqueStrings(timeline.token_model_facts.map((fact) => fact.effective_model)),
+      telemetry_confidences: uniqueStrings(timeline.token_model_facts.map((fact) => fact.telemetry_confidence)),
+      recent: recentTokenFacts.map((fact) => ({
+        requested_model: fact.requested_model,
+        effective_model: fact.effective_model,
+        model_source: fact.model_source,
+        input_tokens: fact.input_tokens,
+        output_tokens: fact.output_tokens,
+        cached_input_tokens: fact.cached_input_tokens,
+        reasoning_output_tokens: fact.reasoning_output_tokens,
+        total_tokens: fact.total_tokens,
+        model_context_window: fact.model_context_window,
+        telemetry_confidence: fact.telemetry_confidence,
+        observed_at: fact.observed_at
+      }))
+    },
+    app_server_lite: {
+      status:
+        appServerExcerpts.length === 0
+          ? 'missing'
+          : appServerExcerpts.some((event) => event.unavailable_reason_code || event.truncated || event.redaction_status !== 'not_required')
+            ? 'degraded'
+            : 'present',
+      excerpts: appServerExcerpts
+    },
+    evidence_references: latestItems(timeline.evidence_references, (evidence) => evidence.recorded_at, 5).map((evidence) => ({
+      evidence_kind: evidence.evidence_kind,
+      uri: evidence.uri,
+      title: evidence.title,
+      recorded_at: evidence.recorded_at,
+      metadata: evidence.metadata
+    }))
   };
 }
 
@@ -292,6 +495,13 @@ function latestBy<T>(items: T[], timestamp: (item: T) => string | null): T | nul
   }, null);
 }
 
+function latestItems<T>(items: T[], timestamp: (item: T) => string | null, limit: number): T[] {
+  return [...items]
+    .filter((item) => timestamp(item) !== null)
+    .sort((a, b) => String(timestamp(b)).localeCompare(String(timestamp(a))))
+    .slice(0, limit);
+}
+
 function maxTimestamp(values: Array<string | null>): string | null {
   return values.filter((value): value is string => value !== null).sort().at(-1) ?? null;
 }
@@ -302,4 +512,8 @@ function sumNullable(values: Array<number | null>): number | null {
     return null;
   }
   return present.reduce((sum, value) => sum + value, 0);
+}
+
+function uniqueStrings(values: Array<string | null>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0))].sort();
 }
