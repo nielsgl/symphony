@@ -16,6 +16,7 @@ describe('SqlitePersistenceStore', () => {
     prepare(sql: string): {
       all(...args: unknown[]): unknown[];
       get(...args: unknown[]): unknown;
+      run(...args: unknown[]): unknown;
     };
   };
   const identity = (params: { issue_id?: string; issue_identifier?: string; projectRoot?: string; workflowPath?: string; trackerScope?: string | null } = {}) =>
@@ -25,7 +26,7 @@ describe('SqlitePersistenceStore', () => {
       workflowHash: { status: 'present', value: 'workflow-hash' },
       repositoryRemote: { status: 'present', value: 'git@github.com:nielsgl/symphony.git' },
       trackerKind: 'linear',
-      trackerScope: params.trackerScope ?? 'symphony',
+      trackerScope: 'trackerScope' in params ? params.trackerScope : 'symphony',
       remoteIssueId: params.issue_id ?? 'issue-1',
       humanIssueIdentifier: params.issue_identifier ?? 'ABC-1'
     });
@@ -151,6 +152,7 @@ describe('SqlitePersistenceStore', () => {
         'history_schema_migrations',
         'history_project_identity',
         'history_ticket_identity',
+        'history_identity_projection',
         'history_protocol_summary',
         'history_app_server_event',
         'history_token_model_fact',
@@ -170,15 +172,16 @@ describe('SqlitePersistenceStore', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 3,
-      applied_version: 3,
+      target_version: 4,
+      applied_version: 4,
       status: 'healthy',
       degraded_reason_code: null
     });
     expect(store.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, name: 'project_execution_history_v1', status: 'applied' }),
       expect.objectContaining({ version: 2, name: 'ticket_orchestration_ledger_v1', status: 'applied' }),
-      expect.objectContaining({ version: 3, name: 'app_server_event_ledger_lite_policy', status: 'applied' })
+      expect.objectContaining({ version: 3, name: 'app_server_event_ledger_lite_policy', status: 'applied' }),
+      expect.objectContaining({ version: 4, name: 'existing_run_history_identity_backfill_v1', status: 'applied' })
     ]);
   });
 
@@ -837,18 +840,19 @@ describe('SqlitePersistenceStore', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(3);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(4);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 3, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
       expect.objectContaining({ version: 2, status: 'applied' }),
-      expect.objectContaining({ version: 3, status: 'applied' })
+      expect.objectContaining({ version: 3, status: 'applied' }),
+      expect.objectContaining({ version: 4, status: 'applied' })
     ]);
   });
 
@@ -970,7 +974,7 @@ describe('SqlitePersistenceStore', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 3, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
       expect.arrayContaining([
         'history_token_model_fact',
@@ -979,6 +983,225 @@ describe('SqlitePersistenceStore', () => {
         'history_app_server_event'
       ])
     );
+  });
+
+  it('backfills existing run history identity projections and degraded evidence idempotently', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-backfill-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const projectedIdentity = identity({
+      issue_id: 'legacy-remote-1',
+      issue_identifier: 'LEG-1',
+      trackerScope: null
+    });
+    const issueRunIdentity = identity({
+      issue_id: 'legacy-remote-2',
+      issue_identifier: 'LEG-2'
+    });
+    const db = openDatabase(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE runs (
+          run_id TEXT PRIMARY KEY,
+          issue_id TEXT NOT NULL,
+          issue_identifier TEXT NOT NULL,
+          identity TEXT,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          terminal_status TEXT,
+          error_code TEXT
+        );
+        CREATE TABLE run_sessions (
+          run_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          PRIMARY KEY (run_id, session_id)
+        );
+        CREATE TABLE run_events (
+          event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id TEXT NOT NULL,
+          at TEXT NOT NULL,
+          event TEXT NOT NULL,
+          message TEXT
+        );
+        CREATE TABLE issue_run (
+          issue_run_id TEXT PRIMARY KEY,
+          issue_id TEXT NOT NULL,
+          issue_identifier TEXT NOT NULL,
+          identity TEXT,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE attempt (
+          attempt_id TEXT PRIMARY KEY,
+          issue_run_id TEXT NOT NULL,
+          attempt_number INTEGER NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE thread (
+          thread_id TEXT PRIMARY KEY,
+          attempt_id TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE turn (
+          turn_id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          turn_index INTEGER NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE phase_span (
+          phase_span_id TEXT PRIMARY KEY,
+          turn_id TEXT NOT NULL,
+          phase TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE tool_span (
+          tool_span_id TEXT PRIMARY KEY,
+          turn_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE state_transition (
+          state_transition_id TEXT PRIMARY KEY,
+          issue_run_id TEXT NOT NULL,
+          attempt_id TEXT,
+          thread_id TEXT,
+          turn_id TEXT,
+          from_status TEXT,
+          to_status TEXT NOT NULL,
+          transitioned_at TEXT NOT NULL,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+      `);
+      db.prepare(
+        `INSERT INTO runs (run_id, issue_id, issue_identifier, identity, started_at, ended_at, terminal_status, error_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        'legacy-run-projectable',
+        'legacy-remote-1',
+        'LEG-1',
+        JSON.stringify(projectedIdentity),
+        '2026-04-11T10:00:00.000Z',
+        '2026-04-11T10:05:00.000Z',
+        'failed',
+        'legacy_error'
+      );
+      db.prepare(
+        `INSERT INTO runs (run_id, issue_id, issue_identifier, identity, started_at, ended_at, terminal_status, error_code)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`
+      ).run(
+        'legacy-run-degraded',
+        'legacy-remote-missing',
+        'LEG-MISSING',
+        '2026-04-11T10:10:00.000Z',
+        '2026-04-11T10:15:00.000Z',
+        'failed',
+        'legacy_missing_identity'
+      );
+      db.prepare(
+        `INSERT INTO issue_run (issue_run_id, issue_id, issue_identifier, identity, started_at, ended_at, status, reason_code, reason_detail)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        'legacy-issue-run-projectable',
+        'legacy-remote-2',
+        'LEG-2',
+        JSON.stringify(issueRunIdentity),
+        '2026-04-11T11:00:00.000Z',
+        null,
+        'running',
+        null,
+        null
+      );
+    } finally {
+      db.close();
+    }
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T12:00:00.000Z') });
+    stores.push(storeA);
+    const history = storeA.listRunHistory(10);
+
+    expect(history.find((run) => run.run_id === 'legacy-run-projectable')).toMatchObject({
+      issue_identifier: 'LEG-1',
+      identity: projectedIdentity,
+      identity_projection: {
+        source_table: 'runs',
+        source_id: 'legacy-run-projectable',
+        projection_status: 'projected',
+        reason_code: null,
+        project_key: projectedIdentity.project.key,
+        ticket_key: projectedIdentity.ticket.key
+      }
+    });
+    expect(history.find((run) => run.run_id === 'legacy-run-projectable')?.identity?.ticket.tracker_scope).toEqual({
+      status: 'missing',
+      reason: 'tracker_scope_unavailable'
+    });
+    expect(history.find((run) => run.run_id === 'legacy-run-degraded')).toMatchObject({
+      issue_identifier: 'LEG-MISSING',
+      identity: null,
+      identity_projection: {
+        source_table: 'runs',
+        source_id: 'legacy-run-degraded',
+        projection_status: 'degraded',
+        reason_code: 'missing_durable_identity',
+        project_key: null,
+        ticket_key: null
+      }
+    });
+    const backfillDbA = openDatabase(dbPath);
+    try {
+      expect(backfillDbA.prepare('SELECT project_key FROM history_project_identity ORDER BY project_key').all()).toEqual(
+        expect.arrayContaining([{ project_key: projectedIdentity.project.key }, { project_key: issueRunIdentity.project.key }])
+      );
+      expect(
+        backfillDbA
+          .prepare('SELECT issue_run_id, project_key, ticket_key FROM issue_run WHERE issue_run_id = ?')
+          .get('legacy-issue-run-projectable')
+      ).toEqual({
+        issue_run_id: 'legacy-issue-run-projectable',
+        project_key: issueRunIdentity.project.key,
+        ticket_key: issueRunIdentity.ticket.key
+      });
+      expect(backfillDbA.prepare('SELECT COUNT(*) AS count FROM history_identity_projection').get()).toEqual({ count: 3 });
+    } finally {
+      backfillDbA.close();
+    }
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T12:05:00.000Z') });
+    stores.push(storeB);
+    const backfillDbB = openDatabase(dbPath);
+    try {
+      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
+      expect(backfillDbB.prepare('SELECT COUNT(*) AS count FROM history_identity_projection').get()).toEqual({ count: 3 });
+    } finally {
+      backfillDbB.close();
+    }
   });
 
   it('stores App Server Event Ledger Lite records with bounded policy details across reopen', async () => {
