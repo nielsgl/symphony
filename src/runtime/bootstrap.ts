@@ -18,7 +18,7 @@ import {
 } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
-import { SqlitePersistenceStore } from '../persistence';
+import { SqlitePersistenceStore, buildDurableIdentity, type DurableIdentity } from '../persistence';
 import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult, type OrchestratorPorts } from '../orchestrator';
 import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
@@ -143,6 +143,13 @@ function extractChecklistCheckpoint(issueDescription: string | null): string | n
   }
   const normalized = checklistLines.join('\n');
   return crypto.createHash('sha1').update(normalized).digest('hex');
+}
+
+function resolveTrackerScope(config: EffectiveConfig): string | null {
+  if (config.tracker.kind === 'github') {
+    return config.tracker.owner && config.tracker.repo ? `${config.tracker.owner}/${config.tracker.repo}` : null;
+  }
+  return config.tracker.project_slug || null;
 }
 
 class StructuredLoggerObserverSink implements LogSink {
@@ -723,6 +730,15 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         nowMs
       })
     : null;
+  const createIdentityForIssue = (params: { issue_id: string; issue_identifier: string }): DurableIdentity =>
+    buildDurableIdentity({
+      projectRoot: effectiveConfig.workspace.provisioner.repo_root ?? workflowDir,
+      workflowPath: currentWorkflowPath,
+      trackerKind: effectiveConfig.tracker.kind,
+      trackerScope: resolveTrackerScope(effectiveConfig),
+      remoteIssueId: params.issue_id,
+      humanIssueIdentifier: params.issue_identifier
+    });
 
   const codexRunner = new CodexRunner({
     dynamicToolExecutor: createDefaultDynamicToolExecutor({
@@ -939,8 +955,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     nowMs,
     persistence: persistenceStore
       ? {
-          startRun: async (params) => persistenceStore.startRun(params),
-          appendIssueRun: async (params) => persistenceStore.appendIssueRun(params),
+          startRun: async (params) => persistenceStore.startRun({ ...params, identity: createIdentityForIssue(params) }),
+          appendIssueRun: async (params) =>
+            persistenceStore.appendIssueRun({ ...params, identity: createIdentityForIssue(params) }),
           appendAttempt: async (params) => persistenceStore.appendAttempt(params),
           appendThread: async (params) => persistenceStore.appendThread(params),
           appendTurn: async (params) => persistenceStore.appendTurn(params),

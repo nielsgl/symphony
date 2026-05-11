@@ -17,6 +17,7 @@ import type {
 import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
+import { buildDurableIdentity } from '../../src/persistence/identity';
 import { SqlitePersistenceStore } from '../../src/persistence/store';
 import { toWorkerEvent } from '../../src/runtime';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
@@ -5851,9 +5852,20 @@ describe('OrchestratorCore', () => {
       nowMs: () => Date.parse('2026-05-08T12:00:00.000Z')
     });
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const identity = (params: { issue_id: string; issue_identifier: string }) =>
+      buildDurableIdentity({
+        projectRoot: dir,
+        workflowPath: path.join(dir, 'WORKFLOW.md'),
+        workflowHash: { status: 'present', value: 'workflow-hash' },
+        repositoryRemote: { status: 'missing', reason: 'repository_remote_unavailable' },
+        trackerKind: 'linear',
+        trackerScope: 'TEST',
+        remoteIssueId: params.issue_id,
+        humanIssueIdentifier: params.issue_identifier
+      });
     const persistence: OrchestratorPersistencePort = {
-      startRun: async (params) => store.startRun(params),
-      appendIssueRun: async (params) => store.appendIssueRun(params),
+      startRun: async (params) => store.startRun({ ...params, identity: identity(params) }),
+      appendIssueRun: async (params) => store.appendIssueRun({ ...params, identity: identity(params) }),
       appendAttempt: async (params) => store.appendAttempt(params),
       appendThread: async (params) => store.appendThread(params),
       appendTurn: async (params) => store.appendTurn(params),

@@ -6,6 +6,7 @@ import { redactUnknown } from '../security/redaction';
 import type {
   BreakerMetadataRecord,
   DurableRunHistoryRecord,
+  DurableIdentity,
   AttemptRecord,
   ExecutionGraphEntityStatus,
   ExecutionGraphThreadLineage,
@@ -52,6 +53,22 @@ function parseNullableJsonObject(value: string | null): Record<string, unknown> 
   } catch {
     return null;
   }
+}
+
+function parseDurableIdentity(value: string | null): DurableIdentity | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value) as DurableIdentity;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeDurableIdentity(identity: DurableIdentity): string {
+  return JSON.stringify(redactUnknown(identity));
 }
 
 function ensureMonotonicTimestamp(next: string, previous: string | null | undefined, label: string): void {
@@ -110,6 +127,7 @@ export class SqlitePersistenceStore {
         issue_run_id TEXT PRIMARY KEY,
         issue_id TEXT NOT NULL,
         issue_identifier TEXT NOT NULL,
+        identity TEXT,
         started_at TEXT NOT NULL,
         ended_at TEXT,
         status TEXT NOT NULL,
@@ -201,6 +219,7 @@ export class SqlitePersistenceStore {
         run_id TEXT PRIMARY KEY,
         issue_id TEXT NOT NULL,
         issue_identifier TEXT NOT NULL,
+        identity TEXT,
         started_at TEXT NOT NULL,
         ended_at TEXT,
         completed_at TEXT,
@@ -263,6 +282,7 @@ export class SqlitePersistenceStore {
       );
     `);
     this.ensureRunDiagnosticColumns();
+    this.ensureIssueRunIdentityColumn();
     this.ensureRunEventDiagnosticColumns();
   }
 
@@ -270,13 +290,13 @@ export class SqlitePersistenceStore {
     this.db.close();
   }
 
-  startRun(params: { issue_id: string; issue_identifier: string }): string {
+  startRun(params: { issue_id: string; issue_identifier: string; identity: DurableIdentity }): string {
     const runId = randomUUID();
     this.db
       .prepare(
-        'INSERT INTO runs (run_id, issue_id, issue_identifier, started_at, ended_at, terminal_status, error_code) VALUES (?, ?, ?, ?, NULL, NULL, NULL)'
+        'INSERT INTO runs (run_id, issue_id, issue_identifier, identity, started_at, ended_at, terminal_status, error_code) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)'
       )
-      .run(runId, params.issue_id, params.issue_identifier, asIso(this.nowMs()));
+      .run(runId, params.issue_id, params.issue_identifier, serializeDurableIdentity(params.identity), asIso(this.nowMs()));
     return runId;
   }
 
@@ -314,6 +334,7 @@ export class SqlitePersistenceStore {
   appendIssueRun(params: {
     issue_id: string;
     issue_identifier: string;
+    identity: DurableIdentity;
     started_at: string;
     ended_at?: string | null;
     status: ExecutionGraphEntityStatus;
@@ -326,13 +347,14 @@ export class SqlitePersistenceStore {
     this.db
       .prepare(
         `INSERT INTO issue_run
-        (issue_run_id, issue_id, issue_identifier, started_at, ended_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        (issue_run_id, issue_id, issue_identifier, identity, started_at, ended_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         issueRunId,
         params.issue_id,
         params.issue_identifier,
+        serializeDurableIdentity(params.identity),
         params.started_at,
         params.ended_at ?? null,
         params.status,
@@ -576,7 +598,16 @@ export class SqlitePersistenceStore {
       return null;
     }
     const attempt = this.db.prepare('SELECT * FROM attempt WHERE attempt_id = ?').get(thread.attempt_id) as AttemptRecord;
-    const issueRun = this.db.prepare('SELECT * FROM issue_run WHERE issue_run_id = ?').get(attempt.issue_run_id) as IssueRunRecord;
+    const issueRunRow = this.db.prepare('SELECT * FROM issue_run WHERE issue_run_id = ?').get(attempt.issue_run_id) as
+      | (Omit<IssueRunRecord, 'identity'> & { identity: string | null })
+      | undefined;
+    if (!issueRunRow) {
+      throw new Error(`issue_run ${attempt.issue_run_id} does not exist`);
+    }
+    const issueRun: IssueRunRecord = {
+      ...issueRunRow,
+      identity: parseDurableIdentity(issueRunRow.identity)
+    };
     const transitions = this.db
       .prepare('SELECT * FROM state_transition WHERE issue_run_id = ? ORDER BY transitioned_at ASC, state_transition_id ASC')
       .all(issueRun.issue_run_id) as StateTransitionRecord[];
@@ -681,7 +712,7 @@ export class SqlitePersistenceStore {
   listRunHistory(limit = 50): DurableRunHistoryRecord[] {
     const rows = this.db
       .prepare(
-        `SELECT run_id, issue_id, issue_identifier, started_at, ended_at, completed_at, terminal_status, error_code,
+        `SELECT run_id, issue_id, issue_identifier, identity, started_at, ended_at, completed_at, terminal_status, error_code,
           terminal_reason_code, terminal_reason_detail, root_cause_status, root_cause_reason_code,
           root_cause_reason_detail, root_cause_at, session_id, thread_id, turn_id, missing_tool_output_recovery
         FROM runs ORDER BY started_at DESC LIMIT ?`
@@ -690,6 +721,7 @@ export class SqlitePersistenceStore {
       run_id: string;
       issue_id: string;
       issue_identifier: string;
+      identity: string | null;
       started_at: string;
       ended_at: string | null;
       completed_at: string | null;
@@ -715,6 +747,7 @@ export class SqlitePersistenceStore {
         run_id: row.run_id,
         issue_id: row.issue_id,
         issue_identifier: row.issue_identifier,
+        identity: parseDurableIdentity(row.identity),
         started_at: row.started_at,
         ended_at: row.ended_at,
         completed_at: row.completed_at,
@@ -741,6 +774,7 @@ export class SqlitePersistenceStore {
     const columns = this.db.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>;
     const existing = new Set(columns.map((column) => column.name));
     const migrations: Array<[string, string]> = [
+      ['identity', 'ALTER TABLE runs ADD COLUMN identity TEXT'],
       ['terminal_reason_code', 'ALTER TABLE runs ADD COLUMN terminal_reason_code TEXT'],
       ['completed_at', 'ALTER TABLE runs ADD COLUMN completed_at TEXT'],
       ['terminal_reason_detail', 'ALTER TABLE runs ADD COLUMN terminal_reason_detail TEXT'],
@@ -762,6 +796,14 @@ export class SqlitePersistenceStore {
     this.db.exec(
       'UPDATE runs SET completed_at = ended_at WHERE completed_at IS NULL AND terminal_status IS NOT NULL AND ended_at IS NOT NULL;'
     );
+  }
+
+  private ensureIssueRunIdentityColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(issue_run)').all() as Array<{ name: string }>;
+    const existing = new Set(columns.map((column) => column.name));
+    if (!existing.has('identity')) {
+      this.db.exec('ALTER TABLE issue_run ADD COLUMN identity TEXT;');
+    }
   }
 
   private ensureRunEventDiagnosticColumns(): void {
