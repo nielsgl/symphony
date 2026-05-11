@@ -155,6 +155,7 @@ export const CANONICAL_EVENT = {
   },
   persistence: {
     pruned: 'persistence.pruned',
+    pruneFailed: 'persistence.prune.failed',
     recordSessionFailed: 'persistence.session.record_failed',
     recordEventFailed: 'persistence.event.record_failed',
     startRunFailed: 'persistence.run.start_failed',
