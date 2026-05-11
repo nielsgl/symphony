@@ -142,6 +142,8 @@ export interface RunningEntry {
     at_ms: number;
     event: string;
     message: string | null;
+    reason_code?: string | null;
+    request_method?: string | null;
   }>;
   quarantined_events?: Array<{
     at_ms: number;
@@ -506,6 +508,8 @@ export interface BlockedEntry {
     at_ms: number;
     event: string;
     message: string | null;
+    reason_code?: string | null;
+    request_method?: string | null;
   }>;
   tool_output_wait?: {
     tool_name: string;
@@ -602,6 +606,8 @@ export interface OrchestratorState {
     issue_identifier?: string;
     session_id?: string;
     detail?: string;
+    reason_code?: string | null;
+    request_method?: string | null;
   }>;
 }
 
@@ -811,6 +817,8 @@ export interface OrchestratorPersistencePort {
     timestamp_ms: number;
     event: string;
     message: string | null;
+    reason_code?: string | null;
+    request_method?: string | null;
   }) => Promise<void>;
   completeRun: (params: {
     run_id: string;
@@ -851,6 +859,8 @@ export interface WorkerObservabilityEvent {
   codex_app_server_pid?: number | null;
   worker_instance_id?: string | null;
   detail?: string;
+  reason_code?: string | null;
+  request_method?: string | null;
   usage?: CodexUsageTotals;
   token_telemetry_status?: TokenTelemetryStatus;
   token_telemetry_last_source?: string | null;

@@ -698,7 +698,9 @@ export class SnapshotService {
         session_console: (entry.session_console ?? []).map((event) => ({
           at: asIsoDate(event.at_ms),
           event: event.event,
-          message: event.message
+          message: event.message,
+          ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+          ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
         }))
       };
     });
@@ -759,7 +761,9 @@ export class SnapshotService {
         severity: event.severity,
         issue_identifier: event.issue_identifier,
         session_id: event.session_id,
-        detail: event.detail
+        detail: event.detail,
+        ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+        ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
       }))
     }) as ApiStateResponse;
   }
@@ -1057,7 +1061,9 @@ export class SnapshotService {
               session_console: (blockedEntry.session_console ?? []).map((event) => ({
                 at: asIsoDate(event.at_ms),
                 event: event.event,
-                message: event.message
+                message: event.message,
+                ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+                ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
               }))
             }
           : null,
@@ -1072,7 +1078,9 @@ export class SnapshotService {
         recent_events: entry.recent_events.map((event) => ({
           at: asIsoDate(event.at_ms),
           event: event.event,
-          message: event.message
+          message: event.message,
+          ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+          ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
         })),
         stale_events: projectQuarantinedRunningEvents(entry),
         last_error: retryEntry?.error ?? state.health.last_error,
@@ -1214,7 +1222,9 @@ export class SnapshotService {
               session_console: (blockedEntry.session_console ?? []).map((event) => ({
                 at: asIsoDate(event.at_ms),
                 event: event.event,
-                message: event.message
+                message: event.message,
+                ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+                ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
               }))
             }
           : null,
@@ -1346,7 +1356,9 @@ export class SnapshotService {
         session_console: (blockedEntry.session_console ?? []).map((event) => ({
           at: asIsoDate(event.at_ms),
           event: event.event,
-          message: event.message
+          message: event.message,
+          ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+          ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
         }))
       },
       phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
@@ -1360,7 +1372,9 @@ export class SnapshotService {
       recent_events: (blockedEntry.session_console ?? []).map((event) => ({
         at: asIsoDate(event.at_ms),
         event: event.event,
-        message: event.message
+        message: event.message,
+        ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+        ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
       })),
       stale_events: [],
       last_error: blockedEntry.stop_reason_detail ?? blockedEntry.stop_reason_code,
