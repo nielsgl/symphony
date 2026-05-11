@@ -123,6 +123,27 @@ export interface TicketEvidenceReferenceRecord {
   recorded_at: string;
 }
 
+export type TokenModelTelemetryConfidence = 'observed_live' | 'backfilled' | 'missing';
+
+export interface TokenModelFactRecord {
+  token_model_fact_id: string;
+  issue_run_id: string;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  requested_model: string | null;
+  effective_model: string | null;
+  model_source: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  reasoning_output_tokens: number | null;
+  total_tokens: number | null;
+  model_context_window: number | null;
+  telemetry_confidence: TokenModelTelemetryConfidence;
+  observed_at: string;
+}
+
 export interface ExecutionGraphThreadLineage {
   issue_run: IssueRunRecord;
   attempt: AttemptRecord;
@@ -132,9 +153,11 @@ export interface ExecutionGraphThreadLineage {
       phase_spans: PhaseSpanRecord[];
       tool_spans: ToolSpanRecord[];
       state_transitions: StateTransitionRecord[];
+      token_model_facts?: TokenModelFactRecord[];
     }
   >;
   state_transitions: StateTransitionRecord[];
+  token_model_facts?: TokenModelFactRecord[];
 }
 
 export type HistoryPayloadClass =
@@ -203,6 +226,7 @@ export interface TicketTimelineRecord {
   terminal_outcomes: TicketTerminalOutcomeRecord[];
   blockers: TicketBlockerRecord[];
   evidence_references: TicketEvidenceReferenceRecord[];
+  token_model_facts: TokenModelFactRecord[];
 }
 
 export interface DurableRunHistoryRecord {
@@ -228,6 +252,7 @@ export interface DurableRunHistoryRecord {
   session_ids: string[];
   app_server_events?: AppServerEventLedgerExcerpt[];
   missing_tool_output_recovery?: Record<string, unknown> | null;
+  token_model_facts?: TokenModelFactRecord[];
 }
 
 export interface HistoryIdentityProjectionRecord {

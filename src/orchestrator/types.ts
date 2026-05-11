@@ -884,6 +884,24 @@ export interface OrchestratorPersistencePort {
     recorded_at: string;
     evidence_reference_id?: string;
   }) => Promise<string>;
+  appendTokenModelFact?: (params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    requested_model?: string | null;
+    effective_model?: string | null;
+    model_source?: string | null;
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cached_input_tokens?: number | null;
+    reasoning_output_tokens?: number | null;
+    total_tokens?: number | null;
+    model_context_window?: number | null;
+    telemetry_confidence: 'observed_live' | 'backfilled' | 'missing';
+    observed_at: string;
+    token_model_fact_id?: string;
+  }) => Promise<string>;
   appendAppServerEvent?: (params: {
     issue_run_id: string;
     observed_at: string;
