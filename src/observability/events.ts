@@ -54,6 +54,7 @@ export const CANONICAL_EVENT = {
     dispatchSpawnSucceeded: 'orchestration.dispatch.spawn.succeeded',
     dispatchSpawnFailed: 'orchestration.dispatch.spawn.failed',
     retryScheduled: 'orchestration.retry.scheduled',
+    retryTimerCallbackFailed: 'orchestration.retry_timer.callback_failed',
     workerExitHandled: 'orchestration.worker.exit.handled',
     workerTerminated: 'orchestration.worker.terminated',
     workerEvent: 'orchestration.worker.event',
