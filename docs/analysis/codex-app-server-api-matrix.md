@@ -1,6 +1,12 @@
 # Codex App Server API Matrix
 
-Status: Draft
+Status: Superseded for SWP-001 final-state decisions
+
+This broad surface inventory predates the final SWP-001 integration audit. Use
+`docs/analysis/swp-001-protocol-hardening-integration-audit.md` as the
+acceptance record for the landed protocol-hardening behavior and regression
+matrix. Keep this file as historical inventory for future app-server surface
+planning.
 
 This matrix is generated from local review of:
 
