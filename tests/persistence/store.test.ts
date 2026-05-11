@@ -2309,6 +2309,49 @@ describe('SqlitePersistenceStore', () => {
       raw_payload: { message: 'expired protocol evidence' },
       summary: 'expired protocol evidence'
     });
+    store.appendTrackerTicketSnapshot({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      tracker_kind: 'linear',
+      remote_issue_id: 'expired-app-server-lite',
+      human_issue_identifier: 'EXP-LEDGER-1',
+      title: 'Expired history ticket',
+      tracker_status: 'Done',
+      observed_at: '2026-04-10T10:00:05.000Z'
+    });
+    store.appendTicketReference({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      reference_kind: 'pull_request',
+      availability: 'available',
+      uri: 'https://github.com/nielsgl/symphony/pull/999',
+      observed_at: '2026-04-10T10:00:06.000Z'
+    });
+    store.appendOperatorActionHistory({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      action: 'resume_blocked_input',
+      result: 'accepted',
+      requested_at: '2026-04-10T10:00:07.000Z',
+      observed_at: '2026-04-10T10:00:07.000Z'
+    });
+    store.appendBlockedInputEvent({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      issue_id: 'expired-app-server-lite',
+      issue_identifier: 'EXP-LEDGER-1',
+      runtime_state: 'blocked',
+      reason_code: 'operator_input_required',
+      blocked_at: '2026-04-10T10:00:08.000Z'
+    });
 
     const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
     stores.push(lateStore);
@@ -2324,6 +2367,15 @@ describe('SqlitePersistenceStore', () => {
         .prepare('SELECT COUNT(*) AS count FROM history_app_server_event WHERE issue_run_id = ?')
         .get(issueRunId) as { count: number };
       expect(appServerRows.count).toBe(0);
+      for (const table of [
+        'history_tracker_ticket_snapshot',
+        'history_ticket_reference',
+        'history_operator_action',
+        'history_blocked_input_event'
+      ]) {
+        const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE issue_run_id = ?`).get(issueRunId) as { count: number };
+        expect(row.count).toBe(0);
+      }
       const tombstone = db
         .prepare(
           `SELECT source_table, source_id, reason_code, pruned_record_count, metadata
@@ -2343,11 +2395,21 @@ describe('SqlitePersistenceStore', () => {
         source_table: 'issue_run',
         source_id: issueRunId,
         reason_code: 'retention_policy_expired_completed_history',
-        pruned_record_count: 5
+        pruned_record_count: 9
       });
       expect(JSON.parse(tombstone?.metadata ?? '{}')).toMatchObject({
         status: 'succeeded',
-        pruned_tables: expect.arrayContaining(['history_app_server_event', 'turn', 'thread', 'attempt', 'issue_run'])
+        pruned_tables: expect.arrayContaining([
+          'history_app_server_event',
+          'history_tracker_ticket_snapshot',
+          'history_ticket_reference',
+          'history_operator_action',
+          'history_blocked_input_event',
+          'turn',
+          'thread',
+          'attempt',
+          'issue_run'
+        ])
       });
     } finally {
       db.close();

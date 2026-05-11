@@ -3317,6 +3317,10 @@ export class SqlitePersistenceStore {
                 'history_ticket_evidence_reference',
                 'history_ticket_blocker',
                 'history_ticket_terminal_outcome',
+                'history_tracker_ticket_snapshot',
+                'history_ticket_reference',
+                'history_operator_action',
+                'history_blocked_input_event',
                 'state_transition',
                 'tool_span',
                 'phase_span',
@@ -3463,6 +3467,10 @@ export class SqlitePersistenceStore {
             + (SELECT COUNT(*) FROM history_ticket_terminal_outcome WHERE history_ticket_terminal_outcome.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_ticket_blocker WHERE history_ticket_blocker.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_ticket_evidence_reference WHERE history_ticket_evidence_reference.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_tracker_ticket_snapshot WHERE history_tracker_ticket_snapshot.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_ticket_reference WHERE history_ticket_reference.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_operator_action WHERE history_operator_action.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_blocked_input_event WHERE history_blocked_input_event.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_protocol_summary WHERE history_protocol_summary.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_token_model_fact WHERE history_token_model_fact.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_app_server_event WHERE history_app_server_event.issue_run_id = issue_run.issue_run_id)
@@ -3544,6 +3552,10 @@ export class SqlitePersistenceStore {
     this.db.prepare('DELETE FROM history_ticket_evidence_reference WHERE issue_run_id = ?').run(issueRunId);
     this.db.prepare('DELETE FROM history_ticket_blocker WHERE issue_run_id = ?').run(issueRunId);
     this.db.prepare('DELETE FROM history_ticket_terminal_outcome WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_tracker_ticket_snapshot WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_ticket_reference WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_operator_action WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_blocked_input_event WHERE issue_run_id = ?').run(issueRunId);
     this.db.prepare('DELETE FROM state_transition WHERE issue_run_id = ?').run(issueRunId);
     this.db
       .prepare(
