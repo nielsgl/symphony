@@ -421,6 +421,19 @@ export class SqlitePersistenceStore {
         'INSERT INTO runs (run_id, issue_id, issue_identifier, identity, started_at, ended_at, terminal_status, error_code) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)'
       )
       .run(runId, params.issue_id, params.issue_identifier, serializeDurableIdentity(params.identity), params.started_at ?? asIso(this.nowMs()));
+    this.recordIdentityProjection({
+      source_table: 'runs',
+      source_id: runId,
+      run_id: runId,
+      issue_run_id: null,
+      issue_id: params.issue_id,
+      issue_identifier: params.issue_identifier,
+      projection_status: 'projected',
+      reason_code: null,
+      reason_detail: null,
+      project_key: params.identity.project.key,
+      ticket_key: params.identity.ticket.key
+    });
     return runId;
   }
 
@@ -449,6 +462,19 @@ export class SqlitePersistenceStore {
         status: params.status,
         reason_code: params.reason_code,
         reason_detail: params.reason_detail
+      });
+      this.recordIdentityProjection({
+        source_table: 'runs',
+        source_id: runId,
+        run_id: runId,
+        issue_run_id: issueRunId,
+        issue_id: params.issue_id,
+        issue_identifier: params.issue_identifier,
+        projection_status: 'projected',
+        reason_code: null,
+        reason_detail: null,
+        project_key: params.identity.project.key,
+        ticket_key: params.identity.ticket.key
       });
       const attemptId = this.appendAttempt({
         issue_run_id: issueRunId,
@@ -1382,16 +1408,16 @@ export class SqlitePersistenceStore {
         )
       : null;
     const tokenModelFactStmt = this.db.prepare(
-      `SELECT history_token_model_fact.*
+      `SELECT *
        FROM history_token_model_fact
-       JOIN issue_run ON issue_run.issue_run_id = history_token_model_fact.issue_run_id
-       WHERE issue_run.issue_id = ? AND issue_run.issue_identifier = ?
+       WHERE issue_run_id = ?
        ORDER BY history_token_model_fact.observed_at ASC, history_token_model_fact.token_model_fact_id ASC`
     );
 
     return rows.map((row) => {
       const sessions = sessionStmt.all(row.run_id) as Array<{ session_id: string }>;
       const identityProjection = this.readHistoryIdentityProjection(identityProjectionStmt, row.run_id);
+      const issueRunId = identityProjection?.issue_run_id ?? this.readIssueRunIdForRunContext(row.thread_id, row.turn_id);
       const record: DurableRunHistoryRecord = {
         run_id: row.run_id,
         issue_id: row.issue_id,
@@ -1414,7 +1440,7 @@ export class SqlitePersistenceStore {
         turn_id: row.turn_id,
         session_ids: sessions.map((entry) => entry.session_id),
         missing_tool_output_recovery: parseNullableJsonObject(row.missing_tool_output_recovery),
-        token_model_facts: tokenModelFactStmt.all(row.issue_id, row.issue_identifier) as TokenModelFactRecord[]
+        token_model_facts: issueRunId ? (tokenModelFactStmt.all(issueRunId) as TokenModelFactRecord[]) : []
       };
 
       return redactUnknown(record) as DurableRunHistoryRecord;
@@ -1970,6 +1996,37 @@ export class SqlitePersistenceStore {
       return null;
     }
     return (statement.get(sourceId) as HistoryIdentityProjectionRecord | undefined) ?? null;
+  }
+
+  private readIssueRunIdForRunContext(threadId: string | null, turnId: string | null): string | null {
+    if (turnId) {
+      const row = this.db
+        .prepare(
+          `SELECT attempt.issue_run_id
+           FROM turn
+           JOIN thread ON thread.thread_id = turn.thread_id
+           JOIN attempt ON attempt.attempt_id = thread.attempt_id
+           WHERE turn.turn_id = ?`
+        )
+        .get(turnId) as { issue_run_id: string } | undefined;
+      if (row) {
+        return row.issue_run_id;
+      }
+    }
+
+    if (threadId) {
+      const row = this.db
+        .prepare(
+          `SELECT attempt.issue_run_id
+           FROM thread
+           JOIN attempt ON attempt.attempt_id = thread.attempt_id
+           WHERE thread.thread_id = ?`
+        )
+        .get(threadId) as { issue_run_id: string } | undefined;
+      return row?.issue_run_id ?? null;
+    }
+
+    return null;
   }
 
   private createAppServerEventLedgerTables(): void {
