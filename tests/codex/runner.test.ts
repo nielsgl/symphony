@@ -6,13 +6,22 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CodexRunner, CONTINUATION_GUIDANCE } from '../../src/codex';
-import type { CodexRunnerStartInput } from '../../src/codex';
+import type { CodexRunnerEvent, CodexRunnerStartInput } from '../../src/codex';
 import {
   DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION,
   UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE
 } from '../../src/observability/dynamic-tool-capability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
+import type {
+  AccountRateLimitsUpdatedNotification,
+  ConfigWarningNotification,
+  DeprecationNoticeNotification,
+  GuardianWarningNotification,
+  ModelReroutedNotification,
+  ThreadTokenUsageUpdatedNotification,
+  WarningNotification
+} from '../fixtures/codex-app-server-contract/good/ts';
 
 class FakeProcess {
   pid: number | null = 4242;
@@ -70,6 +79,130 @@ function parseWrittenMessages(fake: FakeProcess): Array<Record<string, unknown>>
   return fake.writes.map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+const GENERATED_CONTRACT_BUNDLE = path.join(
+  process.cwd(),
+  'tests/fixtures/codex-app-server-contract/good/schema/codex_app_server_protocol.schemas.json'
+);
+
+interface GeneratedSchema {
+  required?: string[];
+  properties?: Record<string, GeneratedSchema | boolean>;
+  type?: string | string[];
+  enum?: unknown[];
+  oneOf?: GeneratedSchema[];
+  anyOf?: GeneratedSchema[];
+  items?: GeneratedSchema;
+  $ref?: string;
+}
+
+function generatedDefinitions(): Record<string, GeneratedSchema> {
+  const bundle = JSON.parse(fs.readFileSync(GENERATED_CONTRACT_BUNDLE, 'utf8')) as {
+    definitions: Record<string, GeneratedSchema>;
+  };
+  return bundle.definitions;
+}
+
+function generatedDefinition(name: string): GeneratedSchema {
+  const definitions = generatedDefinitions();
+  const definition = definitions[name] ?? definitions[`v2/${name}`];
+  if (!definition) {
+    throw new Error(`Generated contract fixture is missing ${name}`);
+  }
+  return definition;
+}
+
+function generatedRef(schema: GeneratedSchema): GeneratedSchema {
+  if (!schema.$ref) {
+    return schema;
+  }
+  return generatedDefinition(schema.$ref.split('/').at(-1) ?? schema.$ref);
+}
+
+function expectGeneratedMethod(unionName: string, method: string): void {
+  const union = generatedDefinition(unionName);
+  const serialized = JSON.stringify(union);
+  expect(serialized).toContain(`"${method}"`);
+}
+
+function expectGeneratedPayloadShape(
+  definitionName: string,
+  payload: Record<string, unknown>,
+  expectedFields: string[]
+): void {
+  const schema = generatedDefinition(definitionName);
+  expect(schema.properties).toBeTruthy();
+
+  for (const field of schema.required ?? []) {
+    expect(payload).toHaveProperty(field);
+  }
+
+  for (const field of expectedFields) {
+    const property = schema.properties?.[field];
+    expect(property).toBeTruthy();
+    expect(payload).toHaveProperty(field);
+    expectValueMatchesGeneratedSchema(property, payload[field], `${definitionName}.${field}`);
+  }
+}
+
+function expectValueMatchesGeneratedSchema(schema: GeneratedSchema | boolean | undefined, value: unknown, label: string): void {
+  if (schema === true || schema === undefined) {
+    return;
+  }
+  if (schema === false) {
+    throw new Error(`${label} is forbidden by generated schema`);
+  }
+  if (schema.$ref) {
+    expectValueMatchesGeneratedSchema(generatedRef(schema), value, label);
+    return;
+  }
+  if (schema.anyOf || schema.oneOf) {
+    const variants = schema.anyOf ?? schema.oneOf ?? [];
+    const errors: string[] = [];
+    for (const variant of variants) {
+      try {
+        expectValueMatchesGeneratedSchema(variant, value, label);
+        return;
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    throw new Error(`${label} did not match generated variants: ${errors.join('; ')}`);
+  }
+
+  const type = schema.type;
+  const allowedTypes = Array.isArray(type) ? type : type ? [type] : [];
+  if (value === null && allowedTypes.includes('null')) {
+    return;
+  }
+  if (schema.enum) {
+    expect(schema.enum).toContain(value);
+    return;
+  }
+  if (allowedTypes.includes('string')) {
+    expect(typeof value).toBe('string');
+  } else if (allowedTypes.includes('boolean')) {
+    expect(typeof value).toBe('boolean');
+  } else if (allowedTypes.includes('array')) {
+    expect(Array.isArray(value)).toBe(true);
+    if (schema.items && Array.isArray(value)) {
+      for (const item of value) {
+        expectValueMatchesGeneratedSchema(schema.items, item, `${label}[]`);
+      }
+    }
+  } else if (allowedTypes.includes('object') || schema.properties) {
+    expect(value && typeof value === 'object' && !Array.isArray(value)).toBe(true);
+    const record = value as Record<string, unknown>;
+    for (const field of schema.required ?? []) {
+      expect(record).toHaveProperty(field);
+    }
+    for (const [field, property] of Object.entries(schema.properties ?? {})) {
+      if (Object.prototype.hasOwnProperty.call(record, field)) {
+        expectValueMatchesGeneratedSchema(property, record[field], `${label}.${field}`);
+      }
+    }
+  }
+}
+
 function writeTranscriptRecord(codexHome: string, filename: string, record: Record<string, unknown>): void {
   const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
   fs.mkdirSync(sessionsDir, { recursive: true });
@@ -120,6 +253,10 @@ describe('CodexRunner', () => {
       token_telemetry_last_source: null,
       token_telemetry_last_at_ms: null,
       rate_limits: null,
+      protocol_warnings: [],
+      model_reroute: null,
+      requested_model: null,
+      effective_model: null,
       terminal_source: 'app_server_protocol'
     });
 
@@ -128,13 +265,48 @@ describe('CodexRunner', () => {
       .filter((method): method is string => Boolean(method));
     expect(writtenMethods).toEqual(['initialize', 'initialized', 'thread/start', 'turn/start', 'thread/read']);
 
+    const initialize = parseWrittenMessages(fake).find((line) => line.method === 'initialize') as
+      | { params?: Record<string, unknown> }
+      | undefined;
+    expectGeneratedMethod('ClientRequest', 'initialize');
+    expectGeneratedPayloadShape('InitializeParams', initialize?.params ?? {}, ['clientInfo', 'capabilities']);
+    expect(initialize?.params?.clientInfo).toEqual({ name: 'symphony', version: '0.1.0' });
+    expect(initialize?.params?.capabilities).toEqual({ experimentalApi: true });
+
+    const initialized = parseWrittenMessages(fake).find((line) => line.method === 'initialized') as
+      | { params?: Record<string, unknown> }
+      | undefined;
+    expectGeneratedMethod('ClientNotification', 'initialized');
+    expect(initialized?.params).toEqual({});
+
     const turnStart = parseWrittenMessages(fake).find((line) => line.method === 'turn/start') as
       | { params?: Record<string, unknown> }
       | undefined;
+    expectGeneratedMethod('ClientRequest', 'turn/start');
+    expectGeneratedPayloadShape('TurnStartParams', turnStart?.params ?? {}, [
+      'threadId',
+      'input',
+      'cwd',
+      'approvalPolicy',
+      'sandboxPolicy'
+    ]);
+    expect(turnStart?.params?.cwd).toBe(workspaceCwd);
+    expect(turnStart?.params?.title).toBe('ABC-1: Title');
+    expect(turnStart?.params?.input).toEqual([{ type: 'text', text: 'hello' }]);
     expect((turnStart?.params?.sandboxPolicy as { type: string }).type).toBe('workspaceWrite');
     const threadStart = parseWrittenMessages(fake).find((line) => line.method === 'thread/start') as
       | { params?: Record<string, unknown> }
       | undefined;
+    expectGeneratedMethod('ClientRequest', 'thread/start');
+    expectGeneratedPayloadShape('ThreadStartParams', threadStart?.params ?? {}, [
+      'approvalPolicy',
+      'sandbox',
+      'cwd',
+      'dynamicTools'
+    ]);
+    expect(threadStart?.params?.cwd).toBe(workspaceCwd);
+    expect(threadStart?.params?.approvalPolicy).toBe('never');
+    expect(threadStart?.params?.sandbox).toBe('workspace-write');
     expect(threadStart?.params?.dynamicTools).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'linear_graphql' })])
     );
@@ -353,7 +525,19 @@ describe('CodexRunner', () => {
 
     const threadStartRequests = parseWrittenMessages(fake).filter((line) => line.method === 'thread/start');
     expect(threadStartRequests).toHaveLength(2);
+    for (const request of threadStartRequests) {
+      expectGeneratedPayloadShape('ThreadStartParams', (request.params as Record<string, unknown>) ?? {}, [
+        'approvalPolicy',
+        'sandbox',
+        'cwd'
+      ]);
+    }
     expect((threadStartRequests[0].params as Record<string, unknown>).dynamicTools).toBeTruthy();
+    expectValueMatchesGeneratedSchema(
+      generatedDefinition('ThreadStartParams').properties?.dynamicTools,
+      (threadStartRequests[0].params as Record<string, unknown>).dynamicTools,
+      'ThreadStartParams.dynamicTools'
+    );
     expect((threadStartRequests[1].params as Record<string, unknown>).dynamicTools).toBeUndefined();
   });
 
@@ -485,10 +669,16 @@ describe('CodexRunner', () => {
     expect(settled).toBe(true);
   });
 
-  it('resumes an existing thread, interrupts the previous turn, and starts a guarded recovery turn', async () => {
+  it('resumes an existing thread in the provisioned workspace without forking or provisioning', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
-    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const spawnCalls: Array<{ command: string; cwd: string }> = [];
+    const runner = new CodexRunner({
+      spawnProcess: ({ command, cwd }) => {
+        spawnCalls.push({ command, cwd });
+        return fake;
+      }
+    });
     const events: string[] = [];
 
     const promise = runner.resumeThreadInterruptAndRunTurn(
@@ -516,6 +706,7 @@ describe('CodexRunner', () => {
       session_id: 'thread-recover-turn-recovery'
     });
 
+    expect(spawnCalls).toEqual([{ command: 'codex app-server', cwd: workspaceCwd }]);
     const messages = parseWrittenMessages(fake);
     expect(messages.map((message) => message.method).filter(Boolean)).toEqual([
       'initialize',
@@ -524,18 +715,48 @@ describe('CodexRunner', () => {
       'turn/interrupt',
       'turn/start'
     ]);
-    expect(messages.find((message) => message.method === 'thread/resume')?.params).toMatchObject({
+    // Workspace provisioning belongs to WorkspaceManager; app-server resume only
+    // re-enters an existing conversation in the already-provisioned cwd.
+    expect(messages).not.toContainEqual(expect.objectContaining({ method: 'thread/fork' }));
+    const threadResume = messages.find((message) => message.method === 'thread/resume') as {
+      params?: Record<string, unknown>;
+    };
+    expectGeneratedMethod('ClientRequest', 'thread/resume');
+    expectGeneratedPayloadShape('ThreadResumeParams', threadResume.params ?? {}, [
+      'threadId',
+      'cwd',
+      'approvalPolicy',
+      'sandbox',
+      'persistExtendedHistory'
+    ]);
+    expect(threadResume.params).toMatchObject({
       threadId: 'thread-recover',
       cwd: workspaceCwd,
+      approvalPolicy: 'never',
+      sandbox: 'workspace-write',
       persistExtendedHistory: true
     });
     expect(messages.find((message) => message.method === 'turn/interrupt')?.params).toEqual({
       threadId: 'thread-recover',
       turnId: 'turn-old'
     });
-    expect(messages.find((message) => message.method === 'turn/start')?.params).toMatchObject({
+    const recoveryTurnStart = messages.find((message) => message.method === 'turn/start') as {
+      params?: Record<string, unknown>;
+    };
+    expectGeneratedPayloadShape('TurnStartParams', recoveryTurnStart.params ?? {}, [
+      'threadId',
+      'input',
+      'cwd',
+      'approvalPolicy',
+      'sandboxPolicy'
+    ]);
+    expect(recoveryTurnStart.params).toMatchObject({
       threadId: 'thread-recover',
-      cwd: workspaceCwd
+      cwd: workspaceCwd,
+      title: 'ABC-1: Title',
+      input: [{ type: 'text', text: 'Recover from an interrupted/stalled turn.' }],
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'workspaceWrite' }
     });
     expect(events).toEqual(
       expect.arrayContaining([
@@ -765,8 +986,10 @@ describe('CodexRunner', () => {
   });
 
   it('maps invalid workspace cwd to invalid_workspace_cwd before launch', async () => {
+    let spawnCalled = false;
     const runner = new CodexRunner({
       spawnProcess: () => {
+        spawnCalled = true;
         throw new Error('should not be called');
       }
     });
@@ -776,11 +999,14 @@ describe('CodexRunner', () => {
         makeStartInput('/tmp/symphony-does-not-exist-123456789')
       )
     ).rejects.toMatchObject({ code: 'invalid_workspace_cwd' });
+    expect(spawnCalled).toBe(false);
   });
 
   it('maps invalid remote workspace cwd to invalid_remote_workspace_cwd before launch', async () => {
+    let spawnCalled = false;
     const runner = new CodexRunner({
       spawnProcess: () => {
+        spawnCalled = true;
         throw new Error('should not be called');
       }
     });
@@ -792,6 +1018,49 @@ describe('CodexRunner', () => {
         })
       )
     ).rejects.toMatchObject({ code: 'invalid_remote_workspace_cwd' });
+    expect(spawnCalled).toBe(false);
+  });
+
+  it('guards invalid local recovery cwd before app-server resume launch', async () => {
+    let spawnCalled = false;
+    const runner = new CodexRunner({
+      spawnProcess: () => {
+        spawnCalled = true;
+        throw new Error('should not be called');
+      }
+    });
+
+    await expect(
+      runner.resumeThreadInterruptAndRunTurn({
+        ...makeStartInput('/tmp/symphony-recovery-does-not-exist-123456789'),
+        previousThreadId: 'thread-recover',
+        previousTurnId: 'turn-old',
+        previousSessionId: 'session-old'
+      })
+    ).rejects.toMatchObject({ code: 'invalid_workspace_cwd' });
+    expect(spawnCalled).toBe(false);
+  });
+
+  it('guards invalid remote recovery cwd before app-server resume launch', async () => {
+    let spawnCalled = false;
+    const runner = new CodexRunner({
+      spawnProcess: () => {
+        spawnCalled = true;
+        throw new Error('should not be called');
+      }
+    });
+
+    await expect(
+      runner.resumeThreadInterruptAndRunTurn({
+        ...makeStartInput('/tmp/workspace\nbad', {
+          workerHost: 'build-1'
+        }),
+        previousThreadId: 'thread-recover',
+        previousTurnId: 'turn-old',
+        previousSessionId: 'session-old'
+      })
+    ).rejects.toMatchObject({ code: 'invalid_remote_workspace_cwd' });
+    expect(spawnCalled).toBe(false);
   });
 
   it('auto-approves allowlisted approval requests and rejects unsupported tool calls without stalling', async () => {
@@ -817,7 +1086,15 @@ describe('CodexRunner', () => {
         id: 92,
         result: expect.objectContaining({
           success: false,
-          output: expect.stringContaining('Unsupported dynamic tool')
+          output: expect.stringContaining('"attemptedToolName": "unknown"')
+        })
+      })
+    );
+    expect(responses).toContainEqual(
+      expect.objectContaining({
+        id: 92,
+        result: expect.objectContaining({
+          output: expect.stringContaining('"supportedTools": [')
         })
       })
     );
@@ -1446,6 +1723,207 @@ describe('CodexRunner', () => {
         remaining: 42,
         limit: 100
       }
+    });
+  });
+
+  it('normalizes generated app-server token, rate-limit, warning, and model-reroute signals', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: CodexRunnerEvent[] = [];
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const tokenTotal = {
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        tokenUsage: {
+          total: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+          last: { inputTokens: 10, outputTokens: 4, totalTokens: 14 }
+        }
+      }
+    } satisfies ThreadTokenUsageUpdatedNotification & Record<string, unknown>;
+    const tokenDelta = {
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        tokenUsage: {
+          delta: { inputTokens: 3, outputTokens: 2, totalTokens: 5 }
+        }
+      }
+    } satisfies ThreadTokenUsageUpdatedNotification & Record<string, unknown>;
+    const rateLimit = {
+      method: 'account/rateLimits/updated',
+      params: {
+        account: {
+          rateLimits: {
+            primary: { remaining: 41, limit: 100, resetAt: '2026-05-11T13:30:00.000Z' }
+          }
+        }
+      }
+    } satisfies AccountRateLimitsUpdatedNotification & Record<string, unknown>;
+    const warning = {
+      method: 'warning',
+      params: { message: 'configuration will be updated by the server' }
+    } satisfies WarningNotification & Record<string, unknown>;
+    const guardianWarning = {
+      method: 'guardianWarning',
+      params: { message: 'guardian policy warning' }
+    } satisfies GuardianWarningNotification & Record<string, unknown>;
+    const configWarning = {
+      method: 'configWarning',
+      params: { message: 'deprecated config key' }
+    } satisfies ConfigWarningNotification & Record<string, unknown>;
+    const deprecationNotice = {
+      method: 'deprecationNotice',
+      params: { message: 'old protocol key is deprecated', severity: 'info' }
+    } satisfies DeprecationNoticeNotification & Record<string, unknown>;
+    const modelReroute = {
+      method: 'model/rerouted',
+      params: {
+        requestedModel: 'gpt-requested',
+        effectiveModel: 'gpt-effective'
+      }
+    } satisfies ModelReroutedNotification & Record<string, unknown>;
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        command: 'codex',
+        commandArgs: ['--config', 'model="gpt-requested"', 'app-server'],
+        onEvent: (event) => events.push(event)
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    for (const notification of [
+      tokenTotal,
+      tokenDelta,
+      rateLimit,
+      warning,
+      guardianWarning,
+      configWarning,
+      deprecationNotice,
+      modelReroute
+    ]) {
+      fake.emitStdout(`${JSON.stringify(notification)}\n`);
+    }
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 13,
+        output_tokens: 6,
+        total_tokens: 19
+      },
+      rate_limits: {
+        primary: { remaining: 41, limit: 100, resetAt: '2026-05-11T13:30:00.000Z' }
+      },
+      protocol_warnings: [
+        {
+          method: 'warning',
+          reason_code: 'codex_protocol_warning',
+          message: 'configuration will be updated by the server',
+          severity: 'warn',
+          source: 'app_server_protocol'
+        },
+        {
+          method: 'guardianWarning',
+          reason_code: 'codex_protocol_guardian_warning',
+          message: 'guardian policy warning',
+          severity: 'warn',
+          source: 'app_server_protocol'
+        },
+        {
+          method: 'configWarning',
+          reason_code: 'codex_protocol_config_warning',
+          message: 'deprecated config key',
+          severity: 'warn',
+          source: 'app_server_protocol'
+        },
+        {
+          method: 'deprecationNotice',
+          reason_code: 'codex_protocol_deprecation_notice',
+          message: 'old protocol key is deprecated',
+          severity: 'info',
+          source: 'app_server_protocol'
+        }
+      ],
+      model_reroute: {
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective',
+        reason_code: 'codex_model_rerouted',
+        source: 'app_server_protocol'
+      },
+      requested_model: 'gpt-requested',
+      effective_model: 'gpt-effective'
+    });
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: CANONICAL_EVENT.codex.rateLimitsUpdated }),
+        expect.objectContaining({ event: CANONICAL_EVENT.codex.protocolWarning }),
+        expect.objectContaining({ event: CANONICAL_EVENT.codex.modelRerouted })
+      ])
+    );
+  });
+
+  it('preserves token, rate-limit, and model state when generated telemetry fields are malformed', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const goodRateLimit = {
+      method: 'account/rateLimits/updated',
+      params: { limits: { remaining: 7, limit: 10 } }
+    } satisfies AccountRateLimitsUpdatedNotification & Record<string, unknown>;
+    const malformedRateLimit = {
+      method: 'account/rateLimits/updated',
+      params: { rateLimits: 'not-an-object' }
+    } satisfies AccountRateLimitsUpdatedNotification & Record<string, unknown>;
+    const goodModelReroute = {
+      method: 'model/rerouted',
+      params: { requestedModel: 'gpt-requested', effectiveModel: 'gpt-effective' }
+    } satisfies ModelReroutedNotification & Record<string, unknown>;
+    const malformedModelReroute = {
+      method: 'model/rerouted',
+      params: { requestedModel: 'gpt-requested' }
+    } satisfies ModelReroutedNotification & Record<string, unknown>;
+
+    const promise = runner.startSessionAndRunTurn(makeStartInput(workspaceCwd));
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout(
+      '{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"total":{"inputTokens":9,"outputTokens":3,"totalTokens":12}}}}\n'
+    );
+    fake.emitStdout(`${JSON.stringify(goodRateLimit)}\n`);
+    fake.emitStdout(`${JSON.stringify(goodModelReroute)}\n`);
+    fake.emitStdout(
+      '{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"total":{"inputTokens":"missing","outputTokens":99,"totalTokens":99},"delta":{"inputTokens":"bad","outputTokens":99,"totalTokens":99}}}}\n'
+    );
+    fake.emitStdout(`${JSON.stringify(malformedRateLimit)}\n`);
+    fake.emitStdout(`${JSON.stringify(malformedModelReroute)}\n`);
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      usage: {
+        input_tokens: 9,
+        output_tokens: 3,
+        total_tokens: 12
+      },
+      rate_limits: {
+        remaining: 7,
+        limit: 10
+      },
+      model_reroute: {
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective'
+      },
+      effective_model: 'gpt-effective'
     });
   });
 

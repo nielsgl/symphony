@@ -57,6 +57,16 @@ For diagnostics, verify:
 - `/api/v1/diagnostics.workspace_copy_ignored.last_status`
 - `/api/v1/diagnostics.workspace_copy_ignored.last_error_code`
 
+Workspace Provisioning Boundary:
+
+- Workspace Manager owns filesystem workspace and Git worktree creation.
+- Codex Runner only passes the already-provisioned `cwd` to the Codex App
+  Server.
+- Codex App Server `thread/start`, `thread/fork`, and `thread/resume` are
+  conversation/session controls, not Git worktree provisioning.
+- Resume flows must keep the existing provisioned workspace `cwd`; do not use
+  app-server conversation APIs to create or switch worktrees.
+
 ## 4b. Optional `.worktreeinclude` copy engine
 
 For dependency-heavy repos you can copy selected gitignored artifacts from a source worktree into each newly provisioned workspace.

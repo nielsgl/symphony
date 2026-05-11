@@ -72,6 +72,11 @@ export const REASON_CODES = {
   unsafeWorkspaceRoot: 'unsafe_workspace_root',
   workspaceEmpty: 'workspace_empty',
   unsupportedApprovalServerRequest: 'unsupported_approval_server_request',
+  codexProtocolWarning: 'codex_protocol_warning',
+  codexProtocolGuardianWarning: 'codex_protocol_guardian_warning',
+  codexProtocolDeprecationNotice: 'codex_protocol_deprecation_notice',
+  codexProtocolConfigWarning: 'codex_protocol_config_warning',
+  codexModelRerouted: 'codex_model_rerouted',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
 
@@ -560,6 +565,56 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     detail:
       'The Codex app-server emitted an approval-like server request that is not in the explicit Symphony approval allowlist.',
     expected_transition: null
+  },
+  [REASON_CODES.codexProtocolWarning]: {
+    reason_code: REASON_CODES.codexProtocolWarning,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Codex Protocol Warning',
+    headline: 'Codex emitted a warning',
+    detail: 'The Codex app-server emitted a generic warning notification that was preserved as runner evidence.',
+    expected_transition: 'Run continues while warning evidence is available for diagnostics'
+  },
+  [REASON_CODES.codexProtocolGuardianWarning]: {
+    reason_code: REASON_CODES.codexProtocolGuardianWarning,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Codex Guardian Warning',
+    headline: 'Codex guardian emitted a warning',
+    detail: 'The Codex app-server emitted a guardian warning notification that was preserved as runner evidence.',
+    expected_transition: 'Run continues while warning evidence is available for diagnostics'
+  },
+  [REASON_CODES.codexProtocolDeprecationNotice]: {
+    reason_code: REASON_CODES.codexProtocolDeprecationNotice,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Codex Deprecation Notice',
+    headline: 'Codex emitted a deprecation notice',
+    detail: 'The Codex app-server emitted a deprecation notice that was preserved as runner evidence.',
+    expected_transition: 'Run continues while warning evidence is available for diagnostics'
+  },
+  [REASON_CODES.codexProtocolConfigWarning]: {
+    reason_code: REASON_CODES.codexProtocolConfigWarning,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Codex Config Warning',
+    headline: 'Codex emitted a config warning',
+    detail: 'The Codex app-server emitted a config warning notification that was preserved as runner evidence.',
+    expected_transition: 'Run continues while warning evidence is available for diagnostics'
+  },
+  [REASON_CODES.codexModelRerouted]: {
+    reason_code: REASON_CODES.codexModelRerouted,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Codex Model Rerouted',
+    headline: 'Codex selected a different effective model',
+    detail: 'The Codex app-server reported a model reroute and the runner preserved requested and effective model evidence.',
+    expected_transition: 'Run continues with effective model evidence available for diagnostics'
   },
   [REASON_CODES.unknownRuntimeReason]: {
     reason_code: REASON_CODES.unknownRuntimeReason,

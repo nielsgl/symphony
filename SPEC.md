@@ -938,6 +938,24 @@ Invariant 3: Workspace key is sanitized.
 - Only `[A-Za-z0-9._-]` allowed in workspace directory names.
 - Replace all other characters with `_`.
 
+### 9.6 Workspace Provisioning Boundary
+
+The Workspace Manager owns filesystem workspace and Git worktree creation. The
+Codex Runner must receive an already-provisioned workspace path and must validate
+that path before launching the Codex App Server locally or remotely.
+
+Boundary rules:
+
+- Workspace Manager creates, reuses, verifies, and tears down workspaces.
+- Codex Runner only passes the provisioned `cwd` to the Codex App Server
+  subprocess and app-server protocol messages.
+- Codex App Server `thread/start`, `thread/fork`, and `thread/resume` are
+  conversation/session controls, not Git worktree provisioning mechanisms.
+- Resume behavior must keep `thread/resume` and the recovery `turn/start`
+  scoped to the same existing provisioned workspace `cwd`.
+- No implementation may replace Symphony worktree creation with app-server
+  conversation APIs unless this boundary is explicitly revised.
+
 ## 10. Agent Runner Protocol (Coding Agent Integration)
 
 This section defines the language-neutral contract for integrating a coding agent app-server.
@@ -966,6 +984,9 @@ Notes:
 
 - The default command is `codex app-server`.
 - Approval policy, cwd, and prompt are expressed in the protocol messages in Section 10.2.
+- The `cwd` has already crossed the Workspace Provisioning Boundary: it must be
+  produced by the Workspace Manager and validated by the Codex Runner before the
+  app-server process is launched.
 
 Recommended additional process settings:
 
@@ -999,7 +1020,7 @@ semantics):
    - Params include:
      - `approvalPolicy` = implementation-defined session approval policy value
      - `sandbox` = implementation-defined session sandbox value
-     - `cwd` = absolute workspace path
+     - `cwd` = absolute provisioned workspace path
      - If optional client-side tools are implemented, include their advertised tool specs using the
        protocol mechanism supported by the targeted Codex app-server version.
 4. `turn/start` request

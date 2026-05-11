@@ -68,6 +68,21 @@ export interface TokenTelemetrySnapshot {
   token_telemetry_last_at_ms: number | null;
 }
 
+export interface CodexProtocolWarningEvidence {
+  method: string;
+  reason_code: string;
+  message: string | null;
+  severity: 'info' | 'warn';
+  source: 'app_server_protocol';
+}
+
+export interface CodexModelRerouteEvidence {
+  requested_model: string | null;
+  effective_model: string;
+  reason_code: string;
+  source: 'app_server_protocol';
+}
+
 export interface CodexInputRequestOption {
   label: string;
   value?: string;
@@ -110,6 +125,10 @@ export interface CodexTurnResult {
   token_telemetry_last_source?: string | null;
   token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
+  protocol_warnings?: CodexProtocolWarningEvidence[];
+  model_reroute?: CodexModelRerouteEvidence | null;
+  requested_model?: string | null;
+  effective_model?: string | null;
 }
 
 export interface CodexRunnerEvent {
@@ -125,6 +144,11 @@ export interface CodexRunnerEvent {
   token_telemetry_last_source?: string | null;
   token_telemetry_last_at_ms?: number | null;
   rate_limits?: Record<string, unknown> | null;
+  protocol_warnings?: CodexProtocolWarningEvidence[];
+  protocol_warning?: CodexProtocolWarningEvidence;
+  model_reroute?: CodexModelRerouteEvidence | null;
+  requested_model?: string | null;
+  effective_model?: string | null;
   codex_thread_activity_at_ms?: number | null;
   codex_thread_activity_source?: CodexAppServerThreadActivitySource | null;
   codex_thread_activity_status?: string | null;

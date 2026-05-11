@@ -24,6 +24,8 @@ import type {
   CodexRunnerEvent,
   CodexRunnerStartInput,
   CodexTurnResult,
+  CodexModelRerouteEvidence,
+  CodexProtocolWarningEvidence,
   CodexUsageTotals,
   TokenTelemetrySnapshot
 } from './types';
@@ -59,6 +61,10 @@ interface WaitForTerminalResult {
   usage: CodexUsageTotals;
   telemetry: TokenTelemetrySnapshot;
   rate_limits: Record<string, unknown> | null;
+  protocol_warnings: CodexProtocolWarningEvidence[];
+  model_reroute: CodexModelRerouteEvidence | null;
+  requested_model: string | null;
+  effective_model: string | null;
   last_agent_message?: string;
   completed_at_ms?: number;
   duration_ms?: number;
@@ -499,9 +505,13 @@ function parseLastTokenUsage(params: Record<string, unknown>): CodexUsageTotals 
 
   return (
     parseTokenTotals(asRecord(info?.last_token_usage) ?? asRecord(info?.lastTokenUsage)) ??
+    parseTokenTotals(asRecord(info?.delta_token_usage) ?? asRecord(info?.deltaTokenUsage)) ??
     parseTokenTotals(asRecord(params.last_token_usage) ?? asRecord(params.lastTokenUsage)) ??
+    parseTokenTotals(asRecord(params.delta_token_usage) ?? asRecord(params.deltaTokenUsage) ?? asRecord(params.delta)) ??
     parseTokenTotals(asRecord(usage?.last_token_usage) ?? asRecord(usage?.lastTokenUsage)) ??
-    parseTokenTotals(asRecord(tokenUsage?.last) ?? asRecord(tokenUsage?.last_usage))
+    parseTokenTotals(asRecord(usage?.delta_token_usage) ?? asRecord(usage?.deltaTokenUsage) ?? asRecord(usage?.delta)) ??
+    parseTokenTotals(asRecord(tokenUsage?.last) ?? asRecord(tokenUsage?.last_usage)) ??
+    parseTokenTotals(asRecord(tokenUsage?.delta) ?? asRecord(tokenUsage?.delta_usage))
   );
 }
 
@@ -763,6 +773,66 @@ function renderShellCommand(command: string, args?: string[], env?: Record<strin
   return envPrefix ? `${envPrefix} ${commandWithArgs}` : commandWithArgs;
 }
 
+function readModelValue(value: unknown): string | null {
+  const parsed = readString(value);
+  return parsed && parsed.trim() ? parsed.trim() : null;
+}
+
+function readFirstModelValue(payload: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = readModelValue(payload[key]);
+    if (value) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function stripConfigQuotes(value: string): string {
+  return value.replace(/^['"]|['"]$/g, '');
+}
+
+function readModelFromConfigAssignment(value: string): string | null {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^model\s*=\s*(.+)$/);
+  return match ? stripConfigQuotes(match[1].trim()) : null;
+}
+
+function extractRequestedModel(input: CodexRunnerStartInput): string | null {
+  const args = input.commandArgs ?? [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--config' || arg === '-c') {
+      const next = args[index + 1];
+      if (next) {
+        const parsed = readModelFromConfigAssignment(next);
+        if (parsed) {
+          return parsed;
+        }
+      }
+    }
+    const inlineConfig = arg.match(/^--config=(.+)$/)?.[1];
+    if (inlineConfig) {
+      const parsed = readModelFromConfigAssignment(inlineConfig);
+      if (parsed) {
+        return parsed;
+      }
+    }
+  }
+
+  const commandMatch = input.command.match(/(?:^|\s)(?:--config|-c)\s+['"]?model\s*=\s*["']?([^'"\s]+)["']?/);
+  return commandMatch ? stripConfigQuotes(commandMatch[1]) : null;
+}
+
+function buildProtocolMetadata(waitResult: WaitForTerminalResult): Partial<CodexTurnResult> {
+  return {
+    protocol_warnings: waitResult.protocol_warnings,
+    model_reroute: waitResult.model_reroute,
+    requested_model: waitResult.requested_model,
+    effective_model: waitResult.effective_model
+  };
+}
+
 function defaultSpawnProcess(params: {
   command: string;
   args?: string[];
@@ -969,7 +1039,12 @@ export class CodexRunner {
       throw new CodexRunnerError('invalid_workspace_cwd', `Failed to launch codex process in cwd: ${input.workspaceCwd}`);
     }
 
-    const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor, normalizeCodexHome(input));
+    const protocol = new ProtocolClient(
+      processHandle,
+      this.dynamicToolExecutor,
+      normalizeCodexHome(input),
+      extractRequestedModel(input)
+    );
     const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
     const cancellation = createProcessCancellation({ processHandle, signal: input.cancellationSignal });
     protocol.setEventEmitter(emit);
@@ -1088,6 +1163,7 @@ export class CodexRunner {
         const telemetry = waitResult.telemetry;
         const rate_limits = waitResult.rate_limits;
         const terminalMetadata = buildTerminalMetadata(waitResult);
+        const protocolMetadata = buildProtocolMetadata(waitResult);
 
         if (waitResult.terminal === 'turn/completed') {
           turnsCompleted += 1;
@@ -1106,6 +1182,7 @@ export class CodexRunner {
             usage,
             ...telemetry,
             rate_limits,
+            ...protocolMetadata,
             terminal_source: waitResult.terminal_source
           });
 
@@ -1123,12 +1200,13 @@ export class CodexRunner {
             usage,
             ...telemetry,
             rate_limits,
+            ...protocolMetadata,
             ...terminalMetadata
           };
         }
 
         if (waitResult.terminal === 'turn/failed') {
-          emit({ event: CANONICAL_EVENT.codex.turnFailed, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+          emit({ event: CANONICAL_EVENT.codex.turnFailed, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits, ...protocolMetadata });
           return {
             status: 'failed',
             thread_id,
@@ -1140,12 +1218,13 @@ export class CodexRunner {
             usage,
             ...telemetry,
             rate_limits,
+            ...protocolMetadata,
             ...terminalMetadata
           };
         }
 
         if (waitResult.terminal === 'turn/cancelled') {
-          emit({ event: CANONICAL_EVENT.codex.turnCancelled, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+          emit({ event: CANONICAL_EVENT.codex.turnCancelled, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits, ...protocolMetadata });
           return {
             status: 'failed',
             thread_id,
@@ -1157,11 +1236,12 @@ export class CodexRunner {
             usage,
             ...telemetry,
             rate_limits,
+            ...protocolMetadata,
             ...terminalMetadata
           };
         }
 
-        emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+        emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits, ...protocolMetadata });
         const inputRequestId = waitResult.input_required_payload?.request_id ?? null;
         if (inputRequestId) {
           this.pendingNativeInputSessions.set(session_id, {
@@ -1186,6 +1266,7 @@ export class CodexRunner {
           usage,
           ...telemetry,
           rate_limits,
+          ...protocolMetadata,
           ...terminalMetadata
         };
       }
@@ -1241,7 +1322,12 @@ export class CodexRunner {
       throw new CodexRunnerError('invalid_workspace_cwd', `Failed to launch codex process in cwd: ${input.workspaceCwd}`);
     }
 
-    const protocol = new ProtocolClient(processHandle, this.dynamicToolExecutor, normalizeCodexHome(input));
+    const protocol = new ProtocolClient(
+      processHandle,
+      this.dynamicToolExecutor,
+      normalizeCodexHome(input),
+      extractRequestedModel(input)
+    );
     const emit = this.makeEmitter(input.onEvent, processHandle.pid ?? null);
     const cancellation = createProcessCancellation({ processHandle, signal: input.cancellationSignal });
     protocol.setEventEmitter(emit);
@@ -1342,6 +1428,7 @@ export class CodexRunner {
       const telemetry = waitResult.telemetry;
       const rate_limits = waitResult.rate_limits;
       const terminalMetadata = buildTerminalMetadata(waitResult);
+      const protocolMetadata = buildProtocolMetadata(waitResult);
       if (waitResult.terminal === 'turn/completed') {
         emit({ event: CANONICAL_EVENT.codex.phaseValidation, thread_id, turn_id, session_id });
         emit({
@@ -1352,6 +1439,7 @@ export class CodexRunner {
           usage,
           ...telemetry,
           rate_limits,
+          ...protocolMetadata,
           terminal_source: waitResult.terminal_source
         });
         return {
@@ -1364,11 +1452,12 @@ export class CodexRunner {
           usage,
           ...telemetry,
           rate_limits,
+          ...protocolMetadata,
           ...terminalMetadata
         };
       }
       if (waitResult.terminal === 'turn/failed') {
-        emit({ event: CANONICAL_EVENT.codex.turnFailed, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+        emit({ event: CANONICAL_EVENT.codex.turnFailed, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits, ...protocolMetadata });
         return {
           status: 'failed',
           thread_id,
@@ -1380,11 +1469,12 @@ export class CodexRunner {
           usage,
           ...telemetry,
           rate_limits,
+          ...protocolMetadata,
           ...terminalMetadata
         };
       }
       if (waitResult.terminal === 'turn/cancelled') {
-        emit({ event: CANONICAL_EVENT.codex.turnCancelled, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+        emit({ event: CANONICAL_EVENT.codex.turnCancelled, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits, ...protocolMetadata });
         return {
           status: 'failed',
           thread_id,
@@ -1396,11 +1486,12 @@ export class CodexRunner {
           usage,
           ...telemetry,
           rate_limits,
+          ...protocolMetadata,
           ...terminalMetadata
         };
       }
 
-      emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits });
+      emit({ event: CANONICAL_EVENT.codex.turnInputRequired, thread_id, turn_id, session_id, usage, ...telemetry, rate_limits, ...protocolMetadata });
       return {
         status: 'failed',
         thread_id,
@@ -1414,6 +1505,7 @@ export class CodexRunner {
         usage,
         ...telemetry,
         rate_limits,
+        ...protocolMetadata,
         ...terminalMetadata
       };
     } catch (error) {
@@ -1522,6 +1614,7 @@ class ProtocolClient {
   private readonly processHandle: RunnerProcess;
   private readonly dynamicToolExecutor: DynamicToolExecutor;
   private readonly codexHome: string;
+  private readonly requestedModel: string | null;
   private readonly pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
   private readonly earlyResponses = new Map<number, ProtocolMessage>();
   private readonly notifications: ProtocolMessage[] = [];
@@ -1531,6 +1624,8 @@ class ProtocolClient {
   private readonly transcriptTails = new Map<string, string>();
 
   private latestRateLimits: Record<string, unknown> | null = null;
+  private latestModelReroute: CodexModelRerouteEvidence | null = null;
+  private protocolWarnings: CodexProtocolWarningEvidence[] = [];
   private stdoutBuffer = '';
   private stderrBuffer = '';
   private nextId = 1;
@@ -1541,10 +1636,16 @@ class ProtocolClient {
   private static readonly TURN_WAITING_HEARTBEAT_MS = 5000;
   private static readonly TRANSCRIPT_SCAN_INTERVAL_MS = 100;
 
-  constructor(processHandle: RunnerProcess, dynamicToolExecutor: DynamicToolExecutor, codexHome: string) {
+  constructor(
+    processHandle: RunnerProcess,
+    dynamicToolExecutor: DynamicToolExecutor,
+    codexHome: string,
+    requestedModel: string | null
+  ) {
     this.processHandle = processHandle;
     this.dynamicToolExecutor = dynamicToolExecutor;
     this.codexHome = codexHome;
+    this.requestedModel = requestedModel;
 
     this.processHandle.stdout.on('data', (chunk: Buffer | string) => {
       this.onStdout(chunk.toString('utf8'));
@@ -1673,7 +1774,13 @@ class ProtocolClient {
         const rateLimits = this.extractRateLimits(message);
         if (rateLimits) {
           this.latestRateLimits = rateLimits;
+          emit({
+            event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+            rate_limits: rateLimits,
+            ...(this.activeTurnContext ? this.activeTurnContext : {})
+          });
         }
+        this.observeProtocolSignals(message, emit);
 
         const approvalResponse = this.approvalResponse(message);
         if (approvalResponse) {
@@ -1763,6 +1870,7 @@ class ProtocolClient {
             usage: this.usageTracker.snapshot(),
             telemetry: this.usageTracker.telemetrySnapshot(),
             rate_limits: this.latestRateLimits,
+            ...this.protocolEvidenceSnapshot(),
             input_required_detail: 'tool requestUserInput input_required_unanswerable',
             input_required_payload: toInputRequestPayload(message) ?? undefined
           };
@@ -1787,6 +1895,7 @@ class ProtocolClient {
             usage: this.usageTracker.snapshot(),
             telemetry: this.usageTracker.telemetrySnapshot(),
             rate_limits: this.latestRateLimits,
+            ...this.protocolEvidenceSnapshot(),
             input_required_detail: 'mcp elicitation request input_required_unanswerable',
             input_required_payload: toInputRequestPayload(message) ?? undefined
           };
@@ -1799,7 +1908,8 @@ class ProtocolClient {
             terminal_source: 'app_server_protocol',
             usage: this.usageTracker.snapshot(),
             telemetry: this.usageTracker.telemetrySnapshot(),
-            rate_limits: this.latestRateLimits
+            rate_limits: this.latestRateLimits,
+            ...this.protocolEvidenceSnapshot()
           };
         }
 
@@ -1827,7 +1937,8 @@ class ProtocolClient {
           terminal_source: 'session_transcript',
           usage: this.usageTracker.snapshot(),
           telemetry: this.usageTracker.telemetrySnapshot(),
-          rate_limits: this.latestRateLimits
+          rate_limits: this.latestRateLimits,
+          ...this.protocolEvidenceSnapshot()
         };
       }
 
@@ -2227,6 +2338,7 @@ class ProtocolClient {
   }
 
   private extractRateLimits(message: ProtocolMessage): Record<string, unknown> | null {
+    const method = (message.method ?? '').toLowerCase();
     const params = asRecord(message.params);
     if (!params) {
       return null;
@@ -2237,12 +2349,43 @@ class ProtocolClient {
       return direct;
     }
 
-    const nestedUsage = asRecord(params.usage);
-    if (!nestedUsage) {
-      return null;
+    const account = asRecord(params.account);
+    const accountRateLimits = asRecord(account?.rate_limits) ?? asRecord(account?.rateLimits);
+    if (accountRateLimits) {
+      return accountRateLimits;
     }
 
-    return asRecord(nestedUsage.rate_limits) ?? asRecord(nestedUsage.rateLimits) ?? null;
+    const data = asRecord(params.data);
+    const dataRateLimits = asRecord(data?.rate_limits) ?? asRecord(data?.rateLimits);
+    if (dataRateLimits) {
+      return dataRateLimits;
+    }
+
+    const limits = asRecord(params.limits) ?? asRecord(params.rate_limit) ?? asRecord(params.rateLimit);
+    if (limits) {
+      return limits;
+    }
+
+    const nestedUsage = asRecord(params.usage);
+    const usageRateLimits = asRecord(nestedUsage?.rate_limits) ?? asRecord(nestedUsage?.rateLimits);
+    if (usageRateLimits) {
+      return usageRateLimits;
+    }
+
+    const hasKnownContainer =
+      'rate_limits' in params ||
+      'rateLimits' in params ||
+      'rate_limit' in params ||
+      'rateLimit' in params ||
+      'limits' in params ||
+      'account' in params ||
+      'data' in params ||
+      'usage' in params;
+    if (method === 'account/ratelimits/updated' && !hasKnownContainer && Object.keys(params).length > 0) {
+      return params;
+    }
+
+    return null;
   }
 
   private approvalResponse(message: ProtocolMessage): { result: Record<string, string>; detail: string } | null {
@@ -2338,6 +2481,118 @@ class ProtocolClient {
     }
 
     return false;
+  }
+
+  private protocolEvidenceSnapshot(): Pick<
+    WaitForTerminalResult,
+    'protocol_warnings' | 'model_reroute' | 'requested_model' | 'effective_model'
+  > {
+    return {
+      protocol_warnings: [...this.protocolWarnings],
+      model_reroute: this.latestModelReroute,
+      requested_model: this.latestModelReroute?.requested_model ?? this.requestedModel,
+      effective_model: this.latestModelReroute?.effective_model ?? this.requestedModel
+    };
+  }
+
+  private observeProtocolSignals(
+    message: ProtocolMessage,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): void {
+    const warning = this.extractProtocolWarning(message);
+    if (warning) {
+      this.protocolWarnings.push(warning);
+      emit({
+        event: CANONICAL_EVENT.codex.protocolWarning,
+        detail: warning.message ?? warning.reason_code,
+        protocol_warning: warning,
+        protocol_warnings: [...this.protocolWarnings],
+        ...(this.activeTurnContext ? this.activeTurnContext : {})
+      });
+    }
+
+    const modelReroute = this.extractModelReroute(message);
+    if (modelReroute) {
+      this.latestModelReroute = modelReroute;
+      emit({
+        event: CANONICAL_EVENT.codex.modelRerouted,
+        detail: modelReroute.reason_code,
+        model_reroute: modelReroute,
+        requested_model: modelReroute.requested_model,
+        effective_model: modelReroute.effective_model,
+        ...(this.activeTurnContext ? this.activeTurnContext : {})
+      });
+    }
+  }
+
+  private extractProtocolWarning(message: ProtocolMessage): CodexProtocolWarningEvidence | null {
+    const method = message.method ?? '';
+    const normalized = method.toLowerCase();
+    const reasonCode =
+      normalized === 'warning'
+        ? REASON_CODES.codexProtocolWarning
+        : normalized === 'guardianwarning'
+          ? REASON_CODES.codexProtocolGuardianWarning
+          : normalized === 'deprecationnotice'
+            ? REASON_CODES.codexProtocolDeprecationNotice
+            : normalized === 'configwarning'
+              ? REASON_CODES.codexProtocolConfigWarning
+              : null;
+    if (!reasonCode) {
+      return null;
+    }
+
+    const params = asRecord(message.params);
+    const messageText =
+      readString(params?.message) ??
+      readString(params?.detail) ??
+      readString(params?.text) ??
+      readString(params?.title) ??
+      null;
+    const severity = readString(params?.severity)?.toLowerCase() === 'info' ? 'info' : 'warn';
+    return {
+      method,
+      reason_code: reasonCode,
+      message: messageText,
+      severity,
+      source: 'app_server_protocol'
+    };
+  }
+
+  private extractModelReroute(message: ProtocolMessage): CodexModelRerouteEvidence | null {
+    if ((message.method ?? '').toLowerCase() !== 'model/rerouted') {
+      return null;
+    }
+
+    const params = asRecord(message.params);
+    if (!params) {
+      return null;
+    }
+
+    const requested_model =
+      readFirstModelValue(params, ['requested_model', 'requestedModel', 'from_model', 'fromModel', 'source_model', 'sourceModel']) ??
+      this.requestedModel;
+    const effective_model = readFirstModelValue(params, [
+      'effective_model',
+      'effectiveModel',
+      'to_model',
+      'toModel',
+      'target_model',
+      'targetModel',
+      'rerouted_model',
+      'reroutedModel',
+      'model'
+    ]);
+    if (!effective_model) {
+      return null;
+    }
+
+    return {
+      requested_model,
+      effective_model,
+      reason_code: REASON_CODES.codexModelRerouted,
+      source: 'app_server_protocol'
+    };
   }
 
   private isMcpElicitationRequest(message: ProtocolMessage): boolean {

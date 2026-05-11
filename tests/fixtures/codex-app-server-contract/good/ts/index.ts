@@ -17,6 +17,8 @@ export interface PermissionsRequestApprovalParams {}
 export interface PermissionsRequestApprovalResponse {}
 export interface ThreadReadParams {}
 export interface ThreadReadResponse {}
+export interface ThreadResumeParams {}
+export interface ThreadResumeResponse {}
 export interface ThreadStartParams {}
 export interface ThreadStartResponse {}
 export interface ToolRequestUserInputParams {}

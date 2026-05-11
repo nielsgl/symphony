@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
-import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort } from '../../src/runtime';
+import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort, toWorkerEvent } from '../../src/runtime';
 import { SqlitePersistenceStore } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
 
@@ -138,6 +138,67 @@ describe('createRuntimeEnvironment', () => {
       worker_handle: workerHandle,
       cleanup_workspace: false,
       reason: REASON_CODES.missingToolOutputRecoveryInterrupted
+    });
+  });
+
+  it('preserves protocol warning and model reroute evidence in worker event conversion', () => {
+    const workerEvent = toWorkerEvent(
+      {
+        event: CANONICAL_EVENT.codex.turnCompleted,
+        timestamp: '2026-05-11T13:20:00.000Z',
+        codex_app_server_pid: 1234,
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        protocol_warnings: [
+          {
+            method: 'session/configWarning',
+            reason_code: 'codex_protocol_config_warning',
+            message: 'config field is deprecated',
+            severity: 'warn',
+            source: 'app_server_protocol'
+          }
+        ],
+        protocol_warning: {
+          method: 'session/configWarning',
+          reason_code: 'codex_protocol_config_warning',
+          message: 'config field is deprecated',
+          severity: 'warn',
+          source: 'app_server_protocol'
+        },
+        model_reroute: {
+          requested_model: 'gpt-requested',
+          effective_model: 'gpt-effective',
+          reason_code: 'codex_model_rerouted',
+          source: 'app_server_protocol'
+        },
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective'
+      },
+      Date.parse('2026-05-11T13:21:00.000Z')
+    );
+
+    expect(workerEvent).toMatchObject({
+      event: CANONICAL_EVENT.codex.turnCompleted,
+      timestamp_ms: Date.parse('2026-05-11T13:20:00.000Z'),
+      protocol_warnings: [
+        {
+          method: 'session/configWarning',
+          reason_code: 'codex_protocol_config_warning',
+          message: 'config field is deprecated'
+        }
+      ],
+      protocol_warning: {
+        method: 'session/configWarning',
+        reason_code: 'codex_protocol_config_warning',
+        message: 'config field is deprecated'
+      },
+      model_reroute: {
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective',
+        reason_code: 'codex_model_rerouted'
+      },
+      requested_model: 'gpt-requested',
+      effective_model: 'gpt-effective'
     });
   });
 
