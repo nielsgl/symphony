@@ -1313,6 +1313,80 @@ describe('SqlitePersistenceStore', () => {
     expect(JSON.stringify(ledger)).not.toContain('raw-tool-token');
   });
 
+  it('projects bounded App Server Event Ledger Lite excerpts through run history', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-app-server-history-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    const started = storeA.recordRunStarted({
+      issue_id: 'issue-history-ledger',
+      issue_identifier: 'ABC-HISTORY-LEDGER',
+      identity: identity({ issue_id: 'issue-history-ledger', issue_identifier: 'ABC-HISTORY-LEDGER' }),
+      started_at: '2026-04-11T10:00:00.000Z',
+      attempt_number: 0,
+      status: 'running'
+    });
+    const threadId = storeA.appendThread({
+      attempt_id: started.attempt_id,
+      thread_id: 'thread-history-ledger',
+      started_at: '2026-04-11T10:00:01.000Z',
+      status: 'running'
+    });
+    const turnId = storeA.appendTurn({
+      thread_id: threadId,
+      turn_index: 0,
+      turn_id: 'turn-history-ledger',
+      started_at: '2026-04-11T10:00:02.000Z',
+      status: 'running'
+    });
+    storeA.appendAppServerEvent({
+      issue_run_id: started.issue_run_id,
+      attempt_id: started.attempt_id,
+      thread_id: threadId,
+      turn_id: turnId,
+      observed_at: '2026-04-11T10:00:03.000Z',
+      source_event_id: 'evt-history-warning',
+      source_event_name: 'codex.protocol.warning',
+      payload_class: 'protocol_lifecycle',
+      summary: 'guardian warning',
+      summary_fields: {
+        protocol_event_category: 'warning',
+        message: 'do not persist transcript token=history-secret'
+      }
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const run = storeB.listRunHistory().find((entry) => entry.run_id === started.run_id);
+
+    expect(run?.identity_projection).toMatchObject({
+      run_id: started.run_id,
+      issue_run_id: started.issue_run_id,
+      projection_status: 'projected'
+    });
+    expect(run?.app_server_events).toEqual([
+      expect.objectContaining({
+        issue_run_id: started.issue_run_id,
+        attempt_id: started.attempt_id,
+        thread_id: 'thread-history-ledger',
+        turn_id: 'turn-history-ledger',
+        source_event_name: 'codex.protocol.warning',
+        detail_status: 'summary_only',
+        full_payload_stored: false,
+        redacted_excerpt: null,
+        summary_fields: expect.objectContaining({
+          protocol_event_category: 'warning',
+          message: 'do not persist transcript token=***REDACTED***'
+        })
+      })
+    ]);
+    expect(JSON.stringify(run)).not.toContain('history-secret');
+  });
+
   it('records explicit degraded history state when migration execution fails', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-migration-failure-'));
     dirs.push(dir);

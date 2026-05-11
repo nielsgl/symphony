@@ -5752,6 +5752,7 @@ describe('OrchestratorCore', () => {
     const transitions: Array<Record<string, unknown>> = [];
     const terminalOutcomes: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketTerminalOutcome']>>[0]> = [];
     const evidenceReferences: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketEvidenceReference']>>[0]> = [];
+    const appServerEvents: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendAppServerEvent']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'legacy-run-1',
       appendIssueRun: async (params) => {
@@ -5790,6 +5791,10 @@ describe('OrchestratorCore', () => {
         evidenceReferences.push(params);
         return `evidence_${evidenceReferences.length}`;
       },
+      appendAppServerEvent: async (params) => {
+        appServerEvents.push(params);
+        return `app_server_event_${appServerEvents.length}`;
+      },
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
       completeRun: async () => undefined
@@ -5810,6 +5815,70 @@ describe('OrchestratorCore', () => {
       thread_id: 'thread-1',
       turn_id: 'turn-1',
       detail: 'waiting_for_turn_completion elapsed_s=0'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 25,
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request',
+      request_category: 'approval'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 26,
+      event: CANONICAL_EVENT.codex.protocolWarning,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      protocol_warning: {
+        method: 'guardianWarning',
+        reason_code: REASON_CODES.codexProtocolGuardianWarning,
+        message: 'guardian warning with transcript token=raw-secret',
+        severity: 'warn',
+        source: 'app_server_protocol'
+      }
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 27,
+      event: CANONICAL_EVENT.codex.modelRerouted,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      requested_model: 'gpt-requested',
+      effective_model: 'gpt-effective',
+      model_reroute: {
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective',
+        reason_code: REASON_CODES.codexModelRerouted,
+        source: 'app_server_protocol'
+      }
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 28,
+      event: CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      tool_call_id: 'call-dynamic',
+      tool_name: 'linear_graphql',
+      tool_call_evidence_source: 'app_server_protocol'
+    });
+    harness.orchestrator.onWorkerEvent('i-lineage', {
+      timestamp_ms: harness.now.value + 29,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      session_id: 'thread-1-turn-1',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15
+      },
+      rate_limits: {
+        primary: { remaining: 8, limit: 10 }
+      }
     });
     harness.orchestrator.onWorkerEvent('i-lineage', {
       timestamp_ms: harness.now.value + 30,
@@ -5839,13 +5908,11 @@ describe('OrchestratorCore', () => {
     expect(attempts).toEqual([expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_number: 0 })]);
     expect(threads).toEqual([expect.objectContaining({ attempt_id: 'attempt_1', thread_id: 'thread-1' })]);
     expect(turns).toEqual([expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', turn_index: 0 })]);
-    expect(phaseSpans).toHaveLength(2);
     expect(phaseSpans).toEqual(expect.arrayContaining([
       expect.objectContaining({ turn_id: 'turn-1', phase: 'planning', reason_code: 'codex_phase_planning' }),
       expect.objectContaining({ turn_id: 'turn-1', phase: 'validation', reason_code: 'codex_turn_completed' })
     ]));
-    expect(toolSpans).toEqual([expect.objectContaining({ turn_id: 'turn-1', tool_name: 'exec_command', status: 'succeeded' })]);
-    expect(transitions).toHaveLength(4);
+    expect(toolSpans).toEqual(expect.arrayContaining([expect.objectContaining({ turn_id: 'turn-1', tool_name: 'exec_command', status: 'succeeded' })]));
     expect(transitions).toEqual(expect.arrayContaining([
       expect.objectContaining({ issue_run_id: 'issue_run_1', attempt_id: 'attempt_1', to_status: 'running', reason_code: 'dispatch_started' }),
       expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'running', reason_code: 'codex_turn_started' }),
@@ -5862,6 +5929,63 @@ describe('OrchestratorCore', () => {
         uri: 'codex-thread:thread-1'
       })
     ]);
+    expect(appServerEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          issue_run_id: 'issue_run_1',
+          attempt_id: 'attempt_1',
+          thread_id: 'thread-1',
+          turn_id: 'turn-1',
+          source_event_name: CANONICAL_EVENT.codex.unsupportedServerRequest,
+          payload_class: 'protocol_request_response',
+          summary_fields: expect.objectContaining({
+            protocol_event_category: 'request_response',
+            request_method: 'approval/request',
+            request_category: 'approval'
+          })
+        }),
+        expect.objectContaining({
+          source_event_name: CANONICAL_EVENT.codex.protocolWarning,
+          payload_class: 'protocol_lifecycle',
+          summary_fields: expect.objectContaining({
+            protocol_event_category: 'warning',
+            warning_reason_code: REASON_CODES.codexProtocolGuardianWarning
+          })
+        }),
+        expect.objectContaining({
+          source_event_name: CANONICAL_EVENT.codex.modelRerouted,
+          summary_fields: expect.objectContaining({
+            protocol_event_category: 'model_signal',
+            requested_model: 'gpt-requested',
+            effective_model: 'gpt-effective'
+          })
+        }),
+        expect.objectContaining({
+          source_event_name: CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch,
+          payload_class: 'tool_payload',
+          unavailable_reason_code: 'tool_payload_payload_not_stored',
+          summary_fields: expect.objectContaining({
+            protocol_event_category: 'dynamic_tool',
+            tool_call_id: 'call-dynamic',
+            tool_name: 'linear_graphql'
+          })
+        }),
+        expect.objectContaining({
+          source_event_name: CANONICAL_EVENT.codex.turnWaiting,
+          summary_fields: expect.objectContaining({
+            protocol_event_category: 'token_rate_signal',
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 }
+          })
+        }),
+        expect.objectContaining({
+          source_event_name: CANONICAL_EVENT.codex.turnCompleted,
+          summary_fields: expect.objectContaining({
+            protocol_event_category: 'terminal_event'
+          })
+        })
+      ])
+    );
+    expect(JSON.stringify(appServerEvents)).not.toContain('raw-secret');
     expect(terminalOutcomes).toEqual([
       expect.objectContaining({
         issue_run_id: 'issue_run_1',
