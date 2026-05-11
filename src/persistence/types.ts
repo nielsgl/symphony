@@ -84,6 +84,45 @@ export interface StateTransitionRecord extends ExecutionGraphReasonFields {
   transitioned_at: string;
 }
 
+export interface TicketTerminalOutcomeRecord {
+  terminal_outcome_id: string;
+  issue_run_id: string;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  outcome: RunTerminalStatus;
+  reason_code: string | null;
+  reason_detail: string | null;
+  recorded_at: string;
+}
+
+export interface TicketBlockerRecord {
+  blocker_id: string;
+  issue_run_id: string;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  blocker_type: string;
+  status: 'active' | 'resolved';
+  reason_code: string;
+  reason_detail: string | null;
+  blocked_at: string;
+  resolved_at: string | null;
+}
+
+export interface TicketEvidenceReferenceRecord {
+  evidence_reference_id: string;
+  issue_run_id: string;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  evidence_kind: string;
+  uri: string;
+  title: string | null;
+  metadata: Record<string, unknown> | null;
+  recorded_at: string;
+}
+
 export interface ExecutionGraphThreadLineage {
   issue_run: IssueRunRecord;
   attempt: AttemptRecord;
@@ -96,6 +135,19 @@ export interface ExecutionGraphThreadLineage {
     }
   >;
   state_transitions: StateTransitionRecord[];
+}
+
+export interface TicketTimelineRecord {
+  identity: DurableIdentity;
+  issue_runs: IssueRunRecord[];
+  attempts: AttemptRecord[];
+  threads: ThreadRecord[];
+  turns: TurnRecord[];
+  phase_spans: PhaseSpanRecord[];
+  state_transitions: StateTransitionRecord[];
+  terminal_outcomes: TicketTerminalOutcomeRecord[];
+  blockers: TicketBlockerRecord[];
+  evidence_references: TicketEvidenceReferenceRecord[];
 }
 
 export interface DurableRunHistoryRecord {
