@@ -213,6 +213,8 @@ export interface AppServerEventLedgerRecord extends HistoryPayloadDetails {
   observed_at: string;
 }
 
+export type AppServerEventLedgerExcerpt = AppServerEventLedgerRecord;
+
 export interface TicketTimelineRecord {
   identity: DurableIdentity;
   issue_runs: IssueRunRecord[];
@@ -248,6 +250,7 @@ export interface DurableRunHistoryRecord {
   thread_id: string | null;
   turn_id: string | null;
   session_ids: string[];
+  app_server_events?: AppServerEventLedgerExcerpt[];
   missing_tool_output_recovery?: Record<string, unknown> | null;
   token_model_facts?: TokenModelFactRecord[];
 }

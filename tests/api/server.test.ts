@@ -3198,7 +3198,34 @@ describe('LocalApiServer', () => {
             session_id: null,
             thread_id: null,
             turn_id: null,
-            session_ids: ['thread-1-turn-1']
+            session_ids: ['thread-1-turn-1'],
+            app_server_events: [
+              {
+                app_server_event_id: 'app-server-event-1',
+                issue_run_id: 'issue_run_1',
+                attempt_id: 'attempt_1',
+                thread_id: 'thread-1',
+                turn_id: 'turn-1',
+                observed_at: '2026-04-10T10:00:30.000Z',
+                source_event_id: 'evt-warning-1',
+                source_event_name: 'codex.protocol.warning',
+                policy_version: 1,
+                payload_class: 'protocol_lifecycle',
+                detail_status: 'summary_only',
+                redaction_status: 'redacted',
+                summary: 'guardian warning',
+                summary_fields: { protocol_event_category: 'warning', message: 'token=***REDACTED***' },
+                redacted_excerpt: null,
+                truncation: {
+                  truncated: false,
+                  original_bytes: 0,
+                  excerpt_bytes: 0,
+                  max_excerpt_bytes: 512
+                },
+                unavailable_reason_code: null,
+                full_payload_stored: false
+              }
+            ]
           },
           {
             run_id: 'run-active',
@@ -3441,14 +3468,27 @@ describe('LocalApiServer', () => {
 
     const historyResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/history?limit=2`);
     const historyPayload = (await historyResponse.json()) as {
-      runs: Array<{ run_id: string; terminal_status: string | null; completed_at: string | null }>;
+      runs: Array<{
+        run_id: string;
+        terminal_status: string | null;
+        completed_at: string | null;
+        app_server_events?: Array<{ full_payload_stored: boolean; redacted_excerpt: string | null; summary_fields: Record<string, unknown> }>;
+      }>;
     };
     expect(historyResponse.status).toBe(200);
     expect(historyPayload.runs[0].run_id).toBe('run-1');
     expect(historyPayload.runs.find((run) => run.run_id === 'run-1')).toMatchObject({
       terminal_status: 'succeeded',
-      completed_at: '2026-04-10T10:01:00.000Z'
+      completed_at: '2026-04-10T10:01:00.000Z',
+      app_server_events: [
+        expect.objectContaining({
+          full_payload_stored: false,
+          redacted_excerpt: null,
+          summary_fields: expect.objectContaining({ protocol_event_category: 'warning' })
+        })
+      ]
     });
+    expect(JSON.stringify(historyPayload)).not.toContain('raw transcript');
     expect(historyPayload.runs.find((run) => run.run_id === 'run-active')).toMatchObject({
       terminal_status: null,
       completed_at: null

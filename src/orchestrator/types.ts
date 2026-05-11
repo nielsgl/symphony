@@ -9,7 +9,7 @@ import type {
 import type { StructuredLogger } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { PhaseMarker, PhaseMarkerName } from '../observability';
-import type { ExecutionGraphEntityStatus, RunTerminalStatus } from '../persistence';
+import type { ExecutionGraphEntityStatus, HistoryPayloadClass, RunTerminalStatus } from '../persistence';
 import type { ControlPlaneHealthSummary, ControlPlaneHealthState } from '../api/control-plane-health';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
@@ -902,6 +902,20 @@ export interface OrchestratorPersistencePort {
     observed_at: string;
     token_model_fact_id?: string;
   }) => Promise<string>;
+  appendAppServerEvent?: (params: {
+    issue_run_id: string;
+    observed_at: string;
+    source_event_id: string;
+    source_event_name: string;
+    payload_class: HistoryPayloadClass;
+    summary?: string | null;
+    summary_fields?: Record<string, unknown>;
+    unavailable_reason_code?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    app_server_event_id?: string;
+  }) => Promise<string>;
   recordHistoryWriteFailure?: (params: { operation: string; reason_code: string; detail?: string | null }) => Promise<void>;
   recordSession: (params: { run_id: string; session_id: string }) => Promise<void>;
   recordEvent: (params: {
@@ -967,6 +981,7 @@ export interface WorkerObservabilityEvent {
   model_reroute?: CodexModelRerouteEvidence | null;
   requested_model?: string | null;
   effective_model?: string | null;
+  terminal_source?: 'app_server_protocol' | 'session_transcript';
   codex_thread_activity_at_ms?: number | null;
   codex_thread_activity_source?: CodexAppServerThreadActivitySource | null;
   codex_thread_activity_status?: string | null;
