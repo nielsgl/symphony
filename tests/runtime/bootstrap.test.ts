@@ -10,6 +10,16 @@ import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort, toWorkerEve
 import { SqlitePersistenceStore, buildDurableIdentity } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
 
+interface TestDatabase {
+  exec(sql: string): void;
+  close(): void;
+}
+
+function openDatabase(dbPath: string): TestDatabase {
+  const sqlite = require('node:sqlite') as { DatabaseSync: new (path: string) => TestDatabase };
+  return new sqlite.DatabaseSync(dbPath);
+}
+
 function requireApiAddress(runtime: { apiServer: { address: () => { host: string; port: number } } | null }) {
   if (!runtime.apiServer) {
     throw new Error('expected API server to be enabled for this test');
@@ -630,6 +640,87 @@ describe('createRuntimeEnvironment', () => {
     expect(stateResponse.status).toBe(200);
     expect(statePayload.counts.running).toBe(0);
     expect(statePayload.counts.retrying).toBe(0);
+  });
+
+  it('keeps diagnostics available when startup retention pruning fails', async () => {
+    const workflowPath = await makeWorkflowFile();
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    const dbPath = path.join(workflowDir, 'runtime.sqlite');
+
+    const seededAtMs = Date.parse('2026-04-01T10:00:00.000Z');
+    const runtimeNowMs = Date.parse('2026-04-20T10:00:00.000Z');
+    const seedStore = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => seededAtMs
+    });
+    const runId = seedStore.startRun({
+      issue_id: 'issue-prune-failure',
+      issue_identifier: 'PRUNE-1',
+      identity: buildDurableIdentity({
+        projectRoot: workflowDir,
+        workflowPath,
+        workflowHash: { status: 'present', value: 'workflow-hash' },
+        repositoryRemote: { status: 'missing', reason: 'repository_remote_unavailable' },
+        trackerKind: 'linear',
+        trackerScope: 'TEST',
+        remoteIssueId: 'issue-prune-failure',
+        humanIssueIdentifier: 'PRUNE-1'
+      })
+    });
+    seedStore.completeRun({ run_id: runId, terminal_status: 'succeeded' });
+    seedStore.close();
+
+    const db = openDatabase(dbPath);
+    try {
+      db.exec(`
+        CREATE TRIGGER fail_retention_prune_delete
+        BEFORE DELETE ON runs
+        BEGIN
+          SELECT RAISE(FAIL, 'token=abcd prune exploded');
+        END;
+      `);
+    } finally {
+      db.close();
+    }
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0,
+      nowMs: () => runtimeNowMs
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      persistence: {
+        last_pruned_at: string | null;
+        last_prune_failure_at: string | null;
+        last_prune_failure_reason: string | null;
+        last_prune_failure_detail: string | null;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.persistence).toMatchObject({
+      last_pruned_at: null,
+      last_prune_failure_at: '2026-04-20T10:00:00.000Z',
+      last_prune_failure_reason: 'retention_prune_failed',
+      last_prune_failure_detail: 'token=***REDACTED*** prune exploded'
+    });
   });
 
   it('restores persisted suppression and breaker state on restart and projects diagnostics', async () => {
