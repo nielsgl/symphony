@@ -154,6 +154,9 @@ describe('SqlitePersistenceStore', () => {
         'history_protocol_summary',
         'history_app_server_event',
         'history_token_model_fact',
+        'history_ticket_terminal_outcome',
+        'history_ticket_blocker',
+        'history_ticket_evidence_reference',
         'history_retention_metadata',
         'history_health_metadata',
         'issue_run',
@@ -167,14 +170,15 @@ describe('SqlitePersistenceStore', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 2,
-      applied_version: 2,
+      target_version: 3,
+      applied_version: 3,
       status: 'healthy',
       degraded_reason_code: null
     });
     expect(store.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, name: 'project_execution_history_v1', status: 'applied' }),
-      expect.objectContaining({ version: 2, name: 'app_server_event_ledger_lite_policy', status: 'applied' })
+      expect.objectContaining({ version: 2, name: 'ticket_orchestration_ledger_v1', status: 'applied' }),
+      expect.objectContaining({ version: 3, name: 'app_server_event_ledger_lite_policy', status: 'applied' })
     ]);
   });
 
@@ -486,6 +490,172 @@ describe('SqlitePersistenceStore', () => {
     expect(storeB.reconstructLatestThreadLineageByIssueIdentifier('ABC-404')).toBeNull();
   });
 
+  it('reconstructs a ticket timeline across multiple attempts and restart by durable identity', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-ticket-ledger-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const durableIdentity = identity({ issue_id: 'remote-ticket-1', issue_identifier: 'TICKET-1' });
+    const renamedIdentity = identity({ issue_id: 'remote-ticket-1', issue_identifier: 'TICKET-99' });
+    const reusedHumanIdentifier = identity({ issue_id: 'remote-ticket-2', issue_identifier: 'TICKET-1', trackerScope: 'other-scope' });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    const issueRunId = storeA.appendIssueRun({
+      issue_id: 'remote-ticket-1',
+      issue_identifier: 'TICKET-1',
+      identity: durableIdentity,
+      started_at: '2026-04-11T10:00:00.000Z',
+      ended_at: '2026-04-11T10:20:00.000Z',
+      status: 'succeeded'
+    });
+    const attemptZeroId = storeA.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-11T10:00:01.000Z',
+      ended_at: '2026-04-11T10:05:00.000Z',
+      status: 'blocked',
+      reason_code: 'missing_tool_output'
+    });
+    const threadZeroId = storeA.appendThread({
+      attempt_id: attemptZeroId,
+      thread_id: 'thread-ticket-0',
+      started_at: '2026-04-11T10:00:02.000Z',
+      ended_at: '2026-04-11T10:05:00.000Z',
+      status: 'blocked'
+    });
+    const turnZeroId = storeA.appendTurn({
+      thread_id: threadZeroId,
+      turn_id: 'turn-ticket-0',
+      turn_index: 0,
+      started_at: '2026-04-11T10:00:03.000Z',
+      ended_at: '2026-04-11T10:05:00.000Z',
+      status: 'blocked'
+    });
+    storeA.appendPhaseSpan({
+      turn_id: turnZeroId,
+      phase: 'dispatch',
+      started_at: '2026-04-11T10:00:04.000Z',
+      ended_at: '2026-04-11T10:01:00.000Z',
+      status: 'succeeded',
+      reason_code: 'phase_completed'
+    });
+    storeA.appendTicketBlocker({
+      issue_run_id: issueRunId,
+      attempt_id: attemptZeroId,
+      thread_id: threadZeroId,
+      turn_id: turnZeroId,
+      blocker_type: 'tool_output',
+      status: 'resolved',
+      reason_code: 'missing_tool_output',
+      reason_detail: 'token=abcd1234',
+      blocked_at: '2026-04-11T10:05:00.000Z',
+      resolved_at: '2026-04-11T10:10:00.000Z'
+    });
+    storeA.appendStateTransition({
+      issue_run_id: issueRunId,
+      attempt_id: attemptZeroId,
+      thread_id: threadZeroId,
+      turn_id: turnZeroId,
+      from_status: 'running',
+      to_status: 'blocked',
+      transitioned_at: '2026-04-11T10:05:01.000Z',
+      status: 'blocked',
+      reason_code: 'missing_tool_output'
+    });
+    const attemptOneId = storeA.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 1,
+      started_at: '2026-04-11T10:10:00.000Z',
+      ended_at: '2026-04-11T10:20:00.000Z',
+      status: 'succeeded',
+      reason_code: 'retry_completed'
+    });
+    const threadOneId = storeA.appendThread({
+      attempt_id: attemptOneId,
+      thread_id: 'thread-ticket-1',
+      started_at: '2026-04-11T10:10:01.000Z',
+      ended_at: '2026-04-11T10:20:00.000Z',
+      status: 'succeeded'
+    });
+    const turnOneId = storeA.appendTurn({
+      thread_id: threadOneId,
+      turn_id: 'turn-ticket-1',
+      turn_index: 0,
+      started_at: '2026-04-11T10:10:02.000Z',
+      ended_at: '2026-04-11T10:20:00.000Z',
+      status: 'succeeded'
+    });
+    storeA.appendPhaseSpan({
+      turn_id: turnOneId,
+      phase: 'implementation',
+      started_at: '2026-04-11T10:10:03.000Z',
+      ended_at: '2026-04-11T10:19:00.000Z',
+      status: 'succeeded',
+      reason_code: 'phase_completed'
+    });
+    storeA.appendTicketEvidenceReference({
+      issue_run_id: issueRunId,
+      attempt_id: attemptOneId,
+      thread_id: threadOneId,
+      turn_id: turnOneId,
+      evidence_kind: 'test_output',
+      uri: 'file://validation/persistence.txt',
+      title: 'persistence restart proof',
+      metadata: { command: 'npm test -- tests/persistence/store.test.ts', token: 'abcd1234' },
+      recorded_at: '2026-04-11T10:19:30.000Z'
+    });
+    storeA.appendTicketTerminalOutcome({
+      issue_run_id: issueRunId,
+      attempt_id: attemptOneId,
+      thread_id: threadOneId,
+      turn_id: turnOneId,
+      outcome: 'succeeded',
+      reason_code: 'agent_review_ready',
+      reason_detail: 'ticket timeline complete',
+      recorded_at: '2026-04-11T10:20:00.000Z'
+    });
+    storeA.appendIssueRun({
+      issue_id: 'remote-ticket-2',
+      issue_identifier: 'TICKET-1',
+      identity: reusedHumanIdentifier,
+      started_at: '2026-04-11T11:00:00.000Z',
+      status: 'running'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const timeline = storeB.reconstructTicketTimeline(renamedIdentity);
+    const otherTimeline = storeB.reconstructTicketTimeline(reusedHumanIdentifier);
+
+    expect(timeline.issue_runs.map((run) => run.issue_run_id)).toEqual([issueRunId]);
+    expect(timeline.issue_runs[0].identity?.ticket.human_issue_identifier).toBe('TICKET-1');
+    expect(timeline.attempts.map((attempt) => attempt.attempt_number)).toEqual([0, 1]);
+    expect(timeline.threads.map((thread) => thread.thread_id)).toEqual(['thread-ticket-0', 'thread-ticket-1']);
+    expect(timeline.phase_spans.map((phase) => phase.phase)).toEqual(['dispatch', 'implementation']);
+    expect(timeline.state_transitions).toEqual([expect.objectContaining({ to_status: 'blocked', reason_code: 'missing_tool_output' })]);
+    expect(timeline.blockers).toEqual([
+      expect.objectContaining({
+        blocker_type: 'tool_output',
+        status: 'resolved',
+        reason_detail: 'token=***REDACTED***'
+      })
+    ]);
+    expect(timeline.evidence_references).toEqual([
+      expect.objectContaining({
+        evidence_kind: 'test_output',
+        title: 'persistence restart proof',
+        metadata: { command: 'npm test -- tests/persistence/store.test.ts', token: '***REDACTED***' }
+      })
+    ]);
+    expect(timeline.terminal_outcomes).toEqual([
+      expect.objectContaining({ outcome: 'succeeded', reason_code: 'agent_review_ready' })
+    ]);
+    expect(otherTimeline.issue_runs).toHaveLength(1);
+    expect(otherTimeline.attempts).toHaveLength(0);
+  });
+
   it('enforces execution graph references and monotonic timestamps', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-integrity-'));
     dirs.push(dir);
@@ -667,17 +837,18 @@ describe('SqlitePersistenceStore', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(2);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(3);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 2, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 3, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
-      expect.objectContaining({ version: 2, status: 'applied' })
+      expect.objectContaining({ version: 2, status: 'applied' }),
+      expect.objectContaining({ version: 3, status: 'applied' })
     ]);
   });
 
@@ -799,9 +970,14 @@ describe('SqlitePersistenceStore', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 2, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 3, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
-      expect.arrayContaining(['history_token_model_fact', 'history_protocol_summary', 'history_app_server_event'])
+      expect.arrayContaining([
+        'history_token_model_fact',
+        'history_protocol_summary',
+        'history_ticket_evidence_reference',
+        'history_app_server_event'
+      ])
     );
   });
 

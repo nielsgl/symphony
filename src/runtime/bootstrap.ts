@@ -964,6 +964,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           appendPhaseSpan: async (params) => persistenceStore.appendPhaseSpan(params),
           appendToolSpan: async (params) => persistenceStore.appendToolSpan(params),
           appendStateTransition: async (params) => persistenceStore.appendStateTransition(params),
+          appendTicketTerminalOutcome: async (params) => persistenceStore.appendTicketTerminalOutcome(params),
+          appendTicketBlocker: async (params) => persistenceStore.appendTicketBlocker(params),
+          appendTicketEvidenceReference: async (params) => persistenceStore.appendTicketEvidenceReference(params),
           recordSession: async (params) => {
             persistenceStore.recordSession(params.run_id, params.session_id);
           },

@@ -5750,6 +5750,8 @@ describe('OrchestratorCore', () => {
     const phaseSpans: Array<Record<string, unknown>> = [];
     const toolSpans: Array<Record<string, unknown>> = [];
     const transitions: Array<Record<string, unknown>> = [];
+    const terminalOutcomes: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketTerminalOutcome']>>[0]> = [];
+    const evidenceReferences: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketEvidenceReference']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'legacy-run-1',
       appendIssueRun: async (params) => {
@@ -5779,6 +5781,14 @@ describe('OrchestratorCore', () => {
       appendStateTransition: async (params) => {
         transitions.push(params);
         return `transition_${transitions.length}`;
+      },
+      appendTicketTerminalOutcome: async (params) => {
+        terminalOutcomes.push(params);
+        return `terminal_${terminalOutcomes.length}`;
+      },
+      appendTicketEvidenceReference: async (params) => {
+        evidenceReferences.push(params);
+        return `evidence_${evidenceReferences.length}`;
       },
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
@@ -5842,6 +5852,26 @@ describe('OrchestratorCore', () => {
       expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'succeeded', reason_code: 'codex_turn_completed' }),
       expect.objectContaining({ thread_id: 'thread-1', turn_id: 'turn-1', to_status: 'retrying', reason_code: 'normal_completion' })
     ]));
+    expect(evidenceReferences).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        evidence_kind: 'codex_thread',
+        uri: 'codex-thread:thread-1'
+      })
+    ]);
+    expect(terminalOutcomes).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        outcome: 'succeeded',
+        reason_code: null
+      })
+    ]);
   });
 
   it('persists duplicate-timestamp codex.turn.waiting heartbeats without generic record-failed warnings', async () => {
@@ -6077,6 +6107,7 @@ describe('OrchestratorCore', () => {
     const issueRuns: Array<Record<string, unknown>> = [];
     const attempts: Array<Record<string, unknown>> = [];
     const transitions: Array<Record<string, unknown>> = [];
+    const blockers: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketBlocker']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'legacy-run-1',
       appendIssueRun: async (params) => {
@@ -6092,6 +6123,10 @@ describe('OrchestratorCore', () => {
       appendStateTransition: async (params) => {
         transitions.push(params);
         return `transition_${transitions.length}`;
+      },
+      appendTicketBlocker: async (params) => {
+        blockers.push(params);
+        return `blocker_${blockers.length}`;
       },
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
@@ -6133,6 +6168,16 @@ describe('OrchestratorCore', () => {
         reason_code: 'operator_action_required_no_progress_redispatch_blocked'
       })
     ]));
+    expect(blockers).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        thread_id: 'thread-0',
+        blocker_type: 'orchestration_blocker',
+        status: 'active',
+        reason_code: 'operator_action_required_no_progress_redispatch_blocked'
+      })
+    ]);
     expect(harness.spawned.filter((entry) => entry.issue_id === 'i-retry-blocked')).toHaveLength(1);
   });
 
