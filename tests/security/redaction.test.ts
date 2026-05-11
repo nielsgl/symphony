@@ -49,6 +49,23 @@ describe('secret redaction', () => {
     expect(redacted).not.toContain('dXNlcjpzZWNyZXQ=');
   });
 
+  it('redacts bare secret-shaped tokens and account identifiers', () => {
+    const message = [
+      'openai key sk-live-secret-value',
+      'github token ghp_secretvalue123',
+      'account_id=acct_secret_12345',
+      'org_id=org_secret_67890'
+    ].join(' ');
+
+    const redacted = redactUnknown(message) as string;
+
+    expect(redacted).toContain(REDACTED);
+    expect(redacted).not.toContain('sk-live-secret-value');
+    expect(redacted).not.toContain('ghp_secretvalue123');
+    expect(redacted).not.toContain('acct_secret_12345');
+    expect(redacted).not.toContain('org_secret_67890');
+  });
+
   it('preserves telemetry token counters that are not secrets', () => {
     const payload = {
       tokens: {

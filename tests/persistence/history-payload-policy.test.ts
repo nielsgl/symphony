@@ -52,6 +52,27 @@ describe('history payload policy', () => {
     expect(details.redacted_excerpt).not.toContain('ghp_another-secret');
   });
 
+  it('removes bare secrets and account identifiers from free-form persisted excerpts', () => {
+    const details = buildHistoryPayloadDetails({
+      payloadClass: 'command_output',
+      sourceEventId: 'event-secret-account',
+      sourceEventName: 'exec_command/output',
+      rawPayload:
+        'openai key sk-live-secret-value account_id=acct_secret_12345 org_id=org_secret_67890 HOME=/Users/alice/private/project'
+    });
+
+    expect(details).toMatchObject({
+      detail_status: 'redacted_excerpt',
+      redaction_status: 'redacted',
+      full_payload_stored: false
+    });
+    expect(details.redacted_excerpt).toContain('***REDACTED***');
+    expect(details.redacted_excerpt).not.toContain('sk-live-secret-value');
+    expect(details.redacted_excerpt).not.toContain('acct_secret_12345');
+    expect(details.redacted_excerpt).not.toContain('org_secret_67890');
+    expect(details.redacted_excerpt).not.toContain('/Users/alice');
+  });
+
   it('keeps transcript and tool payload details unavailable by policy', () => {
     const transcript = buildHistoryPayloadDetails({
       payloadClass: 'conversation_transcript',
