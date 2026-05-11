@@ -334,6 +334,7 @@ export interface TicketTimelineRecord {
   ticket_references: TicketReferenceRecord[];
   operator_actions: OperatorActionHistoryRecord[];
   blocked_input_events: BlockedInputEventRecord[];
+  app_server_events: AppServerEventLedgerExcerpt[];
   token_model_facts: TokenModelFactRecord[];
 }
 
