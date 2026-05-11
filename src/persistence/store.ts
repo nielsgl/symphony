@@ -394,6 +394,19 @@ export class SqlitePersistenceStore {
         'INSERT INTO runs (run_id, issue_id, issue_identifier, identity, started_at, ended_at, terminal_status, error_code) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)'
       )
       .run(runId, params.issue_id, params.issue_identifier, serializeDurableIdentity(params.identity), params.started_at ?? asIso(this.nowMs()));
+    this.recordIdentityProjection({
+      source_table: 'runs',
+      source_id: runId,
+      run_id: runId,
+      issue_run_id: null,
+      issue_id: params.issue_id,
+      issue_identifier: params.issue_identifier,
+      projection_status: 'projected',
+      reason_code: null,
+      reason_detail: null,
+      project_key: params.identity.project.key,
+      ticket_key: params.identity.ticket.key
+    });
     return runId;
   }
 
@@ -440,6 +453,19 @@ export class SqlitePersistenceStore {
         status: params.status,
         reason_code: params.reason_code,
         reason_detail: params.reason_detail
+      });
+      this.recordIdentityProjection({
+        source_table: 'runs',
+        source_id: runId,
+        run_id: runId,
+        issue_run_id: issueRunId,
+        issue_id: params.issue_id,
+        issue_identifier: params.issue_identifier,
+        projection_status: 'projected',
+        reason_code: null,
+        reason_detail: null,
+        project_key: params.identity.project.key,
+        ticket_key: params.identity.ticket.key
       });
       return { run_id: runId, issue_run_id: issueRunId, attempt_id: attemptId };
     });
@@ -604,6 +630,19 @@ export class SqlitePersistenceStore {
         params.reason_code ?? null,
         redactUnknown(params.reason_detail ?? null)
       );
+    this.recordIdentityProjection({
+      source_table: 'issue_run',
+      source_id: issueRunId,
+      run_id: null,
+      issue_run_id: issueRunId,
+      issue_id: params.issue_id,
+      issue_identifier: params.issue_identifier,
+      projection_status: 'projected',
+      reason_code: null,
+      reason_detail: null,
+      project_key: params.identity.project.key,
+      ticket_key: params.identity.ticket.key
+    });
     return issueRunId;
   }
 
@@ -1244,6 +1283,18 @@ export class SqlitePersistenceStore {
     }>;
 
     const sessionStmt = this.db.prepare('SELECT session_id FROM run_sessions WHERE run_id = ? ORDER BY session_id ASC');
+    const appServerEventStmt = this.hasTable('history_app_server_event')
+      ? this.db.prepare(
+          `SELECT app_server_event_id, issue_run_id, attempt_id, thread_id, turn_id, observed_at,
+            source_event_id, source_event_name, payload_class, detail_status, redaction_status,
+            summary, summary_fields, redacted_excerpt, truncation, unavailable_reason_code,
+            full_payload_stored, policy_version
+           FROM history_app_server_event
+           WHERE issue_run_id = ?
+           ORDER BY observed_at ASC, app_server_event_id ASC
+           LIMIT 25`
+        )
+      : null;
     const identityProjectionStmt = this.hasTable('history_identity_projection')
       ? this.db.prepare(
           `SELECT source_table, source_id, run_id, issue_run_id, issue_id, issue_identifier, projection_status,
@@ -1256,6 +1307,21 @@ export class SqlitePersistenceStore {
     return rows.map((row) => {
       const sessions = sessionStmt.all(row.run_id) as Array<{ session_id: string }>;
       const identityProjection = this.readHistoryIdentityProjection(identityProjectionStmt, row.run_id);
+      const appServerEvents =
+        appServerEventStmt && identityProjection?.issue_run_id
+          ? (appServerEventStmt.all(identityProjection.issue_run_id) as Array<
+              Omit<AppServerEventLedgerRecord, 'summary_fields' | 'truncation' | 'full_payload_stored'> & {
+                summary_fields: string;
+                truncation: string;
+                full_payload_stored: 0 | 1;
+              }
+            >).map((event) => ({
+              ...event,
+              summary_fields: parseNullableJsonObject(event.summary_fields) ?? {},
+              truncation: parseHistoryPayloadTruncation(event.truncation),
+              full_payload_stored: event.full_payload_stored === 1
+            }))
+          : [];
       const record: DurableRunHistoryRecord = {
         run_id: row.run_id,
         issue_id: row.issue_id,
@@ -1277,6 +1343,7 @@ export class SqlitePersistenceStore {
         thread_id: row.thread_id,
         turn_id: row.turn_id,
         session_ids: sessions.map((entry) => entry.session_id),
+        app_server_events: appServerEvents,
         missing_tool_output_recovery: parseNullableJsonObject(row.missing_tool_output_recovery)
       };
 
