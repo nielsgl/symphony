@@ -189,6 +189,8 @@ export function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObs
     codex_app_server_pid: event.codex_app_server_pid,
     worker_instance_id: event.worker_instance_id,
     detail: event.detail,
+    reason_code: event.reason_code,
+    request_method: event.request_method,
     usage: event.usage,
     rate_limits: event.rate_limits,
     codex_thread_activity_at_ms: event.codex_thread_activity_at_ms,

@@ -5505,6 +5505,73 @@ describe('OrchestratorCore', () => {
     expect(persistenceFailure?.context.session_id).toBe('thread-9-turn-1');
   });
 
+  it('preserves unsupported approval method evidence beyond the runner callback', async () => {
+    const recordedEvents: Array<Record<string, unknown>> = [];
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-approval',
+      recordSession: async () => undefined,
+      recordEvent: async (params) => {
+        recordedEvents.push(params);
+      },
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-approval', identifier: 'ABC-APPROVAL' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-approval', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      thread_id: 'thread-approval',
+      turn_id: 'turn-approval',
+      session_id: 'session-approval',
+      detail: 'approval/request',
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-approval');
+    expect(running?.recent_events.at(-1)).toMatchObject({
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    expect(snapshot.recent_runtime_events.at(-1)).toMatchObject({
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    expect(recordedEvents.at(-1)).toMatchObject({
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    expect(logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerEvent)?.context).toMatchObject({
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+
+    const projector = new SnapshotService({ nowMs: () => harness.now.value + 20 });
+    const projected = projector.projectState(harness.orchestrator.getStateSnapshot());
+    const projectedIssue = projector.projectIssue(harness.orchestrator.getStateSnapshot(), 'ABC-APPROVAL');
+    expect(projectedIssue?.recent_events.at(-1)).toMatchObject({
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    expect(projected.recent_runtime_events.at(-1)).toMatchObject({
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+  });
+
   it('persists normalized execution graph from real dispatch and worker lifecycle events', async () => {
     const issueRuns: Array<Record<string, unknown>> = [];
     const attempts: Array<Record<string, unknown>> = [];

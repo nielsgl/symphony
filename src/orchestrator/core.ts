@@ -1378,7 +1378,9 @@ export class OrchestratorCore {
     runningEntry.recent_events.push({
       at_ms: workerEvent.timestamp_ms,
       event: workerEvent.event,
-      message: workerEvent.detail ?? null
+      message: workerEvent.detail ?? null,
+      ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
+      ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {})
     });
     if (runningEntry.recent_events.length > 20) {
       runningEntry.recent_events.splice(0, runningEntry.recent_events.length - 20);
@@ -1390,7 +1392,9 @@ export class OrchestratorCore {
           run_id: runningEntry.run_id,
           timestamp_ms: workerEvent.timestamp_ms,
           event: workerEvent.event,
-          message: workerEvent.detail ?? null
+          message: workerEvent.detail ?? null,
+          reason_code: workerEvent.reason_code ?? null,
+          request_method: workerEvent.request_method ?? null
         })
           .catch(() => {
             this.logger?.log({
@@ -1422,7 +1426,9 @@ export class OrchestratorCore {
         worker_host: runningEntry.worker_host,
         codex_app_server_pid: runningEntry.codex_app_server_pid,
         event: workerEvent.event,
-        event_summary: runningEntry.last_event_summary
+        event_summary: runningEntry.last_event_summary,
+        reason_code: workerEvent.reason_code ?? null,
+        request_method: workerEvent.request_method ?? null
       }
     });
     this.recordRuntimeEvent({
@@ -1430,7 +1436,9 @@ export class OrchestratorCore {
       severity: severityForRuntimeEvent(workerEvent.event),
       issue_identifier: runningEntry.identifier,
       session_id: runningEntry.session_id ?? undefined,
-      detail: workerEvent.detail
+      detail: workerEvent.detail,
+      ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
+      ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {})
     });
     if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
       this.emitMappedPhaseMarker(issue_id, workerEvent);
@@ -7530,6 +7538,8 @@ export class OrchestratorCore {
     issue_identifier?: string;
     session_id?: string;
     detail?: string;
+    reason_code?: string | null;
+    request_method?: string | null;
   }): void {
     this.state.recent_runtime_events.push({
       at_ms: this.nowMs(),
@@ -7537,7 +7547,9 @@ export class OrchestratorCore {
       severity: params.severity,
       issue_identifier: params.issue_identifier,
       session_id: params.session_id,
-      detail: params.detail
+      detail: params.detail,
+      ...(params.reason_code !== undefined ? { reason_code: params.reason_code } : {}),
+      ...(params.request_method !== undefined ? { request_method: params.request_method } : {})
     });
     if (this.state.recent_runtime_events.length > 50) {
       this.state.recent_runtime_events.splice(0, this.state.recent_runtime_events.length - 50);
