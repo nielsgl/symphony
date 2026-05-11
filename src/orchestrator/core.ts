@@ -2103,6 +2103,27 @@ export class OrchestratorCore {
         });
       }
 
+      if (this.shouldPersistTokenModelFact(workerEvent)) {
+        operation = 'appendTokenModelFact';
+        await this.persistence.appendTokenModelFact?.({
+          issue_run_id: runningEntry.issue_run_id,
+          attempt_id: runningEntry.attempt_id,
+          thread_id: threadId ?? null,
+          turn_id: turnId ?? null,
+          requested_model: workerEvent.requested_model ?? runningEntry.requested_model ?? null,
+          effective_model: workerEvent.effective_model ?? runningEntry.effective_model ?? null,
+          model_source: this.tokenModelFactSource(workerEvent),
+          input_tokens: workerEvent.usage?.input_tokens ?? null,
+          output_tokens: workerEvent.usage?.output_tokens ?? null,
+          cached_input_tokens: workerEvent.usage?.cached_input_tokens ?? null,
+          reasoning_output_tokens: workerEvent.usage?.reasoning_output_tokens ?? null,
+          total_tokens: workerEvent.usage?.total_tokens ?? null,
+          model_context_window: workerEvent.usage?.model_context_window ?? null,
+          telemetry_confidence: this.tokenModelFactConfidence(workerEvent),
+          observed_at: workerEvent.token_telemetry_last_at_ms ? asIso(workerEvent.token_telemetry_last_at_ms) : at
+        });
+      }
+
       const appServerLiteSummary = appServerLiteSummaryForWorkerEvent(workerEvent);
       if (appServerLiteSummary && this.persistence.appendAppServerEvent) {
         operation = 'appendAppServerEvent';
@@ -2153,6 +2174,32 @@ export class OrchestratorCore {
         }
       })
       .catch(() => undefined);
+  }
+
+  private shouldPersistTokenModelFact(workerEvent: WorkerObservabilityEvent): boolean {
+    return Boolean(
+      workerEvent.usage ||
+        workerEvent.model_reroute !== undefined ||
+        workerEvent.requested_model !== undefined ||
+        workerEvent.effective_model !== undefined
+    );
+  }
+
+  private tokenModelFactSource(workerEvent: WorkerObservabilityEvent): string {
+    return (
+      workerEvent.token_telemetry_last_source ??
+      workerEvent.model_reroute?.source ??
+      (workerEvent.usage ? 'worker_event_usage' : 'worker_event_model')
+    );
+  }
+
+  private tokenModelFactConfidence(workerEvent: WorkerObservabilityEvent): 'observed_live' | 'backfilled' | 'missing' {
+    if (workerEvent.token_telemetry_status === 'unavailable') {
+      return 'missing';
+    }
+    return workerEvent.usage || workerEvent.model_reroute || workerEvent.requested_model || workerEvent.effective_model
+      ? 'observed_live'
+      : 'missing';
   }
 
   private phaseSpanKeysForRunningEntry(runningEntry: RunningEntry): Set<string> {

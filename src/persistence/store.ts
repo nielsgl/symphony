@@ -32,6 +32,8 @@ import type {
   TicketTimelineRecord,
   ThreadRecord,
   TrackerTicketSnapshotRecord,
+  TokenModelFactRecord,
+  TokenModelTelemetryConfidence,
   ToolSpanRecord,
   TurnRecord,
   UiContinuityState
@@ -45,7 +47,7 @@ interface PersistenceStoreOptions {
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 5;
+const HISTORY_SCHEMA_VERSION = 6;
 
 interface HistoryMigration {
   version: number;
@@ -162,6 +164,31 @@ function ensureEndedAfterStarted(startedAt: string, endedAt: string | null | und
   if (endedAt && endedAt < startedAt) {
     throw new Error(`${label} ended_at must be greater than or equal to started_at`);
   }
+}
+
+function normalizeOptionalText(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function validateOptionalTokenCount(value: number | null | undefined, label: string): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function normalizeTelemetryConfidence(value: TokenModelTelemetryConfidence): TokenModelTelemetryConfidence {
+  if (value !== 'observed_live' && value !== 'backfilled' && value !== 'missing') {
+    throw new Error('telemetry_confidence must be observed_live, backfilled, or missing');
+  }
+  return value;
 }
 
 export class SqlitePersistenceStore {
@@ -456,6 +483,19 @@ export class SqlitePersistenceStore {
         status: params.status,
         reason_code: params.reason_code,
         reason_detail: params.reason_detail
+      });
+      this.recordIdentityProjection({
+        source_table: 'runs',
+        source_id: runId,
+        run_id: runId,
+        issue_run_id: issueRunId,
+        issue_id: params.issue_id,
+        issue_identifier: params.issue_identifier,
+        projection_status: 'projected',
+        reason_code: null,
+        reason_detail: null,
+        project_key: params.identity.project.key,
+        ticket_key: params.identity.ticket.key
       });
       const attemptId = this.appendAttempt({
         issue_run_id: issueRunId,
@@ -1276,6 +1316,91 @@ export class SqlitePersistenceStore {
     return operatorActionId;
   }
 
+  appendTokenModelFact(params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    requested_model?: string | null;
+    effective_model?: string | null;
+    model_source?: string | null;
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cached_input_tokens?: number | null;
+    reasoning_output_tokens?: number | null;
+    total_tokens?: number | null;
+    model_context_window?: number | null;
+    telemetry_confidence: TokenModelTelemetryConfidence;
+    observed_at: string;
+    token_model_fact_id?: string;
+  }): string {
+    this.ensureTimelineFactReferences({
+      issue_run_id: params.issue_run_id,
+      attempt_id: params.attempt_id,
+      thread_id: params.thread_id,
+      turn_id: params.turn_id,
+      timestamp: params.observed_at,
+      label: 'token_model_fact'
+    });
+    const requestedModel = normalizeOptionalText(params.requested_model);
+    const effectiveModel = normalizeOptionalText(params.effective_model);
+    const modelSource = normalizeOptionalText(params.model_source);
+    const inputTokens = validateOptionalTokenCount(params.input_tokens, 'input_tokens');
+    const outputTokens = validateOptionalTokenCount(params.output_tokens, 'output_tokens');
+    const cachedInputTokens = validateOptionalTokenCount(params.cached_input_tokens, 'cached_input_tokens');
+    const reasoningOutputTokens = validateOptionalTokenCount(params.reasoning_output_tokens, 'reasoning_output_tokens');
+    const totalTokens = validateOptionalTokenCount(params.total_tokens, 'total_tokens');
+    const modelContextWindow = validateOptionalTokenCount(params.model_context_window, 'model_context_window');
+    const telemetryConfidence = normalizeTelemetryConfidence(params.telemetry_confidence);
+    const tokenModelFactId =
+      params.token_model_fact_id ??
+      asExecutionGraphId('token_model_fact', [
+        params.issue_run_id,
+        params.attempt_id,
+        params.thread_id,
+        params.turn_id,
+        requestedModel,
+        effectiveModel,
+        modelSource,
+        inputTokens,
+        outputTokens,
+        cachedInputTokens,
+        reasoningOutputTokens,
+        totalTokens,
+        modelContextWindow,
+        telemetryConfidence,
+        params.observed_at
+      ]);
+
+    this.db
+      .prepare(
+        `INSERT INTO history_token_model_fact
+        (token_model_fact_id, issue_run_id, attempt_id, thread_id, turn_id, requested_model, effective_model,
+         model_source, input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens,
+         model_context_window, telemetry_confidence, observed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        tokenModelFactId,
+        params.issue_run_id,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        requestedModel,
+        effectiveModel,
+        modelSource,
+        inputTokens,
+        outputTokens,
+        cachedInputTokens,
+        reasoningOutputTokens,
+        totalTokens,
+        modelContextWindow,
+        telemetryConfidence,
+        params.observed_at
+      );
+    return tokenModelFactId;
+  }
+
   reconstructThreadLineage(threadId: string): ExecutionGraphThreadLineage | null {
     const thread = this.db.prepare('SELECT * FROM thread WHERE thread_id = ?').get(threadId) as ThreadRecord | undefined;
     if (!thread) {
@@ -1298,6 +1423,13 @@ export class SqlitePersistenceStore {
     const turns = this.db
       .prepare('SELECT * FROM turn WHERE thread_id = ? ORDER BY turn_index ASC, started_at ASC')
       .all(threadId) as TurnRecord[];
+    const tokenModelFacts = this.db
+      .prepare(
+        `SELECT * FROM history_token_model_fact
+         WHERE issue_run_id = ?
+         ORDER BY observed_at ASC, token_model_fact_id ASC`
+      )
+      .all(issueRun.issue_run_id) as TokenModelFactRecord[];
 
     return {
       issue_run: issueRun,
@@ -1311,9 +1443,11 @@ export class SqlitePersistenceStore {
         tool_spans: this.db
           .prepare('SELECT * FROM tool_span WHERE turn_id = ? ORDER BY started_at ASC, tool_span_id ASC')
           .all(turn.turn_id) as ToolSpanRecord[],
-        state_transitions: transitions.filter((transition) => transition.turn_id === turn.turn_id)
+        state_transitions: transitions.filter((transition) => transition.turn_id === turn.turn_id),
+        token_model_facts: tokenModelFacts.filter((fact) => fact.turn_id === turn.turn_id)
       })),
-      state_transitions: transitions
+      state_transitions: transitions,
+      token_model_facts: tokenModelFacts
     };
   }
 
@@ -1359,7 +1493,8 @@ export class SqlitePersistenceStore {
         evidence_references: [],
         tracker_snapshots: [],
         ticket_references: [],
-        operator_actions: []
+        operator_actions: [],
+        token_model_facts: []
       };
     }
 
@@ -1439,6 +1574,12 @@ export class SqlitePersistenceStore {
        ORDER BY requested_at ASC, operator_action_id ASC`,
       issueRunIds
     );
+    const tokenModelFacts = this.selectByIssueRunIds<TokenModelFactRecord>(
+      `SELECT * FROM history_token_model_fact
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY observed_at ASC, token_model_fact_id ASC`,
+      issueRunIds
+    );
 
     return {
       identity,
@@ -1465,7 +1606,8 @@ export class SqlitePersistenceStore {
       operator_actions: operatorActionRows.map((row) => ({
         ...row,
         state_context: parseNullableJsonObject(row.state_context)
-      }))
+      })),
+      token_model_facts: tokenModelFacts
     };
   }
 
@@ -1581,13 +1723,20 @@ export class SqlitePersistenceStore {
            WHERE source_table = 'runs' AND source_id = ?`
         )
       : null;
+    const tokenModelFactStmt = this.db.prepare(
+      `SELECT *
+       FROM history_token_model_fact
+       WHERE issue_run_id = ?
+       ORDER BY history_token_model_fact.observed_at ASC, history_token_model_fact.token_model_fact_id ASC`
+    );
 
     return rows.map((row) => {
       const sessions = sessionStmt.all(row.run_id) as Array<{ session_id: string }>;
       const identityProjection = this.readHistoryIdentityProjection(identityProjectionStmt, row.run_id);
+      const issueRunId = identityProjection?.issue_run_id ?? this.readIssueRunIdForRunContext(row.thread_id, row.turn_id);
       const appServerEvents =
-        appServerEventStmt && identityProjection?.issue_run_id
-          ? (appServerEventStmt.all(identityProjection.issue_run_id) as Array<
+        appServerEventStmt && issueRunId
+          ? (appServerEventStmt.all(issueRunId) as Array<
               Omit<AppServerEventLedgerRecord, 'summary_fields' | 'truncation' | 'full_payload_stored'> & {
                 summary_fields: string;
                 truncation: string;
@@ -1622,7 +1771,8 @@ export class SqlitePersistenceStore {
         turn_id: row.turn_id,
         session_ids: sessions.map((entry) => entry.session_id),
         app_server_events: appServerEvents,
-        missing_tool_output_recovery: parseNullableJsonObject(row.missing_tool_output_recovery)
+        missing_tool_output_recovery: parseNullableJsonObject(row.missing_tool_output_recovery),
+        token_model_facts: issueRunId ? (tokenModelFactStmt.all(issueRunId) as TokenModelFactRecord[]) : []
       };
 
       return redactUnknown(record) as DurableRunHistoryRecord;
@@ -1668,6 +1818,13 @@ export class SqlitePersistenceStore {
       },
       {
         version: 5,
+        name: 'token_model_fact_dimensions_v1',
+        apply: (store) => {
+          store.ensureTokenModelFactColumns();
+        }
+      },
+      {
+        version: 6,
         name: 'operational_history_facts_v1',
         apply: (store) => {
           store.createOperationalHistoryFactTables();
@@ -1868,6 +2025,7 @@ export class SqlitePersistenceStore {
         attempt_id TEXT,
         thread_id TEXT,
         turn_id TEXT,
+        requested_model TEXT,
         effective_model TEXT,
         model_source TEXT,
         input_tokens INTEGER,
@@ -1875,6 +2033,7 @@ export class SqlitePersistenceStore {
         cached_input_tokens INTEGER,
         reasoning_output_tokens INTEGER,
         total_tokens INTEGER,
+        model_context_window INTEGER,
         telemetry_confidence TEXT NOT NULL,
         observed_at TEXT NOT NULL,
         FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
@@ -2282,6 +2441,37 @@ export class SqlitePersistenceStore {
     return parseDurableIdentity(row?.identity ?? null);
   }
 
+  private readIssueRunIdForRunContext(threadId: string | null, turnId: string | null): string | null {
+    if (turnId) {
+      const row = this.db
+        .prepare(
+          `SELECT attempt.issue_run_id
+           FROM turn
+           JOIN thread ON thread.thread_id = turn.thread_id
+           JOIN attempt ON attempt.attempt_id = thread.attempt_id
+           WHERE turn.turn_id = ?`
+        )
+        .get(turnId) as { issue_run_id: string } | undefined;
+      if (row) {
+        return row.issue_run_id;
+      }
+    }
+
+    if (threadId) {
+      const row = this.db
+        .prepare(
+          `SELECT attempt.issue_run_id
+           FROM thread
+           JOIN attempt ON attempt.attempt_id = thread.attempt_id
+           WHERE thread.thread_id = ?`
+        )
+        .get(threadId) as { issue_run_id: string } | undefined;
+      return row?.issue_run_id ?? null;
+    }
+
+    return null;
+  }
+
   private createAppServerEventLedgerTables(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS history_app_server_event (
@@ -2522,6 +2712,21 @@ export class SqlitePersistenceStore {
         this.db.exec(`${sql};`);
       }
     }
+  }
+
+  private ensureTokenModelFactColumns(): void {
+    const columns = this.db.prepare('PRAGMA table_info(history_token_model_fact)').all() as Array<{ name: string }>;
+    const existing = new Set(columns.map((column) => column.name));
+    const migrations: Array<[string, string]> = [
+      ['requested_model', 'ALTER TABLE history_token_model_fact ADD COLUMN requested_model TEXT'],
+      ['model_context_window', 'ALTER TABLE history_token_model_fact ADD COLUMN model_context_window INTEGER']
+    ];
+    for (const [column, sql] of migrations) {
+      if (!existing.has(column)) {
+        this.db.exec(`${sql};`);
+      }
+    }
+    this.recordHistoryHealthMetadata('healthy', null, null);
   }
 
   saveUiState(state: UiContinuityState): void {

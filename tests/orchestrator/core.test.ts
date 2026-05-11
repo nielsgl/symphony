@@ -6857,6 +6857,107 @@ describe('OrchestratorCore', () => {
     expect(snapshot.codex_totals.model_context_window).toBe(8192);
   });
 
+  it('persists worker token snapshots and requested/effective models into history', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-worker-token-model-'));
+    const store = new SqlitePersistenceStore({
+      dbPath: path.join(dir, 'runtime.sqlite'),
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-05-11T10:00:00.000Z')
+    });
+    const identity = (params: { issue_id: string; issue_identifier: string }) =>
+      buildDurableIdentity({
+        projectRoot: dir,
+        workflowPath: path.join(dir, 'WORKFLOW.md'),
+        workflowHash: { status: 'present', value: 'workflow-hash' },
+        repositoryRemote: { status: 'missing', reason: 'repository_remote_unavailable' },
+        trackerKind: 'linear',
+        trackerScope: 'TEST',
+        remoteIssueId: params.issue_id,
+        humanIssueIdentifier: params.issue_identifier
+      });
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async (params) => store.startRun({ ...params, identity: identity(params) }),
+      recordRunStarted: async (params) => store.recordRunStarted({ ...params, identity: identity(params) }),
+      appendIssueRun: async (params) => store.appendIssueRun({ ...params, identity: identity(params) }),
+      appendAttempt: async (params) => store.appendAttempt(params),
+      appendThread: async (params) => store.appendThread(params),
+      appendTurn: async (params) => store.appendTurn(params),
+      appendPhaseSpan: async (params) => store.appendPhaseSpan(params),
+      appendToolSpan: async (params) => store.appendToolSpan(params),
+      appendStateTransition: async (params) => store.appendStateTransition(params),
+      appendTokenModelFact: async (params) => store.appendTokenModelFact(params),
+      recordHistoryWriteFailure: async (params) => store.recordHistoryWriteFailure(params),
+      recordSession: async ({ run_id, session_id }) => store.recordSession(run_id, session_id),
+      recordEvent: async (params) => store.recordEvent(params),
+      completeRun: async (params) => store.completeRun(params)
+    };
+    const harness = createHarness({ persistence });
+
+    try {
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-token-model', identifier: 'TOK-143' })]);
+      await harness.orchestrator.tick('interval');
+      harness.orchestrator.onWorkerEvent('i-token-model', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-token-model',
+        turn_id: 'turn-token-model',
+        session_id: 'thread-token-model-turn-token-model'
+      });
+      harness.orchestrator.onWorkerEvent('i-token-model', {
+        timestamp_ms: harness.now.value + 100,
+        event: CANONICAL_EVENT.codex.turnCompleted,
+        session_id: 'thread-token-model-turn-token-model',
+        thread_id: 'thread-token-model',
+        turn_id: 'turn-token-model',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 4,
+          total_tokens: 14,
+          cached_input_tokens: 3,
+          reasoning_output_tokens: 2,
+          model_context_window: 8192
+        },
+        token_telemetry_status: 'available',
+        token_telemetry_last_source: 'terminal_turn_summary',
+        token_telemetry_last_at_ms: harness.now.value + 100,
+        model_reroute: {
+          requested_model: 'gpt-requested',
+          effective_model: 'gpt-effective',
+          reason_code: 'app_server_model_reroute',
+          source: 'app_server_protocol'
+        },
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective'
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const lineage = store.reconstructThreadLineage('thread-token-model');
+      expect(lineage?.token_model_facts).toEqual([
+        expect.objectContaining({
+          issue_run_id: expect.any(String),
+          attempt_id: expect.any(String),
+          thread_id: 'thread-token-model',
+          turn_id: 'turn-token-model',
+          requested_model: 'gpt-requested',
+          effective_model: 'gpt-effective',
+          model_source: 'terminal_turn_summary',
+          input_tokens: 10,
+          output_tokens: 4,
+          cached_input_tokens: 3,
+          reasoning_output_tokens: 2,
+          total_tokens: 14,
+          model_context_window: 8192,
+          telemetry_confidence: 'observed_live',
+          observed_at: new Date(harness.now.value + 100).toISOString()
+        })
+      ]);
+      expect(store.listHistoryWriteFailures()).toEqual([]);
+    } finally {
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('tracks pending telemetry and emits a threshold warning while a turn is active', async () => {
     const harness = createHarness({
       configOverrides: { no_telemetry_warning_threshold_ms: 120_000 }

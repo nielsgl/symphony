@@ -976,6 +976,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             }) }),
           appendTicketReference: async (params) => persistenceStore.appendTicketReference(params),
           appendOperatorActionHistory: async (params) => persistenceStore.appendOperatorActionHistory(params),
+          appendTokenModelFact: async (params) => persistenceStore.appendTokenModelFact(params),
           appendAppServerEvent: async (params) => persistenceStore.appendAppServerEvent(params),
           recordHistoryWriteFailure: async (params) => persistenceStore.recordHistoryWriteFailure(params),
           recordSession: async (params) => {
