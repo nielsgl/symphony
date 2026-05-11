@@ -6,6 +6,7 @@ import { redactUnknown } from '../security/redaction';
 import { buildHistoryPayloadDetails } from './history-payload-policy';
 import type {
   AppServerEventLedgerRecord,
+  BlockedInputEventRecord,
   BreakerMetadataRecord,
   DurableRunHistoryRecord,
   DurableIdentity,
@@ -1316,6 +1317,85 @@ export class SqlitePersistenceStore {
     return operatorActionId;
   }
 
+  appendBlockedInputEvent(params: {
+    identity?: DurableIdentity | null;
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    issue_id: string;
+    issue_identifier: string;
+    phase?: string | null;
+    runtime_state: string;
+    reason_code: string;
+    reason_detail?: string | null;
+    request_id?: string | null;
+    request_method?: string | null;
+    input_schema_type?: string | null;
+    prompt_text?: string | null;
+    pending_input?: Record<string, unknown> | null;
+    state_context?: Record<string, unknown> | null;
+    blocked_at: string;
+    blocked_input_event_id?: string;
+  }): string {
+    const identity = params.identity ?? this.readIssueRunIdentity(params.issue_run_id ?? null);
+    const pendingInput = params.pending_input ? (redactUnknown(params.pending_input) as Record<string, unknown>) : null;
+    const stateContext = params.state_context ? (redactUnknown(params.state_context) as Record<string, unknown>) : null;
+    const observationHash = stableOperationalHash([
+      params.issue_id,
+      params.issue_identifier,
+      params.phase ?? null,
+      params.runtime_state,
+      params.reason_code,
+      params.reason_detail ?? null,
+      params.request_id ?? null,
+      params.request_method ?? null,
+      params.input_schema_type ?? null,
+      params.prompt_text ?? null,
+      pendingInput,
+      stateContext
+    ]);
+    const blockedInputEventId =
+      params.blocked_input_event_id ?? asExecutionGraphId('blocked_input_event', [params.issue_run_id, observationHash, params.blocked_at]);
+    this.db
+      .prepare(
+        `INSERT INTO history_blocked_input_event
+          (blocked_input_event_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
+           issue_id, issue_identifier, phase, runtime_state, reason_code, reason_detail, request_id,
+           request_method, input_schema_type, prompt_text, pending_input, state_context, blocked_at,
+           observation_hash, duplicate_count, last_observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+         ON CONFLICT(issue_run_id, observation_hash) DO UPDATE SET
+          duplicate_count = history_blocked_input_event.duplicate_count + 1,
+          last_observed_at = excluded.last_observed_at`
+      )
+      .run(
+        blockedInputEventId,
+        identity?.project.key ?? null,
+        identity?.ticket.key ?? null,
+        params.issue_run_id ?? null,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.issue_id,
+        params.issue_identifier,
+        params.phase ?? null,
+        params.runtime_state,
+        params.reason_code,
+        redactUnknown(params.reason_detail ?? null),
+        params.request_id ?? null,
+        params.request_method ?? null,
+        params.input_schema_type ?? null,
+        redactUnknown(params.prompt_text ?? null),
+        pendingInput ? JSON.stringify(pendingInput) : null,
+        stateContext ? JSON.stringify(stateContext) : null,
+        params.blocked_at,
+        observationHash,
+        params.blocked_at
+      );
+    return blockedInputEventId;
+  }
+
   appendTokenModelFact(params: {
     issue_run_id: string;
     attempt_id?: string | null;
@@ -1494,6 +1574,7 @@ export class SqlitePersistenceStore {
         tracker_snapshots: [],
         ticket_references: [],
         operator_actions: [],
+        blocked_input_events: [],
         token_model_facts: []
       };
     }
@@ -1574,6 +1655,17 @@ export class SqlitePersistenceStore {
        ORDER BY requested_at ASC, operator_action_id ASC`,
       issueRunIds
     );
+    const blockedInputEventRows = this.selectByIssueRunIds<
+      Omit<BlockedInputEventRecord, 'pending_input' | 'state_context'> & {
+        pending_input: string | null;
+        state_context: string | null;
+      }
+    >(
+      `SELECT * FROM history_blocked_input_event
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY blocked_at ASC, blocked_input_event_id ASC`,
+      issueRunIds
+    );
     const tokenModelFacts = this.selectByIssueRunIds<TokenModelFactRecord>(
       `SELECT * FROM history_token_model_fact
        WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
@@ -1605,6 +1697,11 @@ export class SqlitePersistenceStore {
       })),
       operator_actions: operatorActionRows.map((row) => ({
         ...row,
+        state_context: parseNullableJsonObject(row.state_context)
+      })),
+      blocked_input_events: blockedInputEventRows.map((row) => ({
+        ...row,
+        pending_input: parseNullableJsonObject(row.pending_input),
         state_context: parseNullableJsonObject(row.state_context)
       })),
       token_model_facts: tokenModelFacts
@@ -2246,6 +2343,36 @@ export class SqlitePersistenceStore {
         duplicate_count INTEGER NOT NULL DEFAULT 1,
         last_observed_at TEXT NOT NULL,
         UNIQUE (issue_run_id, action, observation_hash),
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS history_blocked_input_event (
+        blocked_input_event_id TEXT PRIMARY KEY,
+        project_key TEXT,
+        ticket_key TEXT,
+        issue_run_id TEXT,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        issue_id TEXT NOT NULL,
+        issue_identifier TEXT NOT NULL,
+        phase TEXT,
+        runtime_state TEXT NOT NULL,
+        reason_code TEXT NOT NULL,
+        reason_detail TEXT,
+        request_id TEXT,
+        request_method TEXT,
+        input_schema_type TEXT,
+        prompt_text TEXT,
+        pending_input TEXT,
+        state_context TEXT,
+        blocked_at TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        duplicate_count INTEGER NOT NULL DEFAULT 1,
+        last_observed_at TEXT NOT NULL,
+        UNIQUE (issue_run_id, observation_hash),
         FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
         FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
         FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,

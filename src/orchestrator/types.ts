@@ -938,6 +938,25 @@ export interface OrchestratorPersistencePort {
     requested_at: string;
     observed_at: string;
   }) => Promise<string>;
+  appendBlockedInputEvent?: (params: {
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    issue_id: string;
+    issue_identifier: string;
+    phase?: string | null;
+    runtime_state: string;
+    reason_code: string;
+    reason_detail?: string | null;
+    request_id?: string | null;
+    request_method?: string | null;
+    input_schema_type?: string | null;
+    prompt_text?: string | null;
+    pending_input?: Record<string, unknown> | null;
+    state_context?: Record<string, unknown> | null;
+    blocked_at: string;
+  }) => Promise<string>;
   appendTokenModelFact?: (params: {
     issue_run_id: string;
     attempt_id?: string | null;

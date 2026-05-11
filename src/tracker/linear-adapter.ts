@@ -174,6 +174,9 @@ function normalizePullRequestLinks(attachments: Record<string, unknown>[]): {
 
 function normalizeIssue(rawIssue: Record<string, unknown>): Issue {
   const state = readObject(rawIssue.state);
+  const assignee = readObject(rawIssue.assignee);
+  const project = readObject(rawIssue.project);
+  const team = readObject(rawIssue.team);
   const attachments = readNodes(rawIssue.attachments);
   const hasGithubIssueLink = attachments.some((attachment) => {
     const url = readString(attachment.url).trim();
@@ -192,13 +195,31 @@ function normalizeIssue(rawIssue: Record<string, unknown>): Issue {
     url: readNullableString(rawIssue.url),
     labels: normalizeLabels(rawIssue),
     blocked_by: normalizeBlockers(rawIssue),
-    tracker_meta: prLinks
-      ? {
-          tracker_kind: 'linear',
-          repository: prLinks.repository,
-          pr_links: prLinks.pr_links
-        }
-      : undefined,
+    tracker_meta: {
+      tracker_kind: 'linear',
+      repository: prLinks?.repository ?? 'unknown',
+      pr_links: prLinks?.pr_links ?? [],
+      assignee: assignee
+        ? {
+            id: readNullableString(assignee.id),
+            name: readNullableString(assignee.name) ?? readNullableString(assignee.displayName)
+          }
+        : null,
+      project: project
+        ? {
+            id: readNullableString(project.id),
+            slug: readNullableString(project.slugId) ?? readNullableString(project.slug),
+            name: readNullableString(project.name)
+          }
+        : null,
+      team: team
+        ? {
+            id: readNullableString(team.id),
+            key: readNullableString(team.key),
+            name: readNullableString(team.name)
+          }
+        : null
+    },
     has_github_issue_link: hasGithubIssueLink,
     created_at: parseIsoDate(rawIssue.createdAt),
     updated_at: parseIsoDate(rawIssue.updatedAt)
@@ -231,6 +252,21 @@ query Issues($projectSlug: String!, $stateNames: [String!], $after: String, $fir
       createdAt
       updatedAt
       state {
+        name
+      }
+      assignee {
+        id
+        name
+        displayName
+      }
+      project {
+        id
+        slugId
+        name
+      }
+      team {
+        id
+        key
         name
       }
       labels {
@@ -289,6 +325,21 @@ query IssuesByAssignee($projectSlug: String!, $stateNames: [String!], $assigneeI
       state {
         name
       }
+      assignee {
+        id
+        name
+        displayName
+      }
+      project {
+        id
+        slugId
+        name
+      }
+      team {
+        id
+        key
+        name
+      }
       labels {
         nodes {
           name
@@ -335,6 +386,21 @@ query IssuesByIds($issueIds: [ID!]!) {
       createdAt
       updatedAt
       state {
+        name
+      }
+      assignee {
+        id
+        name
+        displayName
+      }
+      project {
+        id
+        slugId
+        name
+      }
+      team {
+        id
+        key
         name
       }
       labels {

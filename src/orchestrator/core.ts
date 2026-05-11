@@ -2512,6 +2512,9 @@ export class OrchestratorCore {
     }
 
     const trackerKind = issue.tracker_meta?.tracker_kind ?? 'unknown';
+    const assigneeIdentifier = this.firstNonEmpty(issue.tracker_meta?.assignee?.id, issue.tracker_meta?.assignee?.name);
+    const projectIdentifier = this.firstNonEmpty(issue.tracker_meta?.project?.slug, issue.tracker_meta?.project?.id, issue.tracker_meta?.project?.name);
+    const teamIdentifier = this.firstNonEmpty(issue.tracker_meta?.team?.key, issue.tracker_meta?.team?.id, issue.tracker_meta?.team?.name);
     try {
       await this.persistence.appendTrackerTicketSnapshot?.({
         issue_run_id: runningEntry.issue_run_id,
@@ -2524,12 +2527,15 @@ export class OrchestratorCore {
         title: issue.title,
         tracker_status: issue.state,
         labels: issue.labels,
-        assignee_status: 'unknown',
-        assignee_reason: 'tracker_assignee_unobserved',
-        project_status: 'unknown',
-        project_reason: 'tracker_project_unobserved',
-        team_status: 'unknown',
-        team_reason: 'tracker_team_unobserved',
+        assignee_status: assigneeIdentifier ? 'available' : issue.tracker_meta?.assignee === null ? 'unavailable' : 'unknown',
+        assignee_identifier: assigneeIdentifier,
+        assignee_reason: assigneeIdentifier ? null : issue.tracker_meta?.assignee === null ? 'tracker_assignee_unavailable' : 'tracker_assignee_unobserved',
+        project_status: projectIdentifier ? 'available' : issue.tracker_meta?.project === null ? 'unavailable' : 'unknown',
+        project_identifier: projectIdentifier,
+        project_reason: projectIdentifier ? null : issue.tracker_meta?.project === null ? 'tracker_project_unavailable' : 'tracker_project_unobserved',
+        team_status: teamIdentifier ? 'available' : issue.tracker_meta?.team === null ? 'unavailable' : 'unknown',
+        team_identifier: teamIdentifier,
+        team_reason: teamIdentifier ? null : issue.tracker_meta?.team === null ? 'tracker_team_unavailable' : 'tracker_team_unobserved',
         observed_at: observedAt
       });
       await this.persistTicketReference({
@@ -5364,6 +5370,7 @@ export class OrchestratorCore {
 
     void this.persistence?.upsertBlockedInput?.(params.issue_id, JSON.stringify(blockedEntry));
     void this.persistTicketBlocker(blockedEntry);
+    void this.persistBlockedInputEvent(blockedEntry);
 
     this.logger?.log({
       level: 'warn',
@@ -5424,6 +5431,69 @@ export class OrchestratorCore {
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
         message: `failed to persist ticket blocker for ${blockedEntry.issue_identifier}`,
+        context: {
+          issue_id: blockedEntry.issue_id,
+          issue_identifier: blockedEntry.issue_identifier,
+          issue_run_id: blockedEntry.issue_run_id,
+          previous_attempt_id: blockedEntry.previous_attempt_id ?? null,
+          reason_code: blockedEntry.stop_reason_code,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+  }
+
+  private async persistBlockedInputEvent(blockedEntry: BlockedEntry): Promise<void> {
+    if (!this.persistence?.appendBlockedInputEvent || !blockedEntry.issue_run_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendBlockedInputEvent({
+        issue_run_id: blockedEntry.issue_run_id,
+        attempt_id: blockedEntry.previous_attempt_id ?? null,
+        thread_id: blockedEntry.previous_thread_id ?? null,
+        turn_id: null,
+        issue_id: blockedEntry.issue_id,
+        issue_identifier: blockedEntry.issue_identifier,
+        phase: blockedEntry.last_phase,
+        runtime_state: 'blocked',
+        reason_code: blockedEntry.stop_reason_code,
+        reason_detail: blockedEntry.stop_reason_detail,
+        request_id: blockedEntry.pending_input?.request_id ?? null,
+        request_method: blockedEntry.pending_input?.request_method ?? null,
+        input_schema_type: blockedEntry.pending_input?.input_schema_type ?? null,
+        prompt_text: blockedEntry.pending_input?.prompt_text ?? null,
+        pending_input: blockedEntry.pending_input
+          ? {
+              request_id: blockedEntry.pending_input.request_id,
+              request_method: blockedEntry.pending_input.request_method,
+              prompt_text: blockedEntry.pending_input.prompt_text,
+              input_schema_type: blockedEntry.pending_input.input_schema_type,
+              questions: blockedEntry.pending_input.questions
+            }
+          : null,
+        state_context: {
+          previous_session_id: blockedEntry.previous_session_id,
+          worker_host: blockedEntry.worker_host,
+          workspace_path: blockedEntry.workspace_path,
+          branch_name: blockedEntry.branch_name,
+          last_phase_at_ms: blockedEntry.last_phase_at_ms,
+          last_phase_detail: blockedEntry.last_phase_detail,
+          tool_output_wait: blockedEntry.tool_output_wait,
+          conflict_files: blockedEntry.conflict_files,
+          budget: blockedEntry.budget ?? null,
+          recovery: blockedEntry.recovery,
+          required_actions: blockedEntry.required_actions,
+          progress_signals: blockedEntry.progress_signals ?? null
+        },
+        blocked_at: asIso(blockedEntry.blocked_at_ms)
+      });
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist blocked input event for ${blockedEntry.issue_identifier}`,
         context: {
           issue_id: blockedEntry.issue_id,
           issue_identifier: blockedEntry.issue_identifier,
@@ -6771,6 +6841,15 @@ export class OrchestratorCore {
 
   private stringOrNull(value: unknown): string | null {
     return typeof value === 'string' && value.trim() ? value : null;
+  }
+
+  private firstNonEmpty(...values: Array<string | null | undefined>): string | null {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
   }
 
   private targetIdentifiersFromRuntimeState(

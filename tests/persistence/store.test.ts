@@ -162,6 +162,7 @@ describe('SqlitePersistenceStore', () => {
         'history_tracker_ticket_snapshot',
         'history_ticket_reference',
         'history_operator_action',
+        'history_blocked_input_event',
         'history_write_failure',
         'history_retention_metadata',
         'history_health_metadata',
@@ -778,6 +779,33 @@ describe('SqlitePersistenceStore', () => {
       requested_at: '2026-04-11T10:03:00.000Z',
       observed_at: '2026-04-11T10:03:01.000Z'
     });
+    storeA.appendBlockedInputEvent({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      issue_id: 'remote-operational-1',
+      issue_identifier: 'OPS-1',
+      phase: 'implementation',
+      runtime_state: 'blocked',
+      reason_code: 'operator_input_required',
+      reason_detail: 'Need operator answer token=abcd1234',
+      request_id: 'request-1',
+      request_method: 'input/request',
+      input_schema_type: 'options',
+      prompt_text: 'Choose deployment mode token=abcd1234',
+      pending_input: {
+        request_id: 'request-1',
+        questions: [{ id: 'mode', prompt: 'Mode?', options: [{ label: 'Fast', value: 'fast' }] }],
+        token: 'abcd1234'
+      },
+      state_context: {
+        branch_name: 'feature/OPS-1',
+        previous_session_id: 'session-1',
+        token: 'abcd1234'
+      },
+      blocked_at: '2026-04-11T10:03:10.000Z'
+    });
     storeA.close();
     stores.pop();
 
@@ -819,6 +847,22 @@ describe('SqlitePersistenceStore', () => {
         reason_note: 'continue after clarification token=***REDACTED***',
         phase: 'implementation',
         state_context: { pre_state: 'blocked', post_state: 'running', token: '***REDACTED***' }
+      })
+    ]);
+    expect(timeline.blocked_input_events).toEqual([
+      expect.objectContaining({
+        issue_id: 'remote-operational-1',
+        issue_identifier: 'OPS-1',
+        phase: 'implementation',
+        runtime_state: 'blocked',
+        reason_code: 'operator_input_required',
+        reason_detail: 'Need operator answer token=***REDACTED***',
+        request_id: 'request-1',
+        request_method: 'input/request',
+        input_schema_type: 'options',
+        prompt_text: 'Choose deployment mode token=***REDACTED***',
+        pending_input: expect.objectContaining({ request_id: 'request-1', token: '***REDACTED***' }),
+        state_context: expect.objectContaining({ branch_name: 'feature/OPS-1', token: '***REDACTED***' })
       })
     ]);
   });
@@ -1004,20 +1048,21 @@ describe('SqlitePersistenceStore', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(5);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(6);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 5, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 6, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
       expect.objectContaining({ version: 2, status: 'applied' }),
       expect.objectContaining({ version: 3, status: 'applied' }),
       expect.objectContaining({ version: 4, status: 'applied' }),
-      expect.objectContaining({ version: 5, status: 'applied' })
+      expect.objectContaining({ version: 5, status: 'applied' }),
+      expect.objectContaining({ version: 6, status: 'applied' })
     ]);
   });
 
@@ -1139,7 +1184,7 @@ describe('SqlitePersistenceStore', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 5, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 6, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
       expect.arrayContaining([
         'history_token_model_fact',
@@ -1362,7 +1407,7 @@ describe('SqlitePersistenceStore', () => {
     stores.push(storeB);
     const backfillDbB = openDatabase(dbPath);
     try {
-      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 5, status: 'healthy' });
+      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 6, status: 'healthy' });
       expect(backfillDbB.prepare('SELECT COUNT(*) AS count FROM history_identity_projection').get()).toEqual({ count: 3 });
     } finally {
       backfillDbB.close();
@@ -1836,7 +1881,7 @@ describe('SqlitePersistenceStore', () => {
       nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
     });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 5, status: 'healthy' });
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 6, status: 'healthy' });
     storeA.close();
     stores.pop();
 
@@ -1861,7 +1906,7 @@ describe('SqlitePersistenceStore', () => {
     });
 
     expect(storeB.historySchemaHealth()).toMatchObject({
-      applied_version: 5,
+      applied_version: 6,
       status: 'degraded',
       degraded_reason_code: 'history_write_failed',
       degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'

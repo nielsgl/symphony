@@ -6137,6 +6137,66 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
+  it('persists Linear tracker scope facts without requiring PR metadata', async () => {
+    const trackerSnapshots: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTrackerTicketSnapshot']>>[0]> = [];
+    const ticketReferences: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketReference']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-linear-scope',
+      appendIssueRun: async () => 'issue_run_linear',
+      appendAttempt: async () => 'attempt_linear',
+      appendTrackerTicketSnapshot: async (params) => {
+        trackerSnapshots.push(params);
+        return `tracker_snapshot_${trackerSnapshots.length}`;
+      },
+      appendTicketReference: async (params) => {
+        ticketReferences.push(params);
+        return `ticket_reference_${ticketReferences.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({ persistence });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({
+        id: 'linear-issue-1',
+        identifier: 'NIE-999',
+        title: 'Linear scope issue',
+        state: 'In Progress',
+        labels: ['ready-for-agent'],
+        tracker_meta: {
+          tracker_kind: 'linear',
+          repository: 'unknown',
+          pr_links: [],
+          assignee: { id: 'user-1', name: 'Niels' },
+          project: { id: 'project-1', slug: 'symphony', name: 'Symphony' },
+          team: { id: 'team-1', key: 'NIE', name: 'Nielsgl' }
+        }
+      })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(trackerSnapshots).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_linear',
+        attempt_id: 'attempt_linear',
+        tracker_kind: 'linear',
+        remote_issue_id: 'linear-issue-1',
+        human_issue_identifier: 'NIE-999',
+        assignee_status: 'available',
+        assignee_identifier: 'user-1',
+        project_status: 'available',
+        project_identifier: 'symphony',
+        team_status: 'available',
+        team_identifier: 'NIE'
+      })
+    ]);
+    expect(ticketReferences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reference_kind: 'pull_request', availability: 'unknown', metadata: { reason: 'tracker_pr_unobserved' } })
+    ]));
+  });
+
   it('records terminal run completion write failures as degraded history diagnostics', async () => {
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
     const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
@@ -6562,6 +6622,7 @@ describe('OrchestratorCore', () => {
     const attempts: Array<Record<string, unknown>> = [];
     const transitions: Array<Record<string, unknown>> = [];
     const blockers: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketBlocker']>>[0]> = [];
+    const blockedInputEvents: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendBlockedInputEvent']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'legacy-run-1',
       appendIssueRun: async (params) => {
@@ -6581,6 +6642,10 @@ describe('OrchestratorCore', () => {
       appendTicketBlocker: async (params) => {
         blockers.push(params);
         return `blocker_${blockers.length}`;
+      },
+      appendBlockedInputEvent: async (params) => {
+        blockedInputEvents.push(params);
+        return `blocked_input_event_${blockedInputEvents.length}`;
       },
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
@@ -6630,6 +6695,21 @@ describe('OrchestratorCore', () => {
         blocker_type: 'orchestration_blocker',
         status: 'active',
         reason_code: 'operator_action_required_no_progress_redispatch_blocked'
+      })
+    ]);
+    expect(blockedInputEvents).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        thread_id: 'thread-0',
+        issue_id: 'i-retry-blocked',
+        issue_identifier: 'ABC-BLOCK',
+        runtime_state: 'blocked',
+        reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+        state_context: expect.objectContaining({
+          branch_name: null,
+          progress_signals: expect.objectContaining({ commit_sha: 'sha-same' })
+        })
       })
     ]);
     expect(harness.spawned.filter((entry) => entry.issue_id === 'i-retry-blocked')).toHaveLength(1);
