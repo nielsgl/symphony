@@ -1,6 +1,31 @@
 export type RunTerminalStatus = 'succeeded' | 'failed' | 'timed_out' | 'stalled' | 'cancelled';
 export type ExecutionGraphEntityStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying';
 
+export type IdentityEvidence<T extends string = string> =
+  | { status: 'present'; value: T }
+  | { status: 'missing'; reason: string };
+
+export interface ProjectIdentity {
+  key: string;
+  project_root: string;
+  workflow_path: string;
+  workflow_hash: IdentityEvidence;
+  repository_remote: IdentityEvidence;
+}
+
+export interface TicketIdentity {
+  key: string;
+  tracker_kind: string;
+  tracker_scope: IdentityEvidence;
+  remote_issue_id: string;
+  human_issue_identifier: string;
+}
+
+export interface DurableIdentity {
+  project: ProjectIdentity;
+  ticket: TicketIdentity;
+}
+
 export interface ExecutionGraphReasonFields {
   status: ExecutionGraphEntityStatus;
   reason_code: string | null;
@@ -16,6 +41,7 @@ export interface IssueRunRecord extends ExecutionGraphTimestampFields {
   issue_run_id: string;
   issue_id: string;
   issue_identifier: string;
+  identity?: DurableIdentity | null;
 }
 
 export interface AttemptRecord extends ExecutionGraphTimestampFields {
@@ -76,6 +102,7 @@ export interface DurableRunHistoryRecord {
   run_id: string;
   issue_id: string;
   issue_identifier: string;
+  identity?: DurableIdentity | null;
   started_at: string;
   ended_at: string | null;
   completed_at: string | null;
