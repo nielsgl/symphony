@@ -94,6 +94,7 @@ interface ScheduleRetryParams {
   stop_reason_code?: string | null;
   stop_reason_detail?: string | null;
   previous_thread_id?: string | null;
+  previous_turn_id?: string | null;
   previous_session_id?: string | null;
   issue_snapshot?: Issue | null;
   progress_signals?: {
@@ -527,6 +528,7 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
+    previous_turn_id: entry.previous_turn_id ?? null,
     previous_session_id: entry.previous_session_id,
     last_phase: entry.last_phase,
     last_phase_at_ms: entry.last_phase_at_ms,
@@ -563,6 +565,7 @@ function cloneBlockedEntry(entry: BlockedEntry, options: Required<StateSnapshotO
     classification_summary: entry.classification_summary ? { ...entry.classification_summary } : undefined,
     resolution_hints: [...(entry.resolution_hints ?? [])],
     previous_thread_id: entry.previous_thread_id,
+    previous_turn_id: entry.previous_turn_id ?? null,
     previous_session_id: entry.previous_session_id,
     last_phase: entry.last_phase,
     last_phase_at_ms: entry.last_phase_at_ms,
@@ -1165,6 +1168,7 @@ export class OrchestratorCore {
       stop_reason_code: backpressure.reason_code,
       stop_reason_detail: backpressure.reason_detail,
       previous_thread_id: freshDispatch ? null : retryEntry.previous_thread_id ?? null,
+      previous_turn_id: freshDispatch ? null : retryEntry.previous_turn_id ?? null,
       previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
       progress_signals: retryEntry.progress_signals,
       budget: retryEntry.budget,
@@ -2679,7 +2683,7 @@ export class OrchestratorCore {
         issue_run_id: retryEntry.issue_run_id,
         attempt_id: retryEntry.previous_attempt_id,
         thread_id: retryEntry.previous_thread_id,
-        turn_id: null,
+        turn_id: retryEntry.previous_turn_id ?? null,
         from_status: null,
         to_status: toStatus,
         transitioned_at: asIso(this.nowMs()),
@@ -3072,6 +3076,7 @@ export class OrchestratorCore {
         stop_reason_detail: stopReasonDetail,
         session_console: running.recent_events,
         previous_thread_id: running.thread_id,
+        previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         required_actions: ['Increase budget and resume', 'Cancel and return to backlog'],
         budget: running.budget
@@ -3450,6 +3455,7 @@ export class OrchestratorCore {
           stop_reason_code: REASON_CODES.issueStateRefreshFailed,
           stop_reason_detail: stopReasonDetail,
           previous_thread_id: running.thread_id,
+          previous_turn_id: running.turn_id,
           previous_session_id: running.session_id,
           issue_snapshot: running.issue,
           budget: running.budget,
@@ -3567,6 +3573,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.normalCompletion,
         stop_reason_detail: 'normal worker completion, continuing while issue is active',
         previous_thread_id: running.thread_id,
+        previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
         budget: running.budget,
@@ -3635,6 +3642,7 @@ export class OrchestratorCore {
           pending_input: inputDetail,
           session_console: running.recent_events,
           previous_thread_id: running.thread_id,
+          previous_turn_id: running.turn_id,
           previous_session_id: running.session_id
         });
         this.logger?.log({
@@ -3689,6 +3697,7 @@ export class OrchestratorCore {
           resolution_hints: workspaceConflict.resolution_hints,
           session_console: running.recent_events,
           previous_thread_id: running.thread_id,
+          previous_turn_id: running.turn_id,
           previous_session_id: running.session_id
         });
         this.logger?.log({
@@ -3739,6 +3748,7 @@ export class OrchestratorCore {
         stop_reason_code: stopReasonCode,
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
+        previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
         budget: running.budget,
@@ -3843,6 +3853,7 @@ export class OrchestratorCore {
       required_actions: diagnostic?.recommended_actions ?? [],
       session_console: running.recent_events,
       previous_thread_id: diagnostic?.thread_id ?? running.thread_id,
+      previous_turn_id: diagnostic?.turn_id ?? running.turn_id,
       previous_session_id: diagnostic?.session_id ?? running.session_id,
       last_progress_checkpoint_at: running.last_progress_transition_at_ms ?? running.started_at_ms,
       tool_output_wait: diagnostic,
@@ -3962,6 +3973,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.retryFetchFailed,
         stop_reason_detail: error instanceof Error ? error.message : 'unknown',
         previous_thread_id: retryEntry.previous_thread_id ?? null,
+        previous_turn_id: retryEntry.previous_turn_id ?? null,
         previous_session_id: retryEntry.previous_session_id ?? null,
         issue_snapshot: null
       });
@@ -4017,6 +4029,7 @@ export class OrchestratorCore {
           stop_reason_code: REASON_CODES.slotsExhausted,
           stop_reason_detail: 'no available orchestrator slots',
           previous_thread_id: freshDispatch ? null : retryEntry.previous_thread_id ?? null,
+          previous_turn_id: freshDispatch ? null : retryEntry.previous_turn_id ?? null,
           previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
           issue_snapshot: issue
         });
@@ -4081,6 +4094,7 @@ export class OrchestratorCore {
         stop_reason_code: stopReasonCode,
         stop_reason_detail: stopReasonDetail,
         previous_thread_id: retryEntry.previous_thread_id ?? null,
+        previous_turn_id: retryEntry.previous_turn_id ?? null,
         previous_session_id: retryEntry.previous_session_id ?? null,
         attempt_count_window: gateEvaluation.attempt_count_window,
         window_minutes: gateEvaluation.window_minutes,
@@ -4213,6 +4227,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.issueStateRefreshFailed,
         stop_reason_detail: detail,
         previous_thread_id: retryEntry.previous_thread_id ?? null,
+        previous_turn_id: retryEntry.previous_turn_id ?? null,
         previous_session_id: retryEntry.previous_session_id ?? null,
         issue_snapshot: null,
         progress_signals: retryEntry.progress_signals,
@@ -4270,6 +4285,7 @@ export class OrchestratorCore {
       stop_reason_code: REASON_CODES.normalCompletion,
       stop_reason_detail: 'tracker state refresh succeeded; continuing while issue is active',
       previous_thread_id: retryEntry.previous_thread_id ?? null,
+      previous_turn_id: retryEntry.previous_turn_id ?? null,
       previous_session_id: retryEntry.previous_session_id ?? null,
       issue_snapshot: issue,
       progress_signals: retryEntry.progress_signals,
@@ -4615,6 +4631,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.workerStalled,
         stop_reason_detail: stalledDetail,
         previous_thread_id: runningEntry.thread_id,
+        previous_turn_id: runningEntry.turn_id,
         previous_session_id: runningEntry.session_id,
         issue_snapshot: runningEntry.issue
       });
@@ -5177,6 +5194,7 @@ export class OrchestratorCore {
       stop_reason_code: params.stop_reason_code ?? null,
       stop_reason_detail: params.stop_reason_detail ?? null,
       previous_thread_id: params.previous_thread_id ?? null,
+      previous_turn_id: params.previous_turn_id ?? null,
       previous_session_id: params.previous_session_id ?? null,
       last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
@@ -5255,6 +5273,7 @@ export class OrchestratorCore {
     recovery?: BlockedEntry['recovery'];
     session_console?: Array<{ at_ms: number; event: string; message: string | null }>;
     previous_thread_id: string | null;
+    previous_turn_id?: string | null;
     previous_session_id: string | null;
     attempt_count_window?: number;
     window_minutes?: number;
@@ -5304,6 +5323,7 @@ export class OrchestratorCore {
       classification_summary: params.classification_summary ? { ...params.classification_summary } : undefined,
       resolution_hints: [...(params.resolution_hints ?? [])],
       previous_thread_id: params.previous_thread_id,
+      previous_turn_id: params.previous_turn_id ?? null,
       previous_session_id: params.previous_session_id,
       last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
@@ -5419,7 +5439,7 @@ export class OrchestratorCore {
         issue_run_id: blockedEntry.issue_run_id,
         attempt_id: blockedEntry.previous_attempt_id ?? null,
         thread_id: blockedEntry.previous_thread_id ?? null,
-        turn_id: null,
+        turn_id: blockedEntry.previous_turn_id ?? null,
         blocker_type: this.ticketBlockerTypeForBlockedEntry(blockedEntry),
         status: 'active',
         reason_code: blockedEntry.stop_reason_code,
@@ -5453,7 +5473,7 @@ export class OrchestratorCore {
         issue_run_id: blockedEntry.issue_run_id,
         attempt_id: blockedEntry.previous_attempt_id ?? null,
         thread_id: blockedEntry.previous_thread_id ?? null,
-        turn_id: null,
+        turn_id: blockedEntry.previous_turn_id ?? null,
         issue_id: blockedEntry.issue_id,
         issue_identifier: blockedEntry.issue_identifier,
         phase: blockedEntry.last_phase,
@@ -5475,6 +5495,7 @@ export class OrchestratorCore {
           : null,
         state_context: {
           previous_session_id: blockedEntry.previous_session_id,
+          previous_turn_id: blockedEntry.previous_turn_id ?? null,
           worker_host: blockedEntry.worker_host,
           workspace_path: blockedEntry.workspace_path,
           branch_name: blockedEntry.branch_name,
@@ -5665,6 +5686,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.operatorRequeueRequested,
         stop_reason_detail: reasonNote,
         previous_thread_id: running.thread_id,
+        previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue
       });
@@ -5710,6 +5732,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.operatorRequeueRequested,
         stop_reason_detail: reasonNote,
         previous_thread_id: blocked.previous_thread_id,
+        previous_turn_id: blocked.previous_turn_id ?? null,
         previous_session_id: blocked.previous_session_id,
         issue_snapshot: null
       });
@@ -5755,6 +5778,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.operatorRequeueRequested,
         stop_reason_detail: reasonNote,
         previous_thread_id: retry.previous_thread_id,
+        previous_turn_id: retry.previous_turn_id ?? null,
         previous_session_id: retry.previous_session_id,
         issue_snapshot: null
       });
@@ -5816,6 +5840,7 @@ export class OrchestratorCore {
       stop_reason_code: REASON_CODES.operatorRetryStepRequested,
       stop_reason_detail: reasonNote,
       previous_thread_id: retry.previous_thread_id,
+      previous_turn_id: retry.previous_turn_id ?? null,
       previous_session_id: retry.previous_session_id,
       issue_snapshot: null
     });
@@ -5989,6 +6014,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.slotsExhausted,
         stop_reason_detail: 'resume blocked by no available orchestrator slots',
         previous_thread_id: blocked.previous_thread_id,
+        previous_turn_id: blocked.previous_turn_id ?? null,
         previous_session_id: blocked.previous_session_id,
         issue_snapshot: issue
       });
@@ -6016,6 +6042,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.manualResume,
         stop_reason_detail: 'manual resume requested',
         previous_thread_id: blocked.previous_thread_id,
+        previous_turn_id: blocked.previous_turn_id ?? null,
         previous_session_id: blocked.previous_session_id,
         issue_snapshot: issue
       });
@@ -8013,6 +8040,7 @@ export class OrchestratorCore {
       required_actions: recommendedActions,
       session_console: runningEntry.recent_events,
       previous_thread_id: diagnostic.thread_id,
+      previous_turn_id: diagnostic.turn_id,
       previous_session_id: diagnostic.session_id,
       last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
       tool_output_wait: diagnostic,

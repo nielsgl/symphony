@@ -6678,6 +6678,7 @@ describe('OrchestratorCore', () => {
     expect(issueRuns).toHaveLength(1);
     expect(blocked?.issue_run_id).toBe('issue_run_1');
     expect(blocked?.previous_attempt_id).toBe('attempt_1');
+    expect(blocked?.previous_turn_id).toBe('turn-0');
     expect(transitions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         issue_run_id: 'issue_run_1',
@@ -6692,6 +6693,7 @@ describe('OrchestratorCore', () => {
         issue_run_id: 'issue_run_1',
         attempt_id: 'attempt_1',
         thread_id: 'thread-0',
+        turn_id: 'turn-0',
         blocker_type: 'orchestration_blocker',
         status: 'active',
         reason_code: 'operator_action_required_no_progress_redispatch_blocked'
@@ -6702,6 +6704,7 @@ describe('OrchestratorCore', () => {
         issue_run_id: 'issue_run_1',
         attempt_id: 'attempt_1',
         thread_id: 'thread-0',
+        turn_id: 'turn-0',
         issue_id: 'i-retry-blocked',
         issue_identifier: 'ABC-BLOCK',
         runtime_state: 'blocked',

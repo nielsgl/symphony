@@ -409,6 +409,7 @@ export interface RetryEntry {
   stop_reason_code: string | null;
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
+  previous_turn_id?: string | null;
   previous_session_id: string | null;
   last_phase?: PhaseMarkerName | null;
   last_phase_at_ms?: number | null;
@@ -471,6 +472,7 @@ export interface BlockedEntry {
   };
   resolution_hints: string[];
   previous_thread_id: string | null;
+  previous_turn_id?: string | null;
   previous_session_id: string | null;
   last_phase?: PhaseMarkerName | null;
   last_phase_at_ms?: number | null;
