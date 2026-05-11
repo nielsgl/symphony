@@ -416,6 +416,84 @@ describe('thread diagnostics blocker classification', () => {
     });
   });
 
+  it('preserves protocol hardening evidence in runtime and blocked timeline events', () => {
+    const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
+      state: makeState(
+        makeRunningEntry({
+          recent_events: [
+            {
+              at_ms: Date.parse('2026-04-10T10:00:01.000Z'),
+              event: CANONICAL_EVENT.codex.protocolWarning,
+              message: 'guardian policy warning',
+              reason_code: REASON_CODES.codexProtocolGuardianWarning,
+              request_method: 'guardianWarning',
+              request_category: 'protocol_warning',
+              protocol_warning: {
+                method: 'guardianWarning',
+                reason_code: REASON_CODES.codexProtocolGuardianWarning,
+                message: 'guardian policy warning',
+                severity: 'warn',
+                source: 'app_server_protocol'
+              },
+              model_reroute: {
+                requested_model: 'gpt-requested',
+                effective_model: 'gpt-effective',
+                reason_code: REASON_CODES.codexModelRerouted,
+                source: 'app_server_protocol'
+              },
+              requested_model: 'gpt-requested',
+              effective_model: 'gpt-effective'
+            }
+          ]
+        }),
+        makeBlockedEntry({
+          session_console: [
+            {
+              at_ms: Date.parse('2026-04-10T10:00:02.000Z'),
+              event: CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch,
+              message: 'dynamic tool capability mismatch',
+              reason_code: REASON_CODES.unsupportedDynamicToolConsoleResume,
+              request_method: 'tools/call',
+              request_category: 'dynamic_tool',
+              tool_call_id: 'call-dynamic-1',
+              tool_name: 'linear_graphql'
+            }
+          ]
+        })
+      ),
+      issue_identifier: 'ABC-1'
+    });
+
+    expect(diagnostics?.timeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.protocolWarning,
+          reason_code: REASON_CODES.codexProtocolGuardianWarning,
+          request_method: 'guardianWarning',
+          request_category: 'protocol_warning',
+          protocol_warning: expect.objectContaining({
+            method: 'guardianWarning',
+            reason_code: REASON_CODES.codexProtocolGuardianWarning
+          }),
+          model_reroute: expect.objectContaining({
+            requested_model: 'gpt-requested',
+            effective_model: 'gpt-effective'
+          }),
+          requested_model: 'gpt-requested',
+          effective_model: 'gpt-effective'
+        }),
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch,
+          reason_code: REASON_CODES.unsupportedDynamicToolConsoleResume,
+          request_method: 'tools/call',
+          request_category: 'dynamic_tool',
+          tool_call_id: 'call-dynamic-1',
+          tool_name: 'linear_graphql'
+        })
+      ])
+    );
+  });
+
   it('reports genuinely stale waiting turns with a deterministic blocker', () => {
     const diagnostics = buildThreadDiagnosticsByIssueIdentifier({
       state: makeState(

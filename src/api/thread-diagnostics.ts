@@ -86,6 +86,37 @@ function lastMeaningfulProgressAtMs(events: ThreadDiagnosticsEvent[]): number | 
   return meaningful.length ? meaningful[meaningful.length - 1]!.at_ms : null;
 }
 
+function projectRuntimeEventEvidence(
+  event: RunningEntry['recent_events'][number],
+  context: {
+    thread_id: string;
+    turn_id: string | null;
+    session_id: string | null;
+    fallback_reason_code?: string | null;
+    fallback_reason_detail?: string | null;
+  }
+): ThreadDiagnosticsEvent {
+  return {
+    at_ms: event.at_ms,
+    event: event.event,
+    reason_code: event.reason_code ?? context.fallback_reason_code ?? null,
+    reason_detail: event.message ?? context.fallback_reason_detail ?? null,
+    ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+    ...(event.request_category !== undefined ? { request_category: event.request_category } : {}),
+    ...(event.tool_call_id !== undefined ? { tool_call_id: event.tool_call_id } : {}),
+    ...(event.tool_name !== undefined ? { tool_name: event.tool_name } : {}),
+    ...(event.protocol_warning !== undefined ? { protocol_warning: { ...event.protocol_warning } } : {}),
+    ...(event.model_reroute !== undefined
+      ? { model_reroute: event.model_reroute ? { ...event.model_reroute } : null }
+      : {}),
+    ...(event.requested_model !== undefined ? { requested_model: event.requested_model } : {}),
+    ...(event.effective_model !== undefined ? { effective_model: event.effective_model } : {}),
+    thread_id: context.thread_id,
+    turn_id: context.turn_id,
+    session_id: context.session_id
+  };
+}
+
 function blockerDetails(classification: ThreadDiagnosticsBlockerClassification): {
   actionability: ThreadDiagnosticsBlocker['actionability'];
   recommended_actions: string[];
@@ -296,30 +327,24 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
   const attempt = source?.retry_attempt ?? retry?.attempt ?? blocked?.attempt ?? 0;
   const sessionId = source?.session_id ?? blocked?.previous_session_id ?? retry?.previous_session_id ?? null;
   const blockedConsole = blocked
-    ? blocked.session_console?.map((event) => ({
-        at_ms: event.at_ms,
-        event: event.event,
-        reason_code: event.reason_code ?? blocked.stop_reason_code,
-        reason_detail: event.message ?? blocked.stop_reason_detail,
-        ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-        ...(event.request_category !== undefined ? { request_category: event.request_category } : {}),
-        thread_id: threadId,
-        turn_id: null,
-        session_id: sessionId
-      })) ?? []
+    ? blocked.session_console?.map((event) =>
+        projectRuntimeEventEvidence(event, {
+          thread_id: threadId,
+          turn_id: null,
+          session_id: sessionId,
+          fallback_reason_code: blocked.stop_reason_code,
+          fallback_reason_detail: blocked.stop_reason_detail
+        })
+      ) ?? []
     : [];
   const timeline = sortTimeline([
-    ...(source?.recent_events ?? []).map((event) => ({
-      at_ms: event.at_ms,
-      event: event.event,
-      reason_code: event.reason_code ?? null,
-      reason_detail: event.message,
-      ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-      ...(event.request_category !== undefined ? { request_category: event.request_category } : {}),
-      thread_id: threadId,
-      turn_id: source?.turn_id ?? null,
-      session_id: sessionId
-    })),
+    ...(source?.recent_events ?? []).map((event) =>
+      projectRuntimeEventEvidence(event, {
+        thread_id: threadId,
+        turn_id: source?.turn_id ?? null,
+        session_id: sessionId
+      })
+    ),
     ...blockedConsole
   ]);
   const waitAnchor = source?.running_waiting_started_at_ms ?? source?.stalled_waiting_since_ms ?? null;

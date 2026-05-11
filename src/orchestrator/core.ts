@@ -1373,6 +1373,23 @@ export class OrchestratorCore {
 
     if (workerEvent.rate_limits) {
       this.state.codex_rate_limits = { ...workerEvent.rate_limits };
+      runningEntry.rate_limits = { ...workerEvent.rate_limits };
+    }
+
+    if (workerEvent.protocol_warnings) {
+      runningEntry.protocol_warnings = workerEvent.protocol_warnings.map((warning) => ({ ...warning }));
+    } else if (workerEvent.protocol_warning) {
+      runningEntry.protocol_warnings = [...(runningEntry.protocol_warnings ?? []), { ...workerEvent.protocol_warning }];
+    }
+
+    if (workerEvent.model_reroute !== undefined) {
+      runningEntry.model_reroute = workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null;
+    }
+    if (workerEvent.requested_model !== undefined) {
+      runningEntry.requested_model = workerEvent.requested_model ?? null;
+    }
+    if (workerEvent.effective_model !== undefined) {
+      runningEntry.effective_model = workerEvent.effective_model ?? null;
     }
 
     runningEntry.recent_events.push({
@@ -1381,7 +1398,15 @@ export class OrchestratorCore {
       message: workerEvent.detail ?? null,
       ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
       ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {}),
-      ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {})
+      ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {}),
+      ...(workerEvent.tool_call_id !== undefined ? { tool_call_id: workerEvent.tool_call_id } : {}),
+      ...(workerEvent.tool_name !== undefined ? { tool_name: workerEvent.tool_name } : {}),
+      ...(workerEvent.protocol_warning !== undefined ? { protocol_warning: { ...workerEvent.protocol_warning } } : {}),
+      ...(workerEvent.model_reroute !== undefined
+        ? { model_reroute: workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null }
+        : {}),
+      ...(workerEvent.requested_model !== undefined ? { requested_model: workerEvent.requested_model } : {}),
+      ...(workerEvent.effective_model !== undefined ? { effective_model: workerEvent.effective_model } : {})
     });
     if (runningEntry.recent_events.length > 20) {
       runningEntry.recent_events.splice(0, runningEntry.recent_events.length - 20);
@@ -1442,7 +1467,15 @@ export class OrchestratorCore {
       detail: workerEvent.detail,
       ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
       ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {}),
-      ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {})
+      ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {}),
+      ...(workerEvent.tool_call_id !== undefined ? { tool_call_id: workerEvent.tool_call_id } : {}),
+      ...(workerEvent.tool_name !== undefined ? { tool_name: workerEvent.tool_name } : {}),
+      ...(workerEvent.protocol_warning !== undefined ? { protocol_warning: { ...workerEvent.protocol_warning } } : {}),
+      ...(workerEvent.model_reroute !== undefined
+        ? { model_reroute: workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null }
+        : {}),
+      ...(workerEvent.requested_model !== undefined ? { requested_model: workerEvent.requested_model } : {}),
+      ...(workerEvent.effective_model !== undefined ? { effective_model: workerEvent.effective_model } : {})
     });
     if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
       this.emitMappedPhaseMarker(issue_id, workerEvent);
@@ -4350,6 +4383,11 @@ export class OrchestratorCore {
       token_telemetry_last_at_ms: null,
       token_telemetry_turn_started_at_ms: null,
       token_telemetry_warning_emitted: false,
+      rate_limits: null,
+      protocol_warnings: [],
+      model_reroute: null,
+      requested_model: null,
+      effective_model: null,
       budget_warning_emitted: false,
       budget_hard_limit_enforced: false,
       budget: this.computeBudgetProjection(issue.id, 0, 'unavailable'),
@@ -7545,6 +7583,12 @@ export class OrchestratorCore {
     reason_code?: string | null;
     request_method?: string | null;
     request_category?: string | null;
+    tool_call_id?: string | null;
+    tool_name?: string | null;
+    protocol_warning?: import('../codex').CodexProtocolWarningEvidence;
+    model_reroute?: import('../codex').CodexModelRerouteEvidence | null;
+    requested_model?: string | null;
+    effective_model?: string | null;
   }): void {
     this.state.recent_runtime_events.push({
       at_ms: this.nowMs(),
@@ -7555,7 +7599,15 @@ export class OrchestratorCore {
       detail: params.detail,
       ...(params.reason_code !== undefined ? { reason_code: params.reason_code } : {}),
       ...(params.request_method !== undefined ? { request_method: params.request_method } : {}),
-      ...(params.request_category !== undefined ? { request_category: params.request_category } : {})
+      ...(params.request_category !== undefined ? { request_category: params.request_category } : {}),
+      ...(params.tool_call_id !== undefined ? { tool_call_id: params.tool_call_id } : {}),
+      ...(params.tool_name !== undefined ? { tool_name: params.tool_name } : {}),
+      ...(params.protocol_warning !== undefined ? { protocol_warning: { ...params.protocol_warning } } : {}),
+      ...(params.model_reroute !== undefined
+        ? { model_reroute: params.model_reroute ? { ...params.model_reroute } : null }
+        : {}),
+      ...(params.requested_model !== undefined ? { requested_model: params.requested_model } : {}),
+      ...(params.effective_model !== undefined ? { effective_model: params.effective_model } : {})
     });
     if (this.state.recent_runtime_events.length > 50) {
       this.state.recent_runtime_events.splice(0, this.state.recent_runtime_events.length - 50);

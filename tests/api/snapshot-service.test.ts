@@ -1263,6 +1263,95 @@ describe('SnapshotService', () => {
     expect(issue.tracked).toEqual({});
   });
 
+  it('preserves protocol evidence in blocked-only issue recent events', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:02:00.000Z')
+    });
+
+    const state = makeState({
+      blocked_inputs: new Map([
+        [
+          'issue-1',
+          {
+            issue_id: 'issue-1',
+            issue_identifier: 'ABC-1',
+            attempt: 1,
+            worker_host: null,
+            workspace_path: '/tmp/symphony/ABC-1',
+            provisioner_type: 'none',
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'unknown',
+            workspace_provisioned: false,
+            workspace_is_git_worktree: false,
+            stop_reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+            stop_reason_detail: 'approval request failed closed',
+            conflict_files: [],
+            resolution_hints: ['Inspect the Codex thread'],
+            previous_thread_id: 'thread-1',
+            previous_session_id: 'session-1',
+            blocked_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+            requires_manual_resume: true,
+            required_actions: ['Inspect the Codex thread'],
+            pending_input: null,
+            session_console: [
+              {
+                at_ms: Date.parse('2026-04-10T10:01:30.000Z'),
+                event: CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch,
+                message: 'dynamic tool capability mismatch',
+                reason_code: REASON_CODES.unsupportedDynamicToolConsoleResume,
+                request_method: 'tools/call',
+                request_category: 'dynamic_tool',
+                tool_call_id: 'call-dynamic-1',
+                tool_name: 'linear_graphql',
+                protocol_warning: {
+                  method: 'tools/call',
+                  reason_code: REASON_CODES.codexProtocolGuardianWarning,
+                  message: 'guardian policy warning',
+                  severity: 'warn',
+                  source: 'app_server_protocol'
+                },
+                model_reroute: {
+                  requested_model: 'gpt-requested',
+                  effective_model: 'gpt-effective',
+                  reason_code: REASON_CODES.codexModelRerouted,
+                  source: 'app_server_protocol'
+                },
+                requested_model: 'gpt-requested',
+                effective_model: 'gpt-effective'
+              }
+            ]
+          }
+        ]
+      ])
+    });
+
+    const issue = service.projectIssue(state, 'ABC-1');
+
+    expect(issue.recent_events).toEqual([
+      expect.objectContaining({
+        at: '2026-04-10T10:01:30.000Z',
+        event: CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch,
+        reason_code: REASON_CODES.unsupportedDynamicToolConsoleResume,
+        request_method: 'tools/call',
+        request_category: 'dynamic_tool',
+        tool_call_id: 'call-dynamic-1',
+        tool_name: 'linear_graphql',
+        protocol_warning: expect.objectContaining({
+          method: 'tools/call',
+          reason_code: REASON_CODES.codexProtocolGuardianWarning
+        }),
+        model_reroute: expect.objectContaining({
+          requested_model: 'gpt-requested',
+          effective_model: 'gpt-effective'
+        }),
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective'
+      })
+    ]);
+  });
+
   it('projects active recent events separately from stale same-issue diagnostics', () => {
     const service = new SnapshotService({
       nowMs: () => Date.parse('2026-04-10T10:02:00.000Z')
