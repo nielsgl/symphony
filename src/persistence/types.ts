@@ -144,6 +144,29 @@ export interface PersistenceHealth {
   run_count: number;
   last_pruned_at: string | null;
   integrity_ok: boolean;
+  history_schema?: HistorySchemaHealth;
+}
+
+export type HistorySchemaStatus = 'healthy' | 'degraded';
+
+export interface HistorySchemaMigrationRecord {
+  version: number;
+  name: string;
+  status: 'applied' | 'failed';
+  started_at: string;
+  finished_at: string | null;
+  error_message: string | null;
+}
+
+export interface HistorySchemaHealth {
+  schema_name: 'project_execution_history';
+  target_version: number;
+  applied_version: number;
+  status: HistorySchemaStatus;
+  degraded_reason_code: string | null;
+  degraded_detail: string | null;
+  updated_at: string;
+  migrations: HistorySchemaMigrationRecord[];
 }
 
 export interface BreakerMetadataRecord {
