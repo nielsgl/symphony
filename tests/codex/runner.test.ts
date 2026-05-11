@@ -79,6 +79,130 @@ function parseWrittenMessages(fake: FakeProcess): Array<Record<string, unknown>>
   return fake.writes.map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+const GENERATED_CONTRACT_BUNDLE = path.join(
+  process.cwd(),
+  'tests/fixtures/codex-app-server-contract/good/schema/codex_app_server_protocol.schemas.json'
+);
+
+interface GeneratedSchema {
+  required?: string[];
+  properties?: Record<string, GeneratedSchema | boolean>;
+  type?: string | string[];
+  enum?: unknown[];
+  oneOf?: GeneratedSchema[];
+  anyOf?: GeneratedSchema[];
+  items?: GeneratedSchema;
+  $ref?: string;
+}
+
+function generatedDefinitions(): Record<string, GeneratedSchema> {
+  const bundle = JSON.parse(fs.readFileSync(GENERATED_CONTRACT_BUNDLE, 'utf8')) as {
+    definitions: Record<string, GeneratedSchema>;
+  };
+  return bundle.definitions;
+}
+
+function generatedDefinition(name: string): GeneratedSchema {
+  const definitions = generatedDefinitions();
+  const definition = definitions[name] ?? definitions[`v2/${name}`];
+  if (!definition) {
+    throw new Error(`Generated contract fixture is missing ${name}`);
+  }
+  return definition;
+}
+
+function generatedRef(schema: GeneratedSchema): GeneratedSchema {
+  if (!schema.$ref) {
+    return schema;
+  }
+  return generatedDefinition(schema.$ref.split('/').at(-1) ?? schema.$ref);
+}
+
+function expectGeneratedMethod(unionName: string, method: string): void {
+  const union = generatedDefinition(unionName);
+  const serialized = JSON.stringify(union);
+  expect(serialized).toContain(`"${method}"`);
+}
+
+function expectGeneratedPayloadShape(
+  definitionName: string,
+  payload: Record<string, unknown>,
+  expectedFields: string[]
+): void {
+  const schema = generatedDefinition(definitionName);
+  expect(schema.properties).toBeTruthy();
+
+  for (const field of schema.required ?? []) {
+    expect(payload).toHaveProperty(field);
+  }
+
+  for (const field of expectedFields) {
+    const property = schema.properties?.[field];
+    expect(property).toBeTruthy();
+    expect(payload).toHaveProperty(field);
+    expectValueMatchesGeneratedSchema(property, payload[field], `${definitionName}.${field}`);
+  }
+}
+
+function expectValueMatchesGeneratedSchema(schema: GeneratedSchema | boolean | undefined, value: unknown, label: string): void {
+  if (schema === true || schema === undefined) {
+    return;
+  }
+  if (schema === false) {
+    throw new Error(`${label} is forbidden by generated schema`);
+  }
+  if (schema.$ref) {
+    expectValueMatchesGeneratedSchema(generatedRef(schema), value, label);
+    return;
+  }
+  if (schema.anyOf || schema.oneOf) {
+    const variants = schema.anyOf ?? schema.oneOf ?? [];
+    const errors: string[] = [];
+    for (const variant of variants) {
+      try {
+        expectValueMatchesGeneratedSchema(variant, value, label);
+        return;
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    throw new Error(`${label} did not match generated variants: ${errors.join('; ')}`);
+  }
+
+  const type = schema.type;
+  const allowedTypes = Array.isArray(type) ? type : type ? [type] : [];
+  if (value === null && allowedTypes.includes('null')) {
+    return;
+  }
+  if (schema.enum) {
+    expect(schema.enum).toContain(value);
+    return;
+  }
+  if (allowedTypes.includes('string')) {
+    expect(typeof value).toBe('string');
+  } else if (allowedTypes.includes('boolean')) {
+    expect(typeof value).toBe('boolean');
+  } else if (allowedTypes.includes('array')) {
+    expect(Array.isArray(value)).toBe(true);
+    if (schema.items && Array.isArray(value)) {
+      for (const item of value) {
+        expectValueMatchesGeneratedSchema(schema.items, item, `${label}[]`);
+      }
+    }
+  } else if (allowedTypes.includes('object') || schema.properties) {
+    expect(value && typeof value === 'object' && !Array.isArray(value)).toBe(true);
+    const record = value as Record<string, unknown>;
+    for (const field of schema.required ?? []) {
+      expect(record).toHaveProperty(field);
+    }
+    for (const [field, property] of Object.entries(schema.properties ?? {})) {
+      if (Object.prototype.hasOwnProperty.call(record, field)) {
+        expectValueMatchesGeneratedSchema(property, record[field], `${label}.${field}`);
+      }
+    }
+  }
+}
+
 function writeTranscriptRecord(codexHome: string, filename: string, record: Record<string, unknown>): void {
   const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
   fs.mkdirSync(sessionsDir, { recursive: true });
@@ -141,13 +265,48 @@ describe('CodexRunner', () => {
       .filter((method): method is string => Boolean(method));
     expect(writtenMethods).toEqual(['initialize', 'initialized', 'thread/start', 'turn/start', 'thread/read']);
 
+    const initialize = parseWrittenMessages(fake).find((line) => line.method === 'initialize') as
+      | { params?: Record<string, unknown> }
+      | undefined;
+    expectGeneratedMethod('ClientRequest', 'initialize');
+    expectGeneratedPayloadShape('InitializeParams', initialize?.params ?? {}, ['clientInfo', 'capabilities']);
+    expect(initialize?.params?.clientInfo).toEqual({ name: 'symphony', version: '0.1.0' });
+    expect(initialize?.params?.capabilities).toEqual({ experimentalApi: true });
+
+    const initialized = parseWrittenMessages(fake).find((line) => line.method === 'initialized') as
+      | { params?: Record<string, unknown> }
+      | undefined;
+    expectGeneratedMethod('ClientNotification', 'initialized');
+    expect(initialized?.params).toEqual({});
+
     const turnStart = parseWrittenMessages(fake).find((line) => line.method === 'turn/start') as
       | { params?: Record<string, unknown> }
       | undefined;
+    expectGeneratedMethod('ClientRequest', 'turn/start');
+    expectGeneratedPayloadShape('TurnStartParams', turnStart?.params ?? {}, [
+      'threadId',
+      'input',
+      'cwd',
+      'approvalPolicy',
+      'sandboxPolicy'
+    ]);
+    expect(turnStart?.params?.cwd).toBe(workspaceCwd);
+    expect(turnStart?.params?.title).toBe('ABC-1: Title');
+    expect(turnStart?.params?.input).toEqual([{ type: 'text', text: 'hello' }]);
     expect((turnStart?.params?.sandboxPolicy as { type: string }).type).toBe('workspaceWrite');
     const threadStart = parseWrittenMessages(fake).find((line) => line.method === 'thread/start') as
       | { params?: Record<string, unknown> }
       | undefined;
+    expectGeneratedMethod('ClientRequest', 'thread/start');
+    expectGeneratedPayloadShape('ThreadStartParams', threadStart?.params ?? {}, [
+      'approvalPolicy',
+      'sandbox',
+      'cwd',
+      'dynamicTools'
+    ]);
+    expect(threadStart?.params?.cwd).toBe(workspaceCwd);
+    expect(threadStart?.params?.approvalPolicy).toBe('never');
+    expect(threadStart?.params?.sandbox).toBe('workspace-write');
     expect(threadStart?.params?.dynamicTools).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'linear_graphql' })])
     );
@@ -366,7 +525,19 @@ describe('CodexRunner', () => {
 
     const threadStartRequests = parseWrittenMessages(fake).filter((line) => line.method === 'thread/start');
     expect(threadStartRequests).toHaveLength(2);
+    for (const request of threadStartRequests) {
+      expectGeneratedPayloadShape('ThreadStartParams', (request.params as Record<string, unknown>) ?? {}, [
+        'approvalPolicy',
+        'sandbox',
+        'cwd'
+      ]);
+    }
     expect((threadStartRequests[0].params as Record<string, unknown>).dynamicTools).toBeTruthy();
+    expectValueMatchesGeneratedSchema(
+      generatedDefinition('ThreadStartParams').properties?.dynamicTools,
+      (threadStartRequests[0].params as Record<string, unknown>).dynamicTools,
+      'ThreadStartParams.dynamicTools'
+    );
     expect((threadStartRequests[1].params as Record<string, unknown>).dynamicTools).toBeUndefined();
   });
 
@@ -537,18 +708,46 @@ describe('CodexRunner', () => {
       'turn/interrupt',
       'turn/start'
     ]);
-    expect(messages.find((message) => message.method === 'thread/resume')?.params).toMatchObject({
+    expect(messages).not.toContainEqual(expect.objectContaining({ method: 'thread/fork' }));
+    const threadResume = messages.find((message) => message.method === 'thread/resume') as {
+      params?: Record<string, unknown>;
+    };
+    expectGeneratedMethod('ClientRequest', 'thread/resume');
+    expectGeneratedPayloadShape('ThreadResumeParams', threadResume.params ?? {}, [
+      'threadId',
+      'cwd',
+      'approvalPolicy',
+      'sandbox',
+      'persistExtendedHistory'
+    ]);
+    expect(threadResume.params).toMatchObject({
       threadId: 'thread-recover',
       cwd: workspaceCwd,
+      approvalPolicy: 'never',
+      sandbox: 'workspace-write',
       persistExtendedHistory: true
     });
     expect(messages.find((message) => message.method === 'turn/interrupt')?.params).toEqual({
       threadId: 'thread-recover',
       turnId: 'turn-old'
     });
-    expect(messages.find((message) => message.method === 'turn/start')?.params).toMatchObject({
+    const recoveryTurnStart = messages.find((message) => message.method === 'turn/start') as {
+      params?: Record<string, unknown>;
+    };
+    expectGeneratedPayloadShape('TurnStartParams', recoveryTurnStart.params ?? {}, [
+      'threadId',
+      'input',
+      'cwd',
+      'approvalPolicy',
+      'sandboxPolicy'
+    ]);
+    expect(recoveryTurnStart.params).toMatchObject({
       threadId: 'thread-recover',
-      cwd: workspaceCwd
+      cwd: workspaceCwd,
+      title: 'ABC-1: Title',
+      input: [{ type: 'text', text: 'Recover from an interrupted/stalled turn.' }],
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'workspaceWrite' }
     });
     expect(events).toEqual(
       expect.arrayContaining([
@@ -807,6 +1006,25 @@ describe('CodexRunner', () => {
     ).rejects.toMatchObject({ code: 'invalid_remote_workspace_cwd' });
   });
 
+  it('guards invalid recovery cwd before app-server resume launch', async () => {
+    const runner = new CodexRunner({
+      spawnProcess: () => {
+        throw new Error('should not be called');
+      }
+    });
+
+    await expect(
+      runner.resumeThreadInterruptAndRunTurn({
+        ...makeStartInput('/tmp/workspace\nbad', {
+          workerHost: 'build-1'
+        }),
+        previousThreadId: 'thread-recover',
+        previousTurnId: 'turn-old',
+        previousSessionId: 'session-old'
+      })
+    ).rejects.toMatchObject({ code: 'invalid_remote_workspace_cwd' });
+  });
+
   it('auto-approves approval requests and rejects unsupported tool calls without stalling', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
@@ -830,7 +1048,15 @@ describe('CodexRunner', () => {
         id: 92,
         result: expect.objectContaining({
           success: false,
-          output: expect.stringContaining('Unsupported dynamic tool')
+          output: expect.stringContaining('"attemptedToolName": "unknown"')
+        })
+      })
+    );
+    expect(responses).toContainEqual(
+      expect.objectContaining({
+        id: 92,
+        result: expect.objectContaining({
+          output: expect.stringContaining('"supportedTools": [')
         })
       })
     );

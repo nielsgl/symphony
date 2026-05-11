@@ -6,21 +6,54 @@
       "anyOf": [
         { "properties": { "method": { "enum": ["initialize"] } } },
         { "properties": { "method": { "enum": ["thread/start"] } } },
+        { "properties": { "method": { "enum": ["thread/resume"] } } },
         { "properties": { "method": { "enum": ["turn/start"] } } },
         { "properties": { "method": { "enum": ["turn/interrupt"] } } },
         { "properties": { "method": { "enum": ["thread/read"] } } }
+      ]
+    },
+    "ClientNotification": {
+      "oneOf": [
+        { "properties": { "method": { "enum": ["initialized"] } } }
       ]
     },
     "CommandExecutionRequestApprovalParams": {},
     "CommandExecutionRequestApprovalResponse": {},
     "DynamicToolCallParams": {},
     "DynamicToolCallResponse": {},
-    "DynamicToolSpec": {},
+    "DynamicToolSpec": {
+      "type": "object",
+      "required": ["description", "inputSchema", "name"],
+      "properties": {
+        "description": { "type": "string" },
+        "inputSchema": true,
+        "name": { "type": "string" }
+      }
+    },
     "ExecCommandApprovalParams": {},
     "ExecCommandApprovalResponse": {},
     "FileChangeRequestApprovalParams": {},
     "FileChangeRequestApprovalResponse": {},
-    "InitializeParams": {},
+    "InitializeCapabilities": {
+      "type": "object",
+      "properties": {
+        "experimentalApi": { "type": "boolean" }
+      }
+    },
+    "InitializeParams": {
+      "required": ["clientInfo"],
+      "properties": {
+        "capabilities": { "$ref": "#/definitions/InitializeCapabilities" },
+        "clientInfo": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        }
+      }
+    },
     "InitializeResponse": {},
     "McpServerElicitationRequestParams": {},
     "McpServerElicitationRequestResponse": {},
@@ -51,8 +84,24 @@
     },
     "ThreadReadParams": {},
     "ThreadReadResponse": {},
+    "ThreadResumeParams": {
+      "required": ["threadId"],
+      "properties": {
+        "threadId": { "type": "string" },
+        "approvalPolicy": { "$ref": "#/definitions/v2/AskForApproval" },
+        "cwd": { "type": ["string", "null"] },
+        "persistExtendedHistory": { "type": "boolean" },
+        "sandbox": { "$ref": "#/definitions/v2/SandboxMode" }
+      }
+    },
+    "ThreadResumeResponse": {},
     "ThreadStartParams": {
       "properties": {
+        "cwd": { "type": ["string", "null"] },
+        "dynamicTools": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/definitions/DynamicToolSpec" }
+        },
         "approvalPolicy": { "$ref": "#/definitions/v2/AskForApproval" },
         "sandbox": { "$ref": "#/definitions/v2/SandboxMode" }
       }
@@ -63,21 +112,71 @@
     "TurnInterruptParams": {},
     "TurnInterruptResponse": {},
     "TurnStartParams": {
+      "required": ["input", "threadId"],
       "properties": {
+        "cwd": { "type": ["string", "null"] },
+        "input": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/v2/UserInput" }
+        },
+        "threadId": { "type": "string" },
         "approvalPolicy": { "$ref": "#/definitions/v2/AskForApproval" },
         "sandboxPolicy": { "$ref": "#/definitions/v2/SandboxPolicy" }
       }
     },
     "TurnStartResponse": {},
     "v2/AccountRateLimitsUpdatedNotification": {},
-    "v2/AskForApproval": {},
+    "v2/AskForApproval": {
+      "oneOf": [
+        { "type": "string", "enum": ["untrusted", "on-failure", "on-request", "never"] },
+        {
+          "type": "object",
+          "required": ["granular"],
+          "properties": {
+            "granular": {
+              "type": "object",
+              "required": ["mcp_elicitations", "rules", "sandbox_approval"],
+              "properties": {
+                "mcp_elicitations": { "type": "boolean" },
+                "rules": { "type": "boolean" },
+                "sandbox_approval": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      ]
+    },
     "v2/ConfigWarningNotification": {},
     "v2/DeprecationNoticeNotification": {},
     "v2/GuardianWarningNotification": {},
     "v2/ModelReroutedNotification": {},
-    "v2/SandboxMode": {},
-    "v2/SandboxPolicy": {},
+    "v2/SandboxMode": {
+      "type": "string",
+      "enum": ["read-only", "workspace-write", "danger-full-access"]
+    },
+    "v2/SandboxPolicy": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["readOnly", "workspaceWrite", "dangerFullAccess"]
+        }
+      }
+    },
     "v2/ThreadTokenUsageUpdatedNotification": {},
+    "v2/UserInput": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["text", "type"],
+          "properties": {
+            "text": { "type": "string" },
+            "type": { "type": "string", "enum": ["text"] }
+          }
+        }
+      ]
+    },
     "v2/WarningNotification": {}
   }
 }
