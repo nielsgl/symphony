@@ -1675,16 +1675,10 @@ class ProtocolClient {
           this.latestRateLimits = rateLimits;
         }
 
-        if (this.isApprovalRequest(message)) {
-          const method = message.method ?? '';
-          const decision = this.approvalDecision(method);
-          if (decision) {
-            this.write({ id: message.id, result: { decision } });
-            emit({ event: CANONICAL_EVENT.codex.approvalAutoApproved, detail: decision });
-          } else {
-            this.write({ id: message.id, result: { approved: true } });
-            emit({ event: CANONICAL_EVENT.codex.approvalAutoApproved, detail: 'approved_true' });
-          }
+        const approvalResponse = this.approvalResponse(message);
+        if (approvalResponse) {
+          this.write({ id: message.id, result: approvalResponse.result });
+          emit({ event: CANONICAL_EVENT.codex.approvalAutoApproved, detail: approvalResponse.detail });
           continue;
         }
 
@@ -1811,8 +1805,14 @@ class ProtocolClient {
 
         if (this.isUnhandledServerRequest(message)) {
           const method = message.method ?? 'unknown';
-          this.write({ id: message.id, result: { success: false, error: 'unsupported_server_request', method } });
-          emit({ event: CANONICAL_EVENT.codex.unsupportedServerRequest, detail: method });
+          const reasonCode = this.unsupportedServerRequestReasonCode(message);
+          this.write({ id: message.id, result: { success: false, error: 'unsupported_server_request', method, reason_code: reasonCode } });
+          emit({
+            event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+            detail: method,
+            request_method: method,
+            reason_code: reasonCode
+          });
           continue;
         }
       }
@@ -2245,33 +2245,38 @@ class ProtocolClient {
     return asRecord(nestedUsage.rate_limits) ?? asRecord(nestedUsage.rateLimits) ?? null;
   }
 
-  private isApprovalRequest(message: ProtocolMessage): boolean {
+  private approvalResponse(message: ProtocolMessage): { result: Record<string, string>; detail: string } | null {
+    if (typeof message.id !== 'number') {
+      return null;
+    }
+
+    const method = (message.method ?? '').toLowerCase();
+    if (method === 'item/commandexecution/requestapproval') {
+      return { result: { decision: 'acceptForSession' }, detail: 'acceptForSession' };
+    }
+    if (method === 'item/filechange/requestapproval') {
+      return { result: { decision: 'acceptForSession' }, detail: 'acceptForSession' };
+    }
+    if (method === 'execcommandapproval') {
+      return { result: { decision: 'approved_for_session' }, detail: 'approved_for_session' };
+    }
+    if (method === 'applypatchapproval') {
+      return { result: { decision: 'approved_for_session' }, detail: 'approved_for_session' };
+    }
+    return null;
+  }
+
+  private isApprovalLikeServerRequest(message: ProtocolMessage): boolean {
     if (typeof message.id !== 'number') {
       return false;
     }
 
     const method = (message.method ?? '').toLowerCase();
-    if (method === 'execcommandapproval' || method === 'applypatchapproval') {
-      return true;
-    }
     return method.includes('approval') && (method.includes('request') || method.includes('required'));
   }
 
-  private approvalDecision(method: string): 'acceptForSession' | 'approved_for_session' | null {
-    const normalized = method.toLowerCase();
-    if (normalized === 'item/commandexecution/requestapproval') {
-      return 'acceptForSession';
-    }
-    if (normalized === 'item/filechange/requestapproval') {
-      return 'acceptForSession';
-    }
-    if (normalized === 'execcommandapproval') {
-      return 'approved_for_session';
-    }
-    if (normalized === 'applypatchapproval') {
-      return 'approved_for_session';
-    }
-    return null;
+  private unsupportedServerRequestReasonCode(message: ProtocolMessage): string {
+    return this.isApprovalLikeServerRequest(message) ? REASON_CODES.unsupportedApprovalServerRequest : 'unsupported_server_request';
   }
 
   private isToolCallRequest(message: ProtocolMessage): boolean {

@@ -794,7 +794,7 @@ describe('CodexRunner', () => {
     ).rejects.toMatchObject({ code: 'invalid_remote_workspace_cwd' });
   });
 
-  it('auto-approves approval requests and rejects unsupported tool calls without stalling', async () => {
+  it('auto-approves allowlisted approval requests and rejects unsupported tool calls without stalling', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const runner = new CodexRunner({ spawnProcess: () => fake });
@@ -804,14 +804,14 @@ describe('CodexRunner', () => {
     fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
-    fake.emitStdout('{"id":91,"method":"approval/request","params":{"kind":"command"}}\n');
+    fake.emitStdout('{"id":91,"method":"item/commandExecution/requestApproval","params":{"kind":"command"}}\n');
     fake.emitStdout('{"id":92,"method":"item/tool/call","params":{"name":"unknown"}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
 
     await expect(promise).resolves.toMatchObject({ status: 'completed' });
 
     const responses = parseWrittenMessages(fake).filter((message) => typeof message.id === 'number' && 'result' in message);
-    expect(responses).toContainEqual({ id: 91, result: { approved: true } });
+    expect(responses).toContainEqual({ id: 91, result: { decision: 'acceptForSession' } });
     expect(responses).toContainEqual(
       expect.objectContaining({
         id: 92,
@@ -823,7 +823,7 @@ describe('CodexRunner', () => {
     );
   });
 
-  it('uses method-specific approval decisions for known approval request methods', async () => {
+  it('uses method-specific approval decisions for allowlisted approval request methods', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const runner = new CodexRunner({ spawnProcess: () => fake });
@@ -837,7 +837,6 @@ describe('CodexRunner', () => {
     fake.emitStdout('{"id":82,"method":"item/fileChange/requestApproval","params":{}}\n');
     fake.emitStdout('{"id":83,"method":"execCommandApproval","params":{}}\n');
     fake.emitStdout('{"id":84,"method":"applyPatchApproval","params":{}}\n');
-    fake.emitStdout('{"id":85,"method":"approval/request","params":{"kind":"unknown"}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
 
     await expect(promise).resolves.toMatchObject({ status: 'completed' });
@@ -847,7 +846,66 @@ describe('CodexRunner', () => {
     expect(responses).toContainEqual({ id: 82, result: { decision: 'acceptForSession' } });
     expect(responses).toContainEqual({ id: 83, result: { decision: 'approved_for_session' } });
     expect(responses).toContainEqual({ id: 84, result: { decision: 'approved_for_session' } });
-    expect(responses).toContainEqual({ id: 85, result: { approved: true } });
+  });
+
+  it('rejects unknown approval-like requests with unsupported protocol evidence', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: Array<{ event: string; detail?: string; request_method?: string; reason_code?: string }> = [];
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        onEvent: (event) => events.push(event)
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+    fake.emitStdout('{"id":85,"method":"approval/request","params":{"kind":"unknown"}}\n');
+    fake.emitStdout('{"id":86,"method":"account/sessionApprovalRequired","params":{}}\n');
+    fake.emitStdout('{"method":"turn/completed"}\n');
+
+    await expect(promise).resolves.toMatchObject({ status: 'completed' });
+
+    const responses = parseWrittenMessages(fake).filter((message) => typeof message.id === 'number' && 'result' in message);
+    expect(responses).not.toContainEqual({ id: 85, result: { approved: true } });
+    expect(responses).not.toContainEqual({ id: 86, result: { approved: true } });
+    expect(responses).toContainEqual({
+      id: 85,
+      result: {
+        success: false,
+        error: 'unsupported_server_request',
+        method: 'approval/request',
+        reason_code: REASON_CODES.unsupportedApprovalServerRequest
+      }
+    });
+    expect(responses).toContainEqual({
+      id: 86,
+      result: {
+        success: false,
+        error: 'unsupported_server_request',
+        method: 'account/sessionApprovalRequired',
+        reason_code: REASON_CODES.unsupportedApprovalServerRequest
+      }
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+          request_method: 'approval/request',
+          reason_code: REASON_CODES.unsupportedApprovalServerRequest
+        }),
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+          request_method: 'account/sessionApprovalRequired',
+          reason_code: REASON_CODES.unsupportedApprovalServerRequest
+        })
+      ])
+    );
   });
 
   it('executes supported dynamic tool calls and returns tool output payload', async () => {
@@ -1049,7 +1107,8 @@ describe('CodexRunner', () => {
       result: {
         success: false,
         error: 'unsupported_server_request',
-        method: 'account/chatgptAuthTokens/refresh'
+        method: 'account/chatgptAuthTokens/refresh',
+        reason_code: 'unsupported_server_request'
       }
     });
   });
