@@ -16,7 +16,9 @@ import type {
   HistorySchemaHealth,
   HistoryIdentityProjectionRecord,
   HistoryWriteFailureRecord,
+  IdentityEvidence,
   IssueRunRecord,
+  OperatorActionHistoryRecord,
   PhaseSpanRecord,
   PersistedBlockedInputRecord,
   PersistedOperatorActionsRecord,
@@ -25,9 +27,11 @@ import type {
   StateTransitionRecord,
   TicketBlockerRecord,
   TicketEvidenceReferenceRecord,
+  TicketReferenceRecord,
   TicketTerminalOutcomeRecord,
   TicketTimelineRecord,
   ThreadRecord,
+  TrackerTicketSnapshotRecord,
   ToolSpanRecord,
   TurnRecord,
   UiContinuityState
@@ -41,7 +45,7 @@ interface PersistenceStoreOptions {
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 4;
+const HISTORY_SCHEMA_VERSION = 5;
 
 interface HistoryMigration {
   version: number;
@@ -73,6 +77,19 @@ function parseNullableJsonObject(value: string | null): Record<string, unknown> 
   } catch {
     return null;
   }
+}
+
+function parseJsonArray(value: string): unknown[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseStringArray(value: string): string[] {
+  return parseJsonArray(value).filter((entry): entry is string => typeof entry === 'string');
 }
 
 function isIdentityEvidence(value: unknown): boolean {
@@ -129,6 +146,10 @@ function parseHistoryPayloadTruncation(value: string): AppServerEventLedgerRecor
 
 function serializeDurableIdentity(identity: DurableIdentity): string {
   return JSON.stringify(redactUnknown(identity));
+}
+
+function stableOperationalHash(parts: unknown[]): string {
+  return createHash('sha256').update(JSON.stringify(redactUnknown(parts))).digest('hex');
 }
 
 function ensureMonotonicTimestamp(next: string, previous: string | null | undefined, label: string): void {
@@ -992,6 +1013,230 @@ export class SqlitePersistenceStore {
     return evidenceReferenceId;
   }
 
+  appendTrackerTicketSnapshot(params: {
+    identity?: DurableIdentity | null;
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    tracker_kind: string;
+    tracker_scope?: IdentityEvidence | null;
+    remote_issue_id: string;
+    human_issue_identifier: string;
+    title: string;
+    tracker_status: string;
+    assignee_status?: 'available' | 'unavailable' | 'unknown';
+    assignee_identifier?: string | null;
+    assignee_reason?: string | null;
+    labels?: string[];
+    project_status?: 'available' | 'unavailable' | 'unknown';
+    project_identifier?: string | null;
+    project_reason?: string | null;
+    team_status?: 'available' | 'unavailable' | 'unknown';
+    team_identifier?: string | null;
+    team_reason?: string | null;
+    observed_at: string;
+    tracker_snapshot_id?: string;
+  }): string {
+    const identity = params.identity ?? this.readIssueRunIdentity(params.issue_run_id ?? null);
+    const trackerScope = identity?.ticket.tracker_scope ?? params.tracker_scope ?? { status: 'missing', reason: 'tracker_scope_unavailable' };
+    const labels = [...(params.labels ?? [])].sort();
+    const observationHash = stableOperationalHash([
+      identity?.ticket.tracker_kind ?? params.tracker_kind,
+      trackerScope,
+      params.remote_issue_id,
+      params.human_issue_identifier,
+      params.title,
+      params.tracker_status,
+      params.assignee_status ?? 'unknown',
+      params.assignee_identifier ?? null,
+      params.assignee_reason ?? null,
+      labels,
+      params.project_status ?? 'unknown',
+      params.project_identifier ?? null,
+      params.project_reason ?? null,
+      params.team_status ?? 'unknown',
+      params.team_identifier ?? null,
+      params.team_reason ?? null
+    ]);
+    const snapshotId =
+      params.tracker_snapshot_id ?? asExecutionGraphId('tracker_ticket_snapshot', [params.issue_run_id, observationHash, params.observed_at]);
+    this.db
+      .prepare(
+        `INSERT INTO history_tracker_ticket_snapshot
+          (tracker_snapshot_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
+           tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason, remote_issue_id,
+           human_issue_identifier, title, tracker_status, assignee_status, assignee_identifier,
+           assignee_reason, labels, project_status, project_identifier, project_reason, team_status,
+           team_identifier, team_reason, observed_at, observation_hash, duplicate_count, last_observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+         ON CONFLICT(issue_run_id, observation_hash) DO UPDATE SET
+          duplicate_count = history_tracker_ticket_snapshot.duplicate_count + 1,
+          last_observed_at = excluded.last_observed_at`
+      )
+      .run(
+        snapshotId,
+        identity?.project.key ?? null,
+        identity?.ticket.key ?? null,
+        params.issue_run_id ?? null,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        identity?.ticket.tracker_kind ?? params.tracker_kind,
+        trackerScope.status,
+        trackerScope.status === 'present' ? trackerScope.value : null,
+        trackerScope.status === 'missing' ? trackerScope.reason : null,
+        params.remote_issue_id,
+        params.human_issue_identifier,
+        redactUnknown(params.title),
+        params.tracker_status,
+        params.assignee_status ?? 'unknown',
+        params.assignee_identifier ?? null,
+        params.assignee_reason ?? null,
+        JSON.stringify(labels),
+        params.project_status ?? 'unknown',
+        params.project_identifier ?? null,
+        params.project_reason ?? null,
+        params.team_status ?? 'unknown',
+        params.team_identifier ?? null,
+        params.team_reason ?? null,
+        params.observed_at,
+        observationHash,
+        params.observed_at
+      );
+    return snapshotId;
+  }
+
+  appendTicketReference(params: {
+    identity?: DurableIdentity | null;
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    reference_kind: TicketReferenceRecord['reference_kind'];
+    availability: 'available' | 'unavailable' | 'unknown';
+    uri?: string | null;
+    label?: string | null;
+    external_id?: string | null;
+    state?: string | null;
+    metadata?: Record<string, unknown> | null;
+    observed_at: string;
+    ticket_reference_id?: string;
+  }): string {
+    const identity = params.identity ?? this.readIssueRunIdentity(params.issue_run_id ?? null);
+    const metadata = params.metadata ? (redactUnknown(params.metadata) as Record<string, unknown>) : null;
+    const observationHash = stableOperationalHash([
+      params.reference_kind,
+      params.availability,
+      params.uri ?? null,
+      params.label ?? null,
+      params.external_id ?? null,
+      params.state ?? null,
+      metadata
+    ]);
+    const referenceId =
+      params.ticket_reference_id ?? asExecutionGraphId('ticket_reference', [params.issue_run_id, params.reference_kind, observationHash, params.observed_at]);
+    this.db
+      .prepare(
+        `INSERT INTO history_ticket_reference
+          (ticket_reference_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
+           reference_kind, availability, uri, label, external_id, state, metadata, observed_at,
+           observation_hash, duplicate_count, last_observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+         ON CONFLICT(issue_run_id, reference_kind, observation_hash) DO UPDATE SET
+          duplicate_count = history_ticket_reference.duplicate_count + 1,
+          last_observed_at = excluded.last_observed_at`
+      )
+      .run(
+        referenceId,
+        identity?.project.key ?? null,
+        identity?.ticket.key ?? null,
+        params.issue_run_id ?? null,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.reference_kind,
+        params.availability,
+        params.uri ?? null,
+        redactUnknown(params.label ?? null),
+        params.external_id ?? null,
+        params.state ?? null,
+        metadata ? JSON.stringify(metadata) : null,
+        params.observed_at,
+        observationHash,
+        params.observed_at
+      );
+    return referenceId;
+  }
+
+  appendOperatorActionHistory(params: {
+    identity?: DurableIdentity | null;
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    action: string;
+    actor?: string | null;
+    result: 'accepted' | 'rejected' | 'failed';
+    result_code?: string | null;
+    message?: string | null;
+    reason_note?: string | null;
+    phase?: string | null;
+    state_context?: Record<string, unknown> | null;
+    requested_at: string;
+    observed_at: string;
+    operator_action_id?: string;
+  }): string {
+    const identity = params.identity ?? this.readIssueRunIdentity(params.issue_run_id ?? null);
+    const stateContext = params.state_context ? (redactUnknown(params.state_context) as Record<string, unknown>) : null;
+    const observationHash = stableOperationalHash([
+      params.action,
+      params.actor ?? null,
+      params.result,
+      params.result_code ?? null,
+      params.message ?? null,
+      params.reason_note ?? null,
+      params.phase ?? null,
+      stateContext,
+      params.requested_at
+    ]);
+    const operatorActionId =
+      params.operator_action_id ?? asExecutionGraphId('operator_action', [params.issue_run_id, params.action, observationHash, params.observed_at]);
+    this.db
+      .prepare(
+        `INSERT INTO history_operator_action
+          (operator_action_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
+           action, actor, result, result_code, message, reason_note, phase, state_context,
+           requested_at, observed_at, observation_hash, duplicate_count, last_observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+         ON CONFLICT(issue_run_id, action, observation_hash) DO UPDATE SET
+          duplicate_count = history_operator_action.duplicate_count + 1,
+          last_observed_at = excluded.last_observed_at`
+      )
+      .run(
+        operatorActionId,
+        identity?.project.key ?? null,
+        identity?.ticket.key ?? null,
+        params.issue_run_id ?? null,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.action,
+        params.actor ?? null,
+        params.result,
+        params.result_code ?? null,
+        redactUnknown(params.message ?? null),
+        redactUnknown(params.reason_note ?? null),
+        params.phase ?? null,
+        stateContext ? JSON.stringify(stateContext) : null,
+        params.requested_at,
+        params.observed_at,
+        observationHash,
+        params.observed_at
+      );
+    return operatorActionId;
+  }
+
   reconstructThreadLineage(threadId: string): ExecutionGraphThreadLineage | null {
     const thread = this.db.prepare('SELECT * FROM thread WHERE thread_id = ?').get(threadId) as ThreadRecord | undefined;
     if (!thread) {
@@ -1072,7 +1317,10 @@ export class SqlitePersistenceStore {
         state_transitions: [],
         terminal_outcomes: [],
         blockers: [],
-        evidence_references: []
+        evidence_references: [],
+        tracker_snapshots: [],
+        ticket_references: [],
+        operator_actions: []
       };
     }
 
@@ -1134,6 +1382,24 @@ export class SqlitePersistenceStore {
        ORDER BY recorded_at ASC, evidence_reference_id ASC`,
       issueRunIds
     );
+    const trackerSnapshotRows = this.selectByIssueRunIds<Omit<TrackerTicketSnapshotRecord, 'labels'> & { labels: string }>(
+      `SELECT * FROM history_tracker_ticket_snapshot
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY observed_at ASC, tracker_snapshot_id ASC`,
+      issueRunIds
+    );
+    const ticketReferenceRows = this.selectByIssueRunIds<Omit<TicketReferenceRecord, 'metadata'> & { metadata: string | null }>(
+      `SELECT * FROM history_ticket_reference
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY observed_at ASC, ticket_reference_id ASC`,
+      issueRunIds
+    );
+    const operatorActionRows = this.selectByIssueRunIds<Omit<OperatorActionHistoryRecord, 'state_context'> & { state_context: string | null }>(
+      `SELECT * FROM history_operator_action
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY requested_at ASC, operator_action_id ASC`,
+      issueRunIds
+    );
 
     return {
       identity,
@@ -1148,6 +1414,18 @@ export class SqlitePersistenceStore {
       evidence_references: evidenceRows.map((row) => ({
         ...row,
         metadata: parseNullableJsonObject(row.metadata)
+      })),
+      tracker_snapshots: trackerSnapshotRows.map((row) => ({
+        ...row,
+        labels: parseStringArray(row.labels)
+      })),
+      ticket_references: ticketReferenceRows.map((row) => ({
+        ...row,
+        metadata: parseNullableJsonObject(row.metadata)
+      })),
+      operator_actions: operatorActionRows.map((row) => ({
+        ...row,
+        state_context: parseNullableJsonObject(row.state_context)
       }))
     };
   }
@@ -1319,6 +1597,13 @@ export class SqlitePersistenceStore {
         apply: (store) => {
           store.createHistoryIdentityProjectionTable();
           store.backfillExistingHistoryIdentities();
+        }
+      },
+      {
+        version: 5,
+        name: 'operational_history_facts_v1',
+        apply: (store) => {
+          store.createOperationalHistoryFactTables();
         }
       }
     ];
@@ -1650,6 +1935,100 @@ export class SqlitePersistenceStore {
     `);
   }
 
+  private createOperationalHistoryFactTables(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS history_tracker_ticket_snapshot (
+        tracker_snapshot_id TEXT PRIMARY KEY,
+        project_key TEXT,
+        ticket_key TEXT,
+        issue_run_id TEXT,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        tracker_kind TEXT NOT NULL,
+        tracker_scope_status TEXT NOT NULL CHECK (tracker_scope_status IN ('present', 'missing')),
+        tracker_scope_value TEXT,
+        tracker_scope_reason TEXT,
+        remote_issue_id TEXT NOT NULL,
+        human_issue_identifier TEXT NOT NULL,
+        title TEXT NOT NULL,
+        tracker_status TEXT NOT NULL,
+        assignee_status TEXT NOT NULL CHECK (assignee_status IN ('available', 'unavailable', 'unknown')),
+        assignee_identifier TEXT,
+        assignee_reason TEXT,
+        labels TEXT NOT NULL,
+        project_status TEXT NOT NULL CHECK (project_status IN ('available', 'unavailable', 'unknown')),
+        project_identifier TEXT,
+        project_reason TEXT,
+        team_status TEXT NOT NULL CHECK (team_status IN ('available', 'unavailable', 'unknown')),
+        team_identifier TEXT,
+        team_reason TEXT,
+        observed_at TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        duplicate_count INTEGER NOT NULL DEFAULT 1,
+        last_observed_at TEXT NOT NULL,
+        UNIQUE (issue_run_id, observation_hash),
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS history_ticket_reference (
+        ticket_reference_id TEXT PRIMARY KEY,
+        project_key TEXT,
+        ticket_key TEXT,
+        issue_run_id TEXT,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        reference_kind TEXT NOT NULL CHECK (reference_kind IN ('branch', 'pull_request', 'review', 'merge', 'evidence')),
+        availability TEXT NOT NULL CHECK (availability IN ('available', 'unavailable', 'unknown')),
+        uri TEXT,
+        label TEXT,
+        external_id TEXT,
+        state TEXT,
+        metadata TEXT,
+        observed_at TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        duplicate_count INTEGER NOT NULL DEFAULT 1,
+        last_observed_at TEXT NOT NULL,
+        UNIQUE (issue_run_id, reference_kind, observation_hash),
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS history_operator_action (
+        operator_action_id TEXT PRIMARY KEY,
+        project_key TEXT,
+        ticket_key TEXT,
+        issue_run_id TEXT,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        action TEXT NOT NULL,
+        actor TEXT,
+        result TEXT NOT NULL CHECK (result IN ('accepted', 'rejected', 'failed')),
+        result_code TEXT,
+        message TEXT,
+        reason_note TEXT,
+        phase TEXT,
+        state_context TEXT,
+        requested_at TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        duplicate_count INTEGER NOT NULL DEFAULT 1,
+        last_observed_at TEXT NOT NULL,
+        UNIQUE (issue_run_id, action, observation_hash),
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+    `);
+    this.recordHistoryHealthMetadata('healthy', null, null);
+  }
+
   private recordHistoryHealthMetadata(status: 'healthy' | 'degraded', reasonCode: string | null, detail: string | null): void {
     this.db
       .prepare(
@@ -1824,6 +2203,16 @@ export class SqlitePersistenceStore {
       return null;
     }
     return (statement.get(sourceId) as HistoryIdentityProjectionRecord | undefined) ?? null;
+  }
+
+  private readIssueRunIdentity(issueRunId: string | null): DurableIdentity | null {
+    if (!issueRunId) {
+      return null;
+    }
+    const row = this.db.prepare('SELECT identity FROM issue_run WHERE issue_run_id = ?').get(issueRunId) as
+      | { identity: string | null }
+      | undefined;
+    return parseDurableIdentity(row?.identity ?? null);
   }
 
   private createAppServerEventLedgerTables(): void {

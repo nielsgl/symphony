@@ -969,6 +969,13 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           appendTicketTerminalOutcome: async (params) => persistenceStore.appendTicketTerminalOutcome(params),
           appendTicketBlocker: async (params) => persistenceStore.appendTicketBlocker(params),
           appendTicketEvidenceReference: async (params) => persistenceStore.appendTicketEvidenceReference(params),
+          appendTrackerTicketSnapshot: async (params) =>
+            persistenceStore.appendTrackerTicketSnapshot({ ...params, identity: createIdentityForIssue({
+              issue_id: params.remote_issue_id,
+              issue_identifier: params.human_issue_identifier
+            }) }),
+          appendTicketReference: async (params) => persistenceStore.appendTicketReference(params),
+          appendOperatorActionHistory: async (params) => persistenceStore.appendOperatorActionHistory(params),
           recordHistoryWriteFailure: async (params) => persistenceStore.recordHistoryWriteFailure(params),
           recordSession: async (params) => {
             persistenceStore.recordSession(params.run_id, params.session_id);

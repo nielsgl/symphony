@@ -123,6 +123,84 @@ export interface TicketEvidenceReferenceRecord {
   recorded_at: string;
 }
 
+export type OperationalFactAvailability = 'available' | 'unavailable' | 'unknown';
+
+export interface TrackerTicketSnapshotRecord {
+  tracker_snapshot_id: string;
+  project_key: string | null;
+  ticket_key: string | null;
+  issue_run_id: string | null;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  tracker_kind: string;
+  tracker_scope_status: 'present' | 'missing';
+  tracker_scope_value: string | null;
+  tracker_scope_reason: string | null;
+  remote_issue_id: string;
+  human_issue_identifier: string;
+  title: string;
+  tracker_status: string;
+  assignee_status: OperationalFactAvailability;
+  assignee_identifier: string | null;
+  assignee_reason: string | null;
+  labels: string[];
+  project_status: OperationalFactAvailability;
+  project_identifier: string | null;
+  project_reason: string | null;
+  team_status: OperationalFactAvailability;
+  team_identifier: string | null;
+  team_reason: string | null;
+  observed_at: string;
+  observation_hash: string;
+  duplicate_count: number;
+  last_observed_at: string;
+}
+
+export interface TicketReferenceRecord {
+  ticket_reference_id: string;
+  project_key: string | null;
+  ticket_key: string | null;
+  issue_run_id: string | null;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  reference_kind: 'branch' | 'pull_request' | 'review' | 'merge' | 'evidence';
+  availability: OperationalFactAvailability;
+  uri: string | null;
+  label: string | null;
+  external_id: string | null;
+  state: string | null;
+  metadata: Record<string, unknown> | null;
+  observed_at: string;
+  observation_hash: string;
+  duplicate_count: number;
+  last_observed_at: string;
+}
+
+export interface OperatorActionHistoryRecord {
+  operator_action_id: string;
+  project_key: string | null;
+  ticket_key: string | null;
+  issue_run_id: string | null;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  action: string;
+  actor: string | null;
+  result: 'accepted' | 'rejected' | 'failed';
+  result_code: string | null;
+  message: string | null;
+  reason_note: string | null;
+  phase: string | null;
+  state_context: Record<string, unknown> | null;
+  requested_at: string;
+  observed_at: string;
+  observation_hash: string;
+  duplicate_count: number;
+  last_observed_at: string;
+}
+
 export interface ExecutionGraphThreadLineage {
   issue_run: IssueRunRecord;
   attempt: AttemptRecord;
@@ -201,6 +279,9 @@ export interface TicketTimelineRecord {
   terminal_outcomes: TicketTerminalOutcomeRecord[];
   blockers: TicketBlockerRecord[];
   evidence_references: TicketEvidenceReferenceRecord[];
+  tracker_snapshots: TrackerTicketSnapshotRecord[];
+  ticket_references: TicketReferenceRecord[];
+  operator_actions: OperatorActionHistoryRecord[];
 }
 
 export interface DurableRunHistoryRecord {

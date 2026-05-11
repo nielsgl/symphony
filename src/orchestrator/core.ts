@@ -2301,6 +2301,146 @@ export class OrchestratorCore {
     }
   }
 
+  private async persistOperationalFactsForIssue(issue: Issue, runningEntry: RunningEntry, observedAt: string): Promise<void> {
+    if (!this.persistence || !runningEntry.issue_run_id) {
+      return;
+    }
+
+    const trackerKind = issue.tracker_meta?.tracker_kind ?? 'unknown';
+    try {
+      await this.persistence.appendTrackerTicketSnapshot?.({
+        issue_run_id: runningEntry.issue_run_id,
+        attempt_id: runningEntry.attempt_id ?? null,
+        thread_id: runningEntry.thread_id ?? null,
+        turn_id: runningEntry.turn_id ?? null,
+        tracker_kind: trackerKind,
+        remote_issue_id: issue.id,
+        human_issue_identifier: issue.identifier,
+        title: issue.title,
+        tracker_status: issue.state,
+        labels: issue.labels,
+        assignee_status: 'unknown',
+        assignee_reason: 'tracker_assignee_unobserved',
+        project_status: 'unknown',
+        project_reason: 'tracker_project_unobserved',
+        team_status: 'unknown',
+        team_reason: 'tracker_team_unobserved',
+        observed_at: observedAt
+      });
+      await this.persistTicketReference({
+        runningEntry,
+        reference_kind: 'branch',
+        availability: issue.branch_name ? 'available' : 'unavailable',
+        uri: issue.branch_name ? `git-branch:${issue.branch_name}` : null,
+        label: issue.branch_name,
+        external_id: issue.branch_name,
+        state: issue.branch_name ? 'observed' : 'unavailable',
+        metadata: issue.branch_name ? { branch_name: issue.branch_name } : { reason: 'tracker_branch_unavailable' },
+        observed_at: observedAt
+      });
+      const prLinks = issue.tracker_meta?.pr_links ?? [];
+      if (prLinks.length === 0) {
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'pull_request',
+          availability: 'unknown',
+          uri: null,
+          label: null,
+          external_id: null,
+          state: null,
+          metadata: { reason: 'tracker_pr_unobserved' },
+          observed_at: observedAt
+        });
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'review',
+          availability: 'unknown',
+          uri: null,
+          label: null,
+          external_id: null,
+          state: null,
+          metadata: { reason: 'review_state_unobserved' },
+          observed_at: observedAt
+        });
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'merge',
+          availability: 'unknown',
+          uri: null,
+          label: null,
+          external_id: null,
+          state: null,
+          metadata: { reason: 'merge_state_unobserved' },
+          observed_at: observedAt
+        });
+      }
+      for (const pr of prLinks) {
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'pull_request',
+          availability: 'available',
+          uri: pr.url,
+          label: `PR #${pr.number}`,
+          external_id: String(pr.number),
+          state: pr.state,
+          metadata: { merged: pr.merged, repository: issue.tracker_meta?.repository ?? null },
+          observed_at: observedAt
+        });
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'merge',
+          availability: pr.merged ? 'available' : 'unknown',
+          uri: pr.url,
+          label: `PR #${pr.number}`,
+          external_id: String(pr.number),
+          state: pr.merged ? 'merged' : pr.state,
+          metadata: { merged: pr.merged },
+          observed_at: observedAt
+        });
+      }
+    } catch (error) {
+      await this.recordHistoryWriteFailure('appendOperationalHistoryFacts', REASON_CODES.dispatchStarted, error);
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist operational history facts for ${issue.identifier}`,
+        context: {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          issue_run_id: runningEntry.issue_run_id,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+  }
+
+  private async persistTicketReference(params: {
+    runningEntry: RunningEntry;
+    reference_kind: 'branch' | 'pull_request' | 'review' | 'merge' | 'evidence';
+    availability: 'available' | 'unavailable' | 'unknown';
+    uri: string | null;
+    label: string | null;
+    external_id: string | null;
+    state: string | null;
+    metadata: Record<string, unknown> | null;
+    observed_at: string;
+  }): Promise<void> {
+    await this.persistence?.appendTicketReference?.({
+      issue_run_id: params.runningEntry.issue_run_id ?? null,
+      attempt_id: params.runningEntry.attempt_id ?? null,
+      thread_id: params.runningEntry.thread_id ?? null,
+      turn_id: params.runningEntry.turn_id ?? null,
+      reference_kind: params.reference_kind,
+      availability: params.availability,
+      uri: params.uri,
+      label: params.label,
+      external_id: params.external_id,
+      state: params.state,
+      metadata: params.metadata,
+      observed_at: params.observed_at
+    });
+  }
+
   private async persistExecutionGraphRetryTransition(
     retryEntry: RetryEntry,
     toStatus: string,
@@ -4574,6 +4714,7 @@ export class OrchestratorCore {
             });
           }
         }
+        await this.persistOperationalFactsForIssue(issue, runningEntry, startedAt);
       } catch (error) {
         await this.recordHistoryWriteFailure('recordRunStarted', REASON_CODES.dispatchStarted, error);
         this.logger?.log({
@@ -6325,7 +6466,8 @@ export class OrchestratorCore {
         runtime_state: 'running',
         issue_id: issueId,
         issue_identifier: running.identifier,
-        run_id: running.issue_run_id ?? running.run_id ?? null,
+        issue_run_id: running.issue_run_id ?? null,
+        run_id: running.run_id ?? null,
         attempt_id: running.attempt_id ?? null,
         retry_attempt: running.retry_attempt,
         thread_id: running.thread_id,
@@ -6339,7 +6481,8 @@ export class OrchestratorCore {
         runtime_state: 'blocked',
         issue_id: issueId,
         issue_identifier: blocked.issue_identifier,
-        run_id: blocked.issue_run_id ?? null,
+        issue_run_id: blocked.issue_run_id ?? null,
+        run_id: null,
         attempt_id: blocked.previous_attempt_id ?? null,
         retry_attempt: blocked.attempt,
         thread_id: blocked.previous_thread_id,
@@ -6353,7 +6496,8 @@ export class OrchestratorCore {
         runtime_state: 'retrying',
         issue_id: issueId,
         issue_identifier: retry.identifier,
-        run_id: retry.issue_run_id ?? null,
+        issue_run_id: retry.issue_run_id ?? null,
+        run_id: null,
         attempt_id: retry.previous_attempt_id ?? null,
         retry_attempt: retry.attempt,
         thread_id: retry.previous_thread_id,
@@ -6376,7 +6520,7 @@ export class OrchestratorCore {
       ...action,
       actor: action.actor ?? 'operator',
       reason_note: action.reason_note ?? null,
-      target_identifiers: action.target_identifiers ?? this.targetIdentifiersFromRuntimeState(issueId, currentState),
+      target_identifiers: action.target_identifiers ?? this.targetIdentifiersFromRuntimeState(issueId, action.pre_state ?? currentState),
       pre_state: action.pre_state ?? currentState,
       post_state: action.post_state ?? currentState
     };
@@ -6384,6 +6528,33 @@ export class OrchestratorCore {
     const updated = [...existing, normalized].slice(-20);
     operatorActions.set(issueId, updated);
     void this.persistence?.upsertOperatorActions?.(issueId, JSON.stringify(updated));
+    void this.persistence?.appendOperatorActionHistory?.({
+      issue_run_id: this.stringOrNull(normalized.target_identifiers?.issue_run_id) ?? this.stringOrNull((normalized.pre_state ?? {}).issue_run_id),
+      attempt_id: this.stringOrNull(normalized.target_identifiers?.attempt_id),
+      thread_id: this.stringOrNull(normalized.target_identifiers?.thread_id),
+      turn_id: this.stringOrNull(normalized.target_identifiers?.turn_id),
+      action: normalized.action,
+      actor: normalized.actor ?? 'operator',
+      result: normalized.result,
+      result_code: normalized.result_code,
+      message: normalized.message,
+      reason_note: normalized.reason_note,
+      phase: this.stringOrNull((normalized.pre_state ?? {}).current_phase) ?? this.stringOrNull((normalized.pre_state ?? {}).last_phase),
+      state_context: {
+        issue_id: issueId,
+        target_identifiers: normalized.target_identifiers ?? null,
+        pre_state: normalized.pre_state ?? null,
+        post_state: normalized.post_state ?? null
+      },
+      requested_at: asIso(normalized.requested_at_ms),
+      observed_at: asIso(this.nowMs())
+    })?.catch((error: unknown) => {
+      void this.recordHistoryWriteFailure('appendOperatorActionHistory', normalized.result_code ?? normalized.action, error);
+    });
+  }
+
+  private stringOrNull(value: unknown): string | null {
+    return typeof value === 'string' && value.trim() ? value : null;
   }
 
   private targetIdentifiersFromRuntimeState(
@@ -6393,6 +6564,7 @@ export class OrchestratorCore {
     return {
       issue_id: issueId,
       issue_identifier: typeof runtimeState.issue_identifier === 'string' ? runtimeState.issue_identifier : null,
+      issue_run_id: typeof runtimeState.issue_run_id === 'string' ? runtimeState.issue_run_id : null,
       run_id: typeof runtimeState.run_id === 'string' ? runtimeState.run_id : null,
       attempt_id: typeof runtimeState.attempt_id === 'string' ? runtimeState.attempt_id : null,
       thread_id: typeof runtimeState.thread_id === 'string' ? runtimeState.thread_id : null,
