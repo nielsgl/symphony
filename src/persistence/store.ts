@@ -10,6 +10,7 @@ import type {
   AttemptRecord,
   ExecutionGraphEntityStatus,
   ExecutionGraphThreadLineage,
+  HistorySchemaHealth,
   IssueRunRecord,
   PhaseSpanRecord,
   PersistedBlockedInputRecord,
@@ -27,6 +28,16 @@ interface PersistenceStoreOptions {
   dbPath: string;
   retentionDays: number;
   nowMs?: () => number;
+  migrationFailureForTest?: string;
+}
+
+const HISTORY_SCHEMA_NAME = 'project_execution_history';
+const HISTORY_SCHEMA_VERSION = 1;
+
+interface HistoryMigration {
+  version: number;
+  name: string;
+  apply(store: SqlitePersistenceStore): void;
 }
 
 function asIso(timestampMs: number): string {
@@ -87,6 +98,7 @@ export class SqlitePersistenceStore {
   private readonly dbPath: string;
   private readonly retentionDays: number;
   private readonly nowMs: () => number;
+  private readonly migrationFailureForTest: string | undefined;
   private readonly db: {
     exec(sql: string): void;
     close(): void;
@@ -101,6 +113,7 @@ export class SqlitePersistenceStore {
     this.dbPath = options.dbPath;
     this.retentionDays = options.retentionDays;
     this.nowMs = options.nowMs ?? (() => Date.now());
+    this.migrationFailureForTest = options.migrationFailureForTest;
 
     const parent = path.dirname(this.dbPath);
     fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -281,17 +294,20 @@ export class SqlitePersistenceStore {
         updated_at TEXT NOT NULL
       );
     `);
-    this.ensureRunDiagnosticColumns();
-    this.ensureIssueRunIdentityColumn();
-    this.ensureRunEventDiagnosticColumns();
+    this.runHistorySchemaMigrations();
   }
 
   close(): void {
     this.db.close();
   }
 
+  historySchemaHealth(): HistorySchemaHealth {
+    return this.readHistorySchemaHealth();
+  }
+
   startRun(params: { issue_id: string; issue_identifier: string; identity: DurableIdentity }): string {
     const runId = randomUUID();
+    this.upsertHistoryIdentity(params.identity);
     this.db
       .prepare(
         'INSERT INTO runs (run_id, issue_id, issue_identifier, identity, started_at, ended_at, terminal_status, error_code) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)'
@@ -344,6 +360,7 @@ export class SqlitePersistenceStore {
   }): string {
     ensureEndedAfterStarted(params.started_at, params.ended_at, 'issue_run');
     const issueRunId = params.issue_run_id ?? asExecutionGraphId('issue_run', [params.issue_id, params.issue_identifier, params.started_at]);
+    this.upsertHistoryIdentity(params.identity);
     this.db
       .prepare(
         `INSERT INTO issue_run
@@ -770,6 +787,374 @@ export class SqlitePersistenceStore {
     });
   }
 
+  private runHistorySchemaMigrations(): void {
+    this.ensureHistoryMigrationTables();
+
+    const migrations: HistoryMigration[] = [
+      {
+        version: 1,
+        name: 'project_execution_history_v1',
+        apply: (store) => {
+          store.ensureRunDiagnosticColumns();
+          store.ensureIssueRunIdentityColumn();
+          store.ensureRunEventDiagnosticColumns();
+          store.createProjectExecutionHistoryTables();
+        }
+      }
+    ];
+
+    for (const migration of migrations) {
+      const existing = this.db
+        .prepare('SELECT status FROM history_schema_migrations WHERE schema_name = ? AND version = ?')
+        .get(HISTORY_SCHEMA_NAME, migration.version) as { status: string } | undefined;
+      if (existing?.status === 'applied') {
+        continue;
+      }
+
+      const startedAt = asIso(this.nowMs());
+      try {
+        this.db.exec('BEGIN;');
+        if (this.migrationFailureForTest === migration.name) {
+          throw new Error(`injected migration failure: ${migration.name}`);
+        }
+        migration.apply(this);
+        const finishedAt = asIso(this.nowMs());
+        this.db
+          .prepare(
+            `INSERT INTO history_schema_migrations
+              (schema_name, version, name, status, started_at, finished_at, error_message)
+             VALUES (?, ?, ?, 'applied', ?, ?, NULL)
+             ON CONFLICT(schema_name, version) DO UPDATE SET
+              name = excluded.name,
+              status = excluded.status,
+              started_at = excluded.started_at,
+              finished_at = excluded.finished_at,
+              error_message = excluded.error_message`
+          )
+          .run(HISTORY_SCHEMA_NAME, migration.version, migration.name, startedAt, finishedAt);
+        this.recordHistorySchemaState({
+          appliedVersion: migration.version,
+          status: 'healthy',
+          degradedReasonCode: null,
+          degradedDetail: null
+        });
+        this.db.exec('COMMIT;');
+      } catch (error) {
+        try {
+          this.db.exec('ROLLBACK;');
+        } catch {
+          // The migration may have failed before BEGIN was accepted.
+        }
+        const detail = error instanceof Error ? error.message : String(error);
+        this.recordHistoryMigrationFailure(migration, startedAt, detail);
+        break;
+      }
+    }
+
+    const state = this.db
+      .prepare('SELECT status FROM history_schema_state WHERE schema_name = ?')
+      .get(HISTORY_SCHEMA_NAME) as { status: string } | undefined;
+    if (!state) {
+      this.recordHistorySchemaState({
+        appliedVersion: 0,
+        status: 'degraded',
+        degradedReasonCode: 'history_schema_not_applied',
+        degradedDetail: 'No Project Execution History migration completed.'
+      });
+    }
+  }
+
+  private ensureHistoryMigrationTables(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS history_schema_state (
+        schema_name TEXT PRIMARY KEY,
+        target_version INTEGER NOT NULL,
+        applied_version INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('healthy', 'degraded')),
+        degraded_reason_code TEXT,
+        degraded_detail TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS history_schema_migrations (
+        schema_name TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('applied', 'failed')),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        error_message TEXT,
+        PRIMARY KEY (schema_name, version)
+      );
+    `);
+  }
+
+  private recordHistorySchemaState(params: {
+    appliedVersion: number;
+    status: 'healthy' | 'degraded';
+    degradedReasonCode: string | null;
+    degradedDetail: string | null;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO history_schema_state
+          (schema_name, target_version, applied_version, status, degraded_reason_code, degraded_detail, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(schema_name) DO UPDATE SET
+          target_version = excluded.target_version,
+          applied_version = excluded.applied_version,
+          status = excluded.status,
+          degraded_reason_code = excluded.degraded_reason_code,
+          degraded_detail = excluded.degraded_detail,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        HISTORY_SCHEMA_NAME,
+        HISTORY_SCHEMA_VERSION,
+        params.appliedVersion,
+        params.status,
+        params.degradedReasonCode,
+        redactUnknown(params.degradedDetail),
+        asIso(this.nowMs())
+      );
+  }
+
+  private recordHistoryMigrationFailure(migration: HistoryMigration, startedAt: string, detail: string): void {
+    const finishedAt = asIso(this.nowMs());
+    const redactedDetail = redactUnknown(detail) as string;
+    this.db
+      .prepare(
+        `INSERT INTO history_schema_migrations
+          (schema_name, version, name, status, started_at, finished_at, error_message)
+         VALUES (?, ?, ?, 'failed', ?, ?, ?)
+         ON CONFLICT(schema_name, version) DO UPDATE SET
+          name = excluded.name,
+          status = excluded.status,
+          started_at = excluded.started_at,
+          finished_at = excluded.finished_at,
+          error_message = excluded.error_message`
+      )
+      .run(HISTORY_SCHEMA_NAME, migration.version, migration.name, startedAt, finishedAt, redactedDetail);
+    this.recordHistorySchemaState({
+      appliedVersion: migration.version - 1,
+      status: 'degraded',
+      degradedReasonCode: 'history_schema_migration_failed',
+      degradedDetail: redactedDetail
+    });
+  }
+
+  private createProjectExecutionHistoryTables(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS history_project_identity (
+        project_key TEXT PRIMARY KEY,
+        project_root TEXT NOT NULL,
+        workflow_path TEXT NOT NULL,
+        workflow_hash_status TEXT NOT NULL,
+        workflow_hash_value TEXT,
+        workflow_hash_reason TEXT,
+        repository_remote_status TEXT NOT NULL,
+        repository_remote_value TEXT,
+        repository_remote_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS history_ticket_identity (
+        ticket_key TEXT PRIMARY KEY,
+        project_key TEXT NOT NULL,
+        tracker_kind TEXT NOT NULL,
+        tracker_scope_status TEXT NOT NULL,
+        tracker_scope_value TEXT,
+        tracker_scope_reason TEXT,
+        remote_issue_id TEXT NOT NULL,
+        human_issue_identifier TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS history_protocol_summary (
+        protocol_summary_id TEXT PRIMARY KEY,
+        issue_run_id TEXT NOT NULL,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        protocol_name TEXT NOT NULL,
+        protocol_version TEXT,
+        event_count INTEGER NOT NULL DEFAULT 0,
+        warning_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT,
+        recorded_at TEXT NOT NULL,
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS history_token_model_fact (
+        token_model_fact_id TEXT PRIMARY KEY,
+        issue_run_id TEXT NOT NULL,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        effective_model TEXT,
+        model_source TEXT,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        reasoning_output_tokens INTEGER,
+        total_tokens INTEGER,
+        telemetry_confidence TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS history_retention_metadata (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        retention_days INTEGER NOT NULL,
+        last_pruned_at TEXT,
+        policy_version INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS history_health_metadata (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        status TEXT NOT NULL CHECK (status IN ('healthy', 'degraded')),
+        reason_code TEXT,
+        detail TEXT,
+        checked_at TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        applied_migration_version INTEGER NOT NULL
+      );
+    `);
+    this.db
+      .prepare(
+        `INSERT INTO history_retention_metadata
+          (singleton_id, retention_days, last_pruned_at, policy_version, updated_at)
+         VALUES (1, ?, (SELECT value FROM meta WHERE key = 'last_pruned_at'), 1, ?)
+         ON CONFLICT(singleton_id) DO UPDATE SET
+          retention_days = excluded.retention_days,
+          last_pruned_at = excluded.last_pruned_at,
+          policy_version = excluded.policy_version,
+          updated_at = excluded.updated_at`
+      )
+      .run(this.retentionDays, asIso(this.nowMs()));
+    this.db
+      .prepare(
+        `INSERT INTO history_health_metadata
+          (singleton_id, status, reason_code, detail, checked_at, schema_version, applied_migration_version)
+         VALUES (1, 'healthy', NULL, NULL, ?, ?, ?)
+         ON CONFLICT(singleton_id) DO UPDATE SET
+          status = excluded.status,
+          reason_code = excluded.reason_code,
+          detail = excluded.detail,
+          checked_at = excluded.checked_at,
+          schema_version = excluded.schema_version,
+          applied_migration_version = excluded.applied_migration_version`
+      )
+      .run(asIso(this.nowMs()), HISTORY_SCHEMA_VERSION, HISTORY_SCHEMA_VERSION);
+  }
+
+  private readHistorySchemaHealth(): HistorySchemaHealth {
+    this.ensureHistoryMigrationTables();
+    const row = this.db.prepare('SELECT * FROM history_schema_state WHERE schema_name = ?').get(HISTORY_SCHEMA_NAME) as
+      | {
+          schema_name: 'project_execution_history';
+          target_version: number;
+          applied_version: number;
+          status: 'healthy' | 'degraded';
+          degraded_reason_code: string | null;
+          degraded_detail: string | null;
+          updated_at: string;
+        }
+      | undefined;
+    const migrations = this.db
+      .prepare(
+        `SELECT version, name, status, started_at, finished_at, error_message
+         FROM history_schema_migrations
+         WHERE schema_name = ?
+         ORDER BY version ASC`
+      )
+      .all(HISTORY_SCHEMA_NAME) as HistorySchemaHealth['migrations'];
+
+    return {
+      schema_name: HISTORY_SCHEMA_NAME,
+      target_version: HISTORY_SCHEMA_VERSION,
+      applied_version: row?.applied_version ?? 0,
+      status: row?.status ?? 'degraded',
+      degraded_reason_code: row ? row.degraded_reason_code : 'history_schema_state_missing',
+      degraded_detail: row ? row.degraded_detail : 'Project Execution History schema state has not been recorded.',
+      updated_at: row?.updated_at ?? asIso(this.nowMs()),
+      migrations
+    };
+  }
+
+  private upsertHistoryIdentity(identity: DurableIdentity): void {
+    if (this.readHistorySchemaHealth().status !== 'healthy') {
+      return;
+    }
+    const now = asIso(this.nowMs());
+    const workflowHash = identity.project.workflow_hash;
+    const repositoryRemote = identity.project.repository_remote;
+    const trackerScope = identity.ticket.tracker_scope;
+    this.db
+      .prepare(
+        `INSERT INTO history_project_identity
+          (project_key, project_root, workflow_path, workflow_hash_status, workflow_hash_value, workflow_hash_reason,
+           repository_remote_status, repository_remote_value, repository_remote_reason, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_key) DO UPDATE SET
+          project_root = excluded.project_root,
+          workflow_path = excluded.workflow_path,
+          workflow_hash_status = excluded.workflow_hash_status,
+          workflow_hash_value = excluded.workflow_hash_value,
+          workflow_hash_reason = excluded.workflow_hash_reason,
+          repository_remote_status = excluded.repository_remote_status,
+          repository_remote_value = excluded.repository_remote_value,
+          repository_remote_reason = excluded.repository_remote_reason,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        identity.project.key,
+        identity.project.project_root,
+        identity.project.workflow_path,
+        workflowHash.status,
+        workflowHash.status === 'present' ? workflowHash.value : null,
+        workflowHash.status === 'missing' ? workflowHash.reason : null,
+        repositoryRemote.status,
+        repositoryRemote.status === 'present' ? repositoryRemote.value : null,
+        repositoryRemote.status === 'missing' ? repositoryRemote.reason : null,
+        now,
+        now
+      );
+    this.db
+      .prepare(
+        `INSERT INTO history_ticket_identity
+          (ticket_key, project_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
+           remote_issue_id, human_issue_identifier, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(ticket_key) DO UPDATE SET
+          project_key = excluded.project_key,
+          tracker_kind = excluded.tracker_kind,
+          tracker_scope_status = excluded.tracker_scope_status,
+          tracker_scope_value = excluded.tracker_scope_value,
+          tracker_scope_reason = excluded.tracker_scope_reason,
+          remote_issue_id = excluded.remote_issue_id,
+          human_issue_identifier = excluded.human_issue_identifier,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        identity.ticket.key,
+        identity.project.key,
+        identity.ticket.tracker_kind,
+        trackerScope.status,
+        trackerScope.status === 'present' ? trackerScope.value : null,
+        trackerScope.status === 'missing' ? trackerScope.reason : null,
+        identity.ticket.remote_issue_id,
+        identity.ticket.human_issue_identifier,
+        now,
+        now
+      );
+  }
+
   private ensureRunDiagnosticColumns(): void {
     const columns = this.db.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>;
     const existing = new Set(columns.map((column) => column.name));
@@ -1018,6 +1403,7 @@ export class SqlitePersistenceStore {
       this.db
         .prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
         .run('last_pruned_at', asIso(this.nowMs()));
+      this.updateHistoryRetentionMetadata();
       return 0;
     }
 
@@ -1034,6 +1420,7 @@ export class SqlitePersistenceStore {
     this.db
       .prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
       .run('last_pruned_at', asIso(this.nowMs()));
+    this.updateHistoryRetentionMetadata();
 
     return expired.length;
   }
@@ -1045,13 +1432,61 @@ export class SqlitePersistenceStore {
       | { value: string }
       | undefined;
 
+    const historySchema = this.readHistorySchemaHealth();
+    const integrityOk = integrityRow.integrity_check === 'ok' && historySchema.status === 'healthy';
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO history_health_metadata
+            (singleton_id, status, reason_code, detail, checked_at, schema_version, applied_migration_version)
+           VALUES (1, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(singleton_id) DO UPDATE SET
+            status = excluded.status,
+            reason_code = excluded.reason_code,
+            detail = excluded.detail,
+            checked_at = excluded.checked_at,
+            schema_version = excluded.schema_version,
+            applied_migration_version = excluded.applied_migration_version`
+        )
+        .run(
+          historySchema.status,
+          historySchema.degraded_reason_code,
+          historySchema.degraded_detail,
+          asIso(this.nowMs()),
+          historySchema.target_version,
+          historySchema.applied_version
+        );
+    } catch {
+      // If the history schema is degraded before v1 tables exist, the durable
+      // schema_state row remains the source of truth for the degraded status.
+    }
+
     return {
       enabled: true,
       db_path: this.dbPath,
       retention_days: this.retentionDays,
       run_count: runCountRow.count,
       last_pruned_at: pruneRow?.value ?? null,
-      integrity_ok: integrityRow.integrity_check === 'ok'
+      integrity_ok: integrityOk,
+      history_schema: historySchema
     };
+  }
+
+  private updateHistoryRetentionMetadata(): void {
+    if (this.readHistorySchemaHealth().status !== 'healthy') {
+      return;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO history_retention_metadata
+          (singleton_id, retention_days, last_pruned_at, policy_version, updated_at)
+         VALUES (1, ?, (SELECT value FROM meta WHERE key = 'last_pruned_at'), 1, ?)
+         ON CONFLICT(singleton_id) DO UPDATE SET
+          retention_days = excluded.retention_days,
+          last_pruned_at = excluded.last_pruned_at,
+          policy_version = excluded.policy_version,
+          updated_at = excluded.updated_at`
+      )
+      .run(this.retentionDays, asIso(this.nowMs()));
   }
 }
