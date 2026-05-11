@@ -176,6 +176,20 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
   return trimmed ? trimmed : null;
 }
 
+function normalizeBoundedLimit(value: number | null | undefined, fallback: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    return fallback;
+  }
+  return Math.min(value, max);
+}
+
+function normalizeOffset(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    return 0;
+  }
+  return value;
+}
+
 function validateOptionalTokenCount(value: number | null | undefined, label: string): number | null {
   if (value === null || value === undefined) {
     return null;
@@ -1549,6 +1563,70 @@ export class SqlitePersistenceStore {
     return row ? this.reconstructThreadLineage(row.thread_id) : null;
   }
 
+  listProjectTicketIdentities(
+    projectKey: string,
+    options: { limit?: number; offset?: number } = {}
+  ): { items: DurableIdentity[]; limit: number; offset: number; has_more: boolean; total: number } {
+    const limit = normalizeBoundedLimit(options.limit, 50, 100);
+    const offset = normalizeOffset(options.offset);
+    const totalRow = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM (
+           SELECT ticket_key
+           FROM issue_run
+           WHERE project_key = ? AND ticket_key IS NOT NULL AND identity IS NOT NULL
+           GROUP BY ticket_key
+         )`
+      )
+      .get(projectKey) as { count: number };
+    const ticketRows = this.db
+      .prepare(
+        `SELECT ticket_key, MAX(started_at) AS latest_started_at
+         FROM issue_run
+         WHERE project_key = ? AND ticket_key IS NOT NULL AND identity IS NOT NULL
+         GROUP BY ticket_key
+         ORDER BY latest_started_at DESC, ticket_key ASC
+         LIMIT ? OFFSET ?`
+      )
+      .all(projectKey, limit, offset) as Array<{ ticket_key: string; latest_started_at: string }>;
+
+    const identityStmt = this.db.prepare(
+      `SELECT identity
+       FROM issue_run
+       WHERE project_key = ? AND ticket_key = ? AND identity IS NOT NULL
+       ORDER BY started_at DESC, issue_run_id DESC
+       LIMIT 1`
+    );
+    const items = ticketRows
+      .map((row) => {
+        const identityRow = identityStmt.get(projectKey, row.ticket_key) as { identity: string | null } | undefined;
+        return parseDurableIdentity(identityRow?.identity ?? null);
+      })
+      .filter((identity): identity is DurableIdentity => identity !== null);
+
+    return {
+      items,
+      limit,
+      offset,
+      has_more: offset + items.length < totalRow.count,
+      total: totalRow.count
+    };
+  }
+
+  getProjectTicketIdentity(projectKey: string, ticketKey: string): DurableIdentity | null {
+    const row = this.db
+      .prepare(
+        `SELECT identity
+         FROM issue_run
+         WHERE project_key = ? AND ticket_key = ? AND identity IS NOT NULL
+         ORDER BY started_at DESC, issue_run_id DESC
+         LIMIT 1`
+      )
+      .get(projectKey, ticketKey) as { identity: string | null } | undefined;
+    return parseDurableIdentity(row?.identity ?? null);
+  }
+
   reconstructTicketTimeline(identity: DurableIdentity): TicketTimelineRecord {
     const issueRunRows = this.db
       .prepare(
@@ -1578,6 +1656,7 @@ export class SqlitePersistenceStore {
         ticket_references: [],
         operator_actions: [],
         blocked_input_events: [],
+        app_server_events: [],
         token_model_facts: []
       };
     }
@@ -1675,6 +1754,22 @@ export class SqlitePersistenceStore {
        ORDER BY observed_at ASC, token_model_fact_id ASC`,
       issueRunIds
     );
+    const appServerEventRows = this.selectByIssueRunIds<
+      Omit<AppServerEventLedgerRecord, 'summary_fields' | 'truncation' | 'full_payload_stored'> & {
+        summary_fields: string;
+        truncation: string;
+        full_payload_stored: 0 | 1;
+      }
+    >(
+      `SELECT app_server_event_id, issue_run_id, attempt_id, thread_id, turn_id, observed_at,
+          source_event_id, source_event_name, payload_class, detail_status, redaction_status,
+          summary, summary_fields, redacted_excerpt, truncation, unavailable_reason_code,
+          full_payload_stored, policy_version
+       FROM history_app_server_event
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY observed_at ASC, app_server_event_id ASC`,
+      issueRunIds
+    );
 
     return {
       identity,
@@ -1706,6 +1801,12 @@ export class SqlitePersistenceStore {
         ...row,
         pending_input: parseNullableJsonObject(row.pending_input),
         state_context: parseNullableJsonObject(row.state_context)
+      })),
+      app_server_events: appServerEventRows.map((event) => ({
+        ...event,
+        summary_fields: parseNullableJsonObject(event.summary_fields) ?? {},
+        truncation: parseHistoryPayloadTruncation(event.truncation),
+        full_payload_stored: event.full_payload_stored === 1
       })),
       token_model_facts: tokenModelFacts
     };

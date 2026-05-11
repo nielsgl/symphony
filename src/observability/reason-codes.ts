@@ -82,6 +82,16 @@ export const REASON_CODES = {
   codexProtocolDeprecationNotice: 'codex_protocol_deprecation_notice',
   codexProtocolConfigWarning: 'codex_protocol_config_warning',
   codexModelRerouted: 'codex_model_rerouted',
+  projectHistorySchemaHealthUnavailable: 'project_history_schema_health_unavailable',
+  projectHistoryTrackerSnapshotMissing: 'project_history_tracker_snapshot_missing',
+  projectHistoryTerminalOutcomeMissing: 'project_history_terminal_outcome_missing',
+  projectHistoryThreadTurnReferencesMissing: 'project_history_thread_turn_references_missing',
+  projectHistoryEvidenceReferencesMissing: 'project_history_evidence_references_missing',
+  projectHistoryOperationalFactsMissing: 'project_history_operational_facts_missing',
+  projectHistoryTokenModelSummariesMissing: 'project_history_token_model_summaries_missing',
+  projectHistoryAppServerLiteSummariesMissing: 'project_history_app_server_lite_summaries_missing',
+  projectHistoryPayloadRedacted: 'project_history_payload_redacted',
+  projectHistoryPayloadTruncated: 'project_history_payload_truncated',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
 
@@ -675,6 +685,106 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Codex selected a different effective model',
     detail: 'The Codex app-server reported a model reroute and the runner preserved requested and effective model evidence.',
     expected_transition: 'Run continues with effective model evidence available for diagnostics'
+  },
+  [REASON_CODES.projectHistorySchemaHealthUnavailable]: {
+    reason_code: REASON_CODES.projectHistorySchemaHealthUnavailable,
+    classification: 'failed',
+    actionability: 'recommended',
+    recommended_actions: ['Inspect persistence diagnostics before relying on project history completeness'],
+    label: 'Project History Schema Health Unavailable',
+    headline: 'Project history health is unavailable',
+    detail: 'The Project History API could not read schema health while projecting ticket history.',
+    expected_transition: null
+  },
+  [REASON_CODES.projectHistoryTrackerSnapshotMissing]: {
+    reason_code: REASON_CODES.projectHistoryTrackerSnapshotMissing,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History Tracker Snapshot Missing',
+    headline: 'Tracker snapshot is missing',
+    detail: 'The ticket history exists, but no tracker status snapshot has been recorded for this ticket.',
+    expected_transition: 'Future tracker observations may fill this fact'
+  },
+  [REASON_CODES.projectHistoryTerminalOutcomeMissing]: {
+    reason_code: REASON_CODES.projectHistoryTerminalOutcomeMissing,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History Terminal Outcome Missing',
+    headline: 'Terminal outcome is missing',
+    detail: 'The ticket history exists, but no terminal outcome fact has been recorded for this ticket.',
+    expected_transition: 'The ticket may still be active or awaiting a terminal write'
+  },
+  [REASON_CODES.projectHistoryThreadTurnReferencesMissing]: {
+    reason_code: REASON_CODES.projectHistoryThreadTurnReferencesMissing,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History Thread References Missing',
+    headline: 'Thread or turn references are missing',
+    detail: 'The ticket history exists, but no thread or turn references were recorded for this ticket.',
+    expected_transition: 'Future execution graph writes may fill this fact'
+  },
+  [REASON_CODES.projectHistoryEvidenceReferencesMissing]: {
+    reason_code: REASON_CODES.projectHistoryEvidenceReferencesMissing,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History Evidence Missing',
+    headline: 'Evidence references are missing',
+    detail: 'The ticket history exists, but no validation or review evidence references were recorded for this ticket.',
+    expected_transition: 'Future validation evidence writes may fill this fact'
+  },
+  [REASON_CODES.projectHistoryOperationalFactsMissing]: {
+    reason_code: REASON_CODES.projectHistoryOperationalFactsMissing,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History Operational Facts Missing',
+    headline: 'Tracker, PR, or operator facts are missing',
+    detail: 'The ticket history exists, but tracker snapshots, PR references, and operator action facts are not available for this ticket.',
+    expected_transition: 'Future operational fact writes may fill this fact'
+  },
+  [REASON_CODES.projectHistoryTokenModelSummariesMissing]: {
+    reason_code: REASON_CODES.projectHistoryTokenModelSummariesMissing,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History Token Model Summaries Missing',
+    headline: 'Token or model summaries are missing',
+    detail: 'The ticket history exists, but token and model summaries were not recorded for this ticket.',
+    expected_transition: 'Future app-server-lite or runner telemetry writes may fill this fact'
+  },
+  [REASON_CODES.projectHistoryAppServerLiteSummariesMissing]: {
+    reason_code: REASON_CODES.projectHistoryAppServerLiteSummariesMissing,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History App Server Summaries Missing',
+    headline: 'App-server-lite summaries are missing',
+    detail: 'The ticket history exists, but app-server-lite summary events were not recorded for this ticket.',
+    expected_transition: 'Future app-server-lite events may fill this fact'
+  },
+  [REASON_CODES.projectHistoryPayloadRedacted]: {
+    reason_code: REASON_CODES.projectHistoryPayloadRedacted,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History Payload Redacted',
+    headline: 'History payload was redacted',
+    detail: 'A project history fact is available only through redacted detail because sensitive content was removed.',
+    expected_transition: 'No automatic transition; redacted detail is the durable history contract'
+  },
+  [REASON_CODES.projectHistoryPayloadTruncated]: {
+    reason_code: REASON_CODES.projectHistoryPayloadTruncated,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Project History Payload Truncated',
+    headline: 'History payload was truncated',
+    detail: 'A project history fact is available only through bounded detail because the original payload exceeded excerpt limits.',
+    expected_transition: 'No automatic transition; truncated detail is the durable history contract'
   },
   [REASON_CODES.unknownRuntimeReason]: {
     reason_code: REASON_CODES.unknownRuntimeReason,

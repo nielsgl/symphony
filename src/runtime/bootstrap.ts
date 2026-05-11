@@ -1043,6 +1043,30 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             reconstructThreadLineage: (threadId) => (persistenceStore ? persistenceStore.reconstructThreadLineage(threadId) : null),
             reconstructLatestThreadLineageByIssueIdentifier: (issueIdentifier) =>
               persistenceStore ? persistenceStore.reconstructLatestThreadLineageByIssueIdentifier(issueIdentifier) : null,
+            listProjectTicketIdentities: (projectKey, page) =>
+              persistenceStore ? persistenceStore.listProjectTicketIdentities(projectKey, page) : { items: [], limit: page?.limit ?? 50, offset: page?.offset ?? 0, has_more: false, total: 0 },
+            getProjectTicketIdentity: (projectKey, ticketKey) =>
+              persistenceStore ? persistenceStore.getProjectTicketIdentity(projectKey, ticketKey) : null,
+            reconstructTicketTimeline: (identity) => persistenceStore
+              ? persistenceStore.reconstructTicketTimeline(identity)
+              : {
+                  identity,
+                  issue_runs: [],
+                  attempts: [],
+                  threads: [],
+                  turns: [],
+                  phase_spans: [],
+                  state_transitions: [],
+                  terminal_outcomes: [],
+                  blockers: [],
+                  evidence_references: [],
+                  tracker_snapshots: [],
+                  ticket_references: [],
+                  operator_actions: [],
+                  blocked_input_events: [],
+                  app_server_events: [],
+                  token_model_facts: []
+                },
             getLoggingHealth: () => ({
               root: loggingResolution.logsRoot,
               active_file: activeLogFile,

@@ -808,13 +808,45 @@ describe('SqlitePersistenceStore', () => {
       },
       blocked_at: '2026-04-11T10:03:10.000Z'
     });
+    storeA.appendAppServerEvent({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      observed_at: '2026-04-11T10:03:30.000Z',
+      source_event_id: 'event-token-1',
+      source_event_name: 'thread/tokenUsage/updated',
+      payload_class: 'protocol_lifecycle',
+      raw_payload: { token: 'abcd1234', total_tokens: 10 },
+      summary: 'token update',
+      summary_fields: { total_tokens: 10 }
+    });
+    const otherIdentity = identity({ issue_id: 'remote-operational-2', issue_identifier: 'OPS-2' });
+    storeA.appendIssueRun({
+      issue_id: 'remote-operational-2',
+      issue_identifier: 'OPS-2',
+      identity: otherIdentity,
+      started_at: '2026-04-11T11:00:00.000Z',
+      status: 'running'
+    });
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
     stores.push(storeB);
     const timeline = storeB.reconstructTicketTimeline(durableIdentity);
+    const firstProjectPage = storeB.listProjectTicketIdentities(durableIdentity.project.key, { limit: 1 });
+    const secondProjectPage = storeB.listProjectTicketIdentities(durableIdentity.project.key, { limit: 1, offset: 1 });
 
+    expect(firstProjectPage).toMatchObject({
+      limit: 1,
+      offset: 0,
+      has_more: true,
+      total: 2
+    });
+    expect(firstProjectPage.items[0].ticket.human_issue_identifier).toBe('OPS-2');
+    expect(secondProjectPage.items[0].ticket.human_issue_identifier).toBe('OPS-1');
+    expect(storeB.getProjectTicketIdentity(durableIdentity.project.key, durableIdentity.ticket.key)).toEqual(durableIdentity);
     expect(timeline.tracker_snapshots).toEqual([
       expect.objectContaining({
         project_key: durableIdentity.project.key,
@@ -865,6 +897,13 @@ describe('SqlitePersistenceStore', () => {
         prompt_text: 'Choose deployment mode token=***REDACTED***',
         pending_input: expect.objectContaining({ request_id: 'request-1', token: '***REDACTED***' }),
         state_context: expect.objectContaining({ branch_name: 'feature/OPS-1', token: '***REDACTED***' })
+      })
+    ]);
+    expect(timeline.app_server_events).toEqual([
+      expect.objectContaining({
+        source_event_name: 'thread/tokenUsage/updated',
+        summary_fields: { total_tokens: 10 },
+        redacted_excerpt: expect.stringContaining('***REDACTED***')
       })
     ]);
   });
