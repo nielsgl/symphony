@@ -92,6 +92,8 @@ export const REASON_CODES = {
   projectHistoryAppServerLiteSummariesMissing: 'project_history_app_server_lite_summaries_missing',
   projectHistoryPayloadRedacted: 'project_history_payload_redacted',
   projectHistoryPayloadTruncated: 'project_history_payload_truncated',
+  liveTokenFallbackNotOnHotPath: 'live_token_fallback_not_on_hot_path',
+  stateProjectionUnavailable: 'state_projection_unavailable',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
 
@@ -785,6 +787,27 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'History payload was truncated',
     detail: 'A project history fact is available only through bounded detail because the original payload exceeded excerpt limits.',
     expected_transition: 'No automatic transition; truncated detail is the durable history contract'
+  },
+  [REASON_CODES.liveTokenFallbackNotOnHotPath]: {
+    reason_code: REASON_CODES.liveTokenFallbackNotOnHotPath,
+    classification: 'failed',
+    actionability: 'recommended',
+    recommended_actions: ['Inspect worker token telemetry sources or issue-detail diagnostics instead of blocking state polling'],
+    label: 'Live Token Fallback Not On Hot Path',
+    headline: 'Live token fallback skipped for responsiveness',
+    detail:
+      'The control-plane projection found missing live token totals but did not synchronously read Codex home state from the request path.',
+    expected_transition: 'State and diagnostics remain available while token enrichment is marked degraded'
+  },
+  [REASON_CODES.stateProjectionUnavailable]: {
+    reason_code: REASON_CODES.stateProjectionUnavailable,
+    classification: 'failed',
+    actionability: 'recommended',
+    recommended_actions: ['Inspect control-plane diagnostics and runtime logs for the state projection failure'],
+    label: 'State Projection Unavailable',
+    headline: 'State projection unavailable',
+    detail: 'Diagnostics could not project the current state snapshot and returned degraded enrichment metadata instead.',
+    expected_transition: 'Diagnostics remain available while state projection is degraded'
   },
   [REASON_CODES.unknownRuntimeReason]: {
     reason_code: REASON_CODES.unknownRuntimeReason,
