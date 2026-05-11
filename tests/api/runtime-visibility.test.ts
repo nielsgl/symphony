@@ -118,7 +118,16 @@ describe('runtime visibility resolvers', () => {
     expect(
       resolveProgressSignal(
         running({
-          last_event: CANONICAL_EVENT.codex.turnWaiting,
+          last_event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+          running_waiting_started_at_ms: 2_000,
+          last_heartbeat_at_ms: 3_000
+        })
+      ).progress_signal_state
+    ).toBe('heartbeat_only');
+    expect(
+      resolveProgressSignal(
+        running({
+          last_event: CANONICAL_EVENT.codex.rateLimitsUpdated,
           stalled_waiting_reason: 'turn_waiting_threshold_exceeded',
           last_heartbeat_at_ms: 4_000
         })
