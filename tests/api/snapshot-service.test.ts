@@ -295,6 +295,79 @@ describe('SnapshotService', () => {
     });
   });
 
+  it('projects overdue tracker refresh retries with structured top-level cause data', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-05-11T13:05:21.648Z')
+    });
+    const state = makeState({
+      retry_attempts: new Map([
+        [
+          'issue-nie-128',
+          {
+            issue_id: 'issue-nie-128',
+            identifier: 'NIE-128',
+            attempt: 1,
+            due_at_ms: Date.parse('2026-05-11T12:56:21.648Z'),
+            error: 'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed',
+            worker_host: 'hessian',
+            workspace_path: '/tmp/symphony/NIE-128',
+            provisioner_type: 'worktree',
+            branch_name: 'feature/NIE-128',
+            repo_root: '/tmp/source',
+            workspace_exists: true,
+            workspace_git_status: 'clean',
+            workspace_provisioned: true,
+            workspace_is_git_worktree: true,
+            stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+            stop_reason_detail: 'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed',
+            previous_thread_id: 'thread-prev',
+            previous_session_id: 'session-prev',
+            last_phase: 'validation',
+            timer_handle: {}
+          }
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+
+    expect(projected.retry_status).toMatchObject({
+      total: 1,
+      overdue_count: 1,
+      pending_count: 0,
+      entries: [
+        expect.objectContaining({
+          issue_identifier: 'NIE-128',
+          due_state: 'overdue',
+          overdue_ms: 540_000,
+          reason_code: REASON_CODES.issueStateRefreshFailed,
+          last_phase: 'validation',
+          headline: 'Tracker refresh failed after run activity',
+          operator_detail:
+            'The Codex turn reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step.'
+        })
+      ]
+    });
+    expect(projected.retrying[0]).toMatchObject({
+      issue_identifier: 'NIE-128',
+      due_state: 'overdue',
+      overdue_ms: 540_000,
+      retry_wait_ms: null,
+      stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+      last_phase: 'validation',
+      retry_cause: expect.objectContaining({
+        reason_code: REASON_CODES.issueStateRefreshFailed,
+        due_state: 'overdue',
+        expected_transition: 'Retry due time passed 540000ms ago; dispatch may be stuck'
+      }),
+      operator_explainer_hint: {
+        classification: 'retrying',
+        actionability: 'recommended',
+        headline: 'Tracker refresh failed after run activity'
+      }
+    });
+  });
+
   it('separates Symphony phase age from Codex app-server thread activity age', () => {
     const service = new SnapshotService({
       nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
@@ -1678,8 +1751,14 @@ describe('SnapshotService', () => {
     expect(projected.operator_explainer).toMatchObject({
       classification: 'awaiting_input',
       actionability: 'required',
-      expected_transition: 'Automatic retry at 2026-04-10T10:02:30.000Z',
+      expected_transition: expect.stringContaining('Retry due time passed'),
       reason_code: 'turn_input_required'
+    });
+    expect(projected.retry).toMatchObject({
+      due_state: 'overdue',
+      retry_cause: expect.objectContaining({
+        expected_transition: expect.stringContaining('dispatch may be stuck')
+      })
     });
   });
 });

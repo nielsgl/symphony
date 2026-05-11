@@ -214,6 +214,21 @@ export interface ApiCurrentOperatorBlockProjection {
   detail: string | null;
 }
 
+export type ApiRetryDueState = 'pending' | 'overdue';
+
+export interface ApiRetryCauseProjection {
+  reason_code: string | null;
+  detail: string | null;
+  operator_detail: string | null;
+  headline: string;
+  expected_transition: string | null;
+  last_phase: PhaseMarkerName | null;
+  due_at_ms: number;
+  due_state: ApiRetryDueState;
+  overdue_ms: number | null;
+  retry_wait_ms: number | null;
+}
+
 export interface ApiToolCallLedgerEntry {
   call_id: string;
   tool_name: string;
@@ -345,6 +360,27 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     running_stalled_waiting_count: number;
     running_awaiting_input_count: number;
   };
+  retry_status: {
+    total: number;
+    overdue_count: number;
+    pending_count: number;
+    entries: Array<{
+      issue_id: string;
+      issue_identifier: string;
+      attempt: number;
+      due_at: string;
+      due_at_ms: number;
+      due_state: ApiRetryDueState;
+      overdue_ms: number | null;
+      retry_wait_ms: number | null;
+      reason_code: string | null;
+      detail: string | null;
+      operator_detail: string | null;
+      headline: string;
+      expected_transition: string | null;
+      last_phase: PhaseMarkerName | null;
+    }>;
+  };
   running: Array<ApiBudgetProjection & {
     issue_id: string;
     issue_identifier: string;
@@ -444,6 +480,11 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     issue_identifier: string;
     attempt: number;
     due_at: string;
+    due_at_ms: number;
+    due_state: ApiRetryDueState;
+    overdue_ms: number | null;
+    retry_wait_ms: number | null;
+    retry_cause: ApiRetryCauseProjection;
     error: string | null;
     worker_host: string | null;
     workspace_path: string | null;
@@ -774,6 +815,11 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
   retry: (ApiBudgetProjection & {
     attempt: number;
     due_at: string;
+    due_at_ms: number;
+    due_state: ApiRetryDueState;
+    overdue_ms: number | null;
+    retry_wait_ms: number | null;
+    retry_cause: ApiRetryCauseProjection;
     error: string | null;
     worker_host: string | null;
     workspace_path: string | null;

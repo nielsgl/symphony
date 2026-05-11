@@ -1,5 +1,5 @@
 import type { OperatorActionRecord, OrchestratorState, RunningEntry, TranscriptToolCallDiagnosticStats } from '../orchestrator';
-import { explainOperatorRuntimeState, REASON_CODES, toOperatorExplainerHint } from '../observability';
+import { explainOperatorRuntimeState, getReasonCodeDefinition, REASON_CODES, toOperatorExplainerHint } from '../observability';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
 import {
@@ -343,6 +343,62 @@ function projectCurrentOperatorBlock(entry: { stop_reason_code: string; stop_rea
   };
 }
 
+function projectRetryTiming(dueAtMs: number, nowMs: number) {
+  const overdueMs = Math.max(0, nowMs - dueAtMs);
+  const retryWaitMs = Math.max(0, dueAtMs - nowMs);
+  return {
+    due_at_ms: dueAtMs,
+    due_state: overdueMs > 0 ? ('overdue' as const) : ('pending' as const),
+    overdue_ms: overdueMs > 0 ? overdueMs : null,
+    retry_wait_ms: retryWaitMs > 0 ? retryWaitMs : null
+  };
+}
+
+function projectRetryExplainer(
+  entry: {
+    due_at_ms: number;
+    stop_reason_code?: string | null;
+    stop_reason_detail?: string | null;
+    error?: string | null;
+  },
+  nowMs: number
+) {
+  const timing = projectRetryTiming(entry.due_at_ms, nowMs);
+  return explainOperatorRuntimeState({
+    state_class: 'retrying',
+    reason_code: entry.stop_reason_code,
+    reason_detail: entry.stop_reason_detail ?? entry.error,
+    expected_transition_detail:
+      timing.due_state === 'overdue'
+        ? `Retry due time passed ${timing.overdue_ms}ms ago; dispatch may be stuck`
+        : `Automatic retry at ${asIsoDate(entry.due_at_ms)}`
+  });
+}
+
+function projectRetryCause(
+  entry: {
+    due_at_ms: number;
+    stop_reason_code?: string | null;
+    stop_reason_detail?: string | null;
+    error?: string | null;
+    last_phase?: import('../observability').PhaseMarkerName | null;
+  },
+  nowMs: number
+) {
+  const timing = projectRetryTiming(entry.due_at_ms, nowMs);
+  const explainer = projectRetryExplainer(entry, nowMs);
+  const definition = getReasonCodeDefinition(entry.stop_reason_code);
+  return {
+    reason_code: entry.stop_reason_code ?? null,
+    detail: entry.stop_reason_detail ?? entry.error ?? null,
+    operator_detail: definition?.detail ?? explainer.detail,
+    headline: explainer.headline,
+    expected_transition: explainer.expected_transition,
+    last_phase: entry.last_phase ?? null,
+    ...timing
+  };
+}
+
 function projectBlockedRootCause(entry: {
   last_phase?: import('../observability').PhaseMarkerName | null;
   last_phase_detail?: string | null;
@@ -555,44 +611,66 @@ export class SnapshotService {
     const running = Array.from(state.running.entries()).map(([issueId, entry]) =>
       toStateRunningRow(issueId, entry, nowMs, state.operator_actions)
     );
-    const retrying = Array.from(state.retry_attempts.values()).map((entry) => ({
-      ...projectBudget(entry),
-      issue_id: entry.issue_id,
-      issue_identifier: entry.identifier,
-      attempt: entry.attempt,
-      due_at: asIsoDate(entry.due_at_ms),
-      error: entry.error,
-      worker_host: entry.worker_host ?? null,
-      workspace_path: entry.workspace_path ?? null,
-      provisioner_type: entry.provisioner_type ?? null,
-      branch_name: entry.branch_name ?? null,
-      repo_root: entry.repo_root ?? null,
-      workspace_exists: entry.workspace_exists,
-      workspace_git_status: entry.workspace_git_status ?? null,
-      workspace_provisioned: entry.workspace_provisioned,
-      workspace_is_git_worktree: entry.workspace_is_git_worktree,
-      copy_ignored_applied: entry.copy_ignored_applied ?? false,
-      copy_ignored_status: entry.copy_ignored_status ?? null,
-      copy_ignored_summary: entry.copy_ignored_summary ?? null,
-      stop_reason_code: entry.stop_reason_code ?? null,
-      stop_reason_detail: entry.stop_reason_detail ?? null,
-      previous_thread_id: entry.previous_thread_id ?? null,
-      previous_session_id: entry.previous_session_id ?? null,
-      last_phase: entry.last_phase ?? null,
-      last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
-      last_phase_detail: entry.last_phase_detail ?? null,
-      recovery: entry.recovery ? { ...entry.recovery } : null,
-      missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
-      transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary(entry),
-      operator_explainer_hint: toOperatorExplainerHint(
-        explainOperatorRuntimeState({
-          state_class: 'retrying',
-          reason_code: entry.stop_reason_code,
-          reason_detail: entry.stop_reason_detail ?? entry.error,
-          expected_transition_detail: `Automatic retry at ${asIsoDate(entry.due_at_ms)}`
-        })
-      )
-    }));
+    const retrying = Array.from(state.retry_attempts.values()).map((entry) => {
+      const retryCause = projectRetryCause(entry, nowMs);
+      return {
+        ...projectBudget(entry),
+        issue_id: entry.issue_id,
+        issue_identifier: entry.identifier,
+        attempt: entry.attempt,
+        due_at: asIsoDate(entry.due_at_ms),
+        due_at_ms: entry.due_at_ms,
+        due_state: retryCause.due_state,
+        overdue_ms: retryCause.overdue_ms,
+        retry_wait_ms: retryCause.retry_wait_ms,
+        retry_cause: retryCause,
+        error: entry.error,
+        worker_host: entry.worker_host ?? null,
+        workspace_path: entry.workspace_path ?? null,
+        provisioner_type: entry.provisioner_type ?? null,
+        branch_name: entry.branch_name ?? null,
+        repo_root: entry.repo_root ?? null,
+        workspace_exists: entry.workspace_exists,
+        workspace_git_status: entry.workspace_git_status ?? null,
+        workspace_provisioned: entry.workspace_provisioned,
+        workspace_is_git_worktree: entry.workspace_is_git_worktree,
+        copy_ignored_applied: entry.copy_ignored_applied ?? false,
+        copy_ignored_status: entry.copy_ignored_status ?? null,
+        copy_ignored_summary: entry.copy_ignored_summary ?? null,
+        stop_reason_code: entry.stop_reason_code ?? null,
+        stop_reason_detail: entry.stop_reason_detail ?? null,
+        previous_thread_id: entry.previous_thread_id ?? null,
+        previous_session_id: entry.previous_session_id ?? null,
+        last_phase: entry.last_phase ?? null,
+        last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
+        last_phase_detail: entry.last_phase_detail ?? null,
+        recovery: entry.recovery ? { ...entry.recovery } : null,
+        missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
+        transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary(entry),
+        operator_explainer_hint: toOperatorExplainerHint(projectRetryExplainer(entry, nowMs))
+      };
+    });
+    const retryStatus = {
+      total: retrying.length,
+      overdue_count: retrying.filter((entry) => entry.due_state === 'overdue').length,
+      pending_count: retrying.filter((entry) => entry.due_state === 'pending').length,
+      entries: retrying.map((entry) => ({
+        issue_id: entry.issue_id,
+        issue_identifier: entry.issue_identifier,
+        attempt: entry.attempt,
+        due_at: entry.due_at,
+        due_at_ms: entry.due_at_ms,
+        due_state: entry.due_state,
+        overdue_ms: entry.overdue_ms,
+        retry_wait_ms: entry.retry_wait_ms,
+        reason_code: entry.retry_cause.reason_code,
+        detail: entry.retry_cause.detail,
+        operator_detail: entry.retry_cause.operator_detail,
+        headline: entry.retry_cause.headline,
+        expected_transition: entry.retry_cause.expected_transition,
+        last_phase: entry.retry_cause.last_phase
+      }))
+    };
     const blocked = Array.from(state.blocked_inputs.values()).map((entry) => {
       const progressSignal = resolveBlockedProgressSignal(entry);
       return {
@@ -722,6 +800,7 @@ export class SnapshotService {
         running_awaiting_input_count: running.filter((entry) => entry.operator_explainer_hint?.classification === 'awaiting_input')
           .length
       },
+      retry_status: retryStatus,
       running,
       retrying,
       blocked,
@@ -954,6 +1033,11 @@ export class SnapshotService {
               ...projectBudget(retryEntry),
               attempt: retryEntry.attempt,
               due_at: asIsoDate(retryEntry.due_at_ms),
+              due_at_ms: retryEntry.due_at_ms,
+              due_state: projectRetryTiming(retryEntry.due_at_ms, nowMs).due_state,
+              overdue_ms: projectRetryTiming(retryEntry.due_at_ms, nowMs).overdue_ms,
+              retry_wait_ms: projectRetryTiming(retryEntry.due_at_ms, nowMs).retry_wait_ms,
+              retry_cause: projectRetryCause(retryEntry, nowMs),
               error: retryEntry.error,
               worker_host: retryEntry.worker_host ?? null,
               workspace_path: retryEntry.workspace_path ?? null,
@@ -1091,7 +1175,7 @@ export class SnapshotService {
         state_class: 'retrying',
         reason_code: retryOnlyEntry.stop_reason_code,
         reason_detail: retryOnlyEntry.stop_reason_detail ?? retryOnlyEntry.error,
-        expected_transition_detail: `Automatic retry at ${asIsoDate(retryOnlyEntry.due_at_ms)}`
+        expected_transition_detail: projectRetryExplainer(retryOnlyEntry, nowMs).expected_transition
       });
       return redactUnknown({
         issue_identifier: issueIdentifier,
@@ -1114,6 +1198,11 @@ export class SnapshotService {
           ...projectBudget(retryOnlyEntry),
           attempt: retryOnlyEntry.attempt,
           due_at: asIsoDate(retryOnlyEntry.due_at_ms),
+          due_at_ms: retryOnlyEntry.due_at_ms,
+          due_state: projectRetryTiming(retryOnlyEntry.due_at_ms, nowMs).due_state,
+          overdue_ms: projectRetryTiming(retryOnlyEntry.due_at_ms, nowMs).overdue_ms,
+          retry_wait_ms: projectRetryTiming(retryOnlyEntry.due_at_ms, nowMs).retry_wait_ms,
+          retry_cause: projectRetryCause(retryOnlyEntry, nowMs),
           error: retryOnlyEntry.error,
           worker_host: retryOnlyEntry.worker_host ?? null,
           workspace_path: retryOnlyEntry.workspace_path ?? null,

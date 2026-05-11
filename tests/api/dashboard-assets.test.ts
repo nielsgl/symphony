@@ -552,6 +552,86 @@ describe('dashboard assets', () => {
     expect(harness.document.getElementById('connection-detail').textContent).toBe('Streaming updates connected');
   });
 
+  it('renders overdue retry causes above the retry table', async () => {
+    const harness = installDashboardClientHarness();
+    vi.setSystemTime(new Date('2026-05-11T13:05:21.648Z'));
+    await flushPromises();
+
+    const state = makeStatePayload() as any;
+    state.counts.retrying = 1;
+    state.retry_status = {
+      total: 1,
+      overdue_count: 1,
+      pending_count: 0,
+      entries: [
+        {
+          issue_id: 'issue-nie-128',
+          issue_identifier: 'NIE-128',
+          attempt: 1,
+          due_at: '2026-05-11T12:56:21.648Z',
+          due_at_ms: Date.parse('2026-05-11T12:56:21.648Z'),
+          due_state: 'overdue',
+          overdue_ms: 540000,
+          retry_wait_ms: null,
+          reason_code: 'issue_state_refresh_failed',
+          detail: 'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed',
+          operator_detail:
+            'The Codex turn reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step.',
+          headline: 'Tracker refresh failed after run activity',
+          expected_transition: 'Retry due time passed 540000ms ago; dispatch may be stuck',
+          last_phase: 'validation'
+        }
+      ]
+    };
+    state.retrying = [
+      {
+        issue_identifier: 'NIE-128',
+        attempt: 1,
+        due_at: '2026-05-11T12:56:21.648Z',
+        due_state: 'overdue',
+        overdue_ms: 540000,
+        retry_wait_ms: null,
+        stop_reason_code: 'issue_state_refresh_failed',
+        stop_reason_detail: 'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed',
+        error: 'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed',
+        worker_host: 'hessian',
+        workspace_path: '/tmp/symphony/NIE-128',
+        provisioner_type: 'worktree',
+        workspace_provisioned: true,
+        workspace_is_git_worktree: true,
+        last_phase: 'validation',
+        operator_explainer_hint: {
+          classification: 'retrying',
+          actionability: 'recommended',
+          headline: 'Tracker refresh failed after run activity'
+        },
+        retry_cause: state.retry_status.entries[0]
+      }
+    ];
+
+    harness.stream().onopen?.();
+    harness.stream().onmessage?.({
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state } })
+    });
+    await flushPromises();
+
+    const overviewText = harness.document.getElementById('retry-status-summary').textContent;
+    expect(overviewText).toContain('1 overdue retry needs attention');
+    expect(overviewText).toContain('NIE-128');
+    expect(overviewText).toContain('issue_state_refresh_failed');
+    expect(overviewText).toContain('post-run tracker refresh');
+    expect(overviewText).toContain('Overdue 9m 0s');
+    expect(overviewText).toContain('Last phase: validation');
+  });
+
+  it('labels successful polling fallback as polling instead of offline', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Fresh snapshots via polling fallback');
+  });
+
   it('renders phase age and Codex thread activity as separate clocks', async () => {
     const harness = installDashboardClientHarness();
     vi.setSystemTime(new Date('2026-05-08T15:05:00.000Z'));
