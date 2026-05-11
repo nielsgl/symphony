@@ -1380,7 +1380,8 @@ export class OrchestratorCore {
       event: workerEvent.event,
       message: workerEvent.detail ?? null,
       ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
-      ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {})
+      ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {}),
+      ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {})
     });
     if (runningEntry.recent_events.length > 20) {
       runningEntry.recent_events.splice(0, runningEntry.recent_events.length - 20);
@@ -1394,7 +1395,8 @@ export class OrchestratorCore {
           event: workerEvent.event,
           message: workerEvent.detail ?? null,
           reason_code: workerEvent.reason_code ?? null,
-          request_method: workerEvent.request_method ?? null
+          request_method: workerEvent.request_method ?? null,
+          request_category: workerEvent.request_category ?? null
         })
           .catch(() => {
             this.logger?.log({
@@ -1428,7 +1430,8 @@ export class OrchestratorCore {
         event: workerEvent.event,
         event_summary: runningEntry.last_event_summary,
         reason_code: workerEvent.reason_code ?? null,
-        request_method: workerEvent.request_method ?? null
+        request_method: workerEvent.request_method ?? null,
+        request_category: workerEvent.request_category ?? null
       }
     });
     this.recordRuntimeEvent({
@@ -1438,7 +1441,8 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: workerEvent.detail,
       ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
-      ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {})
+      ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {}),
+      ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {})
     });
     if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
       this.emitMappedPhaseMarker(issue_id, workerEvent);
@@ -7540,6 +7544,7 @@ export class OrchestratorCore {
     detail?: string;
     reason_code?: string | null;
     request_method?: string | null;
+    request_category?: string | null;
   }): void {
     this.state.recent_runtime_events.push({
       at_ms: this.nowMs(),
@@ -7549,7 +7554,8 @@ export class OrchestratorCore {
       session_id: params.session_id,
       detail: params.detail,
       ...(params.reason_code !== undefined ? { reason_code: params.reason_code } : {}),
-      ...(params.request_method !== undefined ? { request_method: params.request_method } : {})
+      ...(params.request_method !== undefined ? { request_method: params.request_method } : {}),
+      ...(params.request_category !== undefined ? { request_category: params.request_category } : {})
     });
     if (this.state.recent_runtime_events.length > 50) {
       this.state.recent_runtime_events.splice(0, this.state.recent_runtime_events.length - 50);

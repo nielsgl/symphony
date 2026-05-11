@@ -159,4 +159,5 @@ export interface CodexRunnerEvent {
   terminal_source?: 'app_server_protocol' | 'session_transcript';
   reason_code?: string;
   request_method?: string;
+  request_category?: string;
 }

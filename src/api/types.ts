@@ -604,6 +604,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       message: string | null;
       reason_code?: string | null;
       request_method?: string | null;
+      request_category?: string | null;
     }>;
     requires_manual_resume: true;
     awaiting_operator: true;
@@ -712,6 +713,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     detail?: string;
     reason_code?: string | null;
     request_method?: string | null;
+    request_category?: string | null;
   }>;
 }
 
@@ -938,6 +940,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       message: string | null;
       reason_code?: string | null;
       request_method?: string | null;
+      request_category?: string | null;
     }>;
     requires_manual_resume: true;
     awaiting_operator: true;
@@ -986,6 +989,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     message: string | null;
     reason_code?: string | null;
     request_method?: string | null;
+    request_category?: string | null;
   }>;
   stale_events: Array<{
     at: string;
@@ -1040,6 +1044,7 @@ export interface ThreadDiagnosticsEvent {
   reason_code: string | null;
   reason_detail: string | null;
   request_method?: string | null;
+  request_category?: string | null;
   thread_id: string;
   turn_id: string | null;
   session_id: string | null;

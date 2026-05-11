@@ -778,7 +778,8 @@ export class SnapshotService {
           event: event.event,
           message: event.message,
           ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-          ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
+          ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+          ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
         }))
       };
     });
@@ -842,7 +843,8 @@ export class SnapshotService {
         session_id: event.session_id,
         detail: event.detail,
         ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-        ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
+        ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+        ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
       }))
     }) as ApiStateResponse;
   }
@@ -1147,7 +1149,8 @@ export class SnapshotService {
                 event: event.event,
                 message: event.message,
                 ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-                ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
+                ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+                ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
               }))
             }
           : null,
@@ -1164,7 +1167,8 @@ export class SnapshotService {
           event: event.event,
           message: event.message,
           ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-          ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
+          ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+          ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
         })),
         stale_events: projectQuarantinedRunningEvents(entry),
         last_error: retryEntry?.error ?? state.health.last_error,
@@ -1313,7 +1317,8 @@ export class SnapshotService {
                 event: event.event,
                 message: event.message,
                 ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-                ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
+                ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+                ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
               }))
             }
           : null,
@@ -1444,11 +1449,12 @@ export class SnapshotService {
         })),
         session_console: (blockedEntry.session_console ?? []).map((event) => ({
           at: asIsoDate(event.at_ms),
-          event: event.event,
-          message: event.message,
-          ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-          ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
-        }))
+        event: event.event,
+        message: event.message,
+        ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+        ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+        ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
+      }))
       },
       phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
         at: asIsoDate(event.at_ms),
@@ -1463,7 +1469,8 @@ export class SnapshotService {
         event: event.event,
         message: event.message,
         ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-        ...(event.request_method !== undefined ? { request_method: event.request_method } : {})
+        ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+        ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
       })),
       stale_events: [],
       last_error: blockedEntry.stop_reason_detail ?? blockedEntry.stop_reason_code,
