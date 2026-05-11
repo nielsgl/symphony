@@ -93,3 +93,17 @@ Use these skills when applicable:
 - `linear`: Linear issue/project triage and updates.
 - `playwright`: CLI browser automation and screenshots.
 - `playwright-interactive`: persistent `js_repl` Playwright/Electron debugging.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs for this repo live in Linear. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default Matt Pocock triage label vocabulary in Linear. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a single-context domain doc layout. See `docs/agents/domain.md`.
