@@ -1080,6 +1080,12 @@ export interface ThreadDiagnosticsEvent {
   reason_detail: string | null;
   request_method?: string | null;
   request_category?: string | null;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  protocol_warning?: CodexProtocolWarningEvidence;
+  model_reroute?: CodexModelRerouteEvidence | null;
+  requested_model?: string | null;
+  effective_model?: string | null;
   thread_id: string;
   turn_id: string | null;
   session_id: string | null;

@@ -1470,14 +1470,7 @@ export class SnapshotService {
         thread_id: event.thread_id ?? null,
         session_id: event.session_id ?? null
       })),
-      recent_events: (blockedEntry.session_console ?? []).map((event) => ({
-        at: asIsoDate(event.at_ms),
-        event: event.event,
-        message: event.message,
-        ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-        ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-        ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
-      })),
+      recent_events: (blockedEntry.session_console ?? []).map(projectRunnerEventEvidence),
       stale_events: [],
       last_error: blockedEntry.stop_reason_detail ?? blockedEntry.stop_reason_code,
       logs: {
