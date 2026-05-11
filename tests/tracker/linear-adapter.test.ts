@@ -19,6 +19,9 @@ function makeIssueNode(overrides: Record<string, unknown> = {}): Record<string, 
     createdAt: '2026-01-01T10:00:00.000Z',
     updatedAt: '2026-01-01T11:00:00.000Z',
     state: { name: 'Todo' },
+    assignee: { id: 'user-1', name: 'Niels', displayName: 'Niels van Galen Last' },
+    project: { id: 'project-1', slugId: 'symphony', name: 'Symphony' },
+    team: { id: 'team-1', key: 'NIE', name: 'Nielsgl' },
     labels: { nodes: [{ name: 'Backend' }, { name: 'P0' }] },
     inverseRelations: {
       nodes: [
@@ -172,6 +175,87 @@ describe('LinearTrackerAdapter', () => {
     expect(issue.priority).toBeNull();
     expect(issue.created_at).toBeNull();
     expect(issue.updated_at?.toISOString()).toBe('2026-03-01T00:00:00.000Z');
+  });
+
+  it('normalizes GitHub PR attachment URLs as tracker metadata', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [
+        new Response(
+          JSON.stringify({
+            data: {
+              issues: {
+                nodes: [
+                  makeIssueNode({
+                    attachments: {
+                      nodes: [
+                        { url: 'https://github.com/nielsgl/symphony/issues/242' },
+                        { url: 'https://github.com/nielsgl/symphony/pull/251' },
+                        { url: 'https://github.com/nielsgl/symphony/pull/251?notification_referrer_id=abc' },
+                        { url: 'https://example.test/not-a-pr' }
+                      ]
+                    }
+                  })
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null }
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      requests
+    );
+
+    const [issue] = await adapter.fetch_candidate_issues();
+
+    expect(issue.has_github_issue_link).toBe(true);
+    expect(issue.tracker_meta).toEqual({
+      tracker_kind: 'linear',
+      repository: 'nielsgl/symphony',
+      assignee: { id: 'user-1', name: 'Niels' },
+      project: { id: 'project-1', slug: 'symphony', name: 'Symphony' },
+      team: { id: 'team-1', key: 'NIE', name: 'Nielsgl' },
+      pr_links: [
+        {
+          number: 251,
+          url: 'https://github.com/nielsgl/symphony/pull/251',
+          state: 'unknown',
+          merged: false
+        }
+      ]
+    });
+  });
+
+  it('preserves Linear tracker scope metadata when no PR attachment exists', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [
+        new Response(
+          JSON.stringify({
+            data: {
+              issues: {
+                nodes: [makeIssueNode({ attachments: { nodes: [] } })],
+                pageInfo: { hasNextPage: false, endCursor: null }
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      requests
+    );
+
+    const [issue] = await adapter.fetch_candidate_issues();
+
+    expect(issue.tracker_meta).toEqual({
+      tracker_kind: 'linear',
+      repository: 'unknown',
+      pr_links: [],
+      assignee: { id: 'user-1', name: 'Niels' },
+      project: { id: 'project-1', slug: 'symphony', name: 'Symphony' },
+      team: { id: 'team-1', key: 'NIE', name: 'Nielsgl' }
+    });
   });
 
   it('issues state-refresh query with GraphQL [ID!] variable typing', async () => {

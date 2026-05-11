@@ -12,9 +12,12 @@ export interface IssuePullRequestLink {
 }
 
 export interface IssueTrackerMeta {
-  tracker_kind: 'github';
+  tracker_kind: 'github' | 'linear';
   repository: string;
   pr_links: IssuePullRequestLink[];
+  assignee?: { id: string | null; name: string | null } | null;
+  project?: { id: string | null; slug: string | null; name: string | null } | null;
+  team?: { id: string | null; key: string | null; name: string | null } | null;
 }
 
 export interface Issue {

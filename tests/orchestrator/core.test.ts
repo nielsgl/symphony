@@ -1806,6 +1806,69 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
+  it('persists operator actions with run, attempt, thread, and turn lineage', async () => {
+    const operatorActionHistory: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendOperatorActionHistory']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-operator',
+      appendIssueRun: async () => 'issue-run-operator',
+      appendAttempt: async () => 'attempt-operator',
+      appendThread: async (params) => String(params.thread_id),
+      appendTurn: async (params) => String(params.turn_id),
+      appendTrackerTicketSnapshot: async () => 'snapshot-operator',
+      appendTicketReference: async () => 'reference-operator',
+      appendOperatorActionHistory: async (params) => {
+        operatorActionHistory.push(params);
+        return `operator_action_${operatorActionHistory.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({ persistence });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-operator-history', identifier: 'ABC-OP-HIST' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-operator-history', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-operator-history',
+      turn_id: 'turn-operator-history',
+      session_id: 'session-operator-history'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await harness.orchestrator.cancelCurrentTurn('ABC-OP-HIST', {
+      actor: 'operator@example.test',
+      reason_note: 'operator requested stop',
+      confirmed: true
+    });
+
+    expect(operatorActionHistory).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue-run-operator',
+        attempt_id: 'attempt-operator',
+        thread_id: 'thread-operator-history',
+        turn_id: 'turn-operator-history',
+        action: 'cancel',
+        actor: 'operator@example.test',
+        result: 'accepted',
+        result_code: 'current_turn_cancelled',
+        reason_note: 'operator requested stop',
+        state_context: expect.objectContaining({
+          issue_id: 'i-operator-history',
+          target_identifiers: expect.objectContaining({
+            issue_id: 'i-operator-history',
+            issue_identifier: 'ABC-OP-HIST',
+            issue_run_id: 'issue-run-operator',
+            run_id: 'legacy-run-operator',
+            attempt_id: 'attempt-operator',
+            thread_id: 'thread-operator-history',
+            turn_id: 'turn-operator-history'
+          })
+        })
+      })
+    ]);
+  });
+
   it('requeues blocked issues and persists immutable audit state transition details', async () => {
     const persistedActions = new Map<string, string>();
     const harness = createHarness({
@@ -5752,6 +5815,8 @@ describe('OrchestratorCore', () => {
     const transitions: Array<Record<string, unknown>> = [];
     const terminalOutcomes: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketTerminalOutcome']>>[0]> = [];
     const evidenceReferences: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketEvidenceReference']>>[0]> = [];
+    const trackerSnapshots: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTrackerTicketSnapshot']>>[0]> = [];
+    const ticketReferences: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketReference']>>[0]> = [];
     const appServerEvents: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendAppServerEvent']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'legacy-run-1',
@@ -5791,6 +5856,14 @@ describe('OrchestratorCore', () => {
         evidenceReferences.push(params);
         return `evidence_${evidenceReferences.length}`;
       },
+      appendTrackerTicketSnapshot: async (params) => {
+        trackerSnapshots.push(params);
+        return `tracker_snapshot_${trackerSnapshots.length}`;
+      },
+      appendTicketReference: async (params) => {
+        ticketReferences.push(params);
+        return `ticket_reference_${ticketReferences.length}`;
+      },
       appendAppServerEvent: async (params) => {
         appServerEvents.push(params);
         return `app_server_event_${appServerEvents.length}`;
@@ -5800,7 +5873,21 @@ describe('OrchestratorCore', () => {
       completeRun: async () => undefined
     };
     const harness = createHarness({ persistence });
-    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-lineage', identifier: 'ABC-LIN' })]);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({
+        id: 'i-lineage',
+        identifier: 'ABC-LIN',
+        title: 'Lineage issue',
+        state: 'In Progress',
+        labels: ['ready-for-agent'],
+        branch_name: 'feature/ABC-LIN',
+        tracker_meta: {
+          tracker_kind: 'github',
+          repository: 'nielsgl/symphony',
+          pr_links: [{ number: 242, url: 'https://github.com/nielsgl/symphony/pull/242', state: 'OPEN', merged: false }]
+        }
+      })
+    ]);
     await harness.orchestrator.tick('interval');
 
     harness.orchestrator.onWorkerEvent('i-lineage', {
@@ -5929,6 +6016,58 @@ describe('OrchestratorCore', () => {
         uri: 'codex-thread:thread-1'
       })
     ]);
+    expect(trackerSnapshots).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        tracker_kind: 'github',
+        remote_issue_id: 'i-lineage',
+        human_issue_identifier: 'ABC-LIN',
+        title: 'Lineage issue',
+        tracker_status: 'In Progress',
+        labels: ['ready-for-agent'],
+        assignee_status: 'unknown',
+        project_status: 'unknown',
+        team_status: 'unknown'
+      })
+    ]);
+    expect(ticketReferences).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        reference_kind: 'branch',
+        availability: 'available',
+        uri: 'git-branch:feature/ABC-LIN',
+        external_id: 'feature/ABC-LIN'
+      }),
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        reference_kind: 'pull_request',
+        availability: 'available',
+        uri: 'https://github.com/nielsgl/symphony/pull/242',
+        external_id: '242',
+        state: 'OPEN'
+      }),
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        reference_kind: 'review',
+        availability: 'unknown',
+        uri: 'https://github.com/nielsgl/symphony/pull/242',
+        external_id: '242',
+        state: null,
+        metadata: { reason: 'review_state_unobserved' }
+      }),
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        reference_kind: 'merge',
+        availability: 'unknown',
+        external_id: '242',
+        state: 'OPEN'
+      })
+    ]));
     expect(appServerEvents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -5996,6 +6135,66 @@ describe('OrchestratorCore', () => {
         reason_code: null
       })
     ]);
+  });
+
+  it('persists Linear tracker scope facts without requiring PR metadata', async () => {
+    const trackerSnapshots: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTrackerTicketSnapshot']>>[0]> = [];
+    const ticketReferences: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketReference']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-linear-scope',
+      appendIssueRun: async () => 'issue_run_linear',
+      appendAttempt: async () => 'attempt_linear',
+      appendTrackerTicketSnapshot: async (params) => {
+        trackerSnapshots.push(params);
+        return `tracker_snapshot_${trackerSnapshots.length}`;
+      },
+      appendTicketReference: async (params) => {
+        ticketReferences.push(params);
+        return `ticket_reference_${ticketReferences.length}`;
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({ persistence });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({
+        id: 'linear-issue-1',
+        identifier: 'NIE-999',
+        title: 'Linear scope issue',
+        state: 'In Progress',
+        labels: ['ready-for-agent'],
+        tracker_meta: {
+          tracker_kind: 'linear',
+          repository: 'unknown',
+          pr_links: [],
+          assignee: { id: 'user-1', name: 'Niels' },
+          project: { id: 'project-1', slug: 'symphony', name: 'Symphony' },
+          team: { id: 'team-1', key: 'NIE', name: 'Nielsgl' }
+        }
+      })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    expect(trackerSnapshots).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_linear',
+        attempt_id: 'attempt_linear',
+        tracker_kind: 'linear',
+        remote_issue_id: 'linear-issue-1',
+        human_issue_identifier: 'NIE-999',
+        assignee_status: 'available',
+        assignee_identifier: 'user-1',
+        project_status: 'available',
+        project_identifier: 'symphony',
+        team_status: 'available',
+        team_identifier: 'NIE'
+      })
+    ]);
+    expect(ticketReferences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reference_kind: 'pull_request', availability: 'unknown', metadata: { reason: 'tracker_pr_unobserved' } })
+    ]));
   });
 
   it('records terminal run completion write failures as degraded history diagnostics', async () => {
@@ -6423,6 +6622,7 @@ describe('OrchestratorCore', () => {
     const attempts: Array<Record<string, unknown>> = [];
     const transitions: Array<Record<string, unknown>> = [];
     const blockers: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketBlocker']>>[0]> = [];
+    const blockedInputEvents: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendBlockedInputEvent']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'legacy-run-1',
       appendIssueRun: async (params) => {
@@ -6442,6 +6642,10 @@ describe('OrchestratorCore', () => {
       appendTicketBlocker: async (params) => {
         blockers.push(params);
         return `blocker_${blockers.length}`;
+      },
+      appendBlockedInputEvent: async (params) => {
+        blockedInputEvents.push(params);
+        return `blocked_input_event_${blockedInputEvents.length}`;
       },
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
@@ -6474,6 +6678,7 @@ describe('OrchestratorCore', () => {
     expect(issueRuns).toHaveLength(1);
     expect(blocked?.issue_run_id).toBe('issue_run_1');
     expect(blocked?.previous_attempt_id).toBe('attempt_1');
+    expect(blocked?.previous_turn_id).toBe('turn-0');
     expect(transitions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         issue_run_id: 'issue_run_1',
@@ -6488,9 +6693,26 @@ describe('OrchestratorCore', () => {
         issue_run_id: 'issue_run_1',
         attempt_id: 'attempt_1',
         thread_id: 'thread-0',
+        turn_id: 'turn-0',
         blocker_type: 'orchestration_blocker',
         status: 'active',
         reason_code: 'operator_action_required_no_progress_redispatch_blocked'
+      })
+    ]);
+    expect(blockedInputEvents).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        thread_id: 'thread-0',
+        turn_id: 'turn-0',
+        issue_id: 'i-retry-blocked',
+        issue_identifier: 'ABC-BLOCK',
+        runtime_state: 'blocked',
+        reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+        state_context: expect.objectContaining({
+          branch_name: null,
+          progress_signals: expect.objectContaining({ commit_sha: 'sha-same' })
+        })
       })
     ]);
     expect(harness.spawned.filter((entry) => entry.issue_id === 'i-retry-blocked')).toHaveLength(1);
