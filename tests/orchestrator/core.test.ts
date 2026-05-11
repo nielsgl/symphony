@@ -5544,23 +5544,109 @@ describe('OrchestratorCore', () => {
         harness.now.value + 10
       )
     );
+    harness.orchestrator.onWorkerEvent(
+      'i-approval',
+      toWorkerEvent(
+        {
+          timestamp: new Date(harness.now.value + 11).toISOString(),
+          event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+          codex_app_server_pid: 1234,
+          thread_id: 'thread-approval',
+          turn_id: 'turn-approval',
+          session_id: 'session-approval',
+          rate_limits: { primary: { remaining: 5, limit: 10 } }
+        },
+        harness.now.value + 11
+      )
+    );
+    harness.orchestrator.onWorkerEvent(
+      'i-approval',
+      toWorkerEvent(
+        {
+          timestamp: new Date(harness.now.value + 12).toISOString(),
+          event: CANONICAL_EVENT.codex.protocolWarning,
+          codex_app_server_pid: 1234,
+          thread_id: 'thread-approval',
+          turn_id: 'turn-approval',
+          session_id: 'session-approval',
+          detail: 'guardian policy warning',
+          protocol_warning: {
+            method: 'guardianWarning',
+            reason_code: REASON_CODES.codexProtocolGuardianWarning,
+            message: 'guardian policy warning',
+            severity: 'warn',
+            source: 'app_server_protocol'
+          },
+          protocol_warnings: [
+            {
+              method: 'guardianWarning',
+              reason_code: REASON_CODES.codexProtocolGuardianWarning,
+              message: 'guardian policy warning',
+              severity: 'warn',
+              source: 'app_server_protocol'
+            }
+          ]
+        },
+        harness.now.value + 12
+      )
+    );
+    harness.orchestrator.onWorkerEvent(
+      'i-approval',
+      toWorkerEvent(
+        {
+          timestamp: new Date(harness.now.value + 13).toISOString(),
+          event: CANONICAL_EVENT.codex.modelRerouted,
+          codex_app_server_pid: 1234,
+          thread_id: 'thread-approval',
+          turn_id: 'turn-approval',
+          session_id: 'session-approval',
+          detail: REASON_CODES.codexModelRerouted,
+          model_reroute: {
+            requested_model: 'gpt-requested',
+            effective_model: 'gpt-effective',
+            reason_code: REASON_CODES.codexModelRerouted,
+            source: 'app_server_protocol'
+          },
+          requested_model: 'gpt-requested',
+          effective_model: 'gpt-effective'
+        },
+        harness.now.value + 13
+      )
+    );
+    harness.orchestrator.onWorkerEvent(
+      'i-approval',
+      toWorkerEvent(
+        {
+          timestamp: new Date(harness.now.value + 14).toISOString(),
+          event: CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch,
+          codex_app_server_pid: 1234,
+          thread_id: 'thread-approval',
+          turn_id: 'turn-approval',
+          session_id: 'session-approval',
+          detail: 'dynamic tool capability mismatch',
+          tool_call_id: 'call-dynamic-1',
+          tool_name: 'linear_graphql'
+        },
+        harness.now.value + 14
+      )
+    );
     await new Promise((resolve) => setImmediate(resolve));
 
     const snapshot = harness.orchestrator.getStateSnapshot();
     const running = snapshot.running.get('i-approval');
-    expect(running?.recent_events.at(-1)).toMatchObject({
+    expect(running?.recent_events.find((event) => event.event === CANONICAL_EVENT.codex.unsupportedServerRequest)).toMatchObject({
       event: CANONICAL_EVENT.codex.unsupportedServerRequest,
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
       request_method: 'approval/request',
       request_category: 'approval'
     });
-    expect(snapshot.recent_runtime_events.at(-1)).toMatchObject({
+    expect(snapshot.recent_runtime_events.find((event) => event.event === CANONICAL_EVENT.codex.unsupportedServerRequest)).toMatchObject({
       event: CANONICAL_EVENT.codex.unsupportedServerRequest,
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
       request_method: 'approval/request',
       request_category: 'approval'
     });
-    expect(recordedEvents.at(-1)).toMatchObject({
+    expect(recordedEvents.find((event) => event.event === CANONICAL_EVENT.codex.unsupportedServerRequest)).toMatchObject({
       event: CANONICAL_EVENT.codex.unsupportedServerRequest,
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
       request_method: 'approval/request',
@@ -5571,19 +5657,87 @@ describe('OrchestratorCore', () => {
       request_method: 'approval/request',
       request_category: 'approval'
     });
+    expect(running).toMatchObject({
+      rate_limits: { primary: { remaining: 5, limit: 10 } },
+      protocol_warnings: [
+        {
+          method: 'guardianWarning',
+          reason_code: REASON_CODES.codexProtocolGuardianWarning,
+          message: 'guardian policy warning',
+          severity: 'warn',
+          source: 'app_server_protocol'
+        }
+      ],
+      model_reroute: {
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective',
+        reason_code: REASON_CODES.codexModelRerouted,
+        source: 'app_server_protocol'
+      },
+      requested_model: 'gpt-requested',
+      effective_model: 'gpt-effective'
+    });
+    expect(
+      running?.recent_events.find((event) => event.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch)
+    ).toMatchObject({
+      tool_call_id: 'call-dynamic-1',
+      tool_name: 'linear_graphql'
+    });
 
     const projector = new SnapshotService({ nowMs: () => harness.now.value + 20 });
     const projected = projector.projectState(harness.orchestrator.getStateSnapshot());
     const projectedIssue = projector.projectIssue(harness.orchestrator.getStateSnapshot(), 'ABC-APPROVAL');
-    expect(projectedIssue?.recent_events.at(-1)).toMatchObject({
+    expect(projected.running[0]).toMatchObject({
+      rate_limits: { primary: { remaining: 5, limit: 10 } },
+      protocol_warnings: [
+        {
+          reason_code: REASON_CODES.codexProtocolGuardianWarning,
+          message: 'guardian policy warning'
+        }
+      ],
+      model_reroute: {
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective'
+      },
+      requested_model: 'gpt-requested',
+      effective_model: 'gpt-effective'
+    });
+    expect(projectedIssue?.running).toMatchObject({
+      rate_limits: { primary: { remaining: 5, limit: 10 } },
+      protocol_warnings: [
+        {
+          reason_code: REASON_CODES.codexProtocolGuardianWarning,
+          message: 'guardian policy warning'
+        }
+      ],
+      model_reroute: {
+        requested_model: 'gpt-requested',
+        effective_model: 'gpt-effective'
+      },
+      requested_model: 'gpt-requested',
+      effective_model: 'gpt-effective'
+    });
+    expect(
+      projectedIssue?.recent_events.find((event) => event.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch)
+    ).toMatchObject({
+      tool_call_id: 'call-dynamic-1',
+      tool_name: 'linear_graphql'
+    });
+    expect(projectedIssue?.recent_events.find((event) => event.event === CANONICAL_EVENT.codex.unsupportedServerRequest)).toMatchObject({
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
       request_method: 'approval/request',
       request_category: 'approval'
     });
-    expect(projected.recent_runtime_events.at(-1)).toMatchObject({
+    expect(projected.recent_runtime_events.find((event) => event.event === CANONICAL_EVENT.codex.unsupportedServerRequest)).toMatchObject({
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
       request_method: 'approval/request',
       request_category: 'approval'
+    });
+    expect(
+      projected.recent_runtime_events.find((event) => event.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch)
+    ).toMatchObject({
+      tool_call_id: 'call-dynamic-1',
+      tool_name: 'linear_graphql'
     });
   });
 
