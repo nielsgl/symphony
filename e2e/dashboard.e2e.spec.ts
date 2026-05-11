@@ -129,6 +129,20 @@ async function installDashboardApiMocks(
     });
   });
 
+  await page.route('**/api/v1/stopped-runs/recovery', async (route) => {
+    const payload = typeof options.state === 'function' ? options.state() : options.state;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        stopped_runs: payload.stopped_runs ?? [],
+        counts: {
+          stopped: payload.counts.stopped
+        }
+      })
+    });
+  });
+
   await page.route('**/api/v1/projects/*/history/tickets?limit=50', async (route) => {
     if (!options.projectHistory?.list) {
       await route.fulfill({
@@ -142,6 +156,27 @@ async function installDashboardApiMocks(
       status: options.projectHistory.listStatus ?? 200,
       contentType: 'application/json',
       body: JSON.stringify(options.projectHistory.list)
+    });
+  });
+
+  await page.route('**/api/v1/projects/*/history/health', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        options.projectHistory?.list?.health ?? {
+          status: 'disabled',
+          enabled: false,
+          storage: { type: 'disabled', target: null },
+          schema: { status: 'unavailable', integrity_ok: false, target_version: null, applied_version: null, reason_code: null, detail: null },
+          counts: { runs: 0, tickets: null },
+          retention: { retention_days: null, last_prune: { status: 'never_run', last_pruned_at: null, failure_at: null, failure_reason_code: null, failure_detail: null } },
+          writes: { status: 'healthy', recent_failures: [] },
+          projections: { status: 'unavailable', reason_code: 'project_history_projection_unavailable', detail: null },
+          app_server_lite: { status: 'missing', redacted_event_count: 0, truncated_event_count: 0, unavailable_event_count: 0, full_payload_stored_count: 0 },
+          diagnostics: []
+        }
+      )
     });
   });
 
@@ -398,6 +433,18 @@ test.describe('phase-marker dashboard e2e', () => {
       projectHistory: {
         list: {
           project_identity: { key: projectKey },
+          health: {
+            status: 'degraded',
+            enabled: true,
+            storage: { type: 'sqlite', target: '/tmp/runtime.sqlite' },
+            schema: { status: 'degraded', integrity_ok: false, target_version: 7, applied_version: 7, reason_code: 'history_write_failed', detail: 'history write degraded' },
+            counts: { runs: 2, tickets: 2 },
+            retention: { retention_days: 14, last_prune: { status: 'failed', last_pruned_at: null, failure_at: '2026-05-10T10:00:00.000Z', failure_reason_code: 'retention_prune_failed', failure_detail: 'prune failed' } },
+            writes: { status: 'degraded', recent_failures: [{ operation: 'appendTurn', reason_code: 'history_turn_write_failed', detail: 'redacted', recorded_at: '2026-05-10T10:00:00.000Z' }] },
+            projections: { status: 'degraded', reason_code: 'history_write_failed', detail: 'projection degraded' },
+            app_server_lite: { status: 'degraded', redacted_event_count: 1, truncated_event_count: 1, unavailable_event_count: 0, full_payload_stored_count: 0 },
+            diagnostics: [{ fact: 'history_writes', status: 'degraded', reason_code: 'history_turn_write_failed', detail: 'appendTurn' }]
+          },
           page: { limit: 50, offset: 0, has_more: true, total: 2 },
           tickets: [completedRow, activeRow],
           facts: [{ fact: 'history_schema', status: 'degraded', reason_code: 'history_write_failed', detail: 'history write degraded' }]
@@ -415,6 +462,10 @@ test.describe('phase-marker dashboard e2e', () => {
 
     await expect(page.locator('#project-history-status')).toContainText('Showing 2 of 2 ticket rows');
     await expect(page.locator('#project-history-status')).toContainText('more rows available');
+    await expect(page.locator('#project-history-status')).toContainText('Health: degraded');
+    await expect(page.locator('#project-history-status')).toContainText('retention 14d');
+    await expect(page.locator('#project-history-status')).toContainText('prune failed');
+    await expect(page.locator('#project-history-status')).toContainText('writes degraded');
     await expect(page.locator('#project-history-rows')).toContainText('NIE-200');
     await expect(page.locator('#project-history-rows')).toContainText('completed');
     await expect(page.locator('#project-history-rows')).toContainText('Attempt 2');
@@ -498,6 +549,7 @@ test.describe('phase-marker dashboard e2e', () => {
     });
 
     await page.goto('/');
+    await page.locator('#stopped-run-recovery-load').click();
 
     const panel = page.locator('#stopped-run-recovery-list');
     await expect(panel).toContainText('NIE-68');
@@ -674,7 +726,7 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#blocked-rows')).toContainText('Run is blocked on operator input');
 
     await page.locator('#issue-input').fill('NIE-49');
-    await page.getByRole('button', { name: 'Load' }).click();
+    await page.locator('#issue-load').click();
 
     await expect(page.locator('#issue-explainer-card')).toContainText('Run is alive but waiting too long');
     await expect(page.locator('#issue-explainer-card')).toContainText('required');
@@ -1201,7 +1253,7 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#retry-rows')).toContainText('Last phase: implementation');
 
     await page.locator('#issue-input').fill('NIE-25');
-    await page.getByRole('button', { name: 'Load' }).click();
+    await page.locator('#issue-load').click();
 
     await expect(page.locator('#issue-summary')).toContainText('Last phase before stop: implementation');
     await expect(page.locator('#issue-output')).toContainText('Execution Timeline');
@@ -1302,7 +1354,7 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#running-rows')).toContainText('Last action: submit_input rejected');
 
     await page.locator('#issue-input').fill('NIE-53');
-    await page.getByRole('button', { name: 'Load' }).click();
+    await page.locator('#issue-load').click();
 
     await expect(page.locator('#issue-summary')).toContainText('API degraded: route_not_found');
     await expect(page.locator('#issue-summary')).toContainText('Turn control: Operator Turn');

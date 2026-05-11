@@ -383,6 +383,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       loading: false,
       detailLoadingTicketKey: null,
       listPayload: null,
+      healthPayload: null,
       detailPayload: null,
       error: null,
       detailError: null
@@ -2425,6 +2426,33 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     ].join(' • ');
   }
 
+  function summarizeProjectHistoryHealth(health) {
+    if (!health || typeof health !== 'object') {
+      return 'Health: unavailable';
+    }
+    const storage = health.storage || {};
+    const schema = health.schema || {};
+    const counts = health.counts || {};
+    const retention = health.retention || {};
+    const prune = retention.last_prune || {};
+    const writes = health.writes || {};
+    const projections = health.projections || {};
+    const appServerLite = health.app_server_lite || {};
+    return [
+      'Health: ' + (health.status || 'unknown'),
+      'enabled ' + (health.enabled ? 'yes' : 'no'),
+      'storage ' + (storage.target || storage.type || 'n/a'),
+      'schema ' + (schema.status || 'unknown') + ' / integrity ' + (schema.integrity_ok ? 'ok' : 'degraded'),
+      'runs ' + formatNumber(counts.runs || 0),
+      'tickets ' + (counts.tickets === null || counts.tickets === undefined ? 'n/a' : formatNumber(counts.tickets)),
+      'retention ' + (retention.retention_days === null || retention.retention_days === undefined ? 'n/a' : formatNumber(retention.retention_days) + 'd'),
+      'prune ' + (prune.status || 'unknown'),
+      'writes ' + (writes.status || 'unknown'),
+      'projection ' + (projections.status || 'unknown'),
+      'app-server-lite ' + (appServerLite.status || 'unknown')
+    ].join(' • ');
+  }
+
   function renderProjectHistory() {
     const projectKey = state.projectHistory.projectKey || '';
     elements.projectHistoryProjectKey.value = projectKey;
@@ -2437,8 +2465,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     }
 
     if (state.projectHistory.error) {
-      elements.projectHistoryStatus.textContent = 'Project history unavailable: ' + state.projectHistory.error;
-      elements.projectHistoryFacts.replaceChildren();
+      elements.projectHistoryStatus.textContent =
+        'Project history unavailable: ' + state.projectHistory.error + ' • ' + summarizeProjectHistoryHealth(state.projectHistory.healthPayload);
+      const healthFacts =
+        state.projectHistory.healthPayload && Array.isArray(state.projectHistory.healthPayload.diagnostics)
+          ? state.projectHistory.healthPayload.diagnostics
+          : [];
+      elements.projectHistoryFacts.replaceChildren(...healthFacts.map(createFactBadge));
       elements.projectHistoryRows.replaceChildren(createProjectHistoryEmptyRow('Project history unavailable.'));
       elements.projectHistoryDetail.classList.add('hidden');
       elements.projectHistoryDetail.replaceChildren();
@@ -2465,7 +2498,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       ' of ' +
       (page.total === null || page.total === undefined ? 'unknown' : formatNumber(page.total)) +
       ' ticket rows' +
-      (page.has_more ? ' (bounded page; more rows available).' : '.');
+      (page.has_more ? ' (bounded page; more rows available).' : '.') +
+      ' • ' +
+      summarizeProjectHistoryHealth(payload.health || state.projectHistory.healthPayload);
     elements.projectHistoryFacts.replaceChildren(...(Array.isArray(payload.facts) ? payload.facts.map(createFactBadge) : []));
 
     if (!tickets.length) {
@@ -2642,11 +2677,17 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     renderProjectHistory();
     try {
       state.projectHistory.listPayload = await fetchJson('/api/v1/projects/' + encodeURIComponent(requestedProjectKey) + '/history/tickets?limit=50');
+      state.projectHistory.healthPayload = state.projectHistory.listPayload.health || null;
       state.projectHistory.detailPayload = null;
       state.projectHistory.detailError = null;
     } catch (error) {
       state.projectHistory.listPayload = null;
       state.projectHistory.error = String(error);
+      try {
+        state.projectHistory.healthPayload = await fetchJson('/api/v1/projects/' + encodeURIComponent(requestedProjectKey) + '/history/health');
+      } catch {
+        state.projectHistory.healthPayload = null;
+      }
     } finally {
       state.projectHistory.loading = false;
       renderProjectHistory();
