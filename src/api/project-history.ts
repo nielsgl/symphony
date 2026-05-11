@@ -3,6 +3,7 @@ import type {
   DurableIdentity,
   ExecutionGraphEntityStatus,
   HistorySchemaHealth,
+  PersistenceHealth,
   IssueRunRecord,
   TicketTimelineRecord
 } from '../persistence';
@@ -22,6 +23,54 @@ export interface ProjectHistoryPage {
   offset: number;
   has_more: boolean;
   total: number | null;
+}
+
+export interface ProjectHistoryHealth {
+  status: 'healthy' | 'disabled' | 'degraded';
+  enabled: boolean;
+  storage: {
+    type: 'sqlite' | 'disabled';
+    target: string | null;
+  };
+  schema: {
+    status: 'healthy' | 'degraded' | 'unavailable';
+    integrity_ok: boolean;
+    target_version: number | null;
+    applied_version: number | null;
+    reason_code: string | null;
+    detail: string | null;
+  };
+  counts: {
+    runs: number;
+    tickets: number | null;
+  };
+  retention: {
+    retention_days: number | null;
+    last_prune: {
+      status: 'succeeded' | 'failed' | 'never_run';
+      last_pruned_at: string | null;
+      failure_at: string | null;
+      failure_reason_code: string | null;
+      failure_detail: string | null;
+    };
+  };
+  writes: {
+    status: 'healthy' | 'degraded';
+    recent_failures: NonNullable<PersistenceHealth['recent_write_failures']>;
+  };
+  projections: {
+    status: 'healthy' | 'degraded' | 'unavailable';
+    reason_code: string | null;
+    detail: string | null;
+  };
+  app_server_lite: {
+    status: 'healthy' | 'degraded' | 'missing';
+    redacted_event_count: number;
+    truncated_event_count: number;
+    unavailable_event_count: number;
+    full_payload_stored_count: number;
+  };
+  diagnostics: ProjectHistoryFactState[];
 }
 
 export interface ProjectHistoryTicketRow {
@@ -65,12 +114,14 @@ export interface ProjectHistoryTicketListResponse {
   project_identity: {
     key: string;
   };
+  health: ProjectHistoryHealth;
   page: ProjectHistoryPage;
   tickets: ProjectHistoryTicketRow[];
   facts: ProjectHistoryFactState[];
 }
 
 export interface ProjectHistoryTicketDetailResponse extends ProjectHistoryTicketRow {
+  health: ProjectHistoryHealth;
   timeline: TicketTimelineRecord;
   attempts: TicketTimelineRecord['attempts'];
   phases: TicketTimelineRecord['phase_spans'];
@@ -92,6 +143,7 @@ export interface ProjectHistoryConsumerSummaryResponse {
   schema_version: 'symphony.project_history.consumer_summary.v1';
   read_only: true;
   deferred_capabilities: Array<'validation_reuse' | 'phase_handoff_packets' | 'drain_mode' | 'operator_steering'>;
+  health: ProjectHistoryHealth;
   project_identity: DurableIdentity['project'];
   ticket_identity: DurableIdentity['ticket'];
   current_ticket_state: {
@@ -185,25 +237,44 @@ export function buildProjectHistoryListResponse(params: {
   projectKey: string;
   timelines: TicketTimelineRecord[];
   page: ProjectHistoryPage;
+  persistenceHealth?: PersistenceHealth | null;
   historySchemaHealth?: HistorySchemaHealth | null;
 }): ProjectHistoryTicketListResponse {
+  const historySchemaHealth = params.historySchemaHealth ?? params.persistenceHealth?.history_schema ?? null;
+  const health = buildProjectHistoryHealth({
+    persistenceHealth: params.persistenceHealth ?? null,
+    timelines: params.timelines,
+    ticketCount: params.page.total,
+    projectionAvailable: true,
+    historySchemaHealth
+  });
   return {
     project_identity: {
       key: params.projectKey
     },
+    health,
     page: params.page,
-    tickets: params.timelines.map((timeline) => buildProjectHistoryTicketRow(timeline, params.historySchemaHealth)),
-    facts: historyHealthFacts(params.historySchemaHealth)
+    tickets: params.timelines.map((timeline) => buildProjectHistoryTicketRow(timeline, historySchemaHealth)),
+    facts: health.diagnostics
   };
 }
 
 export function buildProjectHistoryTicketDetailResponse(
   timeline: TicketTimelineRecord,
-  historySchemaHealth?: HistorySchemaHealth | null
+  historySchemaHealth?: HistorySchemaHealth | null,
+  persistenceHealth?: PersistenceHealth | null
 ): ProjectHistoryTicketDetailResponse {
   const row = buildProjectHistoryTicketRow(timeline, historySchemaHealth);
+  const health = buildProjectHistoryHealth({
+    persistenceHealth: persistenceHealth ?? null,
+    timelines: [timeline],
+    ticketCount: 1,
+    projectionAvailable: true,
+    historySchemaHealth
+  });
   return {
     ...row,
+    health,
     timeline,
     attempts: timeline.attempts,
     phases: timeline.phase_spans,
@@ -237,9 +308,17 @@ export function buildProjectHistoryTicketDetailResponse(
 
 export function buildProjectHistoryConsumerSummaryResponse(
   timeline: TicketTimelineRecord,
-  historySchemaHealth?: HistorySchemaHealth | null
+  historySchemaHealth?: HistorySchemaHealth | null,
+  persistenceHealth?: PersistenceHealth | null
 ): ProjectHistoryConsumerSummaryResponse {
   const row = buildProjectHistoryTicketRow(timeline, historySchemaHealth);
+  const health = buildProjectHistoryHealth({
+    persistenceHealth: persistenceHealth ?? null,
+    timelines: [timeline],
+    ticketCount: 1,
+    projectionAvailable: true,
+    historySchemaHealth
+  });
   const recentAttempts = latestItems(timeline.attempts, (attempt) => attempt.started_at, 5).map((attempt) => ({
     attempt_id: attempt.attempt_id,
     attempt_number: attempt.attempt_number,
@@ -285,6 +364,7 @@ export function buildProjectHistoryConsumerSummaryResponse(
     schema_version: 'symphony.project_history.consumer_summary.v1',
     read_only: true,
     deferred_capabilities: ['validation_reuse', 'phase_handoff_packets', 'drain_mode', 'operator_steering'],
+    health,
     project_identity: row.project_identity,
     ticket_identity: row.ticket_identity,
     current_ticket_state: {
@@ -342,6 +422,146 @@ export function buildProjectHistoryConsumerSummaryResponse(
       recorded_at: evidence.recorded_at,
       metadata: evidence.metadata
     }))
+  };
+}
+
+export function buildProjectHistoryHealth(params: {
+  persistenceHealth?: PersistenceHealth | null;
+  timelines?: TicketTimelineRecord[];
+  ticketCount?: number | null;
+  projectionAvailable?: boolean;
+  projectionFailureReasonCode?: string | null;
+  projectionFailureDetail?: string | null;
+  historySchemaHealth?: HistorySchemaHealth | null;
+}): ProjectHistoryHealth {
+  const persistenceHealth = params.persistenceHealth ?? null;
+  const timelines = params.timelines ?? [];
+  const historySchema = params.historySchemaHealth ?? persistenceHealth?.history_schema ?? null;
+  const recentFailures = persistenceHealth?.recent_write_failures ?? [];
+  const appServerEvents = timelines.flatMap((timeline) => timeline.app_server_events);
+  const projectionFacts = timelines.flatMap((timeline) => timelineFacts(timeline, historySchema));
+  const projectionDegradedFact = projectionFacts.find((fact) => fact.status === 'degraded' || fact.status === 'unavailable');
+  const projectionMissingFact = projectionFacts.find((fact) => fact.status === 'missing');
+  const projectionReason =
+    params.projectionFailureReasonCode ?? projectionDegradedFact?.reason_code ?? projectionMissingFact?.reason_code ?? null;
+  const projectionDetail = params.projectionFailureDetail ?? projectionDegradedFact?.detail ?? null;
+  const projectionAvailable = params.projectionAvailable ?? true;
+  const projectionStatus: ProjectHistoryHealth['projections']['status'] = !projectionAvailable
+    ? 'unavailable'
+    : projectionReason
+      ? 'degraded'
+      : 'healthy';
+  const redactedEventCount = appServerEvents.filter((event) => event.redaction_status === 'redacted').length;
+  const truncatedEventCount = appServerEvents.filter((event) => event.truncation.truncated).length;
+  const unavailableEventCount = appServerEvents.filter((event) => event.unavailable_reason_code).length;
+  const fullPayloadStoredCount = appServerEvents.filter((event) => event.full_payload_stored).length;
+  const appServerStatus: ProjectHistoryHealth['app_server_lite']['status'] =
+    appServerEvents.length === 0
+      ? 'missing'
+      : redactedEventCount > 0 || truncatedEventCount > 0 || unavailableEventCount > 0 || fullPayloadStoredCount > 0
+        ? 'degraded'
+        : 'healthy';
+  const schemaStatus = historySchema?.status ?? (persistenceHealth?.enabled === false ? 'unavailable' : 'unavailable');
+  const pruneStatus: ProjectHistoryHealth['retention']['last_prune']['status'] = persistenceHealth?.last_prune_failure_at
+    ? 'failed'
+    : persistenceHealth?.last_pruned_at
+      ? 'succeeded'
+      : 'never_run';
+  const disabled = persistenceHealth?.enabled === false;
+  const degraded =
+    !disabled &&
+    (!persistenceHealth ||
+      persistenceHealth.integrity_ok === false ||
+      schemaStatus === 'degraded' ||
+      recentFailures.length > 0 ||
+      pruneStatus === 'failed' ||
+      projectionStatus !== 'healthy' ||
+      appServerStatus === 'degraded');
+  const diagnostics: ProjectHistoryFactState[] = [
+    ...historyHealthFacts(historySchema),
+    {
+      fact: 'history_persistence',
+      status: disabled ? 'unavailable' : persistenceHealth ? 'present' : 'unavailable',
+      reason_code: disabled ? 'project_history_persistence_disabled' : persistenceHealth ? null : 'project_history_health_unavailable',
+      detail: null
+    },
+    {
+      fact: 'history_writes',
+      status: recentFailures.length > 0 ? 'degraded' : 'present',
+      reason_code: recentFailures.length > 0 ? recentFailures[0]?.reason_code ?? 'history_write_failed' : null,
+      detail: recentFailures.length > 0 ? recentFailures[0]?.operation ?? null : null
+    },
+    {
+      fact: 'history_retention',
+      status: pruneStatus === 'failed' ? 'degraded' : 'present',
+      reason_code: pruneStatus === 'failed' ? persistenceHealth?.last_prune_failure_reason ?? 'retention_prune_failed' : null,
+      detail: pruneStatus === 'failed' ? persistenceHealth?.last_prune_failure_detail ?? null : null
+    },
+    {
+      fact: 'history_projection',
+      status: projectionStatus === 'healthy' ? 'present' : projectionStatus,
+      reason_code: projectionReason,
+      detail: projectionDetail
+    },
+    {
+      fact: 'app_server_lite_health',
+      status: appServerStatus === 'healthy' ? 'present' : appServerStatus === 'missing' ? 'missing' : 'degraded',
+      reason_code:
+        appServerStatus === 'missing'
+          ? REASON_CODES.projectHistoryAppServerLiteSummariesMissing
+          : appServerStatus === 'degraded'
+            ? 'project_history_app_server_lite_degraded'
+            : null,
+      detail: appServerStatus === 'degraded' ? `redacted=${redactedEventCount} truncated=${truncatedEventCount} unavailable=${unavailableEventCount}` : null
+    }
+  ];
+
+  return {
+    status: disabled ? 'disabled' : degraded ? 'degraded' : 'healthy',
+    enabled: persistenceHealth?.enabled ?? false,
+    storage: {
+      type: persistenceHealth?.enabled === false ? 'disabled' : 'sqlite',
+      target: persistenceHealth?.db_path ?? null
+    },
+    schema: {
+      status: schemaStatus,
+      integrity_ok: persistenceHealth?.integrity_ok ?? false,
+      target_version: historySchema?.target_version ?? null,
+      applied_version: historySchema?.applied_version ?? null,
+      reason_code: historySchema?.degraded_reason_code ?? null,
+      detail: historySchema?.degraded_detail ?? null
+    },
+    counts: {
+      runs: persistenceHealth?.run_count ?? 0,
+      tickets: params.ticketCount ?? persistenceHealth?.ticket_count ?? null
+    },
+    retention: {
+      retention_days: persistenceHealth?.retention_days ?? null,
+      last_prune: {
+        status: pruneStatus,
+        last_pruned_at: persistenceHealth?.last_pruned_at ?? null,
+        failure_at: persistenceHealth?.last_prune_failure_at ?? null,
+        failure_reason_code: persistenceHealth?.last_prune_failure_reason ?? null,
+        failure_detail: persistenceHealth?.last_prune_failure_detail ?? null
+      }
+    },
+    writes: {
+      status: recentFailures.length > 0 ? 'degraded' : 'healthy',
+      recent_failures: recentFailures
+    },
+    projections: {
+      status: projectionStatus,
+      reason_code: projectionReason,
+      detail: projectionDetail
+    },
+    app_server_lite: {
+      status: appServerStatus,
+      redacted_event_count: redactedEventCount,
+      truncated_event_count: truncatedEventCount,
+      unavailable_event_count: unavailableEventCount,
+      full_payload_stored_count: fullPayloadStoredCount
+    },
+    diagnostics
   };
 }
 

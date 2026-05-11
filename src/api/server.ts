@@ -2,7 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../observability/events';
-import type { DurableRunHistoryRecord } from '../persistence';
+import type { DurableRunHistoryRecord, TicketTimelineRecord } from '../persistence';
 import { redactUnknown } from '../security/redaction';
 import { ControlPlaneHealthRecorder, type ControlPlaneHealthState, type ControlPlaneObservation } from './control-plane-health';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
@@ -20,6 +20,7 @@ import {
 } from './telemetry';
 import {
   buildProjectHistoryConsumerSummaryResponse,
+  buildProjectHistoryHealth,
   buildProjectHistoryListResponse,
   buildProjectHistoryTicketDetailResponse
 } from './project-history';
@@ -1302,6 +1303,7 @@ export class LocalApiServer {
               const offset = parseNonNegativeInteger(requestUrl.searchParams.get('offset'));
               const page = this.diagnosticsSource.listProjectTicketIdentities(projectKey, { limit, offset });
               const timelines = page.items.map((identity) => this.diagnosticsSource!.reconstructTicketTimeline!(identity));
+              const persistenceHealth = this.diagnosticsSource.getPersistenceHealth();
 
               sendJson(response, 200, buildProjectHistoryListResponse({
                 projectKey,
@@ -1312,7 +1314,57 @@ export class LocalApiServer {
                   has_more: page.has_more,
                   total: page.total
                 },
-                historySchemaHealth: this.diagnosticsSource.getPersistenceHealth().history_schema ?? null
+                persistenceHealth
+              }));
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/projects\/([^/]+)\/history\/health$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response, match) => {
+              if (!this.diagnosticsSource) {
+                sendJson(response, 200, buildProjectHistoryHealth({
+                  persistenceHealth: null,
+                  projectionAvailable: false,
+                  projectionFailureReasonCode: 'project_history_unavailable',
+                  projectionFailureDetail: 'Diagnostics source is not configured'
+                }));
+                return;
+              }
+
+              const projectKey = decodeURIComponent(match[1]);
+              const projectionAvailable = !!(
+                this.diagnosticsSource.listProjectTicketIdentities &&
+                this.diagnosticsSource.reconstructTicketTimeline
+              );
+              let timelines: TicketTimelineRecord[] = [];
+              let ticketCount: number | null = null;
+              let projectionFailureReasonCode: string | null = null;
+              let projectionFailureDetail: string | null = null;
+              if (projectionAvailable) {
+                try {
+                  const page = this.diagnosticsSource.listProjectTicketIdentities!(projectKey, { limit: 100, offset: 0 });
+                  timelines = page.items.map((identity) => this.diagnosticsSource!.reconstructTicketTimeline!(identity));
+                  ticketCount = page.total;
+                } catch (error) {
+                  projectionFailureReasonCode = 'project_history_projection_failed';
+                  projectionFailureDetail = error instanceof Error ? error.message : String(error);
+                }
+              } else {
+                projectionFailureReasonCode = 'project_history_projection_unavailable';
+              }
+
+              sendJson(response, 200, buildProjectHistoryHealth({
+                persistenceHealth: this.diagnosticsSource.getPersistenceHealth(),
+                timelines,
+                ticketCount,
+                projectionAvailable: projectionAvailable && projectionFailureReasonCode === null,
+                projectionFailureReasonCode,
+                projectionFailureDetail
               }));
             }
           }
@@ -1334,13 +1386,15 @@ export class LocalApiServer {
               if (!identity) {
                 throw new LocalApiError('project_history_ticket_not_found', `Ticket ${ticketKey} was not found for project ${projectKey}`, 404);
               }
+              const persistenceHealth = this.diagnosticsSource.getPersistenceHealth();
 
               sendJson(
                 response,
                 200,
                 buildProjectHistoryConsumerSummaryResponse(
                   this.diagnosticsSource.reconstructTicketTimeline(identity),
-                  this.diagnosticsSource.getPersistenceHealth().history_schema ?? null
+                  persistenceHealth.history_schema ?? null,
+                  persistenceHealth
                 )
               );
             }
@@ -1363,10 +1417,12 @@ export class LocalApiServer {
               if (!identity) {
                 throw new LocalApiError('project_history_ticket_not_found', `Ticket ${ticketKey} was not found for project ${projectKey}`, 404);
               }
+              const persistenceHealth = this.diagnosticsSource.getPersistenceHealth();
 
               sendJson(response, 200, buildProjectHistoryTicketDetailResponse(
                 this.diagnosticsSource.reconstructTicketTimeline(identity),
-                this.diagnosticsSource.getPersistenceHealth().history_schema ?? null
+                persistenceHealth.history_schema ?? null,
+                persistenceHealth
               ));
             }
           }

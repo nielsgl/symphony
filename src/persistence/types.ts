@@ -400,12 +400,14 @@ export interface PersistenceHealth {
   db_path: string | null;
   retention_days: number;
   run_count: number;
+  ticket_count?: number;
   last_pruned_at: string | null;
   last_prune_failure_at: string | null;
   last_prune_failure_reason: string | null;
   last_prune_failure_detail: string | null;
   integrity_ok: boolean;
   history_schema?: HistorySchemaHealth;
+  recent_write_failures?: HistoryWriteFailureRecord[];
 }
 
 export type HistorySchemaStatus = 'healthy' | 'degraded';
