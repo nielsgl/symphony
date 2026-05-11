@@ -4,11 +4,23 @@ import { promises as fs } from 'node:fs';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { buildDurableIdentity } from '../../src/persistence/identity';
 import { SqlitePersistenceStore } from '../../src/persistence/store';
 
 describe('SqlitePersistenceStore', () => {
   const dirs: string[] = [];
   const stores: SqlitePersistenceStore[] = [];
+  const identity = (params: { issue_id?: string; issue_identifier?: string; projectRoot?: string; workflowPath?: string; trackerScope?: string | null } = {}) =>
+    buildDurableIdentity({
+      projectRoot: params.projectRoot ?? '/repo/main',
+      workflowPath: params.workflowPath ?? '/repo/main/WORKFLOW.md',
+      workflowHash: { status: 'present', value: 'workflow-hash' },
+      repositoryRemote: { status: 'present', value: 'git@github.com:nielsgl/symphony.git' },
+      trackerKind: 'linear',
+      trackerScope: params.trackerScope ?? 'symphony',
+      remoteIssueId: params.issue_id ?? 'issue-1',
+      humanIssueIdentifier: params.issue_identifier ?? 'ABC-1'
+    });
 
   afterEach(async () => {
     while (stores.length > 0) {
@@ -31,7 +43,7 @@ describe('SqlitePersistenceStore', () => {
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
 
-    const runId = storeA.startRun({ issue_id: 'i-1', issue_identifier: 'ABC-1' });
+    const runId = storeA.startRun({ issue_id: 'i-1', issue_identifier: 'ABC-1', identity: identity({ issue_id: 'i-1' }) });
     storeA.recordSession(runId, 'thread-1-turn-1');
     storeA.recordEvent({ run_id: runId, timestamp_ms: Date.parse('2026-04-11T10:01:00.000Z'), event: 'turn_completed', message: 'ok' });
     storeA.completeRun({ run_id: runId, terminal_status: 'succeeded' });
@@ -45,8 +57,117 @@ describe('SqlitePersistenceStore', () => {
     expect(history).toHaveLength(1);
     expect(history[0].run_id).toBe(runId);
     expect(history[0].terminal_status).toBe('succeeded');
+    expect(history[0].identity?.project.key).toBe(identity({ issue_id: 'i-1' }).project.key);
+    expect(history[0].identity?.ticket.remote_issue_id).toBe('i-1');
     expect(history[0].completed_at).toBe('2026-04-11T10:00:00.000Z');
     expect(history[0].session_ids).toEqual(['thread-1-turn-1']);
+  });
+
+  it('persists durable project and ticket identity across run and execution graph reopen', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-identity-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const durableIdentity = identity({
+      issue_id: 'linear-remote-1',
+      issue_identifier: 'NIE-139',
+      projectRoot: path.join(dir, 'same-name'),
+      workflowPath: path.join(dir, 'same-name', 'WORKFLOW.md')
+    });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    const runId = storeA.startRun({
+      issue_id: 'linear-remote-1',
+      issue_identifier: 'NIE-139',
+      identity: durableIdentity
+    });
+    const issueRunId = storeA.appendIssueRun({
+      issue_id: 'linear-remote-1',
+      issue_identifier: 'NIE-139',
+      identity: durableIdentity,
+      started_at: '2026-04-11T10:00:00.000Z',
+      status: 'running'
+    });
+    const attemptId = storeA.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-11T10:00:01.000Z',
+      status: 'running'
+    });
+    const threadId = storeA.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'thread-identity',
+      started_at: '2026-04-11T10:00:02.000Z',
+      status: 'running'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+
+    expect(storeB.listRunHistory()[0]).toMatchObject({
+      run_id: runId,
+      identity: durableIdentity
+    });
+    expect(storeB.reconstructThreadLineage(threadId)?.issue_run.identity).toEqual(durableIdentity);
+  });
+
+  it('keeps project and ticket identity collision inputs distinct', () => {
+    const rootA = identity({
+      issue_id: 'remote-1',
+      issue_identifier: 'TASK-1',
+      projectRoot: '/work/a/service',
+      workflowPath: '/work/a/service/WORKFLOW.md'
+    });
+    const rootB = identity({
+      issue_id: 'remote-1',
+      issue_identifier: 'TASK-1',
+      projectRoot: '/work/b/service',
+      workflowPath: '/work/b/service/WORKFLOW.md'
+    });
+    const workflowChanged = identity({
+      issue_id: 'remote-1',
+      issue_identifier: 'TASK-1',
+      projectRoot: '/work/a/service',
+      workflowPath: '/work/a/service/alternate/WORKFLOW.md'
+    });
+    const renamedTicket = identity({
+      issue_id: 'remote-1',
+      issue_identifier: 'TASK-99',
+      projectRoot: '/work/a/service',
+      workflowPath: '/work/a/service/WORKFLOW.md'
+    });
+    const reusedHumanIdOtherScope = identity({
+      issue_id: 'remote-2',
+      issue_identifier: 'TASK-1',
+      projectRoot: '/work/a/service',
+      workflowPath: '/work/a/service/WORKFLOW.md',
+      trackerScope: 'other-project'
+    });
+
+    expect(rootA.project.key).not.toBe(rootB.project.key);
+    expect(rootA.project.key).not.toBe(workflowChanged.project.key);
+    expect(rootA.ticket.key).toBe(renamedTicket.ticket.key);
+    expect(rootA.ticket.human_issue_identifier).not.toBe(renamedTicket.ticket.human_issue_identifier);
+    expect(rootA.ticket.key).not.toBe(reusedHumanIdOtherScope.ticket.key);
+  });
+
+  it('represents missing optional identity evidence explicitly', () => {
+    const missingEvidence = buildDurableIdentity({
+      projectRoot: '/repo',
+      workflowPath: '/repo/WORKFLOW.md',
+      workflowHash: { status: 'missing', reason: 'workflow_file_unreadable' },
+      repositoryRemote: { status: 'missing', reason: 'repository_remote_unavailable' },
+      trackerKind: 'linear',
+      trackerScope: null,
+      remoteIssueId: 'issue-1',
+      humanIssueIdentifier: 'ABC-1'
+    });
+
+    expect(missingEvidence.project.workflow_hash).toEqual({ status: 'missing', reason: 'workflow_file_unreadable' });
+    expect(missingEvidence.project.repository_remote).toEqual({ status: 'missing', reason: 'repository_remote_unavailable' });
+    expect(missingEvidence.ticket.tracker_scope).toEqual({ status: 'missing', reason: 'tracker_scope_unavailable' });
   });
 
   it('persists completed_at for terminal statuses and leaves active runs null', async () => {
@@ -59,9 +180,17 @@ describe('SqlitePersistenceStore', () => {
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => nowMs });
     stores.push(storeA);
 
-    const activeRunId = storeA.startRun({ issue_id: 'active-1', issue_identifier: 'ACTIVE-1' });
+    const activeRunId = storeA.startRun({
+      issue_id: 'active-1',
+      issue_identifier: 'ACTIVE-1',
+      identity: identity({ issue_id: 'active-1', issue_identifier: 'ACTIVE-1' })
+    });
     for (const [index, terminal_status] of terminalStatuses.entries()) {
-      const runId = storeA.startRun({ issue_id: `issue-${index}`, issue_identifier: `ABC-${index}` });
+      const runId = storeA.startRun({
+        issue_id: `issue-${index}`,
+        issue_identifier: `ABC-${index}`,
+        identity: identity({ issue_id: `issue-${index}`, issue_identifier: `ABC-${index}` })
+      });
       nowMs = Date.parse(`2026-04-11T10:0${index + 1}:00.000Z`);
       storeA.completeRun({
         run_id: runId,
@@ -106,7 +235,7 @@ describe('SqlitePersistenceStore', () => {
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:05:00.000Z') });
     stores.push(storeA);
 
-    const runId = storeA.startRun({ issue_id: 'i-1', issue_identifier: 'ABC-1' });
+    const runId = storeA.startRun({ issue_id: 'i-1', issue_identifier: 'ABC-1', identity: identity({ issue_id: 'i-1' }) });
     storeA.recordSession(runId, 'session-linear');
     storeA.completeRun({
       run_id: runId,
@@ -174,6 +303,7 @@ describe('SqlitePersistenceStore', () => {
     const issueRunId = storeA.appendIssueRun({
       issue_id: 'issue-1',
       issue_identifier: 'ABC-1',
+      identity: identity(),
       started_at: '2026-04-11T10:00:00.000Z',
       status: 'running',
       reason_code: 'dispatch_started',
@@ -274,6 +404,7 @@ describe('SqlitePersistenceStore', () => {
     const issueRunId = store.appendIssueRun({
       issue_id: 'issue-1',
       issue_identifier: 'ABC-1',
+      identity: identity(),
       started_at: '2026-04-11T10:00:00.000Z',
       status: 'running'
     });
@@ -396,7 +527,11 @@ describe('SqlitePersistenceStore', () => {
 
     const legacyStore = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
     stores.push(legacyStore);
-    const legacyRunId = legacyStore.startRun({ issue_id: 'legacy-1', issue_identifier: 'LEG-1' });
+    const legacyRunId = legacyStore.startRun({
+      issue_id: 'legacy-1',
+      issue_identifier: 'LEG-1',
+      identity: identity({ issue_id: 'legacy-1', issue_identifier: 'LEG-1' })
+    });
     legacyStore.recordSession(legacyRunId, 'legacy-thread-legacy-turn');
     legacyStore.completeRun({ run_id: legacyRunId, terminal_status: 'succeeded' });
     legacyStore.close();
@@ -407,6 +542,7 @@ describe('SqlitePersistenceStore', () => {
     const issueRunId = migratedStore.appendIssueRun({
       issue_id: 'issue-2',
       issue_identifier: 'ABC-2',
+      identity: identity({ issue_id: 'issue-2', issue_identifier: 'ABC-2' }),
       started_at: '2026-04-11T11:00:00.000Z',
       status: 'running'
     });
@@ -459,7 +595,11 @@ describe('SqlitePersistenceStore', () => {
     const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base });
     stores.push(store);
 
-    const runId = store.startRun({ issue_id: 'i-old', issue_identifier: 'OLD-1' });
+    const runId = store.startRun({
+      issue_id: 'i-old',
+      issue_identifier: 'OLD-1',
+      identity: identity({ issue_id: 'i-old', issue_identifier: 'OLD-1' })
+    });
     store.completeRun({ run_id: runId, terminal_status: 'failed', error_code: 'token=abcd1234' });
 
     // Move clock forward by 2 days and prune.

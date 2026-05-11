@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
 import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort, toWorkerEvent } from '../../src/runtime';
-import { SqlitePersistenceStore } from '../../src/persistence';
+import { SqlitePersistenceStore, buildDurableIdentity } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
 
 function requireApiAddress(runtime: { apiServer: { address: () => { host: string; port: number } } | null }) {
@@ -579,7 +579,20 @@ describe('createRuntimeEnvironment', () => {
       retentionDays: 14,
       nowMs: () => seededAtMs
     });
-    const runId = seedStore.startRun({ issue_id: 'issue-1', issue_identifier: 'ABC-1' });
+    const runId = seedStore.startRun({
+      issue_id: 'issue-1',
+      issue_identifier: 'ABC-1',
+      identity: buildDurableIdentity({
+        projectRoot: workflowDir,
+        workflowPath,
+        workflowHash: { status: 'present', value: 'workflow-hash' },
+        repositoryRemote: { status: 'missing', reason: 'repository_remote_unavailable' },
+        trackerKind: 'linear',
+        trackerScope: 'TEST',
+        remoteIssueId: 'issue-1',
+        humanIssueIdentifier: 'ABC-1'
+      })
+    });
     seedStore.recordSession(runId, 'thread-1-turn-1');
     seedStore.completeRun({ run_id: runId, terminal_status: 'succeeded' });
     seedStore.close();
