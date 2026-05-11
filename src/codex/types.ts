@@ -157,4 +157,6 @@ export interface CodexRunnerEvent {
   tool_name?: string;
   tool_call_evidence_source?: 'worker_event' | 'app_server_protocol' | 'session_transcript';
   terminal_source?: 'app_server_protocol' | 'session_transcript';
+  reason_code?: string;
+  request_method?: string;
 }

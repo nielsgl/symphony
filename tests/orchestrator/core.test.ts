@@ -5304,7 +5304,52 @@ describe('OrchestratorCore', () => {
     expect(failureLog?.context).not.toHaveProperty('identifier');
   });
 
-  it('emits typed retry cleanup when a refresh-failure retry is no longer active', async () => {
+  it('retries only tracker refresh after a completed turn refresh failure', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-refresh-retry', identifier: 'ABC-REFRESH', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-refresh-retry', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'completed-thread',
+      turn_id: 'completed-turn',
+      session_id: 'completed-session'
+    });
+
+    await harness.orchestrator.onWorkerExit('i-refresh-retry', 'normal', 'issue_state_refresh_failed: fetch failed', {
+      completion_reason: REASON_CODES.issueStateRefreshFailed
+    });
+
+    const refreshRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-refresh-retry');
+    expect(refreshRetry).toMatchObject({
+      attempt: 1,
+      error: 'tracker state refresh pending',
+      stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+      previous_thread_id: 'completed-thread',
+      previous_session_id: 'completed-session'
+    });
+
+    harness.tracker.fetch_candidate_issues.mockClear();
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-refresh-retry', identifier: 'ABC-REFRESH', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.onRetryTimer('i-refresh-retry');
+
+    expect(harness.tracker.fetch_issue_states_by_ids).toHaveBeenCalledWith(['i-refresh-retry']);
+    expect(harness.tracker.fetch_candidate_issues).not.toHaveBeenCalled();
+    expect(harness.spawned).toHaveLength(1);
+    expect(harness.orchestrator.getStateSnapshot().retry_attempts.get('i-refresh-retry')).toMatchObject({
+      attempt: 1,
+      error: null,
+      stop_reason_code: REASON_CODES.normalCompletion,
+      previous_thread_id: 'completed-thread',
+      previous_session_id: 'completed-session'
+    });
+  });
+
+  it('emits typed retry cleanup when a refresh-failure retry resolves terminal', async () => {
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
     const logger: StructuredLogger = {
       log: ({ event, context }) => {
@@ -5319,13 +5364,14 @@ describe('OrchestratorCore', () => {
 
     await harness.orchestrator.onWorkerExit(
       'i-refresh-cleanup',
-      'abnormal',
-      'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed'
+      'normal',
+      'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed',
+      { completion_reason: REASON_CODES.issueStateRefreshFailed }
     );
     const scheduledRetry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-refresh-cleanup');
     expect(scheduledRetry?.stop_reason_code).toBe(REASON_CODES.issueStateRefreshFailed);
 
-    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
       makeIssue({ id: 'i-refresh-cleanup', identifier: 'ABC-CLEANUP', state: 'Done' })
     ]);
     await harness.orchestrator.onRetryTimer('i-refresh-cleanup');
@@ -5457,6 +5503,73 @@ describe('OrchestratorCore', () => {
     expect(persistenceFailure?.context.issue_id).toBe('i-session-fail');
     expect(persistenceFailure?.context.issue_identifier).toBe('ABC-5');
     expect(persistenceFailure?.context.session_id).toBe('thread-9-turn-1');
+  });
+
+  it('preserves unsupported approval method evidence beyond the runner callback', async () => {
+    const recordedEvents: Array<Record<string, unknown>> = [];
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-approval',
+      recordSession: async () => undefined,
+      recordEvent: async (params) => {
+        recordedEvents.push(params);
+      },
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-approval', identifier: 'ABC-APPROVAL' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-approval', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      thread_id: 'thread-approval',
+      turn_id: 'turn-approval',
+      session_id: 'session-approval',
+      detail: 'approval/request',
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-approval');
+    expect(running?.recent_events.at(-1)).toMatchObject({
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    expect(snapshot.recent_runtime_events.at(-1)).toMatchObject({
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    expect(recordedEvents.at(-1)).toMatchObject({
+      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    expect(logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerEvent)?.context).toMatchObject({
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+
+    const projector = new SnapshotService({ nowMs: () => harness.now.value + 20 });
+    const projected = projector.projectState(harness.orchestrator.getStateSnapshot());
+    const projectedIssue = projector.projectIssue(harness.orchestrator.getStateSnapshot(), 'ABC-APPROVAL');
+    expect(projectedIssue?.recent_events.at(-1)).toMatchObject({
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
+    expect(projected.recent_runtime_events.at(-1)).toMatchObject({
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
+    });
   });
 
   it('persists normalized execution graph from real dispatch and worker lifecycle events', async () => {

@@ -299,8 +299,9 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
     ? blocked.session_console?.map((event) => ({
         at_ms: event.at_ms,
         event: event.event,
-        reason_code: blocked.stop_reason_code,
+        reason_code: event.reason_code ?? blocked.stop_reason_code,
         reason_detail: event.message ?? blocked.stop_reason_detail,
+        ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
         thread_id: threadId,
         turn_id: null,
         session_id: sessionId
@@ -310,8 +311,9 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
     ...(source?.recent_events ?? []).map((event) => ({
       at_ms: event.at_ms,
       event: event.event,
-      reason_code: null,
+      reason_code: event.reason_code ?? null,
       reason_detail: event.message,
+      ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
       thread_id: threadId,
       turn_id: source?.turn_id ?? null,
       session_id: sessionId
