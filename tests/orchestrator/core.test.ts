@@ -5874,6 +5874,138 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
+  it('records terminal run completion write failures as degraded history diagnostics', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
+    const terminalOutcomes: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketTerminalOutcome']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-terminal-complete-failure',
+      appendIssueRun: async () => 'issue-run-terminal-complete-failure',
+      appendAttempt: async () => 'attempt-terminal-complete-failure',
+      appendThread: async (params) => String(params.thread_id),
+      appendTurn: async (params) => String(params.turn_id),
+      appendTicketTerminalOutcome: async (params) => {
+        terminalOutcomes.push(params);
+        return 'terminal-complete-failure-outcome';
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => {
+        throw new Error('database locked token=terminal-secret');
+      }
+    };
+    const harness = createHarness({
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-terminal-complete-failure', identifier: 'ABC-TERM-COMPLETE-FAIL' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-terminal-complete-failure', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-terminal-complete-failure',
+      turn_id: 'turn-terminal-complete-failure',
+      session_id: 'session-terminal-complete-failure'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.orchestrator.onWorkerExit('i-terminal-complete-failure', 'normal');
+
+    expect(logs.find((entry) => entry.event === CANONICAL_EVENT.persistence.completeRunFailed)?.context).toMatchObject({
+      issue_id: 'i-terminal-complete-failure',
+      issue_identifier: 'ABC-TERM-COMPLETE-FAIL',
+      session_id: 'session-terminal-complete-failure'
+    });
+    expect(writeFailures).toEqual([
+      expect.objectContaining({
+        operation: 'completeRun',
+        reason_code: REASON_CODES.normalCompletion,
+        detail: 'database locked token=***REDACTED***'
+      })
+    ]);
+    expect(terminalOutcomes).toEqual([
+      expect.objectContaining({
+        issue_run_id: 'issue-run-terminal-complete-failure',
+        outcome: 'succeeded',
+        reason_code: null
+      })
+    ]);
+  });
+
+  it('records terminal outcome write failures as degraded history diagnostics', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
+    const completedRuns: Array<Parameters<OrchestratorPersistencePort['completeRun']>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-terminal-outcome-failure',
+      appendIssueRun: async () => 'issue-run-terminal-outcome-failure',
+      appendAttempt: async () => 'attempt-terminal-outcome-failure',
+      appendThread: async (params) => String(params.thread_id),
+      appendTurn: async (params) => String(params.turn_id),
+      appendTicketTerminalOutcome: async () => {
+        throw new Error('database locked token=outcome-secret');
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
+    };
+    const harness = createHarness({
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-terminal-outcome-failure', identifier: 'ABC-TERM-OUTCOME-FAIL' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-terminal-outcome-failure', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-terminal-outcome-failure',
+      turn_id: 'turn-terminal-outcome-failure',
+      session_id: 'session-terminal-outcome-failure'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await harness.orchestrator.onWorkerExit('i-terminal-outcome-failure', 'normal');
+
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        run_id: 'legacy-run-terminal-outcome-failure',
+        terminal_status: 'succeeded',
+        terminal_reason_code: null
+      })
+    ]);
+    expect(logs.find((entry) => entry.event === CANONICAL_EVENT.persistence.recordEventFailed)?.context).toMatchObject({
+      issue_id: 'i-terminal-outcome-failure',
+      issue_identifier: 'ABC-TERM-OUTCOME-FAIL',
+      issue_run_id: 'issue-run-terminal-outcome-failure',
+      attempt_id: 'attempt-terminal-outcome-failure',
+      reason_code: null,
+      error: 'database locked token=outcome-secret'
+    });
+    expect(writeFailures).toEqual([
+      expect.objectContaining({
+        operation: 'appendTicketTerminalOutcome',
+        reason_code: REASON_CODES.normalCompletion,
+        detail: 'database locked token=***REDACTED***'
+      })
+    ]);
+  });
+
   it('persists duplicate-timestamp codex.turn.waiting heartbeats without generic record-failed warnings', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-wait-heartbeats-'));
     const store = new SqlitePersistenceStore({
@@ -5958,6 +6090,7 @@ describe('OrchestratorCore', () => {
 
   it('logs typed execution graph persistence failure context without leaking secrets', async () => {
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'legacy-run-failure-context',
       appendIssueRun: async () => 'issue-run-failure-context',
@@ -5966,6 +6099,9 @@ describe('OrchestratorCore', () => {
       appendTurn: async () => 'turn-failure-context',
       appendPhaseSpan: async () => {
         throw new Error('database locked token=secret-value');
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
       },
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
@@ -6013,6 +6149,61 @@ describe('OrchestratorCore', () => {
         active_turn_id: 'turn-failure-context'
       })
     );
+    expect(writeFailures).toEqual([
+      expect.objectContaining({
+        operation: 'appendPhaseSpan',
+        reason_code: 'codex_turn_waiting',
+        detail: 'database locked token=***REDACTED***'
+      })
+    ]);
+  });
+
+  it('does not mark a turn persisted when the durable turn write fails', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-turn-failure',
+      appendIssueRun: async () => 'issue-run-turn-failure',
+      appendAttempt: async () => 'attempt-turn-failure',
+      appendThread: async () => 'thread-turn-failure',
+      appendTurn: async () => {
+        throw new Error('database locked before turn flush');
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-turn-failure', identifier: 'ABC-TURN-FAIL' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-turn-failure', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-turn-failure',
+      turn_id: 'turn-turn-failure',
+      session_id: 'session-turn-failure'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-turn-failure');
+    expect(running?.persisted_turn_ids).toEqual([]);
+    expect(running?.pending_persisted_turn_ids).toEqual([]);
+    expect(writeFailures).toEqual([
+      expect.objectContaining({
+        operation: 'appendTurn',
+        reason_code: 'codex_turn_started',
+        detail: 'database locked before turn flush'
+      })
+    ]);
   });
 
   it('persists retry timer redispatch attempts under the original issue run', async () => {
