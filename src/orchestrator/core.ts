@@ -7598,7 +7598,8 @@ export class OrchestratorCore {
         turn_id: rootCause.turn_id ?? runningEntry.turn_id ?? null,
         missing_tool_output_recovery: this.buildDurableMissingToolOutputRecoveryContext(runningEntry, recoveryOverride)
       });
-    } catch {
+    } catch (error) {
+      await this.recordHistoryWriteFailure('completeRun', error_code ?? REASON_CODES.normalCompletion, error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.completeRunFailed,
@@ -7641,6 +7642,7 @@ export class OrchestratorCore {
         recorded_at: rootCause.at ?? asIso(this.nowMs())
       });
     } catch (error) {
+      await this.recordHistoryWriteFailure('appendTicketTerminalOutcome', reasonCode ?? REASON_CODES.normalCompletion, error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
