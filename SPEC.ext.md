@@ -462,3 +462,52 @@ Migration requirements:
 - If a migration fails, `history_schema_state.status` is `degraded` and the
   failing migration row records the redacted error. Persistence health must
   surface this degraded state instead of presenting partial history as complete.
+
+## 14. Project Execution History Write And Flush Contract
+
+Runtime history writes are synchronous SQLite writes on the persistence store
+path. A write is considered flushed only after its store call resolves; queued
+runtime observations must not be marked persisted before that point.
+
+Durable write points:
+
+- Run start: write legacy `runs` plus canonical `issue_run` before a worker is
+  treated as history-visible.
+- Attempt start/end: write `attempt` at dispatch, retry, pre-spawn failure, and
+  terminal attempt finalization.
+- Phase enter/exit: write `phase_span` from phase and turn lifecycle events.
+- State transition: write `state_transition` for dispatch, retry, blocked,
+  stalled, cancellation, and terminal transitions.
+- Thread/turn observation: write `thread` and `turn` from app-server worker
+  events, with turn IDs promoted from pending to persisted only after the turn
+  insert succeeds.
+- App-server event summary: write compact `run_events` diagnostics and
+  `history_protocol_summary` rows rather than loading transcripts on the
+  runtime hot path.
+- Token/model observation: write `history_token_model_fact` from usage and
+  effective-model telemetry observations.
+- Blocker/operator action: write `history_ticket_blocker` for durable blocker
+  facts and the operator action trail for audited operator decisions.
+- Evidence reference: write `history_ticket_evidence_reference` for durable
+  references such as Codex thread IDs and validation artifacts.
+- Terminal outcome: write legacy run completion and
+  `history_ticket_terminal_outcome`; failures in either terminal write degrade
+  history health instead of presenting complete terminal history.
+
+Transaction boundaries:
+
+- Multi-row schema migrations run inside explicit transactions.
+- Multi-fact runtime writes that must stay consistent must either use a single
+  store transaction or keep unflushed facts out of the completed history
+  projection until all required writes resolve.
+- Failed writes call `recordHistoryWriteFailure`, which stores a redacted
+  `history_write_failure` record and degrades `history_schema_state` with
+  `history_write_failed`.
+
+Hot-path constraints:
+
+- Runtime persistence must use already-observed app-server events, worker
+  metadata, and tracker facts. It must not load full transcripts or call
+  dashboard APIs to decide whether to write Project Execution History.
+- Restart recovery reads the durable SQLite tables. Live memory can enrich the
+  current process view, but it is not proof of persisted ticket history.
