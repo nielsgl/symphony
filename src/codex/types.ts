@@ -42,7 +42,7 @@ export type CodexTurnErrorCode =
   | 'invalid_remote_workspace_cwd'
   | typeof REASON_CODES.unsafeWorkspaceRoot
   | 'response_timeout'
-  | 'turn_timeout'
+  | typeof REASON_CODES.turnTimeout
   | 'port_exit'
   | 'response_error'
   | 'turn_failed'

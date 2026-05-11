@@ -45,6 +45,7 @@ export const REASON_CODES = {
   manualResume: 'manual_resume',
   operatorRequeueRequested: 'operator_requeue_requested',
   operatorRetryStepRequested: 'operator_retry_step_requested',
+  turnTimeout: 'turn_timeout',
   turnInputRequired: 'turn_input_required',
   turnWaitingThresholdExceeded: 'turn_waiting_threshold_exceeded',
   missingToolOutput: 'missing_tool_output',
@@ -310,6 +311,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Failed step retry was requested',
     detail: 'An operator explicitly retried the last failed or stalled step.',
     expected_transition: 'Automatic retry at the scheduled due time'
+  },
+  [REASON_CODES.turnTimeout]: {
+    reason_code: REASON_CODES.turnTimeout,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Monitor the retry; inspect Codex turn logs if the same reason repeats'],
+    label: 'Turn Timeout',
+    headline: 'Codex turn deadline expired',
+    detail: 'The Codex turn exceeded the configured hard wall-clock turn timeout before terminal evidence arrived.',
+    expected_transition: 'Automatic retry if the issue remains eligible'
   },
   [REASON_CODES.turnInputRequired]: {
     reason_code: REASON_CODES.turnInputRequired,

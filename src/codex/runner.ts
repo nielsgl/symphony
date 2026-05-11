@@ -1299,6 +1299,9 @@ export class CodexRunner {
         if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
           throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
         }
+        if (error.code === REASON_CODES.turnTimeout) {
+          throw error;
+        }
         emit({ event: CANONICAL_EVENT.codex.startupFailed, detail: error.message });
         throw error;
       }
@@ -1534,6 +1537,9 @@ export class CodexRunner {
         }
         if (error.code === 'port_exit' && protocol.sawCodexNotFound()) {
           throw new CodexRunnerError('codex_not_found', 'codex app-server command was not found');
+        }
+        if (error.code === REASON_CODES.turnTimeout) {
+          throw error;
         }
         emit({ event: CANONICAL_EVENT.codex.startupFailed, detail: error.message });
         throw error;
@@ -1984,6 +1990,7 @@ class ProtocolClient {
 
     return new Promise((resolve, reject) => {
       const waitStartedAtMs = Date.now();
+      const hardDeadlineAtMs = waitStartedAtMs + timeoutMs;
       let lastProgressAtMs = waitStartedAtMs;
       let settled = false;
       let timer: NodeJS.Timeout | null = null;
@@ -1998,29 +2005,37 @@ class ProtocolClient {
         this.messageEmitter.off('exit', onExit);
       };
 
-      const scheduleIdleTimeout = () => {
+      const scheduleHardTimeout = () => {
         if (timer) {
           clearTimeout(timer);
         }
-        const delayMs = Math.max(1, timeoutMs - (Date.now() - lastProgressAtMs));
+        const delayMs = Math.max(1, hardDeadlineAtMs - Date.now());
         timer = setTimeout(() => {
           if (settled) {
             return;
           }
-          const idleMs = Date.now() - lastProgressAtMs;
-          if (idleMs < timeoutMs) {
-            scheduleIdleTimeout();
+          const nowMs = Date.now();
+          if (nowMs < hardDeadlineAtMs) {
+            scheduleHardTimeout();
             return;
           }
           settled = true;
           cleanup();
-          reject(new CodexRunnerError('turn_timeout', 'Timed out waiting for turn terminal event'));
+          const elapsedMs = nowMs - waitStartedAtMs;
+          const idleMs = nowMs - lastProgressAtMs;
+          const detail = `hard_wall_clock_turn_timeout timeout_ms=${timeoutMs} elapsed_ms=${elapsedMs} idle_ms=${idleMs}`;
+          emit({
+            event: CANONICAL_EVENT.codex.turnTimedOut,
+            detail,
+            reason_code: REASON_CODES.turnTimeout,
+            ...(this.activeTurnContext ? this.activeTurnContext : {})
+          });
+          reject(new CodexRunnerError(REASON_CODES.turnTimeout, `Timed out waiting for turn terminal event at hard wall-clock deadline: ${detail}`));
         }, delayMs);
       };
 
       markProgress = () => {
         lastProgressAtMs = Date.now();
-        scheduleIdleTimeout();
       };
 
       const heartbeat = setInterval(() => {
@@ -2036,7 +2051,7 @@ class ProtocolClient {
         void onMessage();
       };
 
-      scheduleIdleTimeout();
+      scheduleHardTimeout();
 
       const onExit = () => {
         if (settled) {
