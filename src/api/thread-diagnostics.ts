@@ -302,6 +302,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
         reason_code: event.reason_code ?? blocked.stop_reason_code,
         reason_detail: event.message ?? blocked.stop_reason_detail,
         ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+        ...(event.request_category !== undefined ? { request_category: event.request_category } : {}),
         thread_id: threadId,
         turn_id: null,
         session_id: sessionId
@@ -314,6 +315,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
       reason_code: event.reason_code ?? null,
       reason_detail: event.message,
       ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+      ...(event.request_category !== undefined ? { request_category: event.request_category } : {}),
       thread_id: threadId,
       turn_id: source?.turn_id ?? null,
       session_id: sessionId

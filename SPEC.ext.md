@@ -407,3 +407,28 @@ Equivalent unsupported-tool failure payload:
   }
 }
 ```
+
+## 12. Unsupported Safety-Sensitive Server Requests
+
+Symphony handles Codex app-server request methods through an explicit
+allowlist. Command execution and file-change approval requests may be answered
+only by supported allowlist entries.
+
+Unsupported approval-like server requests return structured unsupported
+protocol evidence with method, category, and reason code.
+
+Unsupported permission, authentication, account, credential, token, secret, or
+session requests are safety-sensitive. Symphony must not fabricate credentials,
+grant permissions, or return success for these requests.
+
+Unsupported safety-sensitive server requests return a structured failure
+response and stop the turn as operator input required unless a specific
+supported policy exists.
+
+Conformance extension:
+
+- Unsupported permission, authentication, account-token, and unknown
+  safety-sensitive server requests are rejected with structured
+  method/category/reason evidence.
+- Unsupported safety-sensitive requests stop as operator input required unless
+  an explicit supported policy exists.

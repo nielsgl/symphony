@@ -229,7 +229,8 @@ export class SqlitePersistenceStore {
         event TEXT NOT NULL,
         message TEXT,
         reason_code TEXT,
-        request_method TEXT
+        request_method TEXT,
+        request_category TEXT
       );
       CREATE TABLE IF NOT EXISTS ui_state (
         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
@@ -292,17 +293,21 @@ export class SqlitePersistenceStore {
     timestamp_ms: number;
     reason_code?: string | null;
     request_method?: string | null;
+    request_category?: string | null;
   }): void {
     const redactedMessage = redactUnknown(params.message) as string | null;
     this.db
-      .prepare('INSERT INTO run_events (run_id, at, event, message, reason_code, request_method) VALUES (?, ?, ?, ?, ?, ?)')
+      .prepare(
+        'INSERT INTO run_events (run_id, at, event, message, reason_code, request_method, request_category) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
       .run(
         params.run_id,
         asIso(params.timestamp_ms),
         params.event,
         redactedMessage,
         params.reason_code ?? null,
-        params.request_method ?? null
+        params.request_method ?? null,
+        params.request_category ?? null
       );
   }
 
@@ -764,7 +769,8 @@ export class SqlitePersistenceStore {
     const existing = new Set(columns.map((column) => column.name));
     const migrations: Array<[string, string]> = [
       ['reason_code', 'ALTER TABLE run_events ADD COLUMN reason_code TEXT'],
-      ['request_method', 'ALTER TABLE run_events ADD COLUMN request_method TEXT']
+      ['request_method', 'ALTER TABLE run_events ADD COLUMN request_method TEXT'],
+      ['request_category', 'ALTER TABLE run_events ADD COLUMN request_category TEXT']
     ];
     for (const [column, sql] of migrations) {
       if (!existing.has(column)) {

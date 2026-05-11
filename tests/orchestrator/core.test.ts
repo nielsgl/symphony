@@ -18,6 +18,7 @@ import type { StructuredLogger } from '../../src/observability';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
 import { SqlitePersistenceStore } from '../../src/persistence/store';
+import { toWorkerEvent } from '../../src/runtime';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 import type { ControlPlaneHealthSummary } from '../../src/api/control-plane-health';
 
@@ -5525,16 +5526,24 @@ describe('OrchestratorCore', () => {
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-approval', identifier: 'ABC-APPROVAL' })]);
     await harness.orchestrator.tick('interval');
 
-    harness.orchestrator.onWorkerEvent('i-approval', {
-      timestamp_ms: harness.now.value + 10,
-      event: CANONICAL_EVENT.codex.unsupportedServerRequest,
-      thread_id: 'thread-approval',
-      turn_id: 'turn-approval',
-      session_id: 'session-approval',
-      detail: 'approval/request',
-      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
-      request_method: 'approval/request'
-    });
+    harness.orchestrator.onWorkerEvent(
+      'i-approval',
+      toWorkerEvent(
+        {
+          timestamp: new Date(harness.now.value + 10).toISOString(),
+          event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+          codex_app_server_pid: 1234,
+          thread_id: 'thread-approval',
+          turn_id: 'turn-approval',
+          session_id: 'session-approval',
+          detail: 'approval/request',
+          reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+          request_method: 'approval/request',
+          request_category: 'approval'
+        },
+        harness.now.value + 10
+      )
+    );
     await new Promise((resolve) => setImmediate(resolve));
 
     const snapshot = harness.orchestrator.getStateSnapshot();
@@ -5542,21 +5551,25 @@ describe('OrchestratorCore', () => {
     expect(running?.recent_events.at(-1)).toMatchObject({
       event: CANONICAL_EVENT.codex.unsupportedServerRequest,
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
-      request_method: 'approval/request'
+      request_method: 'approval/request',
+      request_category: 'approval'
     });
     expect(snapshot.recent_runtime_events.at(-1)).toMatchObject({
       event: CANONICAL_EVENT.codex.unsupportedServerRequest,
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
-      request_method: 'approval/request'
+      request_method: 'approval/request',
+      request_category: 'approval'
     });
     expect(recordedEvents.at(-1)).toMatchObject({
       event: CANONICAL_EVENT.codex.unsupportedServerRequest,
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
-      request_method: 'approval/request'
+      request_method: 'approval/request',
+      request_category: 'approval'
     });
     expect(logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.workerEvent)?.context).toMatchObject({
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
-      request_method: 'approval/request'
+      request_method: 'approval/request',
+      request_category: 'approval'
     });
 
     const projector = new SnapshotService({ nowMs: () => harness.now.value + 20 });
@@ -5564,11 +5577,13 @@ describe('OrchestratorCore', () => {
     const projectedIssue = projector.projectIssue(harness.orchestrator.getStateSnapshot(), 'ABC-APPROVAL');
     expect(projectedIssue?.recent_events.at(-1)).toMatchObject({
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
-      request_method: 'approval/request'
+      request_method: 'approval/request',
+      request_category: 'approval'
     });
     expect(projected.recent_runtime_events.at(-1)).toMatchObject({
       reason_code: REASON_CODES.unsupportedApprovalServerRequest,
-      request_method: 'approval/request'
+      request_method: 'approval/request',
+      request_category: 'approval'
     });
   });
 

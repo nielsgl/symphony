@@ -1,6 +1,6 @@
 import { DYNAMIC_TOOL_CONSOLE_RECOVERY_ACTION, UNSUPPORTED_DYNAMIC_TOOL_CONSOLE_RESUME_REASON_CODE } from './dynamic-tool-capability';
 
-export const REASON_CODE_REGISTRY_VERSION = '2026-05-05.v1';
+export const REASON_CODE_REGISTRY_VERSION = '2026-05-11.v1';
 
 export type ReasonCodeClassification =
   | 'healthy'
