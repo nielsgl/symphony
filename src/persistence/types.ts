@@ -98,6 +98,59 @@ export interface ExecutionGraphThreadLineage {
   state_transitions: StateTransitionRecord[];
 }
 
+export type HistoryPayloadClass =
+  | 'protocol_lifecycle'
+  | 'protocol_request_response'
+  | 'assistant_text'
+  | 'tool_payload'
+  | 'command_output'
+  | 'filesystem_change'
+  | 'environment'
+  | 'account'
+  | 'conversation_transcript'
+  | 'unknown';
+
+export type HistoryPayloadDetailStatus =
+  | 'absent'
+  | 'summary_only'
+  | 'redacted_excerpt'
+  | 'redacted_truncated_excerpt'
+  | 'unavailable_policy'
+  | 'unavailable_source';
+
+export type HistoryPayloadRedactionStatus = 'not_required' | 'redacted' | 'unavailable_policy' | 'unavailable_source';
+
+export interface HistoryPayloadTruncation {
+  truncated: boolean;
+  original_bytes: number;
+  excerpt_bytes: number;
+  max_excerpt_bytes: number;
+}
+
+export interface HistoryPayloadDetails {
+  policy_version: number;
+  payload_class: HistoryPayloadClass;
+  detail_status: HistoryPayloadDetailStatus;
+  redaction_status: HistoryPayloadRedactionStatus;
+  source_event_id: string;
+  source_event_name: string;
+  summary: string | null;
+  summary_fields: Record<string, unknown>;
+  redacted_excerpt: string | null;
+  truncation: HistoryPayloadTruncation;
+  unavailable_reason_code: string | null;
+  full_payload_stored: boolean;
+}
+
+export interface AppServerEventLedgerRecord extends HistoryPayloadDetails {
+  app_server_event_id: string;
+  issue_run_id: string;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  observed_at: string;
+}
+
 export interface DurableRunHistoryRecord {
   run_id: string;
   issue_id: string;

@@ -152,6 +152,7 @@ describe('SqlitePersistenceStore', () => {
         'history_project_identity',
         'history_ticket_identity',
         'history_protocol_summary',
+        'history_app_server_event',
         'history_token_model_fact',
         'history_retention_metadata',
         'history_health_metadata',
@@ -166,13 +167,14 @@ describe('SqlitePersistenceStore', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 1,
-      applied_version: 1,
+      target_version: 2,
+      applied_version: 2,
       status: 'healthy',
       degraded_reason_code: null
     });
     expect(store.historySchemaHealth().migrations).toEqual([
-      expect.objectContaining({ version: 1, name: 'project_execution_history_v1', status: 'applied' })
+      expect.objectContaining({ version: 1, name: 'project_execution_history_v1', status: 'applied' }),
+      expect.objectContaining({ version: 2, name: 'app_server_event_ledger_lite_policy', status: 'applied' })
     ]);
   });
 
@@ -665,16 +667,17 @@ describe('SqlitePersistenceStore', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(1);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(2);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 1, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 2, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
-      expect.objectContaining({ version: 1, status: 'applied' })
+      expect.objectContaining({ version: 1, status: 'applied' }),
+      expect.objectContaining({ version: 2, status: 'applied' })
     ]);
   });
 
@@ -796,8 +799,118 @@ describe('SqlitePersistenceStore', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 1, status: 'healthy' });
-    expect(tableNames(dbPath)).toEqual(expect.arrayContaining(['history_token_model_fact', 'history_protocol_summary']));
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 2, status: 'healthy' });
+    expect(tableNames(dbPath)).toEqual(
+      expect.arrayContaining(['history_token_model_fact', 'history_protocol_summary', 'history_app_server_event'])
+    );
+  });
+
+  it('stores App Server Event Ledger Lite records with bounded policy details across reopen', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-app-server-ledger-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    const issueRunId = storeA.appendIssueRun({
+      issue_id: 'issue-1',
+      issue_identifier: 'ABC-1',
+      identity: identity(),
+      started_at: '2026-04-11T10:00:00.000Z',
+      status: 'running'
+    });
+    const attemptId = storeA.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-11T10:00:01.000Z',
+      status: 'running'
+    });
+    const threadId = storeA.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'thread-ledger',
+      started_at: '2026-04-11T10:00:02.000Z',
+      status: 'running'
+    });
+    const turnId = storeA.appendTurn({
+      thread_id: threadId,
+      turn_index: 0,
+      turn_id: 'turn-ledger',
+      started_at: '2026-04-11T10:00:03.000Z',
+      status: 'running'
+    });
+    storeA.appendAppServerEvent({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      observed_at: '2026-04-11T10:00:04.000Z',
+      source_event_id: 'evt-response-1',
+      source_event_name: 'rawResponseItem/completed',
+      payload_class: 'protocol_request_response',
+      raw_payload: {
+        path: '/Users/alice/project/secret.txt',
+        authorization: 'Bearer raw-secret-token',
+        response: `token=abcd ${'diagnostic '.repeat(120)}`
+      },
+      summary: 'raw response item completed',
+      summary_fields: {
+        method: 'turn/start',
+        account_id: 'acct_secret'
+      }
+    });
+    storeA.appendAppServerEvent({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      observed_at: '2026-04-11T10:00:05.000Z',
+      source_event_id: 'evt-tool-1',
+      source_event_name: 'item/mcpToolCall/progress',
+      payload_class: 'tool_payload',
+      raw_payload: {
+        tool_name: 'linear_graphql',
+        variables: { token: 'raw-tool-token' }
+      },
+      summary: 'tool progress observed',
+      summary_fields: { tool_name: 'linear_graphql' }
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const ledger = storeB.listAppServerEventLedger(issueRunId);
+
+    expect(ledger).toHaveLength(2);
+    expect(ledger[0]).toMatchObject({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      source_event_id: 'evt-response-1',
+      payload_class: 'protocol_request_response',
+      detail_status: 'redacted_truncated_excerpt',
+      redaction_status: 'redacted',
+      full_payload_stored: false
+    });
+    expect(ledger[0].summary_fields).toMatchObject({
+      method: 'turn/start',
+      account_id: '***REDACTED_ACCOUNT***'
+    });
+    expect(ledger[0].redacted_excerpt).not.toContain('/Users/alice');
+    expect(ledger[0].redacted_excerpt).not.toContain('raw-secret-token');
+    expect(ledger[0].redacted_excerpt).not.toContain('abcd');
+    expect(ledger[0].truncation.truncated).toBe(true);
+    expect(ledger[1]).toMatchObject({
+      source_event_id: 'evt-tool-1',
+      payload_class: 'tool_payload',
+      detail_status: 'unavailable_policy',
+      redaction_status: 'unavailable_policy',
+      redacted_excerpt: null,
+      unavailable_reason_code: 'tool_payload_payload_not_stored',
+      full_payload_stored: false
+    });
+    expect(JSON.stringify(ledger)).not.toContain('raw-tool-token');
   });
 
   it('records explicit degraded history state when migration execution fails', async () => {
