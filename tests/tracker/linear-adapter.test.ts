@@ -199,6 +199,68 @@ describe('LinearTrackerAdapter', () => {
     expect(requests[0].variables).toEqual({ issueIds: ['i-refresh'] });
   });
 
+  it('retries transient state-refresh request/status failures only', async () => {
+    const requestRetryRequests: FakeRequest[] = [];
+    const requestRetryAdapter = createAdapterWithQueuedResponses(
+      [
+        new Error('network down'),
+        new Response(
+          JSON.stringify({
+            data: {
+              issues: {
+                nodes: [makeIssueNode({ id: 'i-refresh', identifier: 'ABC-55', state: { name: 'In Progress' } })]
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      requestRetryRequests
+    );
+    await expect(requestRetryAdapter.fetch_issue_states_by_ids(['i-refresh'])).resolves.toHaveLength(1);
+    expect(requestRetryRequests).toHaveLength(2);
+
+    const statusRetryRequests: FakeRequest[] = [];
+    const statusRetryAdapter = createAdapterWithQueuedResponses(
+      [
+        new Response('temporarily unavailable', { status: 503 }),
+        new Response(
+          JSON.stringify({
+            data: {
+              issues: {
+                nodes: [makeIssueNode({ id: 'i-refresh', identifier: 'ABC-55', state: { name: 'In Progress' } })]
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      statusRetryRequests
+    );
+    await expect(statusRetryAdapter.fetch_issue_states_by_ids(['i-refresh'])).resolves.toHaveLength(1);
+    expect(statusRetryRequests).toHaveLength(2);
+
+    const graphQlRequests: FakeRequest[] = [];
+    const graphQlAdapter = createAdapterWithQueuedResponses(
+      [new Response(JSON.stringify({ errors: [{ message: 'bad query' }] }), { status: 200 })],
+      graphQlRequests
+    );
+    await expect(graphQlAdapter.fetch_issue_states_by_ids(['i-refresh'])).rejects.toMatchObject({
+      code: 'linear_graphql_errors'
+    });
+    expect(graphQlRequests).toHaveLength(1);
+
+    const payloadRequests: FakeRequest[] = [];
+    const payloadAdapter = createAdapterWithQueuedResponses(
+      [new Response(JSON.stringify({ data: { issues: null } }), { status: 200 })],
+      payloadRequests
+    );
+    await expect(payloadAdapter.fetch_issue_states_by_ids(['i-refresh'])).rejects.toMatchObject({
+      code: 'linear_unknown_payload'
+    });
+    expect(payloadRequests).toHaveLength(1);
+  });
+
   it('maps request/status/graphql/payload errors to typed categories', async () => {
     const requestErrAdapter = createAdapterWithQueuedResponses([new Error('network down')], []);
     await expect(requestErrAdapter.fetch_candidate_issues()).rejects.toMatchObject({

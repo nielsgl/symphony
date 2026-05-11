@@ -17,6 +17,7 @@ export type WorkerExitReason = 'normal' | 'abnormal';
 export type WorkerCompletionReason =
   | typeof REASON_CODES.maxTurnsReached
   | typeof REASON_CODES.issueStateMissing
+  | typeof REASON_CODES.issueStateRefreshFailed
   | typeof REASON_CODES.handoffStateReached
   | typeof REASON_CODES.freshDispatchStateRouted
   | typeof REASON_CODES.issueLeftActiveStates

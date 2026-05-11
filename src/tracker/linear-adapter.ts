@@ -19,6 +19,7 @@ interface GraphqlSuccess {
 
 const DEFAULT_PAGE_SIZE = 50;
 const DEFAULT_TIMEOUT_MS = 30000;
+const ISSUE_STATE_REFRESH_RETRY_DELAYS_MS = [100, 500];
 
 function parseIsoDate(value: unknown): Date | null {
   if (typeof value !== 'string' || !value.trim()) {
@@ -51,6 +52,31 @@ function readObject(value: unknown): Record<string, unknown> | null {
   }
 
   return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableIssueStateRefreshError(error: unknown): boolean {
+  if (!(error instanceof TrackerAdapterError)) {
+    return false;
+  }
+
+  if (error.code === 'linear_api_request') {
+    return true;
+  }
+
+  if (error.code !== 'linear_api_status') {
+    return false;
+  }
+
+  const status = error.message.match(/status (\d+)/)?.[1];
+  if (!status) {
+    return false;
+  }
+  const statusCode = Number(status);
+  return statusCode === 429 || statusCode === 500 || statusCode === 502 || statusCode === 503 || statusCode === 504;
 }
 
 function readNodes(value: unknown): Record<string, unknown>[] {
@@ -357,7 +383,7 @@ export class LinearTrackerAdapter implements TrackerAdapter {
       return [];
     }
 
-    const payload = await this.graphqlRequest(buildIssueStatesByIdsQuery(), { issueIds: issue_ids });
+    const payload = await this.graphqlRequestWithTransientRetry(buildIssueStatesByIdsQuery(), { issueIds: issue_ids });
     const nodes = this.extractIssueNodes(payload);
     return nodes.map(normalizeIssue).filter(isMinimalStateIssue);
   }
@@ -479,6 +505,25 @@ export class LinearTrackerAdapter implements TrackerAdapter {
     }
 
     return objectPayload as unknown as GraphqlSuccess;
+  }
+
+  private async graphqlRequestWithTransientRetry(
+    query: string,
+    variables: Record<string, unknown>
+  ): Promise<GraphqlSuccess> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= ISSUE_STATE_REFRESH_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        return await this.graphqlRequest(query, variables);
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableIssueStateRefreshError(error) || attempt >= ISSUE_STATE_REFRESH_RETRY_DELAYS_MS.length) {
+          throw error;
+        }
+        await sleep(ISSUE_STATE_REFRESH_RETRY_DELAYS_MS[attempt]);
+      }
+    }
+    throw lastError;
   }
 
   private async resolveStateId(issueId: string, stateName: string): Promise<string> {

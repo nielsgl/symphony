@@ -530,9 +530,10 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     actionability: 'recommended',
     recommended_actions: ['Inspect tracker refresh errors'],
     label: 'Issue State Refresh Failed',
-    headline: 'Run is waiting to retry',
-    detail: 'The orchestrator could not refresh tracker state.',
-    expected_transition: 'Automatic retry at the scheduled due time'
+    headline: 'Tracker refresh is waiting to retry',
+    detail:
+      'The Codex turn completed, but the orchestrator could not refresh tracker state. The scheduled retry refreshes tracker state without rerunning the completed turn.',
+    expected_transition: 'Automatic tracker refresh retry at the scheduled due time'
   },
   [REASON_CODES.unsafeWorkspaceRoot]: {
     reason_code: REASON_CODES.unsafeWorkspaceRoot,
