@@ -3,12 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { redactUnknown } from '../security/redaction';
+import { buildHistoryPayloadDetails } from './history-payload-policy';
 import type {
+  AppServerEventLedgerRecord,
   BreakerMetadataRecord,
   DurableRunHistoryRecord,
   DurableIdentity,
   AttemptRecord,
   ExecutionGraphEntityStatus,
+  HistoryPayloadClass,
   ExecutionGraphThreadLineage,
   HistorySchemaHealth,
   HistoryWriteFailureRecord,
@@ -37,7 +40,7 @@ interface PersistenceStoreOptions {
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 2;
+const HISTORY_SCHEMA_VERSION = 3;
 
 interface HistoryMigration {
   version: number;
@@ -81,6 +84,16 @@ function parseDurableIdentity(value: string | null): DurableIdentity | null {
   } catch {
     return null;
   }
+}
+
+function parseHistoryPayloadTruncation(value: string): AppServerEventLedgerRecord['truncation'] {
+  const parsed = JSON.parse(value) as AppServerEventLedgerRecord['truncation'];
+  return {
+    truncated: Boolean(parsed.truncated),
+    original_bytes: Number(parsed.original_bytes),
+    excerpt_bytes: Number(parsed.excerpt_bytes),
+    max_excerpt_bytes: Number(parsed.max_excerpt_bytes)
+  };
 }
 
 function serializeDurableIdentity(identity: DurableIdentity): string {
@@ -430,6 +443,101 @@ export class SqlitePersistenceStore {
         params.request_method ?? null,
         params.request_category ?? null
       );
+  }
+
+  appendAppServerEvent(params: {
+    issue_run_id: string;
+    observed_at: string;
+    source_event_id: string;
+    source_event_name: string;
+    payload_class: HistoryPayloadClass;
+    raw_payload?: unknown;
+    summary?: string | null;
+    summary_fields?: Record<string, unknown>;
+    unavailable_reason_code?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    app_server_event_id?: string;
+  }): string {
+    this.ensureAppServerEventReferences({ ...params, observed_at: params.observed_at });
+    const payloadDetails = buildHistoryPayloadDetails({
+      payloadClass: params.payload_class,
+      sourceEventId: params.source_event_id,
+      sourceEventName: params.source_event_name,
+      rawPayload: params.raw_payload,
+      summary: params.summary,
+      summaryFields: params.summary_fields,
+      unavailableReasonCode: params.unavailable_reason_code
+    });
+    const appServerEventId =
+      params.app_server_event_id ??
+      asExecutionGraphId('app_server_event', [
+        params.issue_run_id,
+        params.attempt_id,
+        params.thread_id,
+        params.turn_id,
+        params.source_event_id,
+        params.observed_at
+      ]);
+
+    this.db
+      .prepare(
+        `INSERT INTO history_app_server_event
+          (app_server_event_id, issue_run_id, attempt_id, thread_id, turn_id, observed_at,
+           source_event_id, source_event_name, payload_class, detail_status, redaction_status,
+           summary, summary_fields, redacted_excerpt, truncation, unavailable_reason_code,
+           full_payload_stored, policy_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        appServerEventId,
+        params.issue_run_id,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.observed_at,
+        payloadDetails.source_event_id,
+        payloadDetails.source_event_name,
+        payloadDetails.payload_class,
+        payloadDetails.detail_status,
+        payloadDetails.redaction_status,
+        payloadDetails.summary,
+        JSON.stringify(payloadDetails.summary_fields),
+        payloadDetails.redacted_excerpt,
+        JSON.stringify(payloadDetails.truncation),
+        payloadDetails.unavailable_reason_code,
+        payloadDetails.full_payload_stored ? 1 : 0,
+        payloadDetails.policy_version
+      );
+    return appServerEventId;
+  }
+
+  listAppServerEventLedger(issueRunId: string): AppServerEventLedgerRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT app_server_event_id, issue_run_id, attempt_id, thread_id, turn_id, observed_at,
+          source_event_id, source_event_name, payload_class, detail_status, redaction_status,
+          summary, summary_fields, redacted_excerpt, truncation, unavailable_reason_code,
+          full_payload_stored, policy_version
+         FROM history_app_server_event
+         WHERE issue_run_id = ?
+         ORDER BY observed_at ASC, app_server_event_id ASC`
+      )
+      .all(issueRunId) as Array<
+      Omit<AppServerEventLedgerRecord, 'summary_fields' | 'truncation' | 'full_payload_stored'> & {
+        summary_fields: string;
+        truncation: string;
+        full_payload_stored: 0 | 1;
+      }
+    >;
+
+    return rows.map((row) => ({
+      ...row,
+      summary_fields: parseNullableJsonObject(row.summary_fields) ?? {},
+      truncation: parseHistoryPayloadTruncation(row.truncation),
+      full_payload_stored: row.full_payload_stored === 1
+    }));
   }
 
   appendIssueRun(params: {
@@ -1156,6 +1264,13 @@ export class SqlitePersistenceStore {
           store.ensureIssueRunIdentityKeyColumns();
           store.createTicketOrchestrationLedgerTables();
         }
+      },
+      {
+        version: 3,
+        name: 'app_server_event_ledger_lite_policy',
+        apply: (store) => {
+          store.createAppServerEventLedgerTables();
+        }
       }
     ];
 
@@ -1501,6 +1616,50 @@ export class SqlitePersistenceStore {
       .run(status, reasonCode, redactUnknown(detail), asIso(this.nowMs()), HISTORY_SCHEMA_VERSION, this.readHistorySchemaHealth().applied_version);
   }
 
+  private createAppServerEventLedgerTables(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS history_app_server_event (
+        app_server_event_id TEXT PRIMARY KEY,
+        issue_run_id TEXT NOT NULL,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        observed_at TEXT NOT NULL,
+        source_event_id TEXT NOT NULL,
+        source_event_name TEXT NOT NULL,
+        payload_class TEXT NOT NULL,
+        detail_status TEXT NOT NULL CHECK (detail_status IN (
+          'absent',
+          'summary_only',
+          'redacted_excerpt',
+          'redacted_truncated_excerpt',
+          'unavailable_policy',
+          'unavailable_source'
+        )),
+        redaction_status TEXT NOT NULL CHECK (redaction_status IN (
+          'not_required',
+          'redacted',
+          'unavailable_policy',
+          'unavailable_source'
+        )),
+        summary TEXT,
+        summary_fields TEXT NOT NULL,
+        redacted_excerpt TEXT,
+        truncation TEXT NOT NULL,
+        unavailable_reason_code TEXT,
+        full_payload_stored INTEGER NOT NULL DEFAULT 0 CHECK (full_payload_stored IN (0, 1)),
+        policy_version INTEGER NOT NULL,
+        CHECK (full_payload_stored = 0),
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE INDEX IF NOT EXISTS history_app_server_event_issue_run_observed_idx
+        ON history_app_server_event(issue_run_id, observed_at, app_server_event_id);
+    `);
+  }
+
   private readHistorySchemaHealth(): HistorySchemaHealth {
     this.ensureHistoryMigrationTables();
     const row = this.db.prepare('SELECT * FROM history_schema_state WHERE schema_name = ?').get(HISTORY_SCHEMA_NAME) as
@@ -1601,6 +1760,22 @@ export class SqlitePersistenceStore {
         now,
         now
       );
+  }
+
+  private ensureAppServerEventReferences(params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    observed_at?: string;
+  }): void {
+    this.ensureStateTransitionReferences({
+      issue_run_id: params.issue_run_id,
+      attempt_id: params.attempt_id,
+      thread_id: params.thread_id,
+      turn_id: params.turn_id,
+      transitioned_at: params.observed_at ?? asIso(this.nowMs())
+    });
   }
 
   private ensureRunDiagnosticColumns(): void {
