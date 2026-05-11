@@ -67,6 +67,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
       <p id="health-message" class="health health-ok">Dispatch validation: ok</p>
       <p id="last-error" class="muted"></p>
       <div id="kpi-grid" class="kpi-grid"></div>
+      <div id="retry-status-summary" class="retry-status-summary hidden" aria-live="polite"></div>
     </section>
 
     <section class="panel panel-wide">
@@ -375,6 +376,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     snapshotErrorPanel: document.getElementById('snapshot-error-panel'),
     snapshotErrorMessage: document.getElementById('snapshot-error-message'),
     kpiGrid: document.getElementById('kpi-grid'),
+    retryStatusSummary: document.getElementById('retry-status-summary'),
     rateLimits: document.getElementById('rate-limits'),
     throughputPanel: document.getElementById('throughput-panel'),
     throughputOutput: document.getElementById('throughput-output'),
@@ -778,9 +780,96 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     elements.healthMessage.className = failed ? 'health health-failed' : 'health health-ok';
     elements.healthMessage.textContent = 'Dispatch validation: ' + payload.health.dispatch_validation;
     elements.lastError.textContent = payload.health.last_error ? 'Last error: ' + payload.health.last_error : '';
+    renderRetryStatusSummary(payload);
 
     const rateLimits = payload.rate_limits;
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+  }
+
+  function renderRetryStatusSummary(payload) {
+    const entries =
+      payload.retry_status && Array.isArray(payload.retry_status.entries)
+        ? payload.retry_status.entries
+        : Array.isArray(payload.retrying)
+          ? payload.retrying.map(function (entry) {
+              const cause = entry.retry_cause || {};
+              return {
+                issue_identifier: entry.issue_identifier,
+                attempt: entry.attempt,
+                due_at: entry.due_at,
+                due_state: entry.due_state || 'pending',
+                overdue_ms: entry.overdue_ms || null,
+                retry_wait_ms: entry.retry_wait_ms || null,
+                reason_code: cause.reason_code || entry.stop_reason_code || null,
+                detail: cause.detail || entry.stop_reason_detail || entry.error || null,
+                operator_detail: cause.operator_detail || null,
+                headline: cause.headline || (entry.operator_explainer_hint && entry.operator_explainer_hint.headline) || 'Run is waiting to retry',
+                expected_transition: cause.expected_transition || null,
+                last_phase: cause.last_phase || entry.last_phase || null
+              };
+            })
+          : [];
+    if (!entries.length) {
+      elements.retryStatusSummary.classList.add('hidden');
+      elements.retryStatusSummary.replaceChildren();
+      return;
+    }
+
+    const header = document.createElement('div');
+    header.className = 'retry-status-header';
+    const overdueCount = entries.filter(function (entry) {
+      return entry.due_state === 'overdue';
+    }).length;
+    header.textContent =
+      overdueCount > 0
+        ? overdueCount + ' overdue ' + (overdueCount === 1 ? 'retry needs' : 'retries need') + ' attention'
+        : entries.length + ' retry' + (entries.length === 1 ? '' : 'ies') + ' scheduled';
+
+    const list = document.createElement('div');
+    list.className = 'retry-status-list';
+    entries.slice(0, 4).forEach(function (entry) {
+      const item = document.createElement('div');
+      item.className = 'retry-status-item ' + (entry.due_state === 'overdue' ? 'overdue' : 'pending');
+
+      const title = document.createElement('div');
+      title.className = 'retry-status-title';
+      const issue = document.createElement('strong');
+      issue.textContent = entry.issue_identifier || 'unknown issue';
+      const statePill = document.createElement('span');
+      statePill.className = 'status-pill ' + (entry.due_state === 'overdue' ? 'failed' : 'pending');
+      statePill.textContent =
+        entry.due_state === 'overdue'
+          ? 'Overdue ' + formatElapsedMs(entry.overdue_ms || 0)
+          : 'Retry due ' + formatDate(entry.due_at);
+      title.append(issue, statePill);
+
+      const reason = document.createElement('div');
+      reason.className = 'retry-status-reason';
+      reason.textContent =
+        (entry.reason_code || 'unknown_reason') +
+        ' - ' +
+        (entry.operator_detail || entry.detail || entry.headline || 'No retry detail available');
+
+      const meta = document.createElement('div');
+      meta.className = 'muted';
+      const parts = [];
+      if (entry.last_phase) {
+        parts.push('Last phase: ' + entry.last_phase);
+      }
+      if (entry.detail && entry.detail !== entry.operator_detail) {
+        parts.push(entry.detail);
+      }
+      if (entry.expected_transition) {
+        parts.push(entry.expected_transition);
+      }
+      meta.textContent = parts.join(' • ');
+
+      item.append(title, reason, meta);
+      list.append(item);
+    });
+
+    elements.retryStatusSummary.classList.remove('hidden');
+    elements.retryStatusSummary.replaceChildren(header, list);
   }
 
   function renderActionRequiredBanner(payload) {
@@ -2998,7 +3087,11 @@ h1 {
   color: var(--accent);
 }
 
-.badge-polling,
+.badge-polling {
+  background: #eef4ff;
+  color: #1f5fbf;
+}
+
 .badge-connecting {
   background: var(--warn-soft);
   color: var(--warn);
@@ -3170,6 +3263,46 @@ h3 {
   margin: 6px 0 0;
   font-size: 22px;
   font-family: "Iowan Old Style", "IBM Plex Serif", serif;
+}
+
+.retry-status-summary {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fffaf2;
+  padding: 10px;
+}
+
+.retry-status-header {
+  font-weight: 700;
+  color: #8a4b12;
+  margin-bottom: 8px;
+}
+
+.retry-status-list {
+  display: grid;
+  gap: 8px;
+}
+
+.retry-status-item {
+  border-left: 3px solid var(--warn);
+  padding-left: 9px;
+}
+
+.retry-status-item.overdue {
+  border-left-color: var(--danger);
+}
+
+.retry-status-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.retry-status-reason {
+  margin-top: 4px;
+  font-weight: 600;
 }
 
 .health {

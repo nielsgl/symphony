@@ -529,11 +529,11 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     reason_code: REASON_CODES.issueStateRefreshFailed,
     classification: 'retrying',
     actionability: 'recommended',
-    recommended_actions: ['Inspect tracker refresh errors'],
+    recommended_actions: ['Inspect tracker connectivity and confirm the Linear issue state before requeueing'],
     label: 'Issue State Refresh Failed',
-    headline: 'Tracker refresh is waiting to retry',
+    headline: 'Tracker refresh failed after run activity',
     detail:
-      'The Codex turn completed, but the orchestrator could not refresh tracker state. The scheduled retry refreshes tracker state without rerunning the completed turn.',
+      'The Codex turn completed and reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step. The scheduled retry refreshes tracker state without rerunning the completed turn.',
     expected_transition: 'Automatic tracker refresh retry at the scheduled due time'
   },
   [REASON_CODES.unsafeWorkspaceRoot]: {
