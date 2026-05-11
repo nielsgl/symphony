@@ -162,6 +162,12 @@ function makeApiDiagnostics(): ApiDiagnosticsResponse {
     token_telemetry_status: 'available',
     token_telemetry_last_source: 'worker_event_usage',
     token_telemetry_last_at_ms: Date.parse('2026-04-11T10:05:00.000Z'),
+    token_enrichment: {
+      status: 'not_required',
+      degraded: false,
+      reason_code: null,
+      duration_ms: 0
+    },
     workflow: { prompt_fallback_active: false },
     runtime_resolution: {
       workflow_path: '/tmp/WORKFLOW.md',
