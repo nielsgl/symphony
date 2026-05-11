@@ -56,6 +56,15 @@ interface TimedStateSnapshot {
   snapshotErrorCode: ApiStateErrorResponse['error']['code'] | null;
 }
 
+interface StreamDiagnosticsState {
+  lastClientConnectedAtMs: number | null;
+  lastClientDisconnectedAtMs: number | null;
+  lastSnapshotBroadcastAtMs: number | null;
+  lastSnapshotBroadcastLatencyMs: number | null;
+  lastSnapshotBroadcastStatus: 'ok' | 'failed' | 'no_clients' | null;
+  lastSnapshotBroadcastError: string | null;
+}
+
 const ISSUE_DETAIL_ROUTES = ['/api/v1/:issue_identifier', '/api/v1/issues/:issue_identifier'];
 const TERMINAL_RUN_TIMELINE_EVENT = {
   started: 'run.started',
@@ -280,6 +289,7 @@ export class LocalApiServer {
   private nextEventId: number;
   private heartbeatHandle: NodeJS.Timeout | null;
   private lastHealthSignature: string | null;
+  private readonly streamDiagnostics: StreamDiagnosticsState;
 
   constructor(options: LocalApiServerOptions) {
     this.host = options.host ?? '127.0.0.1';
@@ -309,6 +319,14 @@ export class LocalApiServer {
     this.nextEventId = 1;
     this.heartbeatHandle = null;
     this.lastHealthSignature = null;
+    this.streamDiagnostics = {
+      lastClientConnectedAtMs: null,
+      lastClientDisconnectedAtMs: null,
+      lastSnapshotBroadcastAtMs: null,
+      lastSnapshotBroadcastLatencyMs: null,
+      lastSnapshotBroadcastStatus: null,
+      lastSnapshotBroadcastError: null
+    };
 
     this.server = http.createServer((req, res) => {
       void this.handle(req, res);
@@ -405,14 +423,19 @@ export class LocalApiServer {
     };
   }
 
-  private writeEventMessage(message: string): void {
+  private writeEventMessage(message: string): { failedClientCount: number; error: string | null } {
+    let failedClientCount = 0;
+    let errorMessage: string | null = null;
     for (const [clientId, response] of this.eventClients.entries()) {
       try {
         response.write(message);
-      } catch {
+      } catch (error) {
+        failedClientCount += 1;
+        errorMessage = error instanceof Error ? error.message : String(error);
         this.eventClients.delete(clientId);
       }
     }
+    return { failedClientCount, error: errorMessage };
   }
 
   private emitEvent(type: ApiEventEnvelope['type'], payload: unknown): void {
@@ -631,6 +654,10 @@ export class LocalApiServer {
       this.lastHealthSignature = healthSignature;
     }
     if (this.eventClients.size === 0) {
+      this.streamDiagnostics.lastSnapshotBroadcastAtMs = this.nowMs();
+      this.streamDiagnostics.lastSnapshotBroadcastLatencyMs = this.nowMs() - startedAtMs;
+      this.streamDiagnostics.lastSnapshotBroadcastStatus = 'no_clients';
+      this.streamDiagnostics.lastSnapshotBroadcastError = null;
       return;
     }
     const serializationStartedAtMs = this.nowMs();
@@ -654,7 +681,11 @@ export class LocalApiServer {
       snapshot_freshness_state: snapshot.snapshotFreshnessState,
       snapshot_error_code: snapshot.snapshotErrorCode
     });
-    this.writeEventMessage(serialized.message);
+    const writeResult = this.writeEventMessage(serialized.message);
+    this.streamDiagnostics.lastSnapshotBroadcastAtMs = this.nowMs();
+    this.streamDiagnostics.lastSnapshotBroadcastLatencyMs = this.nowMs() - startedAtMs;
+    this.streamDiagnostics.lastSnapshotBroadcastStatus = writeResult.failedClientCount > 0 ? 'failed' : 'ok';
+    this.streamDiagnostics.lastSnapshotBroadcastError = writeResult.error;
   }
 
   private resolveLiveThreadTokenTotals(threadIds: string[]): Map<string, number> {
@@ -861,6 +892,24 @@ export class LocalApiServer {
             blocked_event_reject_total: 0,
             blocked_latch_violation_total: 0
           },
+      stream: {
+        live_client_count: this.eventClients.size,
+        last_client_connected_at:
+          this.streamDiagnostics.lastClientConnectedAtMs === null
+            ? null
+            : new Date(this.streamDiagnostics.lastClientConnectedAtMs).toISOString(),
+        last_client_disconnected_at:
+          this.streamDiagnostics.lastClientDisconnectedAtMs === null
+            ? null
+            : new Date(this.streamDiagnostics.lastClientDisconnectedAtMs).toISOString(),
+        last_snapshot_broadcast_at:
+          this.streamDiagnostics.lastSnapshotBroadcastAtMs === null
+            ? null
+            : new Date(this.streamDiagnostics.lastSnapshotBroadcastAtMs).toISOString(),
+        last_snapshot_broadcast_latency_ms: this.streamDiagnostics.lastSnapshotBroadcastLatencyMs,
+        last_snapshot_broadcast_status: this.streamDiagnostics.lastSnapshotBroadcastStatus,
+        last_snapshot_broadcast_error: this.streamDiagnostics.lastSnapshotBroadcastError
+      },
       control_plane: this.controlPlaneHealth.summarize(this.nowMs()),
       runtime_resolution: {
         ...runtimeResolution,
@@ -898,10 +947,12 @@ export class LocalApiServer {
 
     const clientId = this.nextClientId++;
     this.eventClients.set(clientId, response);
+    this.streamDiagnostics.lastClientConnectedAtMs = this.nowMs();
     this.broadcastStateSnapshot('stream_connected');
 
     response.on('close', () => {
       this.eventClients.delete(clientId);
+      this.streamDiagnostics.lastClientDisconnectedAtMs = this.nowMs();
     });
   }
 

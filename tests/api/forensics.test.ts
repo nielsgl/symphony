@@ -208,6 +208,15 @@ function makeApiDiagnostics(): ApiDiagnosticsResponse {
       blocked_event_reject_total: 0,
       blocked_latch_violation_total: 0
     },
+    stream: {
+      live_client_count: 0,
+      last_client_connected_at: null,
+      last_client_disconnected_at: null,
+      last_snapshot_broadcast_at: null,
+      last_snapshot_broadcast_latency_ms: null,
+      last_snapshot_broadcast_status: null,
+      last_snapshot_broadcast_error: null
+    },
     control_plane: {
       generated_at: '2026-04-11T10:06:00.000Z',
       sample_limit: 40,

@@ -1306,5 +1306,14 @@ export interface ApiDiagnosticsResponse {
     blocked_event_reject_total: number;
     blocked_latch_violation_total: number;
   };
+  stream: {
+    live_client_count: number;
+    last_client_connected_at: string | null;
+    last_client_disconnected_at: string | null;
+    last_snapshot_broadcast_at: string | null;
+    last_snapshot_broadcast_latency_ms: number | null;
+    last_snapshot_broadcast_status: 'ok' | 'failed' | 'no_clients' | null;
+    last_snapshot_broadcast_error: string | null;
+  };
   control_plane: ControlPlaneHealthSummary;
 }

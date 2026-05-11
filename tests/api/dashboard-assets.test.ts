@@ -207,6 +207,7 @@ class FakeEventSource {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  listeners = new Map<string, Array<(event: { data: string }) => void>>();
   closed = false;
 
   constructor(readonly url: string) {
@@ -215,6 +216,18 @@ class FakeEventSource {
 
   close() {
     this.closed = true;
+  }
+
+  addEventListener(type: string, handler: (event: { data: string }) => void) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(handler);
+    this.listeners.set(type, listeners);
+  }
+
+  emit(type: string, event: { data: string }) {
+    for (const handler of this.listeners.get(type) || []) {
+      handler(event);
+    }
   }
 }
 
@@ -383,7 +396,7 @@ function installDashboardClient(fetchImpl: (url: string, init?: unknown) => Prom
   return { document, fetchCalls };
 }
 
-function installDashboardClientHarness() {
+function installDashboardClientHarness(options: { stateError?: Error } = {}) {
   vi.useFakeTimers();
   FakeEventSource.instances = [];
   const document = new FakeDocument(renderDashboardHtml());
@@ -391,6 +404,9 @@ function installDashboardClientHarness() {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     fetchCalls.push(String(url));
     if (url === '/api/v1/state') {
+      if (options.stateError) {
+        return Promise.reject(options.stateError);
+      }
       return okJson(makeStatePayload());
     }
     if (url === '/api/v1/refresh') {
@@ -530,10 +546,14 @@ describe('dashboard assets', () => {
 
     expect(harness.stateFetchCount()).toBe(1);
     harness.stream().onopen?.();
+    expect(harness.document.getElementById('connection-badge').textContent).toBe('Connecting');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE connected; waiting for first state_snapshot');
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();
 
     expect(harness.stateFetchCount()).toBe(2);
+    expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE connected; waiting for first state_snapshot');
   });
 
   it('suspends routine polling after a healthy stream state snapshot arrives', async () => {
@@ -549,7 +569,43 @@ describe('dashboard assets', () => {
     await flushPromises();
 
     expect(harness.stateFetchCount()).toBe(1);
-    expect(harness.document.getElementById('connection-detail').textContent).toBe('Streaming updates connected');
+    expect(harness.document.getElementById('connection-badge').textContent).toBe('Streaming');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE streaming live state_snapshot updates');
+  });
+
+  it('handles named symphony SSE events from the server', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    harness.stream().onopen?.();
+    harness.stream().emit('symphony', {
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state: makeStatePayload() } })
+    });
+    await flushPromises();
+
+    expect(harness.document.getElementById('connection-badge').textContent).toBe('Streaming');
+    expect(harness.stateFetchCount()).toBe(1);
+  });
+
+  it('renders polling fallback live instead of offline when polling succeeds while SSE is unhealthy', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    harness.stream().onerror?.();
+    await flushPromises();
+
+    expect(harness.stateFetchCount()).toBe(2);
+    expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE disconnected after stream error; polling fallback live');
+    expect(harness.document.getElementById('connection-badge').textContent).not.toBe('Offline');
+  });
+
+  it('renders offline only when polling fails', async () => {
+    const harness = installDashboardClientHarness({ stateError: new Error('api unavailable') });
+    await flushPromises();
+
+    expect(harness.document.getElementById('connection-badge').textContent).toBe('Offline');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Polling failed');
   });
 
   it('renders overdue retry causes above the retry table', async () => {
@@ -629,7 +685,7 @@ describe('dashboard assets', () => {
     await flushPromises();
 
     expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
-    expect(harness.document.getElementById('connection-detail').textContent).toBe('Fresh snapshots via polling fallback');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE connecting; polling fallback live');
   });
 
   it('renders phase age and Codex thread activity as separate clocks', async () => {
@@ -718,6 +774,8 @@ describe('dashboard assets', () => {
     harness.stream().onerror?.();
     await flushPromises();
     expect(harness.stateFetchCount()).toBe(2);
+    expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE disconnected after stream error; polling fallback live');
 
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();

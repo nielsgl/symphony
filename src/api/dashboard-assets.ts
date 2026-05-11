@@ -337,6 +337,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     streamRetryMs: 1000,
     streamConnected: false,
     streamSnapshotHealthy: false,
+    streamStatus: 'connecting',
+    streamFallbackReason: 'connecting',
     eventSource: null,
     uiStateLoaded: false,
     uiStateSaveTimer: null,
@@ -510,10 +512,49 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return minutes + 'm ' + remain + 's';
   }
 
+  function getConnectionLabel(mode) {
+    switch (mode) {
+      case 'streaming':
+        return 'Streaming';
+      case 'polling':
+        return 'Polling';
+      case 'connecting':
+        return 'Connecting';
+      default:
+        return 'Offline';
+    }
+  }
+
+  function getConnectionClass(mode) {
+    switch (mode) {
+      case 'streaming':
+        return 'badge badge-live';
+      case 'polling':
+        return 'badge badge-polling';
+      case 'connecting':
+        return 'badge badge-connecting';
+      default:
+        return 'badge badge-offline';
+    }
+  }
+
+  function describeStreamFallback() {
+    if (state.streamConnected && !state.streamSnapshotHealthy) {
+      return 'SSE connected; waiting for first state_snapshot';
+    }
+    if (state.streamFallbackReason === 'error') {
+      return 'SSE disconnected after stream error; polling fallback live';
+    }
+    if (state.streamFallbackReason === 'connecting') {
+      return 'SSE connecting; polling fallback live';
+    }
+    return 'SSE disconnected; polling fallback live';
+  }
+
   function setConnectionStatus(mode, detail) {
     state.connection = mode;
-    elements.connectionBadge.textContent = mode === 'live' ? 'Live' : mode === 'polling' ? 'Polling' : 'Offline';
-    elements.connectionBadge.className = mode === 'live' ? 'badge badge-live' : mode === 'polling' ? 'badge badge-polling' : 'badge badge-offline';
+    elements.connectionBadge.textContent = getConnectionLabel(mode);
+    elements.connectionBadge.className = getConnectionClass(mode);
     elements.connectionDetail.textContent = detail;
   }
 
@@ -2266,7 +2307,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     if (payload && payload.error) {
       renderSnapshotError(payload.error);
       setLastUpdated(payload.generated_at || new Date().toISOString());
-      return;
+      return false;
     }
 
     clearSnapshotError();
@@ -2287,10 +2328,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     setLastUpdated(payload.generated_at || new Date().toISOString());
     if (source === 'stream') {
       state.streamSnapshotHealthy = true;
-      setConnectionStatus('live', 'Streaming updates connected');
+      state.streamStatus = 'streaming';
+      state.streamFallbackReason = null;
+      setConnectionStatus('streaming', 'SSE streaming live state_snapshot updates');
       state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
       clearPollTimer();
     }
+    return true;
   }
 
   function updateRuntimeClock() {
@@ -2316,8 +2360,14 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   async function loadStateViaPoll() {
     try {
       const payload = await fetchJson('/api/v1/state');
-      applyPayload(payload, 'poll');
-      setConnectionStatus(isStreamHealthy() ? 'live' : 'polling', isStreamHealthy() ? 'Streaming updates connected' : 'Fresh snapshots via polling fallback');
+      const usablePayload = applyPayload(payload, 'poll');
+      if (isStreamHealthy()) {
+        setConnectionStatus('streaming', 'SSE streaming live state_snapshot updates');
+      } else if (usablePayload) {
+        setConnectionStatus('polling', describeStreamFallback());
+      } else {
+        setConnectionStatus('offline', 'Polling returned snapshot error');
+      }
       state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
     } catch (error) {
       setConnectionStatus('offline', 'Polling failed');
@@ -2790,27 +2840,37 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
 
     const stream = new EventSource('/api/v1/events');
     state.eventSource = stream;
+    state.streamStatus = 'connecting';
+    state.streamFallbackReason = 'connecting';
+    setConnectionStatus('connecting', 'SSE connecting; polling fallback active until first snapshot');
 
     stream.onopen = function () {
       state.streamConnected = true;
       state.streamSnapshotHealthy = false;
+      state.streamStatus = 'connected_waiting_snapshot';
+      state.streamFallbackReason = 'waiting_first_snapshot';
       state.streamRetryMs = 1000;
-      setConnectionStatus('live', 'Streaming connected; polling fallback active until first snapshot');
+      setConnectionStatus('connecting', 'SSE connected; waiting for first state_snapshot');
     };
 
-    stream.onmessage = function (event) {
+    function handleStreamMessage(event) {
       try {
         const envelope = JSON.parse(event.data);
         handleSseEnvelope(envelope);
       } catch {
         // Ignore malformed envelopes.
       }
-    };
+    }
+
+    stream.onmessage = handleStreamMessage;
+    stream.addEventListener('symphony', handleStreamMessage);
 
     stream.onerror = function () {
       state.streamConnected = false;
       state.streamSnapshotHealthy = false;
-      setConnectionStatus('offline', 'Stream disconnected; retrying with polling fallback');
+      state.streamStatus = 'error';
+      state.streamFallbackReason = 'error';
+      setConnectionStatus('connecting', 'SSE disconnected after stream error; polling fallback active');
       stream.close();
       state.eventSource = null;
       void loadStateViaPoll();
@@ -3027,14 +3087,19 @@ h1 {
   color: var(--accent);
 }
 
-.badge-offline {
+.badge-polling {
+  background: #eef4ff;
+  color: #1f5fbf;
+}
+
+.badge-connecting {
   background: var(--warn-soft);
   color: var(--warn);
 }
 
-.badge-polling {
-  background: #eef4ff;
-  color: #1f5fbf;
+.badge-offline {
+  background: #fee2e2;
+  color: #b91c1c;
 }
 
 .hero-actions {
