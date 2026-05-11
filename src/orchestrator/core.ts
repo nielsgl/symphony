@@ -2546,6 +2546,17 @@ export class OrchestratorCore {
         });
         await this.persistTicketReference({
           runningEntry,
+          reference_kind: 'review',
+          availability: 'unknown',
+          uri: pr.url,
+          label: `PR #${pr.number}`,
+          external_id: String(pr.number),
+          state: null,
+          metadata: { reason: 'review_state_unobserved' },
+          observed_at: observedAt
+        });
+        await this.persistTicketReference({
+          runningEntry,
           reference_kind: 'merge',
           availability: pr.merged ? 'available' : 'unknown',
           uri: pr.url,

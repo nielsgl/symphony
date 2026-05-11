@@ -1,5 +1,5 @@
 import { TrackerAdapterError } from './errors';
-import type { Issue, IssueBlockerRef, TrackerAdapter } from './types';
+import type { Issue, IssueBlockerRef, IssuePullRequestLink, TrackerAdapter } from './types';
 
 interface LinearAdapterOptions {
   endpoint: string;
@@ -116,6 +116,62 @@ function normalizeBlockers(rawIssue: Record<string, unknown>): IssueBlockerRef[]
     });
 }
 
+function parseGithubPullRequestUrl(url: string): { repository: string; number: number } | null {
+  const match = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:[/?#].*)?$/i);
+  if (!match) {
+    return null;
+  }
+
+  const number = Number(match[3]);
+  if (!Number.isInteger(number)) {
+    return null;
+  }
+
+  return {
+    repository: `${match[1]}/${match[2]}`,
+    number
+  };
+}
+
+function normalizePullRequestLinks(attachments: Record<string, unknown>[]): {
+  repository: string;
+  pr_links: IssuePullRequestLink[];
+} | null {
+  const links: IssuePullRequestLink[] = [];
+  let repository: string | null = null;
+  const seen = new Set<string>();
+
+  for (const attachment of attachments) {
+    const url = readString(attachment.url).trim();
+    const parsed = parseGithubPullRequestUrl(url);
+    if (!parsed) {
+      continue;
+    }
+
+    const key = `${parsed.repository}#${parsed.number}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    repository ??= parsed.repository;
+    links.push({
+      number: parsed.number,
+      url,
+      state: 'unknown',
+      merged: false
+    });
+  }
+
+  if (!repository || links.length === 0) {
+    return null;
+  }
+
+  return {
+    repository,
+    pr_links: links
+  };
+}
+
 function normalizeIssue(rawIssue: Record<string, unknown>): Issue {
   const state = readObject(rawIssue.state);
   const attachments = readNodes(rawIssue.attachments);
@@ -123,6 +179,7 @@ function normalizeIssue(rawIssue: Record<string, unknown>): Issue {
     const url = readString(attachment.url).trim();
     return /^https?:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+(?:[/?#].*)?$/i.test(url);
   });
+  const prLinks = normalizePullRequestLinks(attachments);
 
   return {
     id: readString(rawIssue.id),
@@ -135,6 +192,13 @@ function normalizeIssue(rawIssue: Record<string, unknown>): Issue {
     url: readNullableString(rawIssue.url),
     labels: normalizeLabels(rawIssue),
     blocked_by: normalizeBlockers(rawIssue),
+    tracker_meta: prLinks
+      ? {
+          tracker_kind: 'linear',
+          repository: prLinks.repository,
+          pr_links: prLinks.pr_links
+        }
+      : undefined,
     has_github_issue_link: hasGithubIssueLink,
     created_at: parseIsoDate(rawIssue.createdAt),
     updated_at: parseIsoDate(rawIssue.updatedAt)

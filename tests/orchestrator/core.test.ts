@@ -6017,7 +6017,6 @@ describe('OrchestratorCore', () => {
       })
     ]);
     expect(trackerSnapshots).toEqual([
-    expect(trackerSnapshots).toEqual([
       expect.objectContaining({
         issue_run_id: 'issue_run_1',
         attempt_id: 'attempt_1',
@@ -6049,6 +6048,16 @@ describe('OrchestratorCore', () => {
         uri: 'https://github.com/nielsgl/symphony/pull/242',
         external_id: '242',
         state: 'OPEN'
+      }),
+      expect.objectContaining({
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        reference_kind: 'review',
+        availability: 'unknown',
+        uri: 'https://github.com/nielsgl/symphony/pull/242',
+        external_id: '242',
+        state: null,
+        metadata: { reason: 'review_state_unobserved' }
       }),
       expect.objectContaining({
         issue_run_id: 'issue_run_1',

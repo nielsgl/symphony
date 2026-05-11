@@ -12,7 +12,7 @@ export interface IssuePullRequestLink {
 }
 
 export interface IssueTrackerMeta {
-  tracker_kind: 'github';
+  tracker_kind: 'github' | 'linear';
   repository: string;
   pr_links: IssuePullRequestLink[];
 }

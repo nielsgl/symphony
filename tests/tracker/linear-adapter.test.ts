@@ -174,6 +174,53 @@ describe('LinearTrackerAdapter', () => {
     expect(issue.updated_at?.toISOString()).toBe('2026-03-01T00:00:00.000Z');
   });
 
+  it('normalizes GitHub PR attachment URLs as tracker metadata', async () => {
+    const requests: FakeRequest[] = [];
+    const adapter = createAdapterWithQueuedResponses(
+      [
+        new Response(
+          JSON.stringify({
+            data: {
+              issues: {
+                nodes: [
+                  makeIssueNode({
+                    attachments: {
+                      nodes: [
+                        { url: 'https://github.com/nielsgl/symphony/issues/242' },
+                        { url: 'https://github.com/nielsgl/symphony/pull/251' },
+                        { url: 'https://github.com/nielsgl/symphony/pull/251?notification_referrer_id=abc' },
+                        { url: 'https://example.test/not-a-pr' }
+                      ]
+                    }
+                  })
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null }
+              }
+            }
+          }),
+          { status: 200 }
+        )
+      ],
+      requests
+    );
+
+    const [issue] = await adapter.fetch_candidate_issues();
+
+    expect(issue.has_github_issue_link).toBe(true);
+    expect(issue.tracker_meta).toEqual({
+      tracker_kind: 'linear',
+      repository: 'nielsgl/symphony',
+      pr_links: [
+        {
+          number: 251,
+          url: 'https://github.com/nielsgl/symphony/pull/251',
+          state: 'unknown',
+          merged: false
+        }
+      ]
+    });
+  });
+
   it('issues state-refresh query with GraphQL [ID!] variable typing', async () => {
     const requests: FakeRequest[] = [];
     const adapter = createAdapterWithQueuedResponses(
