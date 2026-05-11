@@ -304,6 +304,7 @@ function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotO
     tokens: { ...entry.tokens },
     last_reported_tokens: { ...entry.last_reported_tokens },
     persisted_turn_ids: [...(entry.persisted_turn_ids ?? [])],
+    pending_persisted_turn_ids: [...(entry.pending_persisted_turn_ids ?? [])],
     recent_events: entry.recent_events.map((event) => ({ ...event })),
     quarantined_events: (entry.quarantined_events ?? []).map((event) => ({ ...event })),
     quarantined_event_count: entry.quarantined_event_count ?? 0,
@@ -1437,7 +1438,7 @@ export class OrchestratorCore {
           });
     }
 
-    const turnAlreadyObserved = this.observeExecutionGraphWorkerTurn(runningEntry, workerEvent);
+    const turnAlreadyObserved = this.beginExecutionGraphWorkerTurnObservation(runningEntry, workerEvent);
     this.queuePersistExecutionGraphWorkerEvent(issue_id, runningEntry, workerEvent, turnAlreadyObserved);
 
     this.logger?.log({
@@ -1549,7 +1550,8 @@ export class OrchestratorCore {
       Boolean(runningEntry.thread_id) &&
       workerEvent.thread_id === runningEntry.thread_id &&
       typeof turnId === 'string' &&
-      !(runningEntry.persisted_turn_ids ?? []).includes(turnId)
+      !(runningEntry.persisted_turn_ids ?? []).includes(turnId) &&
+      !(runningEntry.pending_persisted_turn_ids ?? []).includes(turnId)
     );
   }
 
@@ -1906,6 +1908,7 @@ export class OrchestratorCore {
           reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
           reason_detail: workerEvent.detail ?? null
         });
+        this.markExecutionGraphWorkerTurnPersisted(runningEntry, turnId);
       }
 
       if (turnId) {
@@ -1960,6 +1963,11 @@ export class OrchestratorCore {
         });
       }
     } catch (error) {
+      const failedTurnId = workerEvent.turn_id ?? runningEntry.turn_id;
+      if (failedTurnId) {
+        this.clearPendingExecutionGraphWorkerTurn(runningEntry, failedTurnId);
+      }
+      await this.recordHistoryWriteFailure(operation, this.reasonCodeForWorkerEvent(workerEvent.event), error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
@@ -1998,14 +2006,45 @@ export class OrchestratorCore {
     return keys;
   }
 
-  private observeExecutionGraphWorkerTurn(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
+  private beginExecutionGraphWorkerTurnObservation(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
     const observedTurnId = workerEvent.turn_id ?? runningEntry.turn_id;
     const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
-    const turnAlreadyObserved = Boolean(observedTurnId && persistedTurnIds.includes(observedTurnId));
+    const pendingTurnIds = (runningEntry.pending_persisted_turn_ids ??= []);
+    const turnAlreadyObserved = Boolean(
+      observedTurnId && (persistedTurnIds.includes(observedTurnId) || pendingTurnIds.includes(observedTurnId))
+    );
     if (observedTurnId && !turnAlreadyObserved) {
-      persistedTurnIds.push(observedTurnId);
+      pendingTurnIds.push(observedTurnId);
     }
     return turnAlreadyObserved;
+  }
+
+  private markExecutionGraphWorkerTurnPersisted(runningEntry: RunningEntry, turnId: string): void {
+    const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
+    if (!persistedTurnIds.includes(turnId)) {
+      persistedTurnIds.push(turnId);
+    }
+    this.clearPendingExecutionGraphWorkerTurn(runningEntry, turnId);
+  }
+
+  private clearPendingExecutionGraphWorkerTurn(runningEntry: RunningEntry, turnId: string): void {
+    const pending = runningEntry.pending_persisted_turn_ids;
+    if (!pending) {
+      return;
+    }
+    runningEntry.pending_persisted_turn_ids = pending.filter((entry) => entry !== turnId);
+  }
+
+  private async recordHistoryWriteFailure(operation: string, reasonCode: string, error: unknown): Promise<void> {
+    try {
+      await this.persistence?.recordHistoryWriteFailure?.({
+        operation,
+        reason_code: reasonCode,
+        detail: persistenceErrorMessage(error)
+      });
+    } catch {
+      // The original write failure remains the primary diagnostic.
+    }
   }
 
   private executionGraphPersistenceFailureContext(
@@ -4483,44 +4522,60 @@ export class OrchestratorCore {
     const runningEntry = this.state.running.get(issue.id);
     if (runningEntry && this.persistence) {
       try {
-        runningEntry.run_id = await this.persistence.startRun({
-          issue_id: issue.id,
-          issue_identifier: issue.identifier
-        });
         const startedAt = asIso(runningEntry.started_at_ms);
-        runningEntry.issue_run_id =
-          graphContext.issue_run_id ??
-          (await this.persistence.appendIssueRun?.({
+        if (!graphContext.issue_run_id && this.persistence.recordRunStarted) {
+          const started = await this.persistence.recordRunStarted({
             issue_id: issue.id,
             issue_identifier: issue.identifier,
             started_at: startedAt,
             status: 'running',
             reason_code: REASON_CODES.dispatchStarted,
-            reason_detail: 'dispatch attempt started'
-          })) ??
-          null;
-        if (runningEntry.issue_run_id) {
-          runningEntry.attempt_id =
-            (await this.persistence.appendAttempt?.({
-              issue_run_id: runningEntry.issue_run_id,
-              attempt_number: runningEntry.retry_attempt,
+            reason_detail: 'dispatch attempt started',
+            attempt_number: runningEntry.retry_attempt
+          });
+          runningEntry.run_id = started.run_id;
+          runningEntry.issue_run_id = started.issue_run_id;
+          runningEntry.attempt_id = started.attempt_id;
+        } else {
+          runningEntry.run_id = await this.persistence.startRun({
+            issue_id: issue.id,
+            issue_identifier: issue.identifier
+          });
+          runningEntry.issue_run_id =
+            graphContext.issue_run_id ??
+            (await this.persistence.appendIssueRun?.({
+              issue_id: issue.id,
+              issue_identifier: issue.identifier,
               started_at: startedAt,
               status: 'running',
-              reason_code: REASON_CODES.attemptStarted,
-              reason_detail: 'worker spawned'
-            })) ?? null;
-          await this.persistence.appendStateTransition?.({
-            issue_run_id: runningEntry.issue_run_id,
-            attempt_id: runningEntry.attempt_id,
-            from_status: null,
-            to_status: 'running',
-            transitioned_at: startedAt,
-            status: 'running',
-            reason_code: REASON_CODES.dispatchStarted,
-            reason_detail: 'dispatch attempt started'
-          });
+              reason_code: REASON_CODES.dispatchStarted,
+              reason_detail: 'dispatch attempt started'
+            })) ??
+            null;
+          if (runningEntry.issue_run_id) {
+            runningEntry.attempt_id =
+              (await this.persistence.appendAttempt?.({
+                issue_run_id: runningEntry.issue_run_id,
+                attempt_number: runningEntry.retry_attempt,
+                started_at: startedAt,
+                status: 'running',
+                reason_code: REASON_CODES.attemptStarted,
+                reason_detail: 'worker spawned'
+              })) ?? null;
+            await this.persistence.appendStateTransition?.({
+              issue_run_id: runningEntry.issue_run_id,
+              attempt_id: runningEntry.attempt_id,
+              from_status: null,
+              to_status: 'running',
+              transitioned_at: startedAt,
+              status: 'running',
+              reason_code: REASON_CODES.dispatchStarted,
+              reason_detail: 'dispatch attempt started'
+            });
+          }
         }
-      } catch {
+      } catch (error) {
+        await this.recordHistoryWriteFailure('recordRunStarted', REASON_CODES.dispatchStarted, error);
         this.logger?.log({
           level: 'warn',
           event: CANONICAL_EVENT.persistence.startRunFailed,

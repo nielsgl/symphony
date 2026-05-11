@@ -11,6 +11,7 @@ import type {
   ExecutionGraphEntityStatus,
   ExecutionGraphThreadLineage,
   HistorySchemaHealth,
+  HistoryWriteFailureRecord,
   IssueRunRecord,
   PhaseSpanRecord,
   PersistedBlockedInputRecord,
@@ -311,15 +312,93 @@ export class SqlitePersistenceStore {
     return this.readHistorySchemaHealth();
   }
 
-  startRun(params: { issue_id: string; issue_identifier: string; identity: DurableIdentity }): string {
+  recordHistoryWriteFailure(params: { operation: string; reason_code: string; detail?: string | null }): void {
+    const recordedAt = asIso(this.nowMs());
+    const detail = redactUnknown(params.detail ?? null) as string | null;
+    this.db
+      .prepare(
+        `INSERT INTO history_write_failure
+          (operation, reason_code, detail, recorded_at)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run(params.operation, params.reason_code, detail, recordedAt);
+    this.recordHistorySchemaState({
+      appliedVersion: this.readHistorySchemaHealth().applied_version,
+      status: 'degraded',
+      degradedReasonCode: 'history_write_failed',
+      degradedDetail: `${params.operation}: ${params.reason_code}`
+    });
+    this.recordHistoryHealthMetadata('degraded', 'history_write_failed', `${params.operation}: ${params.reason_code}`);
+  }
+
+  listHistoryWriteFailures(limit = 20): HistoryWriteFailureRecord[] {
+    return this.db
+      .prepare(
+        `SELECT operation, reason_code, detail, recorded_at
+         FROM history_write_failure
+         ORDER BY recorded_at DESC, rowid DESC
+         LIMIT ?`
+      )
+      .all(limit) as HistoryWriteFailureRecord[];
+  }
+
+  startRun(params: { issue_id: string; issue_identifier: string; identity: DurableIdentity; started_at?: string }): string {
     const runId = randomUUID();
     this.upsertHistoryIdentity(params.identity);
     this.db
       .prepare(
         'INSERT INTO runs (run_id, issue_id, issue_identifier, identity, started_at, ended_at, terminal_status, error_code) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)'
       )
-      .run(runId, params.issue_id, params.issue_identifier, serializeDurableIdentity(params.identity), asIso(this.nowMs()));
+      .run(runId, params.issue_id, params.issue_identifier, serializeDurableIdentity(params.identity), params.started_at ?? asIso(this.nowMs()));
     return runId;
+  }
+
+  recordRunStarted(params: {
+    issue_id: string;
+    issue_identifier: string;
+    identity: DurableIdentity;
+    started_at: string;
+    attempt_number: number;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+  }): { run_id: string; issue_run_id: string; attempt_id: string } {
+    return this.transaction(() => {
+      const runId = this.startRun({
+        issue_id: params.issue_id,
+        issue_identifier: params.issue_identifier,
+        identity: params.identity,
+        started_at: params.started_at
+      });
+      const issueRunId = this.appendIssueRun({
+        issue_id: params.issue_id,
+        issue_identifier: params.issue_identifier,
+        identity: params.identity,
+        started_at: params.started_at,
+        status: params.status,
+        reason_code: params.reason_code,
+        reason_detail: params.reason_detail
+      });
+      const attemptId = this.appendAttempt({
+        issue_run_id: issueRunId,
+        attempt_number: params.attempt_number,
+        started_at: params.started_at,
+        status: params.status,
+        reason_code: params.reason_code,
+        reason_detail: params.reason_detail
+      });
+      this.appendStateTransition({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        from_status: null,
+        to_status: params.status,
+        transitioned_at: params.started_at,
+        status: params.status,
+        reason_code: params.reason_code,
+        reason_detail: params.reason_detail
+      });
+      return { run_id: runId, issue_run_id: issueRunId, attempt_id: attemptId };
+    });
   }
 
   recordSession(runId: string, sessionId: string): void {
@@ -1301,6 +1380,13 @@ export class SqlitePersistenceStore {
         schema_version INTEGER NOT NULL,
         applied_migration_version INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS history_write_failure (
+        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation TEXT NOT NULL,
+        reason_code TEXT NOT NULL,
+        detail TEXT,
+        recorded_at TEXT NOT NULL
+      );
     `);
     this.db
       .prepare(
@@ -1382,11 +1468,28 @@ export class SqlitePersistenceStore {
         FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
       );
     `);
+    this.ensureHistoryWriteFailureTable();
+    this.recordHistoryHealthMetadata('healthy', null, null);
+  }
+
+  private ensureHistoryWriteFailureTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS history_write_failure (
+        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation TEXT NOT NULL,
+        reason_code TEXT NOT NULL,
+        detail TEXT,
+        recorded_at TEXT NOT NULL
+      );
+    `);
+  }
+
+  private recordHistoryHealthMetadata(status: 'healthy' | 'degraded', reasonCode: string | null, detail: string | null): void {
     this.db
       .prepare(
         `INSERT INTO history_health_metadata
           (singleton_id, status, reason_code, detail, checked_at, schema_version, applied_migration_version)
-         VALUES (1, 'healthy', NULL, NULL, ?, ?, ?)
+         VALUES (1, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(singleton_id) DO UPDATE SET
           status = excluded.status,
           reason_code = excluded.reason_code,
@@ -1395,7 +1498,7 @@ export class SqlitePersistenceStore {
           schema_version = excluded.schema_version,
           applied_migration_version = excluded.applied_migration_version`
       )
-      .run(asIso(this.nowMs()), HISTORY_SCHEMA_VERSION, HISTORY_SCHEMA_VERSION);
+      .run(status, reasonCode, redactUnknown(detail), asIso(this.nowMs()), HISTORY_SCHEMA_VERSION, this.readHistorySchemaHealth().applied_version);
   }
 
   private readHistorySchemaHealth(): HistorySchemaHealth {
@@ -1877,27 +1980,7 @@ export class SqlitePersistenceStore {
     const historySchema = this.readHistorySchemaHealth();
     const integrityOk = integrityRow.integrity_check === 'ok' && historySchema.status === 'healthy';
     try {
-      this.db
-        .prepare(
-          `INSERT INTO history_health_metadata
-            (singleton_id, status, reason_code, detail, checked_at, schema_version, applied_migration_version)
-           VALUES (1, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(singleton_id) DO UPDATE SET
-            status = excluded.status,
-            reason_code = excluded.reason_code,
-            detail = excluded.detail,
-            checked_at = excluded.checked_at,
-            schema_version = excluded.schema_version,
-            applied_migration_version = excluded.applied_migration_version`
-        )
-        .run(
-          historySchema.status,
-          historySchema.degraded_reason_code,
-          historySchema.degraded_detail,
-          asIso(this.nowMs()),
-          historySchema.target_version,
-          historySchema.applied_version
-        );
+      this.recordHistoryHealthMetadata(historySchema.status, historySchema.degraded_reason_code, historySchema.degraded_detail);
     } catch {
       // If the history schema is degraded before v1 tables exist, the durable
       // schema_state row remains the source of truth for the degraded status.
@@ -1930,5 +2013,21 @@ export class SqlitePersistenceStore {
           updated_at = excluded.updated_at`
       )
       .run(this.retentionDays, asIso(this.nowMs()));
+  }
+
+  private transaction<T>(fn: () => T): T {
+    this.db.exec('BEGIN;');
+    try {
+      const result = fn();
+      this.db.exec('COMMIT;');
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK;');
+      } catch {
+        // Preserve the original write error for callers.
+      }
+      throw error;
+    }
   }
 }

@@ -5958,6 +5958,7 @@ describe('OrchestratorCore', () => {
 
   it('logs typed execution graph persistence failure context without leaking secrets', async () => {
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {
       startRun: async () => 'legacy-run-failure-context',
       appendIssueRun: async () => 'issue-run-failure-context',
@@ -5966,6 +5967,9 @@ describe('OrchestratorCore', () => {
       appendTurn: async () => 'turn-failure-context',
       appendPhaseSpan: async () => {
         throw new Error('database locked token=secret-value');
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
       },
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
@@ -6013,6 +6017,61 @@ describe('OrchestratorCore', () => {
         active_turn_id: 'turn-failure-context'
       })
     );
+    expect(writeFailures).toEqual([
+      expect.objectContaining({
+        operation: 'appendPhaseSpan',
+        reason_code: 'codex_turn_waiting',
+        detail: 'database locked token=***REDACTED***'
+      })
+    ]);
+  });
+
+  it('does not mark a turn persisted when the durable turn write fails', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-turn-failure',
+      appendIssueRun: async () => 'issue-run-turn-failure',
+      appendAttempt: async () => 'attempt-turn-failure',
+      appendThread: async () => 'thread-turn-failure',
+      appendTurn: async () => {
+        throw new Error('database locked before turn flush');
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({
+      logger: {
+        log: ({ event, context }) => logs.push({ event, context: context ?? {} })
+      },
+      persistence
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-turn-failure', identifier: 'ABC-TURN-FAIL' })]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-turn-failure', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-turn-failure',
+      turn_id: 'turn-turn-failure',
+      session_id: 'session-turn-failure'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const running = harness.orchestrator.getStateSnapshot().running.get('i-turn-failure');
+    expect(running?.persisted_turn_ids).toEqual([]);
+    expect(running?.pending_persisted_turn_ids).toEqual([]);
+    expect(writeFailures).toEqual([
+      expect.objectContaining({
+        operation: 'appendTurn',
+        reason_code: 'codex_turn_started',
+        detail: 'database locked before turn flush'
+      })
+    ]);
   });
 
   it('persists retry timer redispatch attempts under the original issue run', async () => {

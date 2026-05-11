@@ -221,6 +221,13 @@ export interface HistorySchemaHealth {
   migrations: HistorySchemaMigrationRecord[];
 }
 
+export interface HistoryWriteFailureRecord {
+  operation: string;
+  reason_code: string;
+  detail: string | null;
+  recorded_at: string;
+}
+
 export interface BreakerMetadataRecord {
   issue_id: string;
   issue_identifier: string;

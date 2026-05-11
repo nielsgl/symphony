@@ -111,6 +111,7 @@ export interface RunningEntry {
   turn_id: string | null;
   persisted_thread_id?: string | null;
   persisted_turn_ids?: string[];
+  pending_persisted_turn_ids?: string[];
   codex_app_server_pid: string | null;
   turn_count: number;
   last_event: string | null;
@@ -766,6 +767,15 @@ export interface PhaseMarkerSettings {
 
 export interface OrchestratorPersistencePort {
   startRun: (params: { issue_id: string; issue_identifier: string }) => Promise<string>;
+  recordRunStarted?: (params: {
+    issue_id: string;
+    issue_identifier: string;
+    started_at: string;
+    attempt_number: number;
+    status: ExecutionGraphEntityStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+  }) => Promise<{ run_id: string; issue_run_id: string; attempt_id: string }>;
   appendIssueRun?: (params: {
     issue_id: string;
     issue_identifier: string;
@@ -874,6 +884,7 @@ export interface OrchestratorPersistencePort {
     recorded_at: string;
     evidence_reference_id?: string;
   }) => Promise<string>;
+  recordHistoryWriteFailure?: (params: { operation: string; reason_code: string; detail?: string | null }) => Promise<void>;
   recordSession: (params: { run_id: string; session_id: string }) => Promise<void>;
   recordEvent: (params: {
     run_id: string;
