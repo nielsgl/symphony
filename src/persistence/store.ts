@@ -11,6 +11,7 @@ import type {
   ExecutionGraphEntityStatus,
   ExecutionGraphThreadLineage,
   HistorySchemaHealth,
+  HistoryIdentityProjectionRecord,
   IssueRunRecord,
   PhaseSpanRecord,
   PersistedBlockedInputRecord,
@@ -36,7 +37,7 @@ interface PersistenceStoreOptions {
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 2;
+const HISTORY_SCHEMA_VERSION = 3;
 
 interface HistoryMigration {
   version: number;
@@ -70,13 +71,43 @@ function parseNullableJsonObject(value: string | null): Record<string, unknown> 
   }
 }
 
+function isIdentityEvidence(value: unknown): boolean {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const evidence = value as { status?: unknown; value?: unknown; reason?: unknown };
+  return (
+    (evidence.status === 'present' && typeof evidence.value === 'string') ||
+    (evidence.status === 'missing' && typeof evidence.reason === 'string')
+  );
+}
+
+function isDurableIdentity(value: unknown): value is DurableIdentity {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as DurableIdentity;
+  return (
+    typeof candidate.project?.key === 'string' &&
+    typeof candidate.project.project_root === 'string' &&
+    typeof candidate.project.workflow_path === 'string' &&
+    isIdentityEvidence(candidate.project.workflow_hash) &&
+    isIdentityEvidence(candidate.project.repository_remote) &&
+    typeof candidate.ticket?.key === 'string' &&
+    typeof candidate.ticket.tracker_kind === 'string' &&
+    isIdentityEvidence(candidate.ticket.tracker_scope) &&
+    typeof candidate.ticket.remote_issue_id === 'string' &&
+    typeof candidate.ticket.human_issue_identifier === 'string'
+  );
+}
+
 function parseDurableIdentity(value: string | null): DurableIdentity | null {
   if (!value) {
     return null;
   }
   try {
-    const parsed = JSON.parse(value) as DurableIdentity;
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    const parsed = JSON.parse(value) as unknown;
+    return isDurableIdentity(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -1026,14 +1057,24 @@ export class SqlitePersistenceStore {
     }>;
 
     const sessionStmt = this.db.prepare('SELECT session_id FROM run_sessions WHERE run_id = ? ORDER BY session_id ASC');
+    const identityProjectionStmt = this.hasTable('history_identity_projection')
+      ? this.db.prepare(
+          `SELECT source_table, source_id, run_id, issue_run_id, issue_id, issue_identifier, projection_status,
+            reason_code, reason_detail, project_key, ticket_key, updated_at
+           FROM history_identity_projection
+           WHERE source_table = 'runs' AND source_id = ?`
+        )
+      : null;
 
     return rows.map((row) => {
       const sessions = sessionStmt.all(row.run_id) as Array<{ session_id: string }>;
+      const identityProjection = this.readHistoryIdentityProjection(identityProjectionStmt, row.run_id);
       const record: DurableRunHistoryRecord = {
         run_id: row.run_id,
         issue_id: row.issue_id,
         issue_identifier: row.issue_identifier,
         identity: parseDurableIdentity(row.identity),
+        identity_projection: identityProjection,
         started_at: row.started_at,
         ended_at: row.ended_at,
         completed_at: row.completed_at,
@@ -1076,6 +1117,14 @@ export class SqlitePersistenceStore {
         apply: (store) => {
           store.ensureIssueRunIdentityKeyColumns();
           store.createTicketOrchestrationLedgerTables();
+        }
+      },
+      {
+        version: 3,
+        name: 'existing_run_history_identity_backfill_v1',
+        apply: (store) => {
+          store.createHistoryIdentityProjectionTable();
+          store.backfillExistingHistoryIdentities();
         }
       }
     ];
@@ -1395,7 +1444,186 @@ export class SqlitePersistenceStore {
           schema_version = excluded.schema_version,
           applied_migration_version = excluded.applied_migration_version`
       )
+      .run(asIso(this.nowMs()), 2, 2);
+  }
+
+  private createHistoryIdentityProjectionTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS history_identity_projection (
+        source_table TEXT NOT NULL CHECK (source_table IN ('runs', 'issue_run')),
+        source_id TEXT NOT NULL,
+        run_id TEXT,
+        issue_run_id TEXT,
+        issue_id TEXT NOT NULL,
+        issue_identifier TEXT NOT NULL,
+        projection_status TEXT NOT NULL CHECK (projection_status IN ('projected', 'degraded')),
+        reason_code TEXT,
+        reason_detail TEXT,
+        project_key TEXT,
+        ticket_key TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_table, source_id)
+      );
+    `);
+  }
+
+  private backfillExistingHistoryIdentities(): void {
+    this.backfillRunHistoryIdentities();
+    this.backfillIssueRunHistoryIdentities();
+    this.db
+      .prepare(
+        `INSERT INTO history_health_metadata
+          (singleton_id, status, reason_code, detail, checked_at, schema_version, applied_migration_version)
+         VALUES (1, 'healthy', NULL, NULL, ?, ?, ?)
+         ON CONFLICT(singleton_id) DO UPDATE SET
+          status = excluded.status,
+          reason_code = excluded.reason_code,
+          detail = excluded.detail,
+          checked_at = excluded.checked_at,
+          schema_version = excluded.schema_version,
+          applied_migration_version = excluded.applied_migration_version`
+      )
       .run(asIso(this.nowMs()), HISTORY_SCHEMA_VERSION, HISTORY_SCHEMA_VERSION);
+  }
+
+  private backfillRunHistoryIdentities(): void {
+    const rows = this.db
+      .prepare('SELECT run_id, issue_id, issue_identifier, identity FROM runs ORDER BY started_at ASC, run_id ASC')
+      .all() as Array<{ run_id: string; issue_id: string; issue_identifier: string; identity: string | null }>;
+    for (const row of rows) {
+      const identity = parseDurableIdentity(row.identity);
+      if (identity) {
+        this.upsertHistoryIdentity(identity);
+        this.recordIdentityProjection({
+          source_table: 'runs',
+          source_id: row.run_id,
+          run_id: row.run_id,
+          issue_run_id: null,
+          issue_id: row.issue_id,
+          issue_identifier: row.issue_identifier,
+          projection_status: 'projected',
+          reason_code: null,
+          reason_detail: null,
+          project_key: identity.project.key,
+          ticket_key: identity.ticket.key
+        });
+        continue;
+      }
+
+      this.recordIdentityProjection({
+        source_table: 'runs',
+        source_id: row.run_id,
+        run_id: row.run_id,
+        issue_run_id: null,
+        issue_id: row.issue_id,
+        issue_identifier: row.issue_identifier,
+        projection_status: 'degraded',
+        reason_code: row.identity ? 'invalid_durable_identity' : 'missing_durable_identity',
+        reason_detail: row.identity
+          ? 'Existing run history row contains unusable durable identity JSON; tracker/project facts were not invented.'
+          : 'Existing run history row has no durable identity evidence; tracker/project facts were not invented.',
+        project_key: null,
+        ticket_key: null
+      });
+    }
+  }
+
+  private backfillIssueRunHistoryIdentities(): void {
+    const rows = this.db
+      .prepare('SELECT issue_run_id, issue_id, issue_identifier, identity FROM issue_run ORDER BY started_at ASC, issue_run_id ASC')
+      .all() as Array<{ issue_run_id: string; issue_id: string; issue_identifier: string; identity: string | null }>;
+    const updateKeys = this.db.prepare('UPDATE issue_run SET project_key = ?, ticket_key = ? WHERE issue_run_id = ?');
+    for (const row of rows) {
+      const identity = parseDurableIdentity(row.identity);
+      if (identity) {
+        this.upsertHistoryIdentity(identity);
+        updateKeys.run(identity.project.key, identity.ticket.key, row.issue_run_id);
+        this.recordIdentityProjection({
+          source_table: 'issue_run',
+          source_id: row.issue_run_id,
+          run_id: null,
+          issue_run_id: row.issue_run_id,
+          issue_id: row.issue_id,
+          issue_identifier: row.issue_identifier,
+          projection_status: 'projected',
+          reason_code: null,
+          reason_detail: null,
+          project_key: identity.project.key,
+          ticket_key: identity.ticket.key
+        });
+        continue;
+      }
+
+      this.recordIdentityProjection({
+        source_table: 'issue_run',
+        source_id: row.issue_run_id,
+        run_id: null,
+        issue_run_id: row.issue_run_id,
+        issue_id: row.issue_id,
+        issue_identifier: row.issue_identifier,
+        projection_status: 'degraded',
+        reason_code: row.identity ? 'invalid_durable_identity' : 'missing_durable_identity',
+        reason_detail: row.identity
+          ? 'Existing issue_run row contains unusable durable identity JSON; tracker/project facts were not invented.'
+          : 'Existing issue_run row has no durable identity evidence; tracker/project facts were not invented.',
+        project_key: null,
+        ticket_key: null
+      });
+    }
+  }
+
+  private recordIdentityProjection(
+    record: Omit<HistoryIdentityProjectionRecord, 'updated_at'>
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO history_identity_projection
+          (source_table, source_id, run_id, issue_run_id, issue_id, issue_identifier, projection_status,
+           reason_code, reason_detail, project_key, ticket_key, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(source_table, source_id) DO UPDATE SET
+          run_id = excluded.run_id,
+          issue_run_id = excluded.issue_run_id,
+          issue_id = excluded.issue_id,
+          issue_identifier = excluded.issue_identifier,
+          projection_status = excluded.projection_status,
+          reason_code = excluded.reason_code,
+          reason_detail = excluded.reason_detail,
+          project_key = excluded.project_key,
+          ticket_key = excluded.ticket_key,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        record.source_table,
+        record.source_id,
+        record.run_id,
+        record.issue_run_id,
+        record.issue_id,
+        record.issue_identifier,
+        record.projection_status,
+        record.reason_code,
+        redactUnknown(record.reason_detail ?? null),
+        record.project_key,
+        record.ticket_key,
+        asIso(this.nowMs())
+      );
+  }
+
+  private readHistoryIdentityProjection(
+    statement: { get(...args: unknown[]): unknown } | null,
+    sourceId: string
+  ): HistoryIdentityProjectionRecord | null {
+    if (!statement) {
+      return null;
+    }
+    return (statement.get(sourceId) as HistoryIdentityProjectionRecord | undefined) ?? null;
+  }
+
+  private hasTable(name: string): boolean {
+    const row = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) as
+      | { name: string }
+      | undefined;
+    return Boolean(row);
   }
 
   private readHistorySchemaHealth(): HistorySchemaHealth {

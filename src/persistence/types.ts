@@ -155,6 +155,7 @@ export interface DurableRunHistoryRecord {
   issue_id: string;
   issue_identifier: string;
   identity?: DurableIdentity | null;
+  identity_projection?: HistoryIdentityProjectionRecord | null;
   started_at: string;
   ended_at: string | null;
   completed_at: string | null;
@@ -171,6 +172,21 @@ export interface DurableRunHistoryRecord {
   turn_id: string | null;
   session_ids: string[];
   missing_tool_output_recovery?: Record<string, unknown> | null;
+}
+
+export interface HistoryIdentityProjectionRecord {
+  source_table: 'runs' | 'issue_run';
+  source_id: string;
+  run_id: string | null;
+  issue_run_id: string | null;
+  issue_id: string;
+  issue_identifier: string;
+  projection_status: 'projected' | 'degraded';
+  reason_code: string | null;
+  reason_detail: string | null;
+  project_key: string | null;
+  ticket_key: string | null;
+  updated_at: string;
 }
 
 export interface UiContinuityState {
