@@ -1371,6 +1371,8 @@ export class SqlitePersistenceStore {
       }
     }
 
+    this.ensureHistoryWriteFailureTable();
+
     const state = this.db
       .prepare('SELECT status FROM history_schema_state WHERE schema_name = ?')
       .get(HISTORY_SCHEMA_NAME) as { status: string } | undefined;

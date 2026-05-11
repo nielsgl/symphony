@@ -159,6 +159,7 @@ describe('SqlitePersistenceStore', () => {
         'history_ticket_terminal_outcome',
         'history_ticket_blocker',
         'history_ticket_evidence_reference',
+        'history_write_failure',
         'history_retention_metadata',
         'history_health_metadata',
         'issue_run',
@@ -1389,6 +1390,57 @@ describe('SqlitePersistenceStore', () => {
         detail: 'database locked token=***REDACTED***',
         recorded_at: '2026-04-11T10:00:00.000Z'
       }
+    ]);
+  });
+
+  it('restores write-failure diagnostics for already-applied history schemas', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-write-failure-upgrade-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
+    });
+    stores.push(storeA);
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
+    storeA.close();
+    stores.pop();
+
+    const db = openDatabase(dbPath);
+    try {
+      db.exec('DROP TABLE history_write_failure;');
+    } finally {
+      db.close();
+    }
+
+    const storeB = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-11T10:05:00.000Z')
+    });
+    stores.push(storeB);
+
+    storeB.recordHistoryWriteFailure({
+      operation: 'appendTicketTerminalOutcome',
+      reason_code: 'history_terminal_outcome_write_failed',
+      detail: 'no such table before idempotent ensure'
+    });
+
+    expect(storeB.historySchemaHealth()).toMatchObject({
+      applied_version: 4,
+      status: 'degraded',
+      degraded_reason_code: 'history_write_failed',
+      degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'
+    });
+    expect(storeB.listHistoryWriteFailures()).toEqual([
+      expect.objectContaining({
+        operation: 'appendTicketTerminalOutcome',
+        reason_code: 'history_terminal_outcome_write_failed',
+        detail: 'no such table before idempotent ensure',
+        recorded_at: '2026-04-11T10:05:00.000Z'
+      })
     ]);
   });
 
