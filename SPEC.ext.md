@@ -432,3 +432,33 @@ Conformance extension:
   method/category/reason evidence.
 - Unsupported safety-sensitive requests stop as operator input required unless
   an explicit supported policy exists.
+
+## 13. Project Execution History Persistence Schema
+
+Project Execution History uses an explicit local SQLite schema named
+`project_execution_history`. The durable schema state lives in
+`history_schema_state`, and individual migration outcomes live in
+`history_schema_migrations`.
+
+Version 1 covers:
+
+- Project Identity: `history_project_identity`.
+- Ticket Identity: `history_ticket_identity`.
+- Run attempts and execution graph: existing `issue_run`, `attempt`, `thread`,
+  `turn`, `phase_span`, `tool_span`, and `state_transition` tables.
+- Legacy diagnostic/run history: existing `runs`, `run_sessions`, and
+  `run_events` tables remain diagnostic compatibility tables. They are not the
+  canonical full Project Execution History shape, but they continue to power
+  restart history and diagnostics while newer history tables are populated.
+- Protocol summaries: `history_protocol_summary`.
+- Token and Effective Model facts: `history_token_model_fact`.
+- Retention metadata: `history_retention_metadata`.
+- Health and degradation metadata: `history_health_metadata`.
+
+Migration requirements:
+
+- Migrations are idempotent and record applied version durably.
+- Migration success is not inferred from table or column presence alone.
+- If a migration fails, `history_schema_state.status` is `degraded` and the
+  failing migration row records the redacted error. Persistence health must
+  surface this degraded state instead of presenting partial history as complete.
