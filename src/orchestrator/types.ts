@@ -367,6 +367,7 @@ export interface OperatorActionRecord {
   target_identifiers?: {
     issue_id: string;
     issue_identifier: string | null;
+    issue_run_id?: string | null;
     run_id?: string | null;
     attempt_id?: string | null;
     thread_id?: string | null;
@@ -408,6 +409,7 @@ export interface RetryEntry {
   stop_reason_code: string | null;
   stop_reason_detail: string | null;
   previous_thread_id: string | null;
+  previous_turn_id?: string | null;
   previous_session_id: string | null;
   last_phase?: PhaseMarkerName | null;
   last_phase_at_ms?: number | null;
@@ -470,6 +472,7 @@ export interface BlockedEntry {
   };
   resolution_hints: string[];
   previous_thread_id: string | null;
+  previous_turn_id?: string | null;
   previous_session_id: string | null;
   last_phase?: PhaseMarkerName | null;
   last_phase_at_ms?: number | null;
@@ -883,6 +886,78 @@ export interface OrchestratorPersistencePort {
     metadata?: Record<string, unknown> | null;
     recorded_at: string;
     evidence_reference_id?: string;
+  }) => Promise<string>;
+  appendTrackerTicketSnapshot?: (params: {
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    tracker_kind: string;
+    tracker_scope?: { status: 'present'; value: string } | { status: 'missing'; reason: string } | null;
+    remote_issue_id: string;
+    human_issue_identifier: string;
+    title: string;
+    tracker_status: string;
+    assignee_status?: 'available' | 'unavailable' | 'unknown';
+    assignee_identifier?: string | null;
+    assignee_reason?: string | null;
+    labels?: string[];
+    project_status?: 'available' | 'unavailable' | 'unknown';
+    project_identifier?: string | null;
+    project_reason?: string | null;
+    team_status?: 'available' | 'unavailable' | 'unknown';
+    team_identifier?: string | null;
+    team_reason?: string | null;
+    observed_at: string;
+  }) => Promise<string>;
+  appendTicketReference?: (params: {
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    reference_kind: 'branch' | 'pull_request' | 'review' | 'merge' | 'evidence';
+    availability: 'available' | 'unavailable' | 'unknown';
+    uri?: string | null;
+    label?: string | null;
+    external_id?: string | null;
+    state?: string | null;
+    metadata?: Record<string, unknown> | null;
+    observed_at: string;
+  }) => Promise<string>;
+  appendOperatorActionHistory?: (params: {
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    action: string;
+    actor?: string | null;
+    result: 'accepted' | 'rejected' | 'failed';
+    result_code?: string | null;
+    message?: string | null;
+    reason_note?: string | null;
+    phase?: string | null;
+    state_context?: Record<string, unknown> | null;
+    requested_at: string;
+    observed_at: string;
+  }) => Promise<string>;
+  appendBlockedInputEvent?: (params: {
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    issue_id: string;
+    issue_identifier: string;
+    phase?: string | null;
+    runtime_state: string;
+    reason_code: string;
+    reason_detail?: string | null;
+    request_id?: string | null;
+    request_method?: string | null;
+    input_schema_type?: string | null;
+    prompt_text?: string | null;
+    pending_input?: Record<string, unknown> | null;
+    state_context?: Record<string, unknown> | null;
+    blocked_at: string;
   }) => Promise<string>;
   appendTokenModelFact?: (params: {
     issue_run_id: string;
