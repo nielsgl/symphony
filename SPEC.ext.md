@@ -485,7 +485,11 @@ Durable write points:
   `history_protocol_summary` rows rather than loading transcripts on the
   runtime hot path.
 - Token/model observation: write `history_token_model_fact` from usage and
-  effective-model telemetry observations.
+  effective-model telemetry observations. Token facts preserve observed input,
+  output, total, cached input, reasoning output, context-window metadata,
+  source, confidence, and observation time when available. Requested model and
+  Effective Model are stored separately so reroutes remain auditable without
+  introducing pricing snapshots or cost estimates.
 - Blocker/operator action: write `history_ticket_blocker` for durable blocker
   facts and the operator action trail for audited operator decisions.
 - Evidence reference: write `history_ticket_evidence_reference` for durable
