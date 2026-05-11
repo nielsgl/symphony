@@ -88,6 +88,13 @@ async function installDashboardApiMocks(
     state: DashboardStatePayload | (() => DashboardStatePayload);
     issues?: Record<string, IssuePayload | ((id: string) => IssuePayload)>;
     diagnostics?: Record<string, IssuePayload | ((id: string) => IssuePayload)>;
+    runHistory?: Record<string, unknown>;
+    projectHistory?: {
+      list?: Record<string, unknown>;
+      details?: Record<string, Record<string, unknown>>;
+      listStatus?: number;
+      onDetailLoad?: (ticketKey: string) => void;
+    };
     onInputSubmit?: (issueIdentifier: string, payload: Record<string, unknown>) => void;
     onRefresh?: () => void;
   }
@@ -118,8 +125,39 @@ async function installDashboardApiMocks(
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ runs: [] })
+      body: JSON.stringify(options.runHistory ?? { runs: [] })
     });
+  });
+
+  await page.route('**/api/v1/projects/*/history/tickets?limit=50', async (route) => {
+    if (!options.projectHistory?.list) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'project_history_unavailable', message: 'Project history unavailable' } })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: options.projectHistory.listStatus ?? 200,
+      contentType: 'application/json',
+      body: JSON.stringify(options.projectHistory.list)
+    });
+  });
+
+  await page.route('**/api/v1/projects/*/history/tickets/*', async (route) => {
+    const ticketKey = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-1) || '');
+    options.projectHistory?.onDetailLoad?.(ticketKey);
+    const payload = options.projectHistory?.details?.[ticketKey];
+    if (!payload) {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'project_history_ticket_not_found', message: 'Ticket not found' } })
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(payload) });
   });
 
   await page.route('**/api/v1/ui-state', async (route) => {
@@ -226,6 +264,184 @@ async function installDashboardApiMocks(
 }
 
 test.describe('phase-marker dashboard e2e', () => {
+  test('project history renders bounded ticket rows and lazy timeline detail', async ({ page }) => {
+    const projectKey = 'project-main';
+    const completedTicketKey = 'ticket-completed';
+    const activeTicketKey = 'ticket-active';
+    let detailLoads = 0;
+
+    const factStates = [
+      { fact: 'history_schema', status: 'degraded', reason_code: 'history_write_failed', detail: 'history write degraded' },
+      { fact: 'terminal_outcome', status: 'present', reason_code: null, detail: null },
+      { fact: 'app_server_lite_payload', status: 'redacted', reason_code: 'project_history_payload_redacted', detail: null },
+      { fact: 'app_server_lite_payload', status: 'truncated', reason_code: 'project_history_payload_truncated', detail: null }
+    ];
+
+    const completedRow = {
+      project_identity: { key: projectKey },
+      ticket_identity: { key: completedTicketKey, human_issue_identifier: 'NIE-200' },
+      state: 'completed',
+      current_status: 'Done',
+      last_known_status: 'Done',
+      latest_attempt: {
+        attempt_id: 'attempt-2',
+        attempt_number: 2,
+        status: 'succeeded',
+        started_at: '2026-05-10T10:00:00.000Z',
+        ended_at: '2026-05-10T10:10:00.000Z',
+        outcome: 'succeeded',
+        outcome_reason_code: 'merged'
+      },
+      summary: {
+        issue_run_count: 1,
+        attempt_count: 2,
+        thread_count: 2,
+        turn_count: 5,
+        phase_count: 4,
+        state_transition_count: 3,
+        active_blocker_count: 0,
+        resolved_blocker_count: 1,
+        evidence_reference_count: 1,
+        tracker_snapshot_count: 1,
+        ticket_reference_count: 1,
+        operator_action_count: 1,
+        blocked_input_event_count: 0,
+        app_server_event_count: 1,
+        token_model_fact_count: 1,
+        total_tokens: 4200
+      },
+      facts: factStates,
+      latest_observed_at: '2026-05-10T10:12:00.000Z'
+    };
+
+    const activeRow = {
+      ...completedRow,
+      ticket_identity: { key: activeTicketKey, human_issue_identifier: 'NIE-201' },
+      state: 'active',
+      current_status: 'In Progress',
+      latest_attempt: {
+        attempt_id: 'attempt-active',
+        attempt_number: 1,
+        status: 'running',
+        started_at: '2026-05-10T11:00:00.000Z',
+        ended_at: null,
+        outcome: null,
+        outcome_reason_code: null
+      },
+      summary: {
+        ...completedRow.summary,
+        attempt_count: 1,
+        thread_count: 1,
+        turn_count: 1,
+        total_tokens: null
+      },
+      facts: [
+        { fact: 'terminal_outcome', status: 'missing', reason_code: 'project_history_terminal_outcome_missing', detail: null },
+        { fact: 'token_model_summaries', status: 'missing', reason_code: 'project_history_token_model_summaries_missing', detail: null },
+        { fact: 'history_schema', status: 'degraded', reason_code: 'history_write_failed', detail: 'history write degraded' }
+      ]
+    };
+
+    const completedDetail = {
+      ...completedRow,
+      attempts: [
+        { attempt_id: 'attempt-1', attempt_number: 1, status: 'failed', started_at: '2026-05-10T09:00:00.000Z', ended_at: '2026-05-10T09:10:00.000Z' },
+        { attempt_id: 'attempt-2', attempt_number: 2, status: 'succeeded', started_at: '2026-05-10T10:00:00.000Z', ended_at: '2026-05-10T10:10:00.000Z' }
+      ],
+      phases: [
+        { phase: 'planning', status: 'completed', started_at: '2026-05-10T10:00:00.000Z', ended_at: '2026-05-10T10:02:00.000Z', reason_code: null },
+        { phase: 'validation', status: 'completed', started_at: '2026-05-10T10:08:00.000Z', ended_at: '2026-05-10T10:10:00.000Z', reason_code: null }
+      ],
+      state_transitions: [
+        { from_status: 'In Progress', to_status: 'Agent Review', transitioned_at: '2026-05-10T10:11:00.000Z', reason_code: 'review_ready' }
+      ],
+      thread_references: [
+        { thread_id: 'thread-1', attempt_id: 'attempt-2', started_at: '2026-05-10T10:00:00.000Z', ended_at: '2026-05-10T10:10:00.000Z', status: 'completed' }
+      ],
+      turn_references: [
+        { turn_id: 'turn-1', thread_id: 'thread-1', turn_index: 0, started_at: '2026-05-10T10:01:00.000Z', ended_at: '2026-05-10T10:09:00.000Z', status: 'completed' }
+      ],
+      outcomes: [{ outcome: 'succeeded', reason_code: 'merged', recorded_at: '2026-05-10T10:12:00.000Z' }],
+      blockers: [{ status: 'resolved', blocker_type: 'tool_output', reason_code: 'missing_tool_output', reason_detail: 'recovered' }],
+      evidence_references: [{ evidence_kind: 'test_output', title: 'project history proof', uri: 'file://proof.txt', recorded_at: '2026-05-10T10:09:00.000Z' }],
+      tracker_facts: [{ tracker_status: 'Done', last_observed_at: '2026-05-10T10:12:00.000Z' }],
+      pr_and_reference_facts: [{ reference_kind: 'pull_request', label: 'PR #240', state: 'merged', last_observed_at: '2026-05-10T10:12:00.000Z' }],
+      operator_facts: [{ action: 'resume', result: 'accepted', requested_at: '2026-05-10T09:30:00.000Z' }],
+      blocked_input_events: [],
+      app_server_lite_summaries: [
+        {
+          source_event_name: 'thread/tokenUsage/updated',
+          detail_status: 'redacted_truncated_excerpt',
+          summary: 'token update',
+          redacted_excerpt: 'token=***REDACTED***',
+          unavailable_reason_code: null
+        }
+      ],
+      token_model_summaries: [
+        { effective_model: 'gpt-5.4', requested_model: 'gpt-5.4', total_tokens: 4200, telemetry_confidence: 'observed_live' }
+      ]
+    };
+
+    await installDashboardApiMocks(page, {
+      state: baseState(),
+      runHistory: {
+        runs: [
+          {
+            issue_identifier: 'NIE-200',
+            terminal_status: 'succeeded',
+            started_at: '2026-05-10T10:00:00.000Z',
+            ended_at: '2026-05-10T10:10:00.000Z',
+            identity: { project: { key: projectKey } }
+          }
+        ]
+      },
+      projectHistory: {
+        list: {
+          project_identity: { key: projectKey },
+          page: { limit: 50, offset: 0, has_more: true, total: 2 },
+          tickets: [completedRow, activeRow],
+          facts: [{ fact: 'history_schema', status: 'degraded', reason_code: 'history_write_failed', detail: 'history write degraded' }]
+        },
+        details: {
+          [completedTicketKey]: completedDetail
+        },
+        onDetailLoad: () => {
+          detailLoads += 1;
+        }
+      }
+    });
+
+    await page.goto('/');
+
+    await expect(page.locator('#project-history-status')).toContainText('Showing 2 of 2 ticket rows');
+    await expect(page.locator('#project-history-status')).toContainText('more rows available');
+    await expect(page.locator('#project-history-rows')).toContainText('NIE-200');
+    await expect(page.locator('#project-history-rows')).toContainText('completed');
+    await expect(page.locator('#project-history-rows')).toContainText('Attempt 2');
+    await expect(page.locator('#project-history-rows')).toContainText('tokens 4,200');
+    await expect(page.locator('#project-history-rows')).toContainText('NIE-201');
+    await expect(page.locator('#project-history-rows')).toContainText('active');
+    await expect(page.locator('#project-history-rows')).toContainText('missing: terminal outcome');
+    await expect(page.locator('#project-history-rows')).toContainText('redacted: app server lite payload');
+    await expect(page.locator('#project-history-detail')).toBeHidden();
+    expect(detailLoads).toBe(0);
+
+    await page.locator('tr[data-ticket-key="ticket-completed"]').getByRole('button', { name: 'View Timeline' }).click();
+
+    await expect(page.locator('#project-history-detail')).toBeVisible();
+    await expect(page.locator('#project-history-detail')).toContainText('Ticket Timeline: NIE-200');
+    await expect(page.locator('#project-history-detail')).toContainText('Attempt 1');
+    await expect(page.locator('#project-history-detail')).toContainText('Attempt 2');
+    await expect(page.locator('#project-history-detail')).toContainText('State Transitions');
+    await expect(page.locator('#project-history-detail')).toContainText('thread-1');
+    await expect(page.locator('#project-history-detail')).toContainText('missing_tool_output');
+    await expect(page.locator('#project-history-detail')).toContainText('PR #240');
+    await expect(page.locator('#project-history-detail')).toContainText('token update');
+    await expect(page.locator('#project-history-detail')).toContainText('gpt-5.4');
+    await expect(page.locator('#project-history-detail')).not.toContainText('raw transcript');
+    expect(detailLoads).toBe(1);
+  });
+
   test('stopped-run recovery card renders terminal and root-cause diagnostics without overlap', async ({ page }) => {
     await installDashboardApiMocks(page, {
       state: baseState({
