@@ -817,7 +817,15 @@ describe('CodexRunner', () => {
         id: 92,
         result: expect.objectContaining({
           success: false,
-          output: expect.stringContaining('Unsupported dynamic tool')
+          output: expect.stringContaining('"attemptedToolName": "unknown"')
+        })
+      })
+    );
+    expect(responses).toContainEqual(
+      expect.objectContaining({
+        id: 92,
+        result: expect.objectContaining({
+          output: expect.stringContaining('"supportedTools": [')
         })
       })
     );
