@@ -178,7 +178,7 @@ export function createRuntimeTerminateWorkerPort(
     bridge.terminateWorker({ issue_id, worker_handle, cleanup_workspace, reason });
 }
 
-function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObservabilityEvent {
+export function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObservabilityEvent {
   const parsed = Date.parse(event.timestamp);
   return {
     timestamp_ms: Number.isFinite(parsed) ? parsed : nowMs,
@@ -197,6 +197,11 @@ function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObservabil
     token_telemetry_status: event.token_telemetry_status,
     token_telemetry_last_source: event.token_telemetry_last_source,
     token_telemetry_last_at_ms: event.token_telemetry_last_at_ms,
+    protocol_warnings: event.protocol_warnings,
+    protocol_warning: event.protocol_warning,
+    model_reroute: event.model_reroute,
+    requested_model: event.requested_model,
+    effective_model: event.effective_model,
     tool_call_id: event.tool_call_id,
     tool_name: event.tool_name,
     tool_call_evidence_source: event.tool_call_evidence_source
