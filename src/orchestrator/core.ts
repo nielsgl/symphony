@@ -126,6 +126,23 @@ interface DispatchGraphContext {
   previous_attempt_id?: string | null;
 }
 
+interface AppServerLiteSummary {
+  payload_class:
+    | 'protocol_lifecycle'
+    | 'protocol_request_response'
+    | 'assistant_text'
+    | 'tool_payload'
+    | 'command_output'
+    | 'filesystem_change'
+    | 'environment'
+    | 'account'
+    | 'conversation_transcript'
+    | 'unknown';
+  summary: string;
+  summary_fields: Record<string, unknown>;
+  unavailable_reason_code?: string | null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
@@ -154,6 +171,129 @@ function readTimestampMs(value: Record<string, unknown> | null): number | null {
       return parsed;
     }
   }
+  return null;
+}
+
+function appServerLiteSourceEventId(workerEvent: WorkerObservabilityEvent): string {
+  const hash = createHash('sha256')
+    .update(workerEvent.event)
+    .update('\0')
+    .update(String(workerEvent.timestamp_ms))
+    .update('\0')
+    .update(workerEvent.thread_id ?? '')
+    .update('\0')
+    .update(workerEvent.turn_id ?? '')
+    .update('\0')
+    .update(workerEvent.session_id ?? '')
+    .update('\0')
+    .update(workerEvent.tool_call_id ?? '')
+    .update('\0')
+    .update(workerEvent.request_method ?? '')
+    .digest('hex')
+    .slice(0, 20);
+  return `worker_event:${hash}`;
+}
+
+function appServerLiteSummaryForWorkerEvent(workerEvent: WorkerObservabilityEvent): AppServerLiteSummary | null {
+  const baseFields: Record<string, unknown> = {
+    event: workerEvent.event,
+    reason_code: workerEvent.reason_code ?? null,
+    thread_id_available: Boolean(workerEvent.thread_id),
+    turn_id_available: Boolean(workerEvent.turn_id),
+    session_id_available: Boolean(workerEvent.session_id)
+  };
+
+  if (workerEvent.request_method || workerEvent.request_category) {
+    return {
+      payload_class: 'protocol_request_response',
+      summary: `${workerEvent.event}: ${workerEvent.request_method ?? 'unknown method'}`,
+      summary_fields: {
+        ...baseFields,
+        protocol_event_category: 'request_response',
+        request_method: workerEvent.request_method ?? null,
+        request_category: workerEvent.request_category ?? null
+      }
+    };
+  }
+
+  if (workerEvent.protocol_warning) {
+    return {
+      payload_class: 'protocol_lifecycle',
+      summary: `${workerEvent.protocol_warning.reason_code}: ${workerEvent.protocol_warning.method}`,
+      summary_fields: {
+        ...baseFields,
+        protocol_event_category: 'warning',
+        method: workerEvent.protocol_warning.method,
+        warning_reason_code: workerEvent.protocol_warning.reason_code,
+        severity: workerEvent.protocol_warning.severity
+      }
+    };
+  }
+
+  if (workerEvent.model_reroute) {
+    return {
+      payload_class: 'protocol_lifecycle',
+      summary: `${workerEvent.model_reroute.reason_code}: model rerouted`,
+      summary_fields: {
+        ...baseFields,
+        protocol_event_category: 'model_signal',
+        requested_model: workerEvent.model_reroute.requested_model,
+        effective_model: workerEvent.model_reroute.effective_model,
+        model_reason_code: workerEvent.model_reroute.reason_code
+      }
+    };
+  }
+
+  if (workerEvent.usage || workerEvent.rate_limits || workerEvent.token_telemetry_status) {
+    return {
+      payload_class: 'protocol_lifecycle',
+      summary: `${workerEvent.event}: token/rate/model telemetry`,
+      summary_fields: {
+        ...baseFields,
+        protocol_event_category: 'token_rate_signal',
+        usage: workerEvent.usage ?? null,
+        token_telemetry_status: workerEvent.token_telemetry_status ?? null,
+        token_telemetry_last_source: workerEvent.token_telemetry_last_source ?? null,
+        rate_limits: workerEvent.rate_limits ?? null,
+        requested_model: workerEvent.requested_model ?? null,
+        effective_model: workerEvent.effective_model ?? null
+      }
+    };
+  }
+
+  if (workerEvent.tool_call_id || workerEvent.tool_name || workerEvent.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch) {
+    return {
+      payload_class: 'tool_payload',
+      summary: `${workerEvent.event}: ${workerEvent.tool_name ?? workerEvent.tool_call_id ?? 'tool event'}`,
+      summary_fields: {
+        ...baseFields,
+        protocol_event_category: 'dynamic_tool',
+        tool_call_id: workerEvent.tool_call_id ?? null,
+        tool_name: workerEvent.tool_name ?? null,
+        evidence_source: workerEvent.tool_call_evidence_source ?? null
+      },
+      unavailable_reason_code: 'tool_payload_payload_not_stored'
+    };
+  }
+
+  if (
+    workerEvent.event === CANONICAL_EVENT.codex.turnStarted ||
+    workerEvent.event === CANONICAL_EVENT.codex.turnCompleted ||
+    workerEvent.event === CANONICAL_EVENT.codex.turnFailed ||
+    workerEvent.event === CANONICAL_EVENT.codex.turnCancelled ||
+    workerEvent.event === CANONICAL_EVENT.codex.turnInputRequired
+  ) {
+    return {
+      payload_class: 'protocol_lifecycle',
+      summary: workerEvent.event,
+      summary_fields: {
+        ...baseFields,
+        protocol_event_category: 'terminal_event',
+        terminal_source: workerEvent.terminal_source ?? null
+      }
+    };
+  }
+
   return null;
 }
 
@@ -1960,6 +2100,24 @@ export class OrchestratorCore {
           status: this.executionGraphStatusForWorkerEvent(workerEvent.event),
           reason_code: this.reasonCodeForWorkerEvent(workerEvent.event),
           reason_detail: workerEvent.detail ?? null
+        });
+      }
+
+      const appServerLiteSummary = appServerLiteSummaryForWorkerEvent(workerEvent);
+      if (appServerLiteSummary && this.persistence.appendAppServerEvent) {
+        operation = 'appendAppServerEvent';
+        await this.persistence.appendAppServerEvent({
+          issue_run_id: runningEntry.issue_run_id,
+          attempt_id: runningEntry.attempt_id,
+          thread_id: threadId ?? null,
+          turn_id: turnId ?? null,
+          observed_at: at,
+          source_event_id: appServerLiteSourceEventId(workerEvent),
+          source_event_name: workerEvent.event,
+          payload_class: appServerLiteSummary.payload_class,
+          summary: appServerLiteSummary.summary,
+          summary_fields: appServerLiteSummary.summary_fields,
+          unavailable_reason_code: appServerLiteSummary.unavailable_reason_code ?? null
         });
       }
     } catch (error) {
