@@ -1,0 +1,83 @@
+{
+  "definitions": {
+    "ApplyPatchApprovalParams": {},
+    "ApplyPatchApprovalResponse": {},
+    "ClientRequest": {
+      "anyOf": [
+        { "properties": { "method": { "enum": ["initialize"] } } },
+        { "properties": { "method": { "enum": ["thread/start"] } } },
+        { "properties": { "method": { "enum": ["turn/start"] } } },
+        { "properties": { "method": { "enum": ["turn/interrupt"] } } },
+        { "properties": { "method": { "enum": ["thread/read"] } } }
+      ]
+    },
+    "CommandExecutionRequestApprovalParams": {},
+    "CommandExecutionRequestApprovalResponse": {},
+    "DynamicToolCallParams": {},
+    "DynamicToolCallResponse": {},
+    "DynamicToolSpec": {},
+    "ExecCommandApprovalParams": {},
+    "ExecCommandApprovalResponse": {},
+    "FileChangeRequestApprovalParams": {},
+    "FileChangeRequestApprovalResponse": {},
+    "InitializeParams": {},
+    "InitializeResponse": {},
+    "McpServerElicitationRequestParams": {},
+    "McpServerElicitationRequestResponse": {},
+    "PermissionsRequestApprovalParams": {},
+    "PermissionsRequestApprovalResponse": {},
+    "ServerNotification": {
+      "anyOf": [
+        { "properties": { "method": { "enum": ["thread/tokenUsage/updated"] } } },
+        { "properties": { "method": { "enum": ["account/rateLimits/updated"] } } },
+        { "properties": { "method": { "enum": ["warning"] } } },
+        { "properties": { "method": { "enum": ["guardianWarning"] } } },
+        { "properties": { "method": { "enum": ["deprecationNotice"] } } },
+        { "properties": { "method": { "enum": ["configWarning"] } } },
+        { "properties": { "method": { "enum": ["model/rerouted"] } } }
+      ]
+    },
+    "ServerRequest": {
+      "anyOf": [
+        { "properties": { "method": { "enum": ["item/commandExecution/requestApproval"] } } },
+        { "properties": { "method": { "enum": ["item/fileChange/requestApproval"] } } },
+        { "properties": { "method": { "enum": ["execCommandApproval"] } } },
+        { "properties": { "method": { "enum": ["applyPatchApproval"] } } },
+        { "properties": { "method": { "enum": ["item/tool/requestUserInput"] } } },
+        { "properties": { "method": { "enum": ["mcpServer/elicitation/request"] } } },
+        { "properties": { "method": { "enum": ["item/permissions/requestApproval"] } } },
+        { "properties": { "method": { "enum": ["item/tool/call"] } } }
+      ]
+    },
+    "ThreadReadParams": {},
+    "ThreadReadResponse": {},
+    "ThreadStartParams": {
+      "properties": {
+        "approvalPolicy": { "$ref": "#/definitions/v2/AskForApproval" },
+        "sandbox": { "$ref": "#/definitions/v2/SandboxMode" }
+      }
+    },
+    "ThreadStartResponse": {},
+    "ToolRequestUserInputParams": {},
+    "ToolRequestUserInputResponse": {},
+    "TurnInterruptParams": {},
+    "TurnInterruptResponse": {},
+    "TurnStartParams": {
+      "properties": {
+        "approvalPolicy": { "$ref": "#/definitions/v2/AskForApproval" },
+        "sandboxPolicy": { "$ref": "#/definitions/v2/SandboxPolicy" }
+      }
+    },
+    "TurnStartResponse": {},
+    "v2/AccountRateLimitsUpdatedNotification": {},
+    "v2/AskForApproval": {},
+    "v2/ConfigWarningNotification": {},
+    "v2/DeprecationNoticeNotification": {},
+    "v2/GuardianWarningNotification": {},
+    "v2/ModelReroutedNotification": {},
+    "v2/SandboxMode": {},
+    "v2/SandboxPolicy": {},
+    "v2/ThreadTokenUsageUpdatedNotification": {},
+    "v2/WarningNotification": {}
+  }
+}
