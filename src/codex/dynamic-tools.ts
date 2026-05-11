@@ -51,6 +51,20 @@ function resultPayload(success: boolean, value: unknown): DynamicToolResult {
   };
 }
 
+function failurePayload(
+  code: string,
+  message: string,
+  fields: Record<string, unknown> = {}
+): DynamicToolResult {
+  return resultPayload(false, {
+    error: {
+      code,
+      message,
+      ...fields
+    }
+  });
+}
+
 function toLinearGraphqlInput(argumentsValue: unknown): DynamicToolLinearGraphqlInput | null {
   if (typeof argumentsValue === 'string') {
     const trimmed = argumentsValue.trim();
@@ -118,37 +132,30 @@ export function createDefaultDynamicToolExecutor(options: DynamicToolExecutorOpt
     },
     async execute(toolName: string | undefined, argumentsValue: unknown): Promise<DynamicToolResult> {
       if (toolName !== LINEAR_GRAPHQL_TOOL_NAME) {
-        return resultPayload(false, {
-          error: {
-            message: `Unsupported dynamic tool: ${JSON.stringify(toolName)}.`,
-            supportedTools: toolSpecs.map((entry) => entry.name)
-          }
+        return failurePayload('unsupported_dynamic_tool', `Unsupported dynamic tool: ${JSON.stringify(toolName)}.`, {
+          attemptedToolName: toolName ?? null,
+          supportedTools: toolSpecs.map((entry) => entry.name)
         });
       }
 
       const parsedInput = toLinearGraphqlInput(argumentsValue);
       if (!parsedInput) {
-        return resultPayload(false, {
-          error: {
-            message:
-              '`linear_graphql` expects either a GraphQL query string or an object with `query` and optional `variables`.'
-          }
-        });
+        return failurePayload(
+          'invalid_linear_graphql_arguments',
+          '`linear_graphql` expects either a GraphQL query string or an object with `query` and optional `variables`.',
+          { attemptedToolName: LINEAR_GRAPHQL_TOOL_NAME }
+        );
       }
 
       if (!options.trackerApiKey.trim()) {
-        return resultPayload(false, {
-          error: {
-            message: 'Symphony is missing Linear auth. Set tracker.api_key or export LINEAR_API_KEY.'
-          }
+        return failurePayload('missing_linear_auth', 'Symphony is missing Linear auth. Set tracker.api_key or export LINEAR_API_KEY.', {
+          attemptedToolName: LINEAR_GRAPHQL_TOOL_NAME
         });
       }
 
       if (!options.trackerEndpoint.trim()) {
-        return resultPayload(false, {
-          error: {
-            message: 'Symphony is missing tracker endpoint for dynamic tool execution.'
-          }
+        return failurePayload('missing_tracker_endpoint', 'Symphony is missing tracker endpoint for dynamic tool execution.', {
+          attemptedToolName: LINEAR_GRAPHQL_TOOL_NAME
         });
       }
 
@@ -172,11 +179,9 @@ export function createDefaultDynamicToolExecutor(options: DynamicToolExecutorOpt
         });
 
         if (!response.ok) {
-          return resultPayload(false, {
-            error: {
-              message: `Linear GraphQL request failed with HTTP ${response.status}.`,
-              status: response.status
-            }
+          return failurePayload('linear_graphql_http_error', `Linear GraphQL request failed with HTTP ${response.status}.`, {
+            attemptedToolName: LINEAR_GRAPHQL_TOOL_NAME,
+            status: response.status
           });
         }
 
@@ -185,11 +190,9 @@ export function createDefaultDynamicToolExecutor(options: DynamicToolExecutorOpt
         const success = graphQlErrors.length === 0;
         return resultPayload(success, payload);
       } catch (error) {
-        return resultPayload(false, {
-          error: {
-            message: 'Linear GraphQL request failed before receiving a successful response.',
-            reason: error instanceof Error ? error.message : String(error)
-          }
+        return failurePayload('linear_graphql_transport_error', 'Linear GraphQL request failed before receiving a successful response.', {
+          attemptedToolName: LINEAR_GRAPHQL_TOOL_NAME,
+          reason: error instanceof Error ? error.message : String(error)
         });
       } finally {
         clearTimeout(timeout);

@@ -18,6 +18,10 @@ cannot perform, such as private upload flows, rich `bodyData` writes or
 verification, targeted introspection, or narrowly scoped unsupported Linear API
 operations.
 
+This skill is the only supported DynamicTool exception by default. Do not use it
+as a pattern for adding plugin, marketplace, realtime, filesystem, process, or
+other general dynamic API behavior without a documented exception.
+
 Do not use this skill to hand-build screenshot or screencast uploads for UI
 evidence. UI evidence publication is the repository's intentional GraphQL-only
 exception and must go through the script-backed publisher:
