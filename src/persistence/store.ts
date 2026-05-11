@@ -38,10 +38,11 @@ interface PersistenceStoreOptions {
   retentionDays: number;
   nowMs?: () => number;
   migrationFailureForTest?: string;
+  pruneFailureForTest?: string;
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 4;
+const HISTORY_SCHEMA_VERSION = 5;
 
 interface HistoryMigration {
   version: number;
@@ -148,6 +149,7 @@ export class SqlitePersistenceStore {
   private readonly retentionDays: number;
   private readonly nowMs: () => number;
   private readonly migrationFailureForTest: string | undefined;
+  private readonly pruneFailureForTest: string | undefined;
   private readonly db: {
     exec(sql: string): void;
     close(): void;
@@ -163,6 +165,7 @@ export class SqlitePersistenceStore {
     this.retentionDays = options.retentionDays;
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.migrationFailureForTest = options.migrationFailureForTest;
+    this.pruneFailureForTest = options.pruneFailureForTest;
 
     const parent = path.dirname(this.dbPath);
     fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -1387,6 +1390,13 @@ export class SqlitePersistenceStore {
           store.createHistoryIdentityProjectionTable();
           store.backfillExistingHistoryIdentities();
         }
+      },
+      {
+        version: 5,
+        name: 'history_retention_prune_evidence_v1',
+        apply: (store) => {
+          store.createHistoryRetentionPruneRecordTable();
+        }
       }
     ];
 
@@ -1647,6 +1657,32 @@ export class SqlitePersistenceStore {
           applied_migration_version = excluded.applied_migration_version`
       )
       .run(asIso(this.nowMs()), 1, 1);
+  }
+
+  private createHistoryRetentionPruneRecordTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS history_retention_prune_record (
+        prune_record_id TEXT PRIMARY KEY,
+        source_table TEXT NOT NULL CHECK (source_table IN ('runs', 'issue_run')),
+        source_id TEXT NOT NULL,
+        issue_id TEXT NOT NULL,
+        issue_identifier TEXT NOT NULL,
+        project_key TEXT,
+        ticket_key TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        pruned_at TEXT NOT NULL,
+        retention_days INTEGER NOT NULL,
+        cutoff_at TEXT NOT NULL,
+        pruned_record_count INTEGER NOT NULL,
+        reason_code TEXT NOT NULL,
+        metadata TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS history_retention_prune_record_source_idx
+        ON history_retention_prune_record(source_table, source_id);
+      CREATE INDEX IF NOT EXISTS history_retention_prune_record_pruned_at_idx
+        ON history_retention_prune_record(pruned_at, prune_record_id);
+    `);
   }
 
   private createTicketOrchestrationLedgerTables(): void {
@@ -2401,38 +2437,104 @@ export class SqlitePersistenceStore {
   pruneExpiredRuns(): number {
     const cutoffMs = this.nowMs() - this.retentionDays * 24 * 60 * 60 * 1000;
     const cutoff = asIso(cutoffMs);
-    const expired = this.db.prepare('SELECT run_id FROM runs WHERE started_at < ?').all(cutoff) as Array<{ run_id: string }>;
+    const prunedAt = asIso(this.nowMs());
 
-    if (expired.length === 0) {
-      this.db
-        .prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-        .run('last_pruned_at', asIso(this.nowMs()));
-      this.updateHistoryRetentionMetadata();
-      return 0;
+    try {
+      if (this.pruneFailureForTest) {
+        throw new Error(this.pruneFailureForTest);
+      }
+
+      return this.transaction(() => {
+        const expiredRuns = this.expiredCompletedRuns(cutoff);
+        const expiredIssueRuns = this.expiredCompletedIssueRuns(cutoff);
+        let pruned = 0;
+
+        for (const item of expiredRuns) {
+          this.recordRetentionPrune({
+            source_table: 'runs',
+            source_id: item.run_id,
+            issue_id: item.issue_id,
+            issue_identifier: item.issue_identifier,
+            project_key: item.project_key,
+            ticket_key: item.ticket_key,
+            started_at: item.started_at,
+            completed_at: item.completed_at,
+            cutoff_at: cutoff,
+            pruned_at: prunedAt,
+            pruned_record_count: item.pruned_record_count,
+            metadata: {
+              terminal_status: item.terminal_status,
+              pruned_tables: ['run_sessions', 'run_events', 'runs']
+            }
+          });
+          this.db.prepare('DELETE FROM run_sessions WHERE run_id = ?').run(item.run_id);
+          this.db.prepare('DELETE FROM run_events WHERE run_id = ?').run(item.run_id);
+          this.db.prepare('DELETE FROM runs WHERE run_id = ?').run(item.run_id);
+          pruned += 1;
+        }
+
+        for (const item of expiredIssueRuns) {
+          this.recordRetentionPrune({
+            source_table: 'issue_run',
+            source_id: item.issue_run_id,
+            issue_id: item.issue_id,
+            issue_identifier: item.issue_identifier,
+            project_key: item.project_key,
+            ticket_key: item.ticket_key,
+            started_at: item.started_at,
+            completed_at: item.completed_at,
+            cutoff_at: cutoff,
+            pruned_at: prunedAt,
+            pruned_record_count: item.pruned_record_count,
+            metadata: {
+              status: item.status,
+              pruned_tables: [
+                'history_app_server_event',
+                'history_protocol_summary',
+                'history_token_model_fact',
+                'history_ticket_evidence_reference',
+                'history_ticket_blocker',
+                'history_ticket_terminal_outcome',
+                'state_transition',
+                'tool_span',
+                'phase_span',
+                'turn',
+                'thread',
+                'attempt',
+                'issue_run'
+              ]
+            }
+          });
+          this.deleteIssueRunHistory(item.issue_run_id);
+          pruned += 1;
+        }
+
+        this.db
+          .prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+          .run('last_pruned_at', prunedAt);
+        this.updateHistoryRetentionMetadata();
+
+        return pruned;
+      });
+    } catch (error) {
+      this.recordPruneFailure(error);
+      throw error;
     }
-
-    const deleteRun = this.db.prepare('DELETE FROM runs WHERE run_id = ?');
-    const deleteSessions = this.db.prepare('DELETE FROM run_sessions WHERE run_id = ?');
-    const deleteEvents = this.db.prepare('DELETE FROM run_events WHERE run_id = ?');
-
-    for (const item of expired) {
-      deleteSessions.run(item.run_id);
-      deleteEvents.run(item.run_id);
-      deleteRun.run(item.run_id);
-    }
-
-    this.db
-      .prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-      .run('last_pruned_at', asIso(this.nowMs()));
-    this.updateHistoryRetentionMetadata();
-
-    return expired.length;
   }
 
   health(): PersistenceHealth {
     const runCountRow = this.db.prepare('SELECT COUNT(*) AS count FROM runs').get() as { count: number };
     const integrityRow = this.db.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
     const pruneRow = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('last_pruned_at') as
+      | { value: string }
+      | undefined;
+    const pruneFailureAtRow = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('last_prune_failure_at') as
+      | { value: string }
+      | undefined;
+    const pruneFailureReasonRow = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('last_prune_failure_reason') as
+      | { value: string }
+      | undefined;
+    const pruneFailureDetailRow = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('last_prune_failure_detail') as
       | { value: string }
       | undefined;
 
@@ -2451,9 +2553,232 @@ export class SqlitePersistenceStore {
       retention_days: this.retentionDays,
       run_count: runCountRow.count,
       last_pruned_at: pruneRow?.value ?? null,
+      last_prune_failure_at: pruneFailureAtRow?.value ?? null,
+      last_prune_failure_reason: pruneFailureReasonRow?.value ?? null,
+      last_prune_failure_detail: pruneFailureDetailRow?.value ?? null,
       integrity_ok: integrityOk,
       history_schema: historySchema
     };
+  }
+
+  private expiredCompletedRuns(cutoff: string): Array<{
+    run_id: string;
+    issue_id: string;
+    issue_identifier: string;
+    project_key: string | null;
+    ticket_key: string | null;
+    started_at: string;
+    completed_at: string;
+    terminal_status: RunTerminalStatus;
+    pruned_record_count: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT runs.run_id, runs.issue_id, runs.issue_identifier,
+          history_identity_projection.project_key, history_identity_projection.ticket_key,
+          runs.started_at, COALESCE(runs.completed_at, runs.ended_at) AS completed_at, runs.terminal_status,
+          (1
+            + (SELECT COUNT(*) FROM run_sessions WHERE run_sessions.run_id = runs.run_id)
+            + (SELECT COUNT(*) FROM run_events WHERE run_events.run_id = runs.run_id)
+          ) AS pruned_record_count
+         FROM runs
+         LEFT JOIN history_identity_projection
+          ON history_identity_projection.source_table = 'runs'
+          AND history_identity_projection.source_id = runs.run_id
+         WHERE runs.terminal_status IS NOT NULL
+          AND COALESCE(runs.completed_at, runs.ended_at) IS NOT NULL
+          AND COALESCE(runs.completed_at, runs.ended_at) < ?
+         ORDER BY completed_at ASC, runs.run_id ASC`
+      )
+      .all(cutoff) as Array<{
+      run_id: string;
+      issue_id: string;
+      issue_identifier: string;
+      project_key: string | null;
+      ticket_key: string | null;
+      started_at: string;
+      completed_at: string;
+      terminal_status: RunTerminalStatus;
+      pruned_record_count: number;
+    }>;
+    return rows;
+  }
+
+  private expiredCompletedIssueRuns(cutoff: string): Array<{
+    issue_run_id: string;
+    issue_id: string;
+    issue_identifier: string;
+    project_key: string | null;
+    ticket_key: string | null;
+    started_at: string;
+    ended_at: string;
+    completed_at: string;
+    status: ExecutionGraphEntityStatus;
+    pruned_record_count: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT issue_run.issue_run_id, issue_run.issue_id, issue_run.issue_identifier,
+          issue_run.project_key, issue_run.ticket_key, issue_run.started_at, issue_run.ended_at, issue_run.status,
+          COALESCE(issue_run.ended_at, MIN(COALESCE(linked_run.completed_at, linked_run.ended_at))) AS completed_at,
+          (1
+            + (SELECT COUNT(*) FROM attempt WHERE attempt.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM thread JOIN attempt ON attempt.attempt_id = thread.attempt_id WHERE attempt.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM turn JOIN thread ON thread.thread_id = turn.thread_id JOIN attempt ON attempt.attempt_id = thread.attempt_id WHERE attempt.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM phase_span JOIN turn ON turn.turn_id = phase_span.turn_id JOIN thread ON thread.thread_id = turn.thread_id JOIN attempt ON attempt.attempt_id = thread.attempt_id WHERE attempt.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM tool_span JOIN turn ON turn.turn_id = tool_span.turn_id JOIN thread ON thread.thread_id = turn.thread_id JOIN attempt ON attempt.attempt_id = thread.attempt_id WHERE attempt.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM state_transition WHERE state_transition.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_ticket_terminal_outcome WHERE history_ticket_terminal_outcome.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_ticket_blocker WHERE history_ticket_blocker.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_ticket_evidence_reference WHERE history_ticket_evidence_reference.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_protocol_summary WHERE history_protocol_summary.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_token_model_fact WHERE history_token_model_fact.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_app_server_event WHERE history_app_server_event.issue_run_id = issue_run.issue_run_id)
+          ) AS pruned_record_count
+         FROM issue_run
+         LEFT JOIN history_identity_projection AS linked_run_projection
+          ON linked_run_projection.source_table = 'runs'
+          AND linked_run_projection.issue_run_id = issue_run.issue_run_id
+         LEFT JOIN runs AS linked_run
+          ON linked_run.run_id = linked_run_projection.run_id
+         GROUP BY issue_run.issue_run_id
+         HAVING COALESCE(issue_run.ended_at, MIN(COALESCE(linked_run.completed_at, linked_run.ended_at))) IS NOT NULL
+          AND COALESCE(issue_run.ended_at, MIN(COALESCE(linked_run.completed_at, linked_run.ended_at))) < ?
+          AND (
+            (issue_run.ended_at IS NOT NULL AND issue_run.status IN ('succeeded', 'failed', 'cancelled'))
+            OR SUM(CASE WHEN linked_run.terminal_status IS NOT NULL THEN 1 ELSE 0 END) > 0
+          )
+         ORDER BY completed_at ASC, issue_run.issue_run_id ASC`
+      )
+      .all(cutoff) as Array<{
+      issue_run_id: string;
+      issue_id: string;
+      issue_identifier: string;
+      project_key: string | null;
+      ticket_key: string | null;
+      started_at: string;
+      ended_at: string;
+      completed_at: string;
+      status: ExecutionGraphEntityStatus;
+      pruned_record_count: number;
+    }>;
+    return rows;
+  }
+
+  private recordRetentionPrune(params: {
+    source_table: 'runs' | 'issue_run';
+    source_id: string;
+    issue_id: string;
+    issue_identifier: string;
+    project_key: string | null;
+    ticket_key: string | null;
+    started_at: string;
+    completed_at: string;
+    cutoff_at: string;
+    pruned_at: string;
+    pruned_record_count: number;
+    metadata: Record<string, unknown>;
+  }): void {
+    if (!this.hasTable('history_retention_prune_record')) {
+      return;
+    }
+    const pruneRecordId = asExecutionGraphId('retention_prune', [
+      params.source_table,
+      params.source_id,
+      params.cutoff_at,
+      params.pruned_at
+    ]);
+    this.db
+      .prepare(
+        `INSERT INTO history_retention_prune_record
+          (prune_record_id, source_table, source_id, issue_id, issue_identifier, project_key, ticket_key,
+           started_at, completed_at, pruned_at, retention_days, cutoff_at, pruned_record_count, reason_code, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        pruneRecordId,
+        params.source_table,
+        params.source_id,
+        params.issue_id,
+        params.issue_identifier,
+        params.project_key,
+        params.ticket_key,
+        params.started_at,
+        params.completed_at,
+        params.pruned_at,
+        this.retentionDays,
+        params.cutoff_at,
+        params.pruned_record_count,
+        'retention_policy_expired_completed_history',
+        JSON.stringify(redactUnknown(params.metadata))
+      );
+  }
+
+  private deleteIssueRunHistory(issueRunId: string): void {
+    this.db.prepare('DELETE FROM history_app_server_event WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_protocol_summary WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_token_model_fact WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_ticket_evidence_reference WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_ticket_blocker WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_ticket_terminal_outcome WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM state_transition WHERE issue_run_id = ?').run(issueRunId);
+    this.db
+      .prepare(
+        `DELETE FROM tool_span
+         WHERE turn_id IN (
+          SELECT turn.turn_id FROM turn
+          JOIN thread ON thread.thread_id = turn.thread_id
+          JOIN attempt ON attempt.attempt_id = thread.attempt_id
+          WHERE attempt.issue_run_id = ?
+         )`
+      )
+      .run(issueRunId);
+    this.db
+      .prepare(
+        `DELETE FROM phase_span
+         WHERE turn_id IN (
+          SELECT turn.turn_id FROM turn
+          JOIN thread ON thread.thread_id = turn.thread_id
+          JOIN attempt ON attempt.attempt_id = thread.attempt_id
+          WHERE attempt.issue_run_id = ?
+         )`
+      )
+      .run(issueRunId);
+    this.db
+      .prepare(
+        `DELETE FROM turn
+         WHERE thread_id IN (
+          SELECT thread.thread_id FROM thread
+          JOIN attempt ON attempt.attempt_id = thread.attempt_id
+          WHERE attempt.issue_run_id = ?
+         )`
+      )
+      .run(issueRunId);
+    this.db
+      .prepare('DELETE FROM thread WHERE attempt_id IN (SELECT attempt_id FROM attempt WHERE issue_run_id = ?)')
+      .run(issueRunId);
+    this.db.prepare('DELETE FROM attempt WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM issue_run WHERE issue_run_id = ?').run(issueRunId);
+  }
+
+  private recordPruneFailure(error: unknown): void {
+    const failedAt = asIso(this.nowMs());
+    const detail = error instanceof Error ? error.message : String(error);
+    const redactedDetail = redactUnknown(detail) as string;
+    const entries: Array<[string, string]> = [
+      ['last_prune_failure_at', failedAt],
+      ['last_prune_failure_reason', 'retention_prune_failed'],
+      ['last_prune_failure_detail', redactedDetail]
+    ];
+    const upsert = this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    for (const [key, value] of entries) {
+      upsert.run(key, value);
+    }
+    try {
+      this.recordHistoryHealthMetadata('degraded', 'retention_prune_failed', redactedDetail);
+    } catch {
+      // Keep meta-level failure evidence even if history health tables are unavailable.
+    }
   }
 
   private updateHistoryRetentionMetadata(): void {

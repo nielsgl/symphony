@@ -1025,6 +1025,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
                     retention_days: effectiveConfig.persistence.retention_days,
                     run_count: 0,
                     last_pruned_at: null,
+                    last_prune_failure_at: null,
+                    last_prune_failure_reason: null,
+                    last_prune_failure_detail: null,
                     integrity_ok: true
                   },
             listRunHistory: (limit) => (persistenceStore ? persistenceStore.listRunHistory(limit) : []),

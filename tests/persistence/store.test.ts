@@ -161,6 +161,7 @@ describe('SqlitePersistenceStore', () => {
         'history_ticket_evidence_reference',
         'history_write_failure',
         'history_retention_metadata',
+        'history_retention_prune_record',
         'history_health_metadata',
         'issue_run',
         'attempt',
@@ -173,8 +174,8 @@ describe('SqlitePersistenceStore', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 4,
-      applied_version: 4,
+      target_version: 5,
+      applied_version: 5,
       status: 'healthy',
       degraded_reason_code: null
     });
@@ -182,7 +183,8 @@ describe('SqlitePersistenceStore', () => {
       expect.objectContaining({ version: 1, name: 'project_execution_history_v1', status: 'applied' }),
       expect.objectContaining({ version: 2, name: 'ticket_orchestration_ledger_v1', status: 'applied' }),
       expect.objectContaining({ version: 3, name: 'app_server_event_ledger_lite_policy', status: 'applied' }),
-      expect.objectContaining({ version: 4, name: 'existing_run_history_identity_backfill_v1', status: 'applied' })
+      expect.objectContaining({ version: 4, name: 'existing_run_history_identity_backfill_v1', status: 'applied' }),
+      expect.objectContaining({ version: 5, name: 'history_retention_prune_evidence_v1', status: 'applied' })
     ]);
   });
 
@@ -841,19 +843,20 @@ describe('SqlitePersistenceStore', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(4);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(5);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 5, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
       expect.objectContaining({ version: 2, status: 'applied' }),
       expect.objectContaining({ version: 3, status: 'applied' }),
-      expect.objectContaining({ version: 4, status: 'applied' })
+      expect.objectContaining({ version: 4, status: 'applied' }),
+      expect.objectContaining({ version: 5, status: 'applied' })
     ]);
   });
 
@@ -975,7 +978,7 @@ describe('SqlitePersistenceStore', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 5, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
       expect.arrayContaining([
         'history_token_model_fact',
@@ -1198,7 +1201,7 @@ describe('SqlitePersistenceStore', () => {
     stores.push(storeB);
     const backfillDbB = openDatabase(dbPath);
     try {
-      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
+      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 5, status: 'healthy' });
       expect(backfillDbB.prepare('SELECT COUNT(*) AS count FROM history_identity_projection').get()).toEqual({ count: 3 });
     } finally {
       backfillDbB.close();
@@ -1478,7 +1481,7 @@ describe('SqlitePersistenceStore', () => {
       nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
     });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 5, status: 'healthy' });
     storeA.close();
     stores.pop();
 
@@ -1503,7 +1506,7 @@ describe('SqlitePersistenceStore', () => {
     });
 
     expect(storeB.historySchemaHealth()).toMatchObject({
-      applied_version: 4,
+      applied_version: 5,
       status: 'degraded',
       degraded_reason_code: 'history_write_failed',
       degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'
@@ -1598,6 +1601,243 @@ describe('SqlitePersistenceStore', () => {
     const health = lateStore.health();
     expect(health.integrity_ok).toBe(true);
     expect(health.last_pruned_at).not.toBeNull();
+  });
+
+  it('applies retention to completed operational history and preserves active evidence', async () => {
+    const base = Date.parse('2026-04-11T12:00:00.000Z');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-retention-operational-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base });
+    stores.push(store);
+
+    const expiredRunId = store.startRun({
+      issue_id: 'expired-run',
+      issue_identifier: 'EXP-1',
+      identity: identity({ issue_id: 'expired-run', issue_identifier: 'EXP-1' }),
+      started_at: '2026-04-10T10:00:00.000Z'
+    });
+    store.recordSession(expiredRunId, 'expired-session');
+    store.recordEvent({
+      run_id: expiredRunId,
+      event: 'completed',
+      message: 'expired run event',
+      timestamp_ms: Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    store.completeRun({ run_id: expiredRunId, terminal_status: 'succeeded' });
+
+    const activeRunId = store.startRun({
+      issue_id: 'active-run',
+      issue_identifier: 'ACTIVE-RETENTION-1',
+      identity: identity({ issue_id: 'active-run', issue_identifier: 'ACTIVE-RETENTION-1' }),
+      started_at: '2026-04-10T09:00:00.000Z'
+    });
+
+    const expiredGraph = store.recordRunStarted({
+      issue_id: 'expired-issue-run',
+      issue_identifier: 'EXP-ISSUE-1',
+      identity: identity({ issue_id: 'expired-issue-run', issue_identifier: 'EXP-ISSUE-1' }),
+      started_at: '2026-04-10T10:00:00.000Z',
+      attempt_number: 0,
+      status: 'running'
+    });
+    const expiredThreadId = store.appendThread({
+      attempt_id: expiredGraph.attempt_id,
+      thread_id: 'expired-thread-retention',
+      started_at: '2026-04-10T10:00:02.000Z',
+      status: 'running'
+    });
+    const expiredTurnId = store.appendTurn({
+      thread_id: expiredThreadId,
+      turn_id: 'expired-turn-retention',
+      turn_index: 0,
+      started_at: '2026-04-10T10:00:03.000Z',
+      status: 'running'
+    });
+    store.appendAppServerEvent({
+      issue_run_id: expiredGraph.issue_run_id,
+      attempt_id: expiredGraph.attempt_id,
+      thread_id: expiredThreadId,
+      turn_id: expiredTurnId,
+      observed_at: '2026-04-10T10:00:04.000Z',
+      source_event_id: 'expired-app-event',
+      source_event_name: 'rawResponseItem/completed',
+      payload_class: 'protocol_request_response',
+      raw_payload: { message: 'old protocol evidence' },
+      summary: 'old protocol evidence'
+    });
+    store.completeRun({ run_id: expiredGraph.run_id, terminal_status: 'succeeded' });
+
+    const activeIssueRunId = store.appendIssueRun({
+      issue_id: 'active-issue-run',
+      issue_identifier: 'ACTIVE-ISSUE-1',
+      identity: identity({ issue_id: 'active-issue-run', issue_identifier: 'ACTIVE-ISSUE-1' }),
+      started_at: '2026-04-10T09:00:00.000Z',
+      status: 'running'
+    });
+    const activeAttemptId = store.appendAttempt({
+      issue_run_id: activeIssueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-10T09:00:01.000Z',
+      status: 'running'
+    });
+    const activeThreadId = store.appendThread({
+      attempt_id: activeAttemptId,
+      thread_id: 'active-thread-retention',
+      started_at: '2026-04-10T09:00:02.000Z',
+      status: 'running'
+    });
+    const activeTurnId = store.appendTurn({
+      thread_id: activeThreadId,
+      turn_id: 'active-turn-retention',
+      turn_index: 0,
+      started_at: '2026-04-10T09:00:03.000Z',
+      status: 'running'
+    });
+    store.appendAppServerEvent({
+      issue_run_id: activeIssueRunId,
+      attempt_id: activeAttemptId,
+      thread_id: activeThreadId,
+      turn_id: activeTurnId,
+      observed_at: '2026-04-10T09:00:04.000Z',
+      source_event_id: 'active-app-event',
+      source_event_name: 'rawResponseItem/completed',
+      payload_class: 'protocol_request_response',
+      raw_payload: { message: 'active protocol evidence' },
+      summary: 'active protocol evidence'
+    });
+
+    const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
+    stores.push(lateStore);
+    expect(lateStore.pruneExpiredRuns()).toBe(3);
+
+    expect(lateStore.listRunHistory(10).map((run) => run.run_id)).toContain(activeRunId);
+    expect(lateStore.listRunHistory(10).map((run) => run.run_id)).not.toContain(expiredRunId);
+    expect(lateStore.reconstructThreadLineage(activeThreadId)?.issue_run.issue_run_id).toBe(activeIssueRunId);
+    expect(lateStore.reconstructThreadLineage(expiredThreadId)).toBeNull();
+    expect(lateStore.listAppServerEventLedger(activeIssueRunId)).toHaveLength(1);
+    expect(lateStore.listAppServerEventLedger(expiredGraph.issue_run_id)).toHaveLength(0);
+
+    const db = openDatabase(dbPath);
+    try {
+      const records = db.prepare('SELECT source_table, source_id, reason_code FROM history_retention_prune_record ORDER BY source_table, source_id').all();
+      expect(records).toHaveLength(3);
+      expect(records).toEqual(
+        expect.arrayContaining([
+          {
+            source_table: 'issue_run',
+            source_id: expiredGraph.issue_run_id,
+            reason_code: 'retention_policy_expired_completed_history'
+          },
+          {
+            source_table: 'runs',
+            source_id: expiredRunId,
+            reason_code: 'retention_policy_expired_completed_history'
+          },
+          {
+            source_table: 'runs',
+            source_id: expiredGraph.run_id,
+            reason_code: 'retention_policy_expired_completed_history'
+          }
+        ])
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps retained app-server-lite redaction and truncation metadata across repeated retention pruning', async () => {
+    const base = Date.parse('2026-04-11T12:00:00.000Z');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-retention-ledger-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base });
+    stores.push(store);
+    const retainedIssueRunId = store.appendIssueRun({
+      issue_id: 'retained-ledger',
+      issue_identifier: 'RETAIN-1',
+      identity: identity({ issue_id: 'retained-ledger', issue_identifier: 'RETAIN-1' }),
+      started_at: '2026-04-12T18:00:00.000Z',
+      ended_at: '2026-04-12T18:30:00.000Z',
+      status: 'succeeded'
+    });
+    const retainedAttemptId = store.appendAttempt({
+      issue_run_id: retainedIssueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-12T18:00:01.000Z',
+      ended_at: '2026-04-12T18:30:00.000Z',
+      status: 'succeeded'
+    });
+    const retainedThreadId = store.appendThread({
+      attempt_id: retainedAttemptId,
+      thread_id: 'retained-thread-ledger',
+      started_at: '2026-04-12T18:00:02.000Z',
+      ended_at: '2026-04-12T18:30:00.000Z',
+      status: 'succeeded'
+    });
+    const retainedTurnId = store.appendTurn({
+      thread_id: retainedThreadId,
+      turn_id: 'retained-turn-ledger',
+      turn_index: 0,
+      started_at: '2026-04-12T18:00:03.000Z',
+      ended_at: '2026-04-12T18:30:00.000Z',
+      status: 'succeeded'
+    });
+    store.appendAppServerEvent({
+      issue_run_id: retainedIssueRunId,
+      attempt_id: retainedAttemptId,
+      thread_id: retainedThreadId,
+      turn_id: retainedTurnId,
+      observed_at: '2026-04-12T18:00:04.000Z',
+      source_event_id: 'retained-app-event',
+      source_event_name: 'rawResponseItem/completed',
+      payload_class: 'protocol_request_response',
+      raw_payload: {
+        path: '/Users/alice/project/secret.txt',
+        authorization: 'Bearer raw-secret-token',
+        response: `token=abcd ${'diagnostic '.repeat(120)}`
+      },
+      summary: 'retained protocol evidence',
+      summary_fields: { account_id: 'acct_secret' }
+    });
+
+    const firstPrune = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
+    stores.push(firstPrune);
+    expect(firstPrune.pruneExpiredRuns()).toBe(0);
+    const firstLedger = firstPrune.listAppServerEventLedger(retainedIssueRunId);
+    expect(firstLedger[0]).toMatchObject({
+      detail_status: 'redacted_truncated_excerpt',
+      redaction_status: 'redacted',
+      full_payload_stored: false
+    });
+    expect(firstLedger[0].summary_fields).toEqual({ account_id: '***REDACTED_ACCOUNT***' });
+    expect(firstLedger[0].truncation.truncated).toBe(true);
+
+    const secondPrune = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 + 60_000 });
+    stores.push(secondPrune);
+    expect(secondPrune.pruneExpiredRuns()).toBe(0);
+    expect(secondPrune.listAppServerEventLedger(retainedIssueRunId)).toEqual(firstLedger);
+    expect(secondPrune.health().last_pruned_at).toBe('2026-04-13T12:01:00.000Z');
+  });
+
+  it('records retention prune failures in persistence health evidence', async () => {
+    const base = Date.parse('2026-04-11T12:00:00.000Z');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-retention-failure-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base, pruneFailureForTest: 'token=abcd prune exploded' });
+    stores.push(store);
+
+    expect(() => store.pruneExpiredRuns()).toThrow(/prune exploded/);
+    expect(store.health()).toMatchObject({
+      last_pruned_at: null,
+      last_prune_failure_at: '2026-04-11T12:00:00.000Z',
+      last_prune_failure_reason: 'retention_prune_failed',
+      last_prune_failure_detail: 'token=***REDACTED*** prune exploded'
+    });
   });
 
   it('persists breaker and blocked input records across reopen and supports delete lifecycle', async () => {

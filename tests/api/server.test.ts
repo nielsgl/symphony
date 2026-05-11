@@ -265,6 +265,9 @@ function makeDiagnosticsSource(overrides: Record<string, unknown> = {}) {
       retention_days: 14,
       run_count: 1,
       last_pruned_at: null,
+      last_prune_failure_at: null,
+      last_prune_failure_reason: null,
+      last_prune_failure_detail: null,
       integrity_ok: true
     }),
     getLoggingHealth: () => ({
@@ -1572,6 +1575,9 @@ describe('LocalApiServer', () => {
           retention_days: 14,
           run_count: 1,
           last_pruned_at: null,
+          last_prune_failure_at: null,
+          last_prune_failure_reason: null,
+          last_prune_failure_detail: null,
           integrity_ok: true
         }),
         getLoggingHealth: () => ({
@@ -3171,6 +3177,9 @@ describe('LocalApiServer', () => {
           retention_days: 14,
           run_count: 3,
           last_pruned_at: '2026-04-11T00:00:00.000Z',
+          last_prune_failure_at: null,
+          last_prune_failure_reason: null,
+          last_prune_failure_detail: null,
           integrity_ok: true
         }),
         getLoggingHealth: () => ({
@@ -3846,6 +3855,9 @@ describe('LocalApiServer', () => {
           retention_days: 14,
           run_count: 1,
           last_pruned_at: null,
+          last_prune_failure_at: null,
+          last_prune_failure_reason: null,
+          last_prune_failure_detail: null,
           integrity_ok: true
         }),
         getLoggingHealth: () => ({
@@ -4220,6 +4232,9 @@ describe('LocalApiServer', () => {
           retention_days: 14,
           run_count: 0,
           last_pruned_at: null,
+          last_prune_failure_at: null,
+          last_prune_failure_reason: null,
+          last_prune_failure_detail: null,
           integrity_ok: true
         }),
         getLoggingHealth: () => ({
@@ -4337,6 +4352,9 @@ describe('LocalApiServer', () => {
           retention_days: 14,
           run_count: 0,
           last_pruned_at: null,
+          last_prune_failure_at: null,
+          last_prune_failure_reason: null,
+          last_prune_failure_detail: null,
           integrity_ok: true
         }),
         getLoggingHealth: () => ({
