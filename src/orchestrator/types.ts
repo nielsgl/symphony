@@ -146,6 +146,12 @@ export interface RunningEntry {
     reason_code?: string | null;
     request_method?: string | null;
     request_category?: string | null;
+    tool_call_id?: string | null;
+    tool_name?: string | null;
+    protocol_warning?: CodexProtocolWarningEvidence;
+    model_reroute?: CodexModelRerouteEvidence | null;
+    requested_model?: string | null;
+    effective_model?: string | null;
   }>;
   quarantined_events?: Array<{
     at_ms: number;
@@ -188,6 +194,11 @@ export interface RunningEntry {
   codex_thread_activity_at_ms?: number | null;
   codex_thread_activity_source?: CodexAppServerThreadActivitySource | null;
   codex_thread_activity_status?: string | null;
+  rate_limits?: Record<string, unknown> | null;
+  protocol_warnings?: CodexProtocolWarningEvidence[];
+  model_reroute?: CodexModelRerouteEvidence | null;
+  requested_model?: string | null;
+  effective_model?: string | null;
   current_phase?: PhaseMarkerName | null;
   current_phase_at_ms?: number | null;
   phase_detail?: string | null;
@@ -513,6 +524,12 @@ export interface BlockedEntry {
     reason_code?: string | null;
     request_method?: string | null;
     request_category?: string | null;
+    tool_call_id?: string | null;
+    tool_name?: string | null;
+    protocol_warning?: CodexProtocolWarningEvidence;
+    model_reroute?: CodexModelRerouteEvidence | null;
+    requested_model?: string | null;
+    effective_model?: string | null;
   }>;
   tool_output_wait?: {
     tool_name: string;
@@ -612,6 +629,12 @@ export interface OrchestratorState {
     reason_code?: string | null;
     request_method?: string | null;
     request_category?: string | null;
+    tool_call_id?: string | null;
+    tool_name?: string | null;
+    protocol_warning?: CodexProtocolWarningEvidence;
+    model_reroute?: CodexModelRerouteEvidence | null;
+    requested_model?: string | null;
+    effective_model?: string | null;
   }>;
 }
 
@@ -867,6 +890,8 @@ export interface WorkerObservabilityEvent {
   reason_code?: string | null;
   request_method?: string | null;
   request_category?: string | null;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
   usage?: CodexUsageTotals;
   token_telemetry_status?: TokenTelemetryStatus;
   token_telemetry_last_source?: string | null;
@@ -880,8 +905,6 @@ export interface WorkerObservabilityEvent {
   codex_thread_activity_at_ms?: number | null;
   codex_thread_activity_source?: CodexAppServerThreadActivitySource | null;
   codex_thread_activity_status?: string | null;
-  tool_call_id?: string;
-  tool_name?: string;
   tool_call_evidence_source?: ToolCallEvidenceSource;
 }
 

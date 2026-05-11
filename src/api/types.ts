@@ -1,4 +1,5 @@
 import type { OrchestratorState, StateSnapshotOptions, TickReason, ToolCallEvidenceSource, ToolCallCompletionStatus } from '../orchestrator';
+import type { CodexModelRerouteEvidence, CodexProtocolWarningEvidence } from '../codex';
 import type { CodexAppServerThreadActivitySource } from '../codex/app-server-protocol';
 import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
@@ -463,6 +464,11 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
+    rate_limits: Record<string, unknown> | null;
+    protocol_warnings: CodexProtocolWarningEvidence[];
+    model_reroute: CodexModelRerouteEvidence | null;
+    requested_model: string | null;
+    effective_model: string | null;
     tokens: {
       input_tokens: number;
       output_tokens: number;
@@ -605,6 +611,12 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       reason_code?: string | null;
       request_method?: string | null;
       request_category?: string | null;
+      tool_call_id?: string | null;
+      tool_name?: string | null;
+      protocol_warning?: CodexProtocolWarningEvidence;
+      model_reroute?: CodexModelRerouteEvidence | null;
+      requested_model?: string | null;
+      effective_model?: string | null;
     }>;
     requires_manual_resume: true;
     awaiting_operator: true;
@@ -714,6 +726,12 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     reason_code?: string | null;
     request_method?: string | null;
     request_category?: string | null;
+    tool_call_id?: string | null;
+    tool_name?: string | null;
+    protocol_warning?: CodexProtocolWarningEvidence;
+    model_reroute?: CodexModelRerouteEvidence | null;
+    requested_model?: string | null;
+    effective_model?: string | null;
   }>;
 }
 
@@ -807,6 +825,11 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
     transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
+    rate_limits: Record<string, unknown> | null;
+    protocol_warnings: CodexProtocolWarningEvidence[];
+    model_reroute: CodexModelRerouteEvidence | null;
+    requested_model: string | null;
+    effective_model: string | null;
     tokens: {
       input_tokens: number;
       output_tokens: number;
@@ -941,6 +964,12 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       reason_code?: string | null;
       request_method?: string | null;
       request_category?: string | null;
+      tool_call_id?: string | null;
+      tool_name?: string | null;
+      protocol_warning?: CodexProtocolWarningEvidence;
+      model_reroute?: CodexModelRerouteEvidence | null;
+      requested_model?: string | null;
+      effective_model?: string | null;
     }>;
     requires_manual_resume: true;
     awaiting_operator: true;
@@ -990,6 +1019,12 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     reason_code?: string | null;
     request_method?: string | null;
     request_category?: string | null;
+    tool_call_id?: string | null;
+    tool_name?: string | null;
+    protocol_warning?: CodexProtocolWarningEvidence;
+    model_reroute?: CodexModelRerouteEvidence | null;
+    requested_model?: string | null;
+    effective_model?: string | null;
   }>;
   stale_events: Array<{
     at: string;

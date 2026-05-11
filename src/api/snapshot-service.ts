@@ -170,6 +170,47 @@ function projectTranscriptToolCallDiagnostics(entry: {
   }));
 }
 
+function projectRunnerEventEvidence(event: RunningEntry['recent_events'][number]) {
+  return {
+    at: asIsoDate(event.at_ms),
+    event: event.event,
+    message: event.message,
+    ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+    ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+    ...(event.request_category !== undefined ? { request_category: event.request_category } : {}),
+    ...(event.tool_call_id !== undefined ? { tool_call_id: event.tool_call_id } : {}),
+    ...(event.tool_name !== undefined ? { tool_name: event.tool_name } : {}),
+    ...(event.protocol_warning !== undefined ? { protocol_warning: { ...event.protocol_warning } } : {}),
+    ...(event.model_reroute !== undefined
+      ? { model_reroute: event.model_reroute ? { ...event.model_reroute } : null }
+      : {}),
+    ...(event.requested_model !== undefined ? { requested_model: event.requested_model } : {}),
+    ...(event.effective_model !== undefined ? { effective_model: event.effective_model } : {})
+  };
+}
+
+function projectRuntimeEventEvidence(event: OrchestratorState['recent_runtime_events'][number]) {
+  return {
+    at: asIsoDate(event.at_ms),
+    event: event.event,
+    severity: event.severity,
+    issue_identifier: event.issue_identifier,
+    session_id: event.session_id,
+    detail: event.detail,
+    ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
+    ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
+    ...(event.request_category !== undefined ? { request_category: event.request_category } : {}),
+    ...(event.tool_call_id !== undefined ? { tool_call_id: event.tool_call_id } : {}),
+    ...(event.tool_name !== undefined ? { tool_name: event.tool_name } : {}),
+    ...(event.protocol_warning !== undefined ? { protocol_warning: { ...event.protocol_warning } } : {}),
+    ...(event.model_reroute !== undefined
+      ? { model_reroute: event.model_reroute ? { ...event.model_reroute } : null }
+      : {}),
+    ...(event.requested_model !== undefined ? { requested_model: event.requested_model } : {}),
+    ...(event.effective_model !== undefined ? { effective_model: event.effective_model } : {})
+  };
+}
+
 function projectTranscriptToolCallDiagnosticSummary(entry: {
   transcript_tool_call_diagnostics?: import('../orchestrator').TranscriptToolCallDiagnostic[];
   transcript_tool_call_diagnostic_stats?: TranscriptToolCallDiagnosticStats;
@@ -529,6 +570,11 @@ function toStateRunningRow(
     token_telemetry_status: entry.token_telemetry_status,
     token_telemetry_last_source: entry.token_telemetry_last_source,
     token_telemetry_last_at_ms: entry.token_telemetry_last_at_ms,
+    rate_limits: entry.rate_limits ?? null,
+    protocol_warnings: (entry.protocol_warnings ?? []).map((warning) => ({ ...warning })),
+    model_reroute: entry.model_reroute ? { ...entry.model_reroute } : null,
+    requested_model: entry.requested_model ?? null,
+    effective_model: entry.effective_model ?? null,
     ...turnControl,
     ...progressSignal,
     ...resolveTokenTelemetryQuality(entry),
@@ -773,14 +819,7 @@ export class SnapshotService {
           previous_thread_id: history.previous_thread_id ?? null,
           previous_session_id: history.previous_session_id ?? null
         })),
-        session_console: (entry.session_console ?? []).map((event) => ({
-          at: asIsoDate(event.at_ms),
-          event: event.event,
-          message: event.message,
-          ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-          ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-          ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
-        }))
+        session_console: (entry.session_console ?? []).map(projectRunnerEventEvidence)
       };
     });
 
@@ -835,17 +874,7 @@ export class SnapshotService {
         sparkline_10m: [...state.throughput.sparkline_10m],
         sample_count: state.throughput.sample_count
       },
-      recent_runtime_events: state.recent_runtime_events.map((event) => ({
-        at: asIsoDate(event.at_ms),
-        event: event.event,
-        severity: event.severity,
-        issue_identifier: event.issue_identifier,
-        session_id: event.session_id,
-        detail: event.detail,
-        ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-        ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-        ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
-      }))
+      recent_runtime_events: state.recent_runtime_events.map(projectRuntimeEventEvidence)
     }) as ApiStateResponse;
   }
 
@@ -1000,6 +1029,11 @@ export class SnapshotService {
           token_telemetry_status: entry.token_telemetry_status,
           token_telemetry_last_source: entry.token_telemetry_last_source,
           token_telemetry_last_at_ms: entry.token_telemetry_last_at_ms,
+          rate_limits: entry.rate_limits ?? null,
+          protocol_warnings: (entry.protocol_warnings ?? []).map((warning) => ({ ...warning })),
+          model_reroute: entry.model_reroute ? { ...entry.model_reroute } : null,
+          requested_model: entry.requested_model ?? null,
+          effective_model: entry.effective_model ?? null,
           ...turnControl,
           ...progressSignal,
           ...resolveTokenTelemetryQuality(entry),
@@ -1144,14 +1178,7 @@ export class SnapshotService {
                 previous_thread_id: history.previous_thread_id ?? null,
                 previous_session_id: history.previous_session_id ?? null
               })),
-              session_console: (blockedEntry.session_console ?? []).map((event) => ({
-                at: asIsoDate(event.at_ms),
-                event: event.event,
-                message: event.message,
-                ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-                ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-                ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
-              }))
+              session_console: (blockedEntry.session_console ?? []).map(projectRunnerEventEvidence)
             }
           : null,
         phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
@@ -1162,14 +1189,7 @@ export class SnapshotService {
           thread_id: event.thread_id ?? null,
           session_id: event.session_id ?? null
         })),
-        recent_events: entry.recent_events.map((event) => ({
-          at: asIsoDate(event.at_ms),
-          event: event.event,
-          message: event.message,
-          ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-          ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-          ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
-        })),
+        recent_events: entry.recent_events.map(projectRunnerEventEvidence),
         stale_events: projectQuarantinedRunningEvents(entry),
         last_error: retryEntry?.error ?? state.health.last_error,
         logs: {
@@ -1312,14 +1332,7 @@ export class SnapshotService {
                 previous_thread_id: history.previous_thread_id ?? null,
                 previous_session_id: history.previous_session_id ?? null
               })),
-              session_console: (blockedEntry.session_console ?? []).map((event) => ({
-                at: asIsoDate(event.at_ms),
-                event: event.event,
-                message: event.message,
-                ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-                ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-                ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
-              }))
+              session_console: (blockedEntry.session_console ?? []).map(projectRunnerEventEvidence)
             }
           : null,
         phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
@@ -1447,14 +1460,7 @@ export class SnapshotService {
           previous_thread_id: history.previous_thread_id ?? null,
           previous_session_id: history.previous_session_id ?? null
         })),
-        session_console: (blockedEntry.session_console ?? []).map((event) => ({
-          at: asIsoDate(event.at_ms),
-        event: event.event,
-        message: event.message,
-        ...(event.reason_code !== undefined ? { reason_code: event.reason_code } : {}),
-        ...(event.request_method !== undefined ? { request_method: event.request_method } : {}),
-        ...(event.request_category !== undefined ? { request_category: event.request_category } : {})
-      }))
+        session_console: (blockedEntry.session_console ?? []).map(projectRunnerEventEvidence)
       },
       phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
         at: asIsoDate(event.at_ms),
