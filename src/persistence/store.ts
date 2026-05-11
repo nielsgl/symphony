@@ -18,6 +18,10 @@ import type {
   PersistenceHealth,
   RunTerminalStatus,
   StateTransitionRecord,
+  TicketBlockerRecord,
+  TicketEvidenceReferenceRecord,
+  TicketTerminalOutcomeRecord,
+  TicketTimelineRecord,
   ThreadRecord,
   ToolSpanRecord,
   TurnRecord,
@@ -32,7 +36,7 @@ interface PersistenceStoreOptions {
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 1;
+const HISTORY_SCHEMA_VERSION = 2;
 
 interface HistoryMigration {
   version: number;
@@ -141,6 +145,8 @@ export class SqlitePersistenceStore {
         issue_id TEXT NOT NULL,
         issue_identifier TEXT NOT NULL,
         identity TEXT,
+        project_key TEXT,
+        ticket_key TEXT,
         started_at TEXT NOT NULL,
         ended_at TEXT,
         status TEXT NOT NULL,
@@ -364,14 +370,16 @@ export class SqlitePersistenceStore {
     this.db
       .prepare(
         `INSERT INTO issue_run
-        (issue_run_id, issue_id, issue_identifier, identity, started_at, ended_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (issue_run_id, issue_id, issue_identifier, identity, project_key, ticket_key, started_at, ended_at, status, reason_code, reason_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         issueRunId,
         params.issue_id,
         params.issue_identifier,
         serializeDurableIdentity(params.identity),
+        params.identity.project.key,
+        params.identity.ticket.key,
         params.started_at,
         params.ended_at ?? null,
         params.status,
@@ -609,6 +617,163 @@ export class SqlitePersistenceStore {
     return stateTransitionId;
   }
 
+  appendTicketTerminalOutcome(params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    outcome: RunTerminalStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    recorded_at: string;
+    terminal_outcome_id?: string;
+  }): string {
+    this.ensureTimelineFactReferences({
+      issue_run_id: params.issue_run_id,
+      attempt_id: params.attempt_id,
+      thread_id: params.thread_id,
+      turn_id: params.turn_id,
+      timestamp: params.recorded_at,
+      label: 'ticket_terminal_outcome'
+    });
+    const terminalOutcomeId =
+      params.terminal_outcome_id ??
+      asExecutionGraphId('ticket_terminal_outcome', [
+        params.issue_run_id,
+        params.attempt_id,
+        params.thread_id,
+        params.turn_id,
+        params.outcome,
+        params.recorded_at,
+        params.reason_code
+      ]);
+    this.db
+      .prepare(
+        `INSERT INTO history_ticket_terminal_outcome
+        (terminal_outcome_id, issue_run_id, attempt_id, thread_id, turn_id, outcome, reason_code, reason_detail, recorded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        terminalOutcomeId,
+        params.issue_run_id,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.outcome,
+        params.reason_code ?? null,
+        redactUnknown(params.reason_detail ?? null),
+        params.recorded_at
+      );
+    return terminalOutcomeId;
+  }
+
+  appendTicketBlocker(params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    blocker_type: string;
+    status?: 'active' | 'resolved';
+    reason_code: string;
+    reason_detail?: string | null;
+    blocked_at: string;
+    resolved_at?: string | null;
+    blocker_id?: string;
+  }): string {
+    ensureEndedAfterStarted(params.blocked_at, params.resolved_at, 'ticket_blocker');
+    this.ensureTimelineFactReferences({
+      issue_run_id: params.issue_run_id,
+      attempt_id: params.attempt_id,
+      thread_id: params.thread_id,
+      turn_id: params.turn_id,
+      timestamp: params.blocked_at,
+      label: 'ticket_blocker'
+    });
+    const blockerId =
+      params.blocker_id ??
+      asExecutionGraphId('ticket_blocker', [
+        params.issue_run_id,
+        params.attempt_id,
+        params.thread_id,
+        params.turn_id,
+        params.blocker_type,
+        params.reason_code,
+        params.blocked_at
+      ]);
+    this.db
+      .prepare(
+        `INSERT INTO history_ticket_blocker
+        (blocker_id, issue_run_id, attempt_id, thread_id, turn_id, blocker_type, status, reason_code, reason_detail, blocked_at, resolved_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        blockerId,
+        params.issue_run_id,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.blocker_type,
+        params.status ?? 'active',
+        params.reason_code,
+        redactUnknown(params.reason_detail ?? null),
+        params.blocked_at,
+        params.resolved_at ?? null
+      );
+    return blockerId;
+  }
+
+  appendTicketEvidenceReference(params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    evidence_kind: string;
+    uri: string;
+    title?: string | null;
+    metadata?: Record<string, unknown> | null;
+    recorded_at: string;
+    evidence_reference_id?: string;
+  }): string {
+    this.ensureTimelineFactReferences({
+      issue_run_id: params.issue_run_id,
+      attempt_id: params.attempt_id,
+      thread_id: params.thread_id,
+      turn_id: params.turn_id,
+      timestamp: params.recorded_at,
+      label: 'ticket_evidence_reference'
+    });
+    const evidenceReferenceId =
+      params.evidence_reference_id ??
+      asExecutionGraphId('ticket_evidence_reference', [
+        params.issue_run_id,
+        params.attempt_id,
+        params.thread_id,
+        params.turn_id,
+        params.evidence_kind,
+        params.uri,
+        params.recorded_at
+      ]);
+    this.db
+      .prepare(
+        `INSERT INTO history_ticket_evidence_reference
+        (evidence_reference_id, issue_run_id, attempt_id, thread_id, turn_id, evidence_kind, uri, title, metadata, recorded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        evidenceReferenceId,
+        params.issue_run_id,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.evidence_kind,
+        params.uri,
+        redactUnknown(params.title ?? null),
+        params.metadata ? JSON.stringify(redactUnknown(params.metadata)) : null,
+        params.recorded_at
+      );
+    return evidenceReferenceId;
+  }
+
   reconstructThreadLineage(threadId: string): ExecutionGraphThreadLineage | null {
     const thread = this.db.prepare('SELECT * FROM thread WHERE thread_id = ?').get(threadId) as ThreadRecord | undefined;
     if (!thread) {
@@ -663,6 +828,110 @@ export class SqlitePersistenceStore {
       )
       .get(issueIdentifier) as { thread_id: string } | undefined;
     return row ? this.reconstructThreadLineage(row.thread_id) : null;
+  }
+
+  reconstructTicketTimeline(identity: DurableIdentity): TicketTimelineRecord {
+    const issueRunRows = this.db
+      .prepare(
+        `SELECT * FROM issue_run
+         WHERE project_key = ? AND ticket_key = ?
+         ORDER BY started_at ASC, issue_run_id ASC`
+      )
+      .all(identity.project.key, identity.ticket.key) as Array<Omit<IssueRunRecord, 'identity'> & { identity: string | null }>;
+    const issueRuns = issueRunRows.map((row) => ({
+      ...row,
+      identity: parseDurableIdentity(row.identity)
+    }));
+    const issueRunIds = issueRuns.map((run) => run.issue_run_id);
+    if (issueRunIds.length === 0) {
+      return {
+        identity,
+        issue_runs: [],
+        attempts: [],
+        threads: [],
+        turns: [],
+        phase_spans: [],
+        state_transitions: [],
+        terminal_outcomes: [],
+        blockers: [],
+        evidence_references: []
+      };
+    }
+
+    const attempts = this.selectByIssueRunIds<AttemptRecord>(
+      `SELECT attempt.* FROM attempt
+       JOIN issue_run ON issue_run.issue_run_id = attempt.issue_run_id
+       WHERE issue_run.issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY issue_run.started_at ASC, attempt.attempt_number ASC, attempt.started_at ASC`,
+      issueRunIds
+    );
+    const threads = this.selectByIssueRunIds<ThreadRecord>(
+      `SELECT thread.* FROM thread
+       JOIN attempt ON attempt.attempt_id = thread.attempt_id
+       JOIN issue_run ON issue_run.issue_run_id = attempt.issue_run_id
+       WHERE issue_run.issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY issue_run.started_at ASC, attempt.attempt_number ASC, thread.started_at ASC, thread.thread_id ASC`,
+      issueRunIds
+    );
+    const turns = this.selectByIssueRunIds<TurnRecord>(
+      `SELECT turn.* FROM turn
+       JOIN thread ON thread.thread_id = turn.thread_id
+       JOIN attempt ON attempt.attempt_id = thread.attempt_id
+       JOIN issue_run ON issue_run.issue_run_id = attempt.issue_run_id
+       WHERE issue_run.issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY issue_run.started_at ASC, attempt.attempt_number ASC, thread.started_at ASC, turn.turn_index ASC`,
+      issueRunIds
+    );
+    const phaseSpans = this.selectByIssueRunIds<PhaseSpanRecord>(
+      `SELECT phase_span.* FROM phase_span
+       JOIN turn ON turn.turn_id = phase_span.turn_id
+       JOIN thread ON thread.thread_id = turn.thread_id
+       JOIN attempt ON attempt.attempt_id = thread.attempt_id
+       JOIN issue_run ON issue_run.issue_run_id = attempt.issue_run_id
+       WHERE issue_run.issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY phase_span.started_at ASC, phase_span.phase_span_id ASC`,
+      issueRunIds
+    );
+    const stateTransitions = this.selectByIssueRunIds<StateTransitionRecord>(
+      `SELECT * FROM state_transition
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY transitioned_at ASC, state_transition_id ASC`,
+      issueRunIds
+    );
+    const terminalOutcomes = this.selectByIssueRunIds<TicketTerminalOutcomeRecord>(
+      `SELECT * FROM history_ticket_terminal_outcome
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY recorded_at ASC, terminal_outcome_id ASC`,
+      issueRunIds
+    );
+    const blockers = this.selectByIssueRunIds<TicketBlockerRecord>(
+      `SELECT * FROM history_ticket_blocker
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY blocked_at ASC, blocker_id ASC`,
+      issueRunIds
+    );
+    const evidenceRows = this.selectByIssueRunIds<Omit<TicketEvidenceReferenceRecord, 'metadata'> & { metadata: string | null }>(
+      `SELECT * FROM history_ticket_evidence_reference
+       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       ORDER BY recorded_at ASC, evidence_reference_id ASC`,
+      issueRunIds
+    );
+
+    return {
+      identity,
+      issue_runs: issueRuns,
+      attempts,
+      threads,
+      turns,
+      phase_spans: phaseSpans,
+      state_transitions: stateTransitions,
+      terminal_outcomes: terminalOutcomes,
+      blockers,
+      evidence_references: evidenceRows.map((row) => ({
+        ...row,
+        metadata: parseNullableJsonObject(row.metadata)
+      }))
+    };
   }
 
   completeRun(params: {
@@ -799,6 +1068,14 @@ export class SqlitePersistenceStore {
           store.ensureIssueRunIdentityColumn();
           store.ensureRunEventDiagnosticColumns();
           store.createProjectExecutionHistoryTables();
+        }
+      },
+      {
+        version: 2,
+        name: 'ticket_orchestration_ledger_v1',
+        apply: (store) => {
+          store.ensureIssueRunIdentityKeyColumns();
+          store.createTicketOrchestrationLedgerTables();
         }
       }
     ];
@@ -1050,6 +1327,74 @@ export class SqlitePersistenceStore {
           schema_version = excluded.schema_version,
           applied_migration_version = excluded.applied_migration_version`
       )
+      .run(asIso(this.nowMs()), 1, 1);
+  }
+
+  private createTicketOrchestrationLedgerTables(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS history_ticket_terminal_outcome (
+        terminal_outcome_id TEXT PRIMARY KEY,
+        issue_run_id TEXT NOT NULL,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        outcome TEXT NOT NULL,
+        reason_code TEXT,
+        reason_detail TEXT,
+        recorded_at TEXT NOT NULL,
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS history_ticket_blocker (
+        blocker_id TEXT PRIMARY KEY,
+        issue_run_id TEXT NOT NULL,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        blocker_type TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'resolved')),
+        reason_code TEXT NOT NULL,
+        reason_detail TEXT,
+        blocked_at TEXT NOT NULL,
+        resolved_at TEXT,
+        CHECK (resolved_at IS NULL OR resolved_at >= blocked_at),
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS history_ticket_evidence_reference (
+        evidence_reference_id TEXT PRIMARY KEY,
+        issue_run_id TEXT NOT NULL,
+        attempt_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        evidence_kind TEXT NOT NULL,
+        uri TEXT NOT NULL,
+        title TEXT,
+        metadata TEXT,
+        recorded_at TEXT NOT NULL,
+        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
+      );
+    `);
+    this.db
+      .prepare(
+        `INSERT INTO history_health_metadata
+          (singleton_id, status, reason_code, detail, checked_at, schema_version, applied_migration_version)
+         VALUES (1, 'healthy', NULL, NULL, ?, ?, ?)
+         ON CONFLICT(singleton_id) DO UPDATE SET
+          status = excluded.status,
+          reason_code = excluded.reason_code,
+          detail = excluded.detail,
+          checked_at = excluded.checked_at,
+          schema_version = excluded.schema_version,
+          applied_migration_version = excluded.applied_migration_version`
+      )
       .run(asIso(this.nowMs()), HISTORY_SCHEMA_VERSION, HISTORY_SCHEMA_VERSION);
   }
 
@@ -1191,6 +1536,28 @@ export class SqlitePersistenceStore {
     }
   }
 
+  private ensureIssueRunIdentityKeyColumns(): void {
+    const columns = this.db.prepare('PRAGMA table_info(issue_run)').all() as Array<{ name: string }>;
+    const existing = new Set(columns.map((column) => column.name));
+    if (!existing.has('project_key')) {
+      this.db.exec('ALTER TABLE issue_run ADD COLUMN project_key TEXT;');
+    }
+    if (!existing.has('ticket_key')) {
+      this.db.exec('ALTER TABLE issue_run ADD COLUMN ticket_key TEXT;');
+    }
+
+    const rows = this.db
+      .prepare('SELECT issue_run_id, identity FROM issue_run WHERE (project_key IS NULL OR ticket_key IS NULL) AND identity IS NOT NULL')
+      .all() as Array<{ issue_run_id: string; identity: string | null }>;
+    const update = this.db.prepare('UPDATE issue_run SET project_key = ?, ticket_key = ? WHERE issue_run_id = ?');
+    for (const row of rows) {
+      const identity = parseDurableIdentity(row.identity);
+      if (identity) {
+        update.run(identity.project.key, identity.ticket.key, row.issue_run_id);
+      }
+    }
+  }
+
   private ensureRunEventDiagnosticColumns(): void {
     const columns = this.db.prepare('PRAGMA table_info(run_events)').all() as Array<{ name: string }>;
     const existing = new Set(columns.map((column) => column.name));
@@ -1326,6 +1693,81 @@ export class SqlitePersistenceStore {
       throw new Error(`turn ${turnId} does not exist`);
     }
     ensureMonotonicTimestamp(timestamp, parent.started_at, label);
+  }
+
+  private placeholders(values: unknown[]): string {
+    return values.map(() => '?').join(', ');
+  }
+
+  private selectByIssueRunIds<T>(sql: string, issueRunIds: string[]): T[] {
+    return this.db.prepare(sql).all(...issueRunIds) as T[];
+  }
+
+  private ensureTimelineFactReferences(params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    timestamp: string;
+    label: string;
+  }): void {
+    const issueRun = this.db.prepare('SELECT started_at FROM issue_run WHERE issue_run_id = ?').get(params.issue_run_id) as
+      | { started_at: string }
+      | undefined;
+    if (!issueRun) {
+      throw new Error(`issue_run ${params.issue_run_id} does not exist`);
+    }
+    ensureMonotonicTimestamp(params.timestamp, issueRun.started_at, params.label);
+
+    if (params.attempt_id) {
+      const attempt = this.db.prepare('SELECT issue_run_id, started_at FROM attempt WHERE attempt_id = ?').get(params.attempt_id) as
+        | { issue_run_id: string; started_at: string }
+        | undefined;
+      if (!attempt || attempt.issue_run_id !== params.issue_run_id) {
+        throw new Error(`attempt ${params.attempt_id} does not belong to issue_run ${params.issue_run_id}`);
+      }
+      ensureMonotonicTimestamp(params.timestamp, attempt.started_at, params.label);
+    }
+
+    if (params.thread_id) {
+      const thread = this.db
+        .prepare(
+          `SELECT thread.started_at, thread.attempt_id, attempt.issue_run_id
+           FROM thread
+           JOIN attempt ON attempt.attempt_id = thread.attempt_id
+           WHERE thread.thread_id = ?`
+        )
+        .get(params.thread_id) as { started_at: string; attempt_id: string; issue_run_id: string } | undefined;
+      if (!thread || thread.issue_run_id !== params.issue_run_id) {
+        throw new Error(`thread ${params.thread_id} does not belong to issue_run ${params.issue_run_id}`);
+      }
+      if (params.attempt_id && thread.attempt_id !== params.attempt_id) {
+        throw new Error(`thread ${params.thread_id} does not belong to attempt ${params.attempt_id}`);
+      }
+      ensureMonotonicTimestamp(params.timestamp, thread.started_at, params.label);
+    }
+
+    if (params.turn_id) {
+      const turn = this.db
+        .prepare(
+          `SELECT turn.started_at, turn.thread_id, thread.attempt_id, attempt.issue_run_id
+           FROM turn
+           JOIN thread ON thread.thread_id = turn.thread_id
+           JOIN attempt ON attempt.attempt_id = thread.attempt_id
+           WHERE turn.turn_id = ?`
+        )
+        .get(params.turn_id) as { started_at: string; thread_id: string; attempt_id: string; issue_run_id: string } | undefined;
+      if (!turn || turn.issue_run_id !== params.issue_run_id) {
+        throw new Error(`turn ${params.turn_id} does not belong to issue_run ${params.issue_run_id}`);
+      }
+      if (params.attempt_id && turn.attempt_id !== params.attempt_id) {
+        throw new Error(`turn ${params.turn_id} does not belong to attempt ${params.attempt_id}`);
+      }
+      if (params.thread_id && turn.thread_id !== params.thread_id) {
+        throw new Error(`turn ${params.turn_id} does not belong to thread ${params.thread_id}`);
+      }
+      ensureMonotonicTimestamp(params.timestamp, turn.started_at, params.label);
+    }
   }
 
   private ensureStateTransitionReferences(params: {

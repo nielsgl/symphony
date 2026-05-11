@@ -838,6 +838,42 @@ export interface OrchestratorPersistencePort {
     reason_detail?: string | null;
     state_transition_id?: string;
   }) => Promise<string>;
+  appendTicketTerminalOutcome?: (params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    outcome: RunTerminalStatus;
+    reason_code?: string | null;
+    reason_detail?: string | null;
+    recorded_at: string;
+    terminal_outcome_id?: string;
+  }) => Promise<string>;
+  appendTicketBlocker?: (params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    blocker_type: string;
+    status?: 'active' | 'resolved';
+    reason_code: string;
+    reason_detail?: string | null;
+    blocked_at: string;
+    resolved_at?: string | null;
+    blocker_id?: string;
+  }) => Promise<string>;
+  appendTicketEvidenceReference?: (params: {
+    issue_run_id: string;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    evidence_kind: string;
+    uri: string;
+    title?: string | null;
+    metadata?: Record<string, unknown> | null;
+    recorded_at: string;
+    evidence_reference_id?: string;
+  }) => Promise<string>;
   recordSession: (params: { run_id: string; session_id: string }) => Promise<void>;
   recordEvent: (params: {
     run_id: string;

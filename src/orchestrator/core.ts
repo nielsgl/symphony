@@ -1892,6 +1892,7 @@ export class OrchestratorCore {
           reason_detail: workerEvent.session_id ?? runningEntry.session_id
         });
         runningEntry.persisted_thread_id = threadId;
+        await this.persistTicketEvidenceReferenceForThread(runningEntry, workerEvent, threadId, at);
       }
 
       if (threadId && turnId && !turnAlreadyObserved) {
@@ -2219,6 +2220,48 @@ export class OrchestratorCore {
     }
   }
 
+  private async persistTicketEvidenceReferenceForThread(
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent,
+    threadId: string,
+    recordedAt: string
+  ): Promise<void> {
+    if (!this.persistence?.appendTicketEvidenceReference || !runningEntry.issue_run_id || !runningEntry.attempt_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendTicketEvidenceReference({
+        issue_run_id: runningEntry.issue_run_id,
+        attempt_id: runningEntry.attempt_id,
+        thread_id: threadId,
+        turn_id: workerEvent.turn_id ?? runningEntry.turn_id ?? null,
+        evidence_kind: 'codex_thread',
+        uri: `codex-thread:${threadId}`,
+        title: 'Codex thread observed',
+        metadata: {
+          session_id: workerEvent.session_id ?? runningEntry.session_id ?? null,
+          event: workerEvent.event
+        },
+        recorded_at: recordedAt
+      });
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist ticket evidence reference for ${runningEntry.identifier}`,
+        context: {
+          issue_id: runningEntry.issue.id,
+          issue_identifier: runningEntry.identifier,
+          issue_run_id: runningEntry.issue_run_id,
+          attempt_id: runningEntry.attempt_id,
+          thread_id: threadId,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+  }
+
   private async persistExecutionGraphRetryTransition(
     retryEntry: RetryEntry,
     toStatus: string,
@@ -2319,6 +2362,26 @@ export class OrchestratorCore {
           reason_code: params.reasonCode,
           reason_detail: params.reasonDetail
         });
+        if (params.status === 'failed') {
+          await this.persistence.appendTicketTerminalOutcome?.({
+            issue_run_id: issueRunId,
+            attempt_id: attemptId,
+            outcome: 'failed',
+            reason_code: params.reasonCode,
+            reason_detail: params.reasonDetail,
+            recorded_at: startedAt
+          });
+        } else {
+          await this.persistence.appendTicketBlocker?.({
+            issue_run_id: issueRunId,
+            attempt_id: attemptId,
+            blocker_type: 'orchestration_blocker',
+            status: 'active',
+            reason_code: params.reasonCode,
+            reason_detail: params.reasonDetail,
+            blocked_at: startedAt
+          });
+        }
       }
 
       return {
@@ -4888,6 +4951,7 @@ export class OrchestratorCore {
     }
 
     void this.persistence?.upsertBlockedInput?.(params.issue_id, JSON.stringify(blockedEntry));
+    void this.persistTicketBlocker(blockedEntry);
 
     this.logger?.log({
       level: 'warn',
@@ -4924,6 +4988,56 @@ export class OrchestratorCore {
         reason
       }
     });
+  }
+
+  private async persistTicketBlocker(blockedEntry: BlockedEntry): Promise<void> {
+    if (!this.persistence?.appendTicketBlocker || !blockedEntry.issue_run_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendTicketBlocker({
+        issue_run_id: blockedEntry.issue_run_id,
+        attempt_id: blockedEntry.previous_attempt_id ?? null,
+        thread_id: blockedEntry.previous_thread_id ?? null,
+        turn_id: null,
+        blocker_type: this.ticketBlockerTypeForBlockedEntry(blockedEntry),
+        status: 'active',
+        reason_code: blockedEntry.stop_reason_code,
+        reason_detail: blockedEntry.stop_reason_detail,
+        blocked_at: asIso(blockedEntry.blocked_at_ms)
+      });
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist ticket blocker for ${blockedEntry.issue_identifier}`,
+        context: {
+          issue_id: blockedEntry.issue_id,
+          issue_identifier: blockedEntry.issue_identifier,
+          issue_run_id: blockedEntry.issue_run_id,
+          previous_attempt_id: blockedEntry.previous_attempt_id ?? null,
+          reason_code: blockedEntry.stop_reason_code,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+  }
+
+  private ticketBlockerTypeForBlockedEntry(blockedEntry: BlockedEntry): string {
+    if (blockedEntry.pending_input) {
+      return 'operator_input';
+    }
+    if (blockedEntry.tool_output_wait) {
+      return REASON_CODES.missingToolOutput;
+    }
+    if (blockedEntry.conflict_files.length > 0) {
+      return 'workspace_conflict';
+    }
+    if (blockedEntry.budget?.budget_status === 'hard_limited') {
+      return 'budget_limit';
+    }
+    return 'orchestration_blocker';
   }
 
   private resolveBacklogStateName(): string {
@@ -7412,8 +7526,8 @@ export class OrchestratorCore {
       return;
     }
 
+    const rootCause = this.extractRootCauseDiagnostic(runningEntry, error_code);
     try {
-      const rootCause = this.extractRootCauseDiagnostic(runningEntry, error_code);
       await this.persistence.completeRun({
         run_id: runningEntry.run_id,
         terminal_status,
@@ -7438,6 +7552,51 @@ export class OrchestratorCore {
           issue_id: runningEntry.issue.id,
           issue_identifier: runningEntry.identifier,
           session_id: runningEntry.session_id
+        }
+      });
+    }
+
+    await this.persistTicketTerminalOutcome(runningEntry, terminal_status, error_code, terminalReasonDetail, rootCause);
+  }
+
+  private async persistTicketTerminalOutcome(
+    runningEntry: RunningEntry,
+    terminalStatus: 'succeeded' | 'failed' | 'timed_out' | 'stalled' | 'cancelled',
+    reasonCode: string | null,
+    reasonDetail: string | null,
+    rootCause: {
+      at: string | null;
+      thread_id: string | null;
+      turn_id: string | null;
+    }
+  ): Promise<void> {
+    if (!this.persistence?.appendTicketTerminalOutcome || !runningEntry.issue_run_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendTicketTerminalOutcome({
+        issue_run_id: runningEntry.issue_run_id,
+        attempt_id: runningEntry.attempt_id ?? null,
+        thread_id: rootCause.thread_id ?? runningEntry.thread_id ?? runningEntry.persisted_thread_id ?? null,
+        turn_id: rootCause.turn_id ?? runningEntry.turn_id ?? null,
+        outcome: terminalStatus,
+        reason_code: reasonCode,
+        reason_detail: reasonDetail,
+        recorded_at: rootCause.at ?? asIso(this.nowMs())
+      });
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist ticket terminal outcome for ${runningEntry.identifier}`,
+        context: {
+          issue_id: runningEntry.issue.id,
+          issue_identifier: runningEntry.identifier,
+          issue_run_id: runningEntry.issue_run_id,
+          attempt_id: runningEntry.attempt_id ?? null,
+          reason_code: reasonCode,
+          error: error instanceof Error ? error.message : String(error)
         }
       });
     }
