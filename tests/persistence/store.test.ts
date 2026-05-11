@@ -10,6 +10,14 @@ import { SqlitePersistenceStore } from '../../src/persistence/store';
 describe('SqlitePersistenceStore', () => {
   const dirs: string[] = [];
   const stores: SqlitePersistenceStore[] = [];
+  type TestDatabase = {
+    exec(sql: string): void;
+    close(): void;
+    prepare(sql: string): {
+      all(...args: unknown[]): unknown[];
+      get(...args: unknown[]): unknown;
+    };
+  };
   const identity = (params: { issue_id?: string; issue_identifier?: string; projectRoot?: string; workflowPath?: string; trackerScope?: string | null } = {}) =>
     buildDurableIdentity({
       projectRoot: params.projectRoot ?? '/repo/main',
@@ -21,6 +29,20 @@ describe('SqlitePersistenceStore', () => {
       remoteIssueId: params.issue_id ?? 'issue-1',
       humanIssueIdentifier: params.issue_identifier ?? 'ABC-1'
     });
+  const openDatabase = (dbPath: string): TestDatabase => {
+    const sqlite = require('node:sqlite') as { DatabaseSync: new (path: string) => TestDatabase };
+    return new sqlite.DatabaseSync(dbPath);
+  };
+  const tableNames = (dbPath: string): string[] => {
+    const db = openDatabase(dbPath);
+    try {
+      return (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map(
+        (row) => row.name
+      );
+    } finally {
+      db.close();
+    }
+  };
 
   afterEach(async () => {
     while (stores.length > 0) {
@@ -111,6 +133,74 @@ describe('SqlitePersistenceStore', () => {
       identity: durableIdentity
     });
     expect(storeB.reconstructThreadLineage(threadId)?.issue_run.identity).toEqual(durableIdentity);
+  });
+
+  it('creates a versioned Project Execution History schema on clean databases', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-schema-clean-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 30, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
+    stores.push(store);
+    const durableIdentity = identity({ issue_id: 'history-clean-1', issue_identifier: 'HIST-1' });
+    store.startRun({ issue_id: 'history-clean-1', issue_identifier: 'HIST-1', identity: durableIdentity });
+
+    expect(tableNames(dbPath)).toEqual(
+      expect.arrayContaining([
+        'history_schema_state',
+        'history_schema_migrations',
+        'history_project_identity',
+        'history_ticket_identity',
+        'history_protocol_summary',
+        'history_token_model_fact',
+        'history_retention_metadata',
+        'history_health_metadata',
+        'issue_run',
+        'attempt',
+        'thread',
+        'turn',
+        'phase_span',
+        'tool_span',
+        'state_transition'
+      ])
+    );
+    expect(store.historySchemaHealth()).toMatchObject({
+      schema_name: 'project_execution_history',
+      target_version: 1,
+      applied_version: 1,
+      status: 'healthy',
+      degraded_reason_code: null
+    });
+    expect(store.historySchemaHealth().migrations).toEqual([
+      expect.objectContaining({ version: 1, name: 'project_execution_history_v1', status: 'applied' })
+    ]);
+  });
+
+  it('persists history identity rows in the versioned schema', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-identity-schema-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(store);
+    const durableIdentity = identity({ issue_id: 'remote-history-1', issue_identifier: 'HIST-2' });
+    store.startRun({ issue_id: 'remote-history-1', issue_identifier: 'HIST-2', identity: durableIdentity });
+
+    const db = openDatabase(dbPath);
+    try {
+      expect(db.prepare('SELECT project_key FROM history_project_identity').all()).toEqual([
+        { project_key: durableIdentity.project.key }
+      ]);
+      expect(db.prepare('SELECT ticket_key, project_key, remote_issue_id FROM history_ticket_identity').all()).toEqual([
+        {
+          ticket_key: durableIdentity.ticket.key,
+          project_key: durableIdentity.project.key,
+          remote_issue_id: 'remote-history-1'
+        }
+      ]);
+    } finally {
+      db.close();
+    }
   });
 
   it('keeps project and ticket identity collision inputs distinct', () => {
@@ -566,6 +656,180 @@ describe('SqlitePersistenceStore', () => {
     });
     expect(migratedStore.reconstructThreadLineage(threadId)?.issue_run.issue_identifier).toBe('ABC-2');
     expect(migratedStore.health().integrity_ok).toBe(true);
+  });
+
+  it('runs history schema migrations idempotently across repeated opens', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-idempotent-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
+    stores.push(storeA);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(1);
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
+    stores.push(storeB);
+
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 1, status: 'healthy' });
+    expect(storeB.historySchemaHealth().migrations).toEqual([
+      expect.objectContaining({ version: 1, status: 'applied' })
+    ]);
+  });
+
+  it('upgrades partial legacy history tables and records applied migration state', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-partial-legacy-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const db = openDatabase(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE runs (
+          run_id TEXT PRIMARY KEY,
+          issue_id TEXT NOT NULL,
+          issue_identifier TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          terminal_status TEXT,
+          error_code TEXT
+        );
+        CREATE TABLE run_sessions (
+          run_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          PRIMARY KEY (run_id, session_id)
+        );
+        CREATE TABLE run_events (
+          event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id TEXT NOT NULL,
+          at TEXT NOT NULL,
+          event TEXT NOT NULL,
+          message TEXT
+        );
+        CREATE TABLE issue_run (
+          issue_run_id TEXT PRIMARY KEY,
+          issue_id TEXT NOT NULL,
+          issue_identifier TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE attempt (
+          attempt_id TEXT PRIMARY KEY,
+          issue_run_id TEXT NOT NULL,
+          attempt_number INTEGER NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE thread (
+          thread_id TEXT PRIMARY KEY,
+          attempt_id TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE turn (
+          turn_id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          turn_index INTEGER NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE phase_span (
+          phase_span_id TEXT PRIMARY KEY,
+          turn_id TEXT NOT NULL,
+          phase TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE tool_span (
+          tool_span_id TEXT PRIMARY KEY,
+          turn_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        CREATE TABLE state_transition (
+          state_transition_id TEXT PRIMARY KEY,
+          issue_run_id TEXT NOT NULL,
+          attempt_id TEXT,
+          thread_id TEXT,
+          turn_id TEXT,
+          from_status TEXT,
+          to_status TEXT NOT NULL,
+          transitioned_at TEXT NOT NULL,
+          status TEXT NOT NULL,
+          reason_code TEXT,
+          reason_detail TEXT
+        );
+        INSERT INTO runs (run_id, issue_id, issue_identifier, started_at, ended_at, terminal_status, error_code)
+        VALUES ('legacy-run-1', 'legacy-issue-1', 'LEG-1', '2026-04-11T10:00:00.000Z', '2026-04-11T10:05:00.000Z', 'failed', 'legacy_error');
+      `);
+    } finally {
+      db.close();
+    }
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(store);
+
+    expect(store.listRunHistory()).toEqual([
+      expect.objectContaining({
+        run_id: 'legacy-run-1',
+        issue_identifier: 'LEG-1',
+        completed_at: '2026-04-11T10:05:00.000Z',
+        terminal_reason_code: 'legacy_error'
+      })
+    ]);
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 1, status: 'healthy' });
+    expect(tableNames(dbPath)).toEqual(expect.arrayContaining(['history_token_model_fact', 'history_protocol_summary']));
+  });
+
+  it('records explicit degraded history state when migration execution fails', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-migration-failure-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-11T10:00:00.000Z'),
+      migrationFailureForTest: 'project_execution_history_v1'
+    });
+    stores.push(store);
+
+    expect(store.historySchemaHealth()).toMatchObject({
+      applied_version: 0,
+      status: 'degraded',
+      degraded_reason_code: 'history_schema_migration_failed'
+    });
+    expect(store.historySchemaHealth().migrations).toEqual([
+      expect.objectContaining({
+        version: 1,
+        name: 'project_execution_history_v1',
+        status: 'failed',
+        error_message: 'injected migration failure: project_execution_history_v1'
+      })
+    ]);
+    expect(store.health()).toMatchObject({
+      integrity_ok: false,
+      history_schema: expect.objectContaining({ status: 'degraded' })
+    });
   });
 
   it('persists UI continuity state', async () => {
