@@ -71,7 +71,12 @@ export const REASON_CODES = {
   issueStateRefreshFailed: 'issue_state_refresh_failed',
   unsafeWorkspaceRoot: 'unsafe_workspace_root',
   workspaceEmpty: 'workspace_empty',
+  unsupportedServerRequest: 'unsupported_server_request',
   unsupportedApprovalServerRequest: 'unsupported_approval_server_request',
+  unsupportedPermissionServerRequest: 'unsupported_permission_server_request',
+  unsupportedAuthenticationServerRequest: 'unsupported_authentication_server_request',
+  unsupportedAccountServerRequest: 'unsupported_account_server_request',
+  unsupportedSafetySensitiveServerRequest: 'unsupported_safety_sensitive_server_request',
   codexProtocolWarning: 'codex_protocol_warning',
   codexProtocolGuardianWarning: 'codex_protocol_guardian_warning',
   codexProtocolDeprecationNotice: 'codex_protocol_deprecation_notice',
@@ -565,6 +570,60 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Runner rejected an unsupported approval protocol request',
     detail:
       'The Codex app-server emitted an approval-like server request that is not in the explicit Symphony approval allowlist.',
+    expected_transition: null
+  },
+  [REASON_CODES.unsupportedServerRequest]: {
+    reason_code: REASON_CODES.unsupportedServerRequest,
+    classification: 'failed',
+    actionability: 'recommended',
+    recommended_actions: ['Inspect the app-server method and add explicit support only when Symphony can answer it safely'],
+    label: 'Unsupported Server Request',
+    headline: 'Runner rejected an unsupported protocol request',
+    detail: 'The Codex app-server emitted a request method that Symphony does not support.',
+    expected_transition: null
+  },
+  [REASON_CODES.unsupportedPermissionServerRequest]: {
+    reason_code: REASON_CODES.unsupportedPermissionServerRequest,
+    classification: 'blocked_input',
+    actionability: 'required',
+    recommended_actions: ['Add an explicit permission-grant policy or keep the request rejected as unsupported'],
+    label: 'Unsupported Permission Server Request',
+    headline: 'Runner blocked an unsupported permission protocol request',
+    detail:
+      'The Codex app-server requested permission approval, but Symphony has no supported permission-grant policy for this request.',
+    expected_transition: null
+  },
+  [REASON_CODES.unsupportedAuthenticationServerRequest]: {
+    reason_code: REASON_CODES.unsupportedAuthenticationServerRequest,
+    classification: 'blocked_input',
+    actionability: 'required',
+    recommended_actions: ['Authenticate outside the runner or add an explicit supported authentication policy'],
+    label: 'Unsupported Authentication Server Request',
+    headline: 'Runner blocked an unsupported authentication protocol request',
+    detail:
+      'The Codex app-server requested authentication handling, but Symphony must not fabricate credentials or report success.',
+    expected_transition: null
+  },
+  [REASON_CODES.unsupportedAccountServerRequest]: {
+    reason_code: REASON_CODES.unsupportedAccountServerRequest,
+    classification: 'blocked_input',
+    actionability: 'required',
+    recommended_actions: ['Handle account-token requests through an explicit supported policy before enabling this path'],
+    label: 'Unsupported Account Server Request',
+    headline: 'Runner blocked an unsupported account protocol request',
+    detail:
+      'The Codex app-server requested account or token handling, but Symphony has no supported credential response for it.',
+    expected_transition: null
+  },
+  [REASON_CODES.unsupportedSafetySensitiveServerRequest]: {
+    reason_code: REASON_CODES.unsupportedSafetySensitiveServerRequest,
+    classification: 'blocked_input',
+    actionability: 'required',
+    recommended_actions: ['Classify the request explicitly before allowing the runner to answer it'],
+    label: 'Unsupported Safety-Sensitive Server Request',
+    headline: 'Runner blocked an unsupported safety-sensitive protocol request',
+    detail:
+      'The Codex app-server emitted a safety-sensitive request that is not in Symphony’s supported request policy.',
     expected_transition: null
   },
   [REASON_CODES.codexProtocolWarning]: {

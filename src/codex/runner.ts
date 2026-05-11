@@ -95,6 +95,20 @@ interface TranscriptScanResult {
   observedProgress: boolean;
 }
 
+type UnsupportedServerRequestCategory =
+  | 'approval'
+  | 'permission'
+  | 'authentication'
+  | 'account'
+  | 'safety_sensitive'
+  | 'unsupported';
+
+interface UnsupportedServerRequestClassification {
+  category: UnsupportedServerRequestCategory;
+  reason_code: string;
+  terminal: boolean;
+}
+
 const CONTINUATION_GUIDANCE = 'Continue working on the same issue thread. Provide concise progress and next actions.';
 const NON_INTERACTIVE_TOOL_INPUT_ANSWER = 'This is a non-interactive session. Operator input is unavailable.';
 
@@ -1915,14 +1929,35 @@ class ProtocolClient {
 
         if (this.isUnhandledServerRequest(message)) {
           const method = message.method ?? 'unknown';
-          const reasonCode = this.unsupportedServerRequestReasonCode(message);
-          this.write({ id: message.id, result: { success: false, error: 'unsupported_server_request', method, reason_code: reasonCode } });
+          const classification = this.unsupportedServerRequestClassification(message);
+          this.write({
+            id: message.id,
+            result: {
+              success: false,
+              error: REASON_CODES.unsupportedServerRequest,
+              method,
+              category: classification.category,
+              reason_code: classification.reason_code
+            }
+          });
           emit({
             event: CANONICAL_EVENT.codex.unsupportedServerRequest,
             detail: method,
             request_method: method,
-            reason_code: reasonCode
+            request_category: classification.category,
+            reason_code: classification.reason_code
           });
+          if (classification.terminal) {
+            return {
+              terminal: 'turn/input_required',
+              terminal_source: 'app_server_protocol',
+              usage: this.usageTracker.snapshot(),
+              telemetry: this.usageTracker.telemetrySnapshot(),
+              rate_limits: this.latestRateLimits,
+              ...this.protocolEvidenceSnapshot(),
+              input_required_detail: `unsupported safety-sensitive server request: ${method}`
+            };
+          }
           continue;
         }
       }
@@ -2418,8 +2453,55 @@ class ProtocolClient {
     return method.includes('approval') && (method.includes('request') || method.includes('required'));
   }
 
-  private unsupportedServerRequestReasonCode(message: ProtocolMessage): string {
-    return this.isApprovalLikeServerRequest(message) ? REASON_CODES.unsupportedApprovalServerRequest : 'unsupported_server_request';
+  private unsupportedServerRequestClassification(message: ProtocolMessage): UnsupportedServerRequestClassification {
+    const method = (message.method ?? '').toLowerCase();
+    const safetySensitiveTerminal = true;
+
+    if (method.includes('permission') && (method.includes('approval') || method.includes('request') || method.includes('required'))) {
+      return {
+        category: 'permission',
+        reason_code: REASON_CODES.unsupportedPermissionServerRequest,
+        terminal: safetySensitiveTerminal
+      };
+    }
+
+    if (method.startsWith('account/') || method.includes('token')) {
+      return {
+        category: 'account',
+        reason_code: REASON_CODES.unsupportedAccountServerRequest,
+        terminal: safetySensitiveTerminal
+      };
+    }
+
+    if (method.includes('auth') || method.includes('oauth') || method.includes('login')) {
+      return {
+        category: 'authentication',
+        reason_code: REASON_CODES.unsupportedAuthenticationServerRequest,
+        terminal: safetySensitiveTerminal
+      };
+    }
+
+    if (method.includes('credential') || method.includes('secret') || method.includes('session')) {
+      return {
+        category: 'safety_sensitive',
+        reason_code: REASON_CODES.unsupportedSafetySensitiveServerRequest,
+        terminal: safetySensitiveTerminal
+      };
+    }
+
+    if (this.isApprovalLikeServerRequest(message)) {
+      return {
+        category: 'approval',
+        reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+        terminal: false
+      };
+    }
+
+    return {
+      category: 'unsupported',
+      reason_code: REASON_CODES.unsupportedServerRequest,
+      terminal: false
+    };
   }
 
   private isToolCallRequest(message: ProtocolMessage): boolean {

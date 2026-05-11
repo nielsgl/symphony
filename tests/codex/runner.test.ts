@@ -1128,7 +1128,7 @@ describe('CodexRunner', () => {
   it('rejects unknown approval-like requests with unsupported protocol evidence', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
-    const events: Array<{ event: string; detail?: string; request_method?: string; reason_code?: string }> = [];
+    const events: Array<{ event: string; detail?: string; request_method?: string; request_category?: string; reason_code?: string }> = [];
     const runner = new CodexRunner({
       spawnProcess: () => fake
     });
@@ -1143,29 +1143,19 @@ describe('CodexRunner', () => {
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
     fake.emitStdout('{"id":85,"method":"approval/request","params":{"kind":"unknown"}}\n');
-    fake.emitStdout('{"id":86,"method":"account/sessionApprovalRequired","params":{}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
 
     await expect(promise).resolves.toMatchObject({ status: 'completed' });
 
     const responses = parseWrittenMessages(fake).filter((message) => typeof message.id === 'number' && 'result' in message);
     expect(responses).not.toContainEqual({ id: 85, result: { approved: true } });
-    expect(responses).not.toContainEqual({ id: 86, result: { approved: true } });
     expect(responses).toContainEqual({
       id: 85,
       result: {
         success: false,
         error: 'unsupported_server_request',
         method: 'approval/request',
-        reason_code: REASON_CODES.unsupportedApprovalServerRequest
-      }
-    });
-    expect(responses).toContainEqual({
-      id: 86,
-      result: {
-        success: false,
-        error: 'unsupported_server_request',
-        method: 'account/sessionApprovalRequired',
+        category: 'approval',
         reason_code: REASON_CODES.unsupportedApprovalServerRequest
       }
     });
@@ -1174,16 +1164,91 @@ describe('CodexRunner', () => {
         expect.objectContaining({
           event: CANONICAL_EVENT.codex.unsupportedServerRequest,
           request_method: 'approval/request',
-          reason_code: REASON_CODES.unsupportedApprovalServerRequest
-        }),
-        expect.objectContaining({
-          event: CANONICAL_EVENT.codex.unsupportedServerRequest,
-          request_method: 'account/sessionApprovalRequired',
+          request_category: 'approval',
           reason_code: REASON_CODES.unsupportedApprovalServerRequest
         })
       ])
     );
   });
+
+  it.each([
+    {
+      method: 'item/permissions/requestApproval',
+      category: 'permission',
+      reasonCode: REASON_CODES.unsupportedPermissionServerRequest
+    },
+    {
+      method: 'getAuthStatus',
+      category: 'authentication',
+      reasonCode: REASON_CODES.unsupportedAuthenticationServerRequest
+    },
+    {
+      method: 'account/chatgptAuthTokens/refresh',
+      category: 'account',
+      reasonCode: REASON_CODES.unsupportedAccountServerRequest
+    },
+    {
+      method: 'credential/request',
+      category: 'safety_sensitive',
+      reasonCode: REASON_CODES.unsupportedSafetySensitiveServerRequest
+    }
+  ])(
+    'fails closed for unsupported safety-sensitive $method requests',
+    async ({ method, category, reasonCode }) => {
+      const fake = new FakeProcess();
+      const workspaceCwd = makeWorkspace();
+      const events: Array<{ event: string; detail?: string; request_method?: string; request_category?: string; reason_code?: string }> = [];
+      const runner = new CodexRunner({
+        spawnProcess: () => fake
+      });
+
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          onEvent: (event) => events.push(event)
+        })
+      );
+
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
+      fake.emitStdout(`${JSON.stringify({ id: 86, method, params: {} })}\n`);
+      fake.emitStdout('{"method":"turn/completed"}\n');
+
+      await expect(promise).resolves.toMatchObject({
+        status: 'failed',
+        last_event: CANONICAL_EVENT.codex.turnInputRequired,
+        error_code: REASON_CODES.turnInputRequired,
+        error_detail: `unsupported safety-sensitive server request: ${method}`
+      });
+
+      const responses = parseWrittenMessages(fake).filter((message) => typeof message.id === 'number' && 'result' in message);
+      expect(responses).not.toContainEqual({ id: 86, result: { approved: true } });
+      expect(responses).not.toContainEqual({ id: 86, result: { success: true } });
+      expect(responses).toContainEqual({
+        id: 86,
+        result: {
+          success: false,
+          error: 'unsupported_server_request',
+          method,
+          category,
+          reason_code: reasonCode
+        }
+      });
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: CANONICAL_EVENT.codex.unsupportedServerRequest,
+            request_method: method,
+            request_category: category,
+            reason_code: reasonCode
+          }),
+          expect.objectContaining({
+            event: CANONICAL_EVENT.codex.turnInputRequired
+          })
+        ])
+      );
+    }
+  );
 
   it('executes supported dynamic tool calls and returns tool output payload', async () => {
     const fake = new FakeProcess();
@@ -1373,7 +1438,7 @@ describe('CodexRunner', () => {
     fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
     fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-1"}}}\n');
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
-    fake.emitStdout('{"id":99,"method":"account/chatgptAuthTokens/refresh","params":{}}\n');
+    fake.emitStdout('{"id":99,"method":"unknown/serverRequest","params":{}}\n');
     fake.emitStdout('{"method":"turn/completed"}\n');
 
     await expect(promise).resolves.toMatchObject({ status: 'completed' });
@@ -1384,8 +1449,9 @@ describe('CodexRunner', () => {
       result: {
         success: false,
         error: 'unsupported_server_request',
-        method: 'account/chatgptAuthTokens/refresh',
-        reason_code: 'unsupported_server_request'
+        method: 'unknown/serverRequest',
+        category: 'unsupported',
+        reason_code: REASON_CODES.unsupportedServerRequest
       }
     });
   });

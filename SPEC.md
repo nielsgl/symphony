@@ -1121,6 +1121,17 @@ Unsupported dynamic tool calls:
   failure response and continue the session.
 - This prevents the session from stalling on unsupported tool execution paths.
 
+Unsupported server requests:
+
+- Supported command execution and file-change approval requests may be answered by explicit
+  allowlist entries only.
+- Unsupported approval-like server requests return structured unsupported protocol evidence with
+  method, category, and reason code.
+- Unsupported permission, authentication, account, credential, token, secret, or session requests
+  are safety-sensitive. They must not fabricate credentials, grant permissions, or return success.
+- Unsupported safety-sensitive server requests return a structured failure response and stop the
+  turn as operator input required unless a specific supported policy exists.
+
 Optional client-side tool extension:
 
 - An implementation may expose a limited set of client-side tools to the app-server session.
@@ -2152,6 +2163,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Stdout and stderr are handled separately; protocol JSON is parsed from stdout only
 - Non-JSON stderr lines are logged but do not crash parsing
 - Command/file-change approvals are handled according to the implementation's documented policy
+- Unsupported permission, authentication, account-token, and unknown safety-sensitive server
+  requests are rejected with structured method/category/reason evidence and stop as operator input
+  required unless an explicit supported policy exists
 - Unsupported dynamic tool calls are rejected without stalling the session
 - User input requests are handled according to the implementation's documented policy and do not
   stall indefinitely
