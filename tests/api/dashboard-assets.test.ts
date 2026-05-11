@@ -576,7 +576,7 @@ describe('dashboard assets', () => {
           reason_code: 'issue_state_refresh_failed',
           detail: 'issue_state_refresh_failed: Linear request failed: TypeError: fetch failed',
           operator_detail:
-            'The Codex turn reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step.',
+            'The Codex turn completed and reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step. The scheduled retry refreshes tracker state without rerunning the completed turn.',
           headline: 'Tracker refresh failed after run activity',
           expected_transition: 'Retry due time passed 540000ms ago; dispatch may be stuck',
           last_phase: 'validation'

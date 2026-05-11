@@ -227,7 +227,9 @@ export class SqlitePersistenceStore {
         run_id TEXT NOT NULL,
         at TEXT NOT NULL,
         event TEXT NOT NULL,
-        message TEXT
+        message TEXT,
+        reason_code TEXT,
+        request_method TEXT
       );
       CREATE TABLE IF NOT EXISTS ui_state (
         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
@@ -260,6 +262,7 @@ export class SqlitePersistenceStore {
       );
     `);
     this.ensureRunDiagnosticColumns();
+    this.ensureRunEventDiagnosticColumns();
   }
 
   close(): void {
@@ -282,11 +285,25 @@ export class SqlitePersistenceStore {
       .run(runId, sessionId);
   }
 
-  recordEvent(params: { run_id: string; event: string; message: string | null; timestamp_ms: number }): void {
+  recordEvent(params: {
+    run_id: string;
+    event: string;
+    message: string | null;
+    timestamp_ms: number;
+    reason_code?: string | null;
+    request_method?: string | null;
+  }): void {
     const redactedMessage = redactUnknown(params.message) as string | null;
     this.db
-      .prepare('INSERT INTO run_events (run_id, at, event, message) VALUES (?, ?, ?, ?)')
-      .run(params.run_id, asIso(params.timestamp_ms), params.event, redactedMessage);
+      .prepare('INSERT INTO run_events (run_id, at, event, message, reason_code, request_method) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(
+        params.run_id,
+        asIso(params.timestamp_ms),
+        params.event,
+        redactedMessage,
+        params.reason_code ?? null,
+        params.request_method ?? null
+      );
   }
 
   appendIssueRun(params: {
@@ -740,6 +757,20 @@ export class SqlitePersistenceStore {
     this.db.exec(
       'UPDATE runs SET completed_at = ended_at WHERE completed_at IS NULL AND terminal_status IS NOT NULL AND ended_at IS NOT NULL;'
     );
+  }
+
+  private ensureRunEventDiagnosticColumns(): void {
+    const columns = this.db.prepare('PRAGMA table_info(run_events)').all() as Array<{ name: string }>;
+    const existing = new Set(columns.map((column) => column.name));
+    const migrations: Array<[string, string]> = [
+      ['reason_code', 'ALTER TABLE run_events ADD COLUMN reason_code TEXT'],
+      ['request_method', 'ALTER TABLE run_events ADD COLUMN request_method TEXT']
+    ];
+    for (const [column, sql] of migrations) {
+      if (!existing.has(column)) {
+        this.db.exec(`${sql};`);
+      }
+    }
   }
 
   saveUiState(state: UiContinuityState): void {

@@ -71,6 +71,7 @@ export const REASON_CODES = {
   issueStateRefreshFailed: 'issue_state_refresh_failed',
   unsafeWorkspaceRoot: 'unsafe_workspace_root',
   workspaceEmpty: 'workspace_empty',
+  unsupportedApprovalServerRequest: 'unsupported_approval_server_request',
   codexProtocolWarning: 'codex_protocol_warning',
   codexProtocolGuardianWarning: 'codex_protocol_guardian_warning',
   codexProtocolDeprecationNotice: 'codex_protocol_deprecation_notice',
@@ -532,8 +533,8 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     label: 'Issue State Refresh Failed',
     headline: 'Tracker refresh failed after run activity',
     detail:
-      'The Codex turn reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step.',
-    expected_transition: 'Automatic retry at the scheduled due time'
+      'The Codex turn completed and reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step. The scheduled retry refreshes tracker state without rerunning the completed turn.',
+    expected_transition: 'Automatic tracker refresh retry at the scheduled due time'
   },
   [REASON_CODES.unsafeWorkspaceRoot]: {
     reason_code: REASON_CODES.unsafeWorkspaceRoot,
@@ -553,6 +554,17 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     label: 'Workspace Empty',
     headline: 'Run failed',
     detail: 'The worker reported an empty workspace.',
+    expected_transition: null
+  },
+  [REASON_CODES.unsupportedApprovalServerRequest]: {
+    reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Update the approval server-request allowlist or reject the upstream method as unsupported'],
+    label: 'Unsupported Approval Server Request',
+    headline: 'Runner rejected an unsupported approval protocol request',
+    detail:
+      'The Codex app-server emitted an approval-like server request that is not in the explicit Symphony approval allowlist.',
     expected_transition: null
   },
   [REASON_CODES.codexProtocolWarning]: {

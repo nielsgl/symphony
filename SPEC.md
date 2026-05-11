@@ -1217,7 +1217,9 @@ Behavior:
 2. Build prompt from workflow template.
 3. Start app-server session.
 4. Forward app-server events to orchestrator.
-5. On any error, fail the worker attempt (the orchestrator will retry).
+5. On agent/workspace/prompt errors, fail the worker attempt (the orchestrator will retry).
+6. If the Codex turn completed but the post-turn tracker refresh failed, report a normal
+   completion with `issue_state_refresh_failed` so only tracker synchronization is retried.
 
 Note:
 
@@ -1248,6 +1250,9 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - `tracker.project_slug` maps to Linear project `slugId`
 - Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
 - Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
+- Issue-state refresh retries transient request failures and transient HTTP status failures with
+  bounded backoff. It must not retry GraphQL validation errors, malformed payloads, or Linear
+  mutations/writes.
 - Pagination required for candidate issues
 - Page size default: `50`
 - Network timeout: `30000 ms`
@@ -1936,7 +1941,10 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
     if refreshed_issue failed:
       app_server.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
-      fail_worker("issue state refresh error")
+      exit_normal({
+        completion_reason: "issue_state_refresh_failed",
+        error: "issue state refresh error"
+      })
 
     issue = refreshed_issue[0] or issue
 
@@ -1963,6 +1971,17 @@ on_worker_exit(issue_id, reason, state):
 
   if reason == normal:
     state.completed.add(issue_id)  # bookkeeping only
+    if completion_reason == "issue_state_refresh_failed":
+      state = schedule_retry(state, issue_id, 1, {
+        identifier: running_entry.identifier,
+        delay_type: failure,
+        error: "tracker state refresh pending",
+        stop_reason_code: "issue_state_refresh_failed",
+        previous_thread_id: running_entry.thread_id,
+        previous_session_id: running_entry.session_id
+      })
+      return state
+
     state = schedule_retry(state, issue_id, 1, {
       identifier: running_entry.identifier,
       delay_type: continuation
@@ -1982,6 +2001,37 @@ on_retry_timer(issue_id, state):
   retry_entry = state.retry_attempts.pop(issue_id)
   if missing:
     return state
+
+  if retry_entry.stop_reason_code == "issue_state_refresh_failed":
+    refreshed = tracker.fetch_issue_states_by_ids([issue_id])
+    if refreshed failed:
+      return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
+        identifier: retry_entry.identifier,
+        error: "tracker state refresh retry failed",
+        stop_reason_code: "issue_state_refresh_failed",
+        previous_thread_id: retry_entry.previous_thread_id,
+        previous_session_id: retry_entry.previous_session_id
+      })
+
+    issue = find_by_id(refreshed, issue_id)
+    if issue is null:
+      state.claimed.remove(issue_id)
+      return state
+
+    if issue.state is terminal or issue.state is not active:
+      state.claimed.remove(issue_id)
+      return state
+
+    if issue.state is fresh_dispatch_state:
+      state.claimed.remove(issue_id)
+      return dispatch_issue(issue, state, attempt=null)
+
+    return schedule_retry(state, issue_id, retry_entry.attempt, {
+      identifier: issue.identifier,
+      delay_type: continuation,
+      previous_thread_id: retry_entry.previous_thread_id,
+      previous_session_id: retry_entry.previous_session_id
+    })
 
   candidates = tracker.fetch_candidate_issues()
   if fetch failed:

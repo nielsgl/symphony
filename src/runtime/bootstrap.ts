@@ -189,6 +189,8 @@ export function toWorkerEvent(event: CodexRunnerEvent, nowMs: number): WorkerObs
     codex_app_server_pid: event.codex_app_server_pid,
     worker_instance_id: event.worker_instance_id,
     detail: event.detail,
+    reason_code: event.reason_code,
+    request_method: event.request_method,
     usage: event.usage,
     rate_limits: event.rate_limits,
     codex_thread_activity_at_ms: event.codex_thread_activity_at_ms,
@@ -879,7 +881,19 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       scheduleRetryTimer: ({ issue_id, due_at_ms, callback }) => {
         const delayMs = Math.max(0, due_at_ms - nowMs());
         const timeout = setTimeout(() => {
-          void callback();
+          void callback().catch((error) => {
+            logger.log({
+              level: 'error',
+              event: CANONICAL_EVENT.orchestration.retryTimerCallbackFailed,
+              message: 'retry timer callback failed',
+              context: {
+                issue_id,
+                due_at_ms,
+                error: error instanceof Error ? error.message : 'unknown'
+              }
+            });
+            apiServer?.notifyStateChanged('retry_timer_callback_failed');
+          });
         }, delayMs);
         retryTimers.set(issue_id, { timeout });
         return timeout;

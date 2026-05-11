@@ -172,7 +172,9 @@ describe('createRuntimeEnvironment', () => {
           source: 'app_server_protocol'
         },
         requested_model: 'gpt-requested',
-        effective_model: 'gpt-effective'
+        effective_model: 'gpt-effective',
+        reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+        request_method: 'approval/request'
       },
       Date.parse('2026-05-11T13:21:00.000Z')
     );
@@ -198,7 +200,9 @@ describe('createRuntimeEnvironment', () => {
         reason_code: 'codex_model_rerouted'
       },
       requested_model: 'gpt-requested',
-      effective_model: 'gpt-effective'
+      effective_model: 'gpt-effective',
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      request_method: 'approval/request'
     });
   });
 

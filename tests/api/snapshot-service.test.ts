@@ -344,7 +344,7 @@ describe('SnapshotService', () => {
           last_phase: 'validation',
           headline: 'Tracker refresh failed after run activity',
           operator_detail:
-            'The Codex turn reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step.'
+            'The Codex turn completed and reached post-run tracker refresh, but Symphony could not refresh the issue state from Linear before deciding the next workflow step. The scheduled retry refreshes tracker state without rerunning the completed turn.'
         })
       ]
     });
