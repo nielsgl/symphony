@@ -18,7 +18,11 @@ import {
   parseTelemetryQuery,
   TelemetryQueryError
 } from './telemetry';
-import { buildProjectHistoryListResponse, buildProjectHistoryTicketDetailResponse } from './project-history';
+import {
+  buildProjectHistoryConsumerSummaryResponse,
+  buildProjectHistoryListResponse,
+  buildProjectHistoryTicketDetailResponse
+} from './project-history';
 import {
   buildThreadDiagnosticsByIssueIdentifier,
   buildThreadDiagnosticsByThreadId,
@@ -1310,6 +1314,35 @@ export class LocalApiServer {
                 },
                 historySchemaHealth: this.diagnosticsSource.getPersistenceHealth().history_schema ?? null
               }));
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/projects\/([^/]+)\/history\/tickets\/([^/]+)\/consumer-summary$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response, match) => {
+              if (!this.diagnosticsSource?.getProjectTicketIdentity || !this.diagnosticsSource.reconstructTicketTimeline) {
+                throw new LocalApiError('project_history_unavailable', 'Project ticket history source is not configured', 503);
+              }
+
+              const projectKey = decodeURIComponent(match[1]);
+              const ticketKey = decodeURIComponent(match[2]);
+              const identity = this.diagnosticsSource.getProjectTicketIdentity(projectKey, ticketKey);
+              if (!identity) {
+                throw new LocalApiError('project_history_ticket_not_found', `Ticket ${ticketKey} was not found for project ${projectKey}`, 404);
+              }
+
+              sendJson(
+                response,
+                200,
+                buildProjectHistoryConsumerSummaryResponse(
+                  this.diagnosticsSource.reconstructTicketTimeline(identity),
+                  this.diagnosticsSource.getPersistenceHealth().history_schema ?? null
+                )
+              );
             }
           }
         ]
