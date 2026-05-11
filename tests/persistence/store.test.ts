@@ -159,6 +159,7 @@ describe('SqlitePersistenceStore', () => {
         'history_ticket_terminal_outcome',
         'history_ticket_blocker',
         'history_ticket_evidence_reference',
+        'history_write_failure',
         'history_retention_metadata',
         'history_health_metadata',
         'issue_run',
@@ -1342,6 +1343,142 @@ describe('SqlitePersistenceStore', () => {
       integrity_ok: false,
       history_schema: expect.objectContaining({ status: 'degraded' })
     });
+  });
+
+  it('records failed history writes as degraded health across restart', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-write-failure-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
+    });
+    stores.push(storeA);
+    storeA.recordHistoryWriteFailure({
+      operation: 'appendTurn',
+      reason_code: 'history_turn_write_failed',
+      detail: 'database locked token=secret-value'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-11T10:05:00.000Z')
+    });
+    stores.push(storeB);
+
+    expect(storeB.historySchemaHealth()).toMatchObject({
+      status: 'degraded',
+      degraded_reason_code: 'history_write_failed',
+      degraded_detail: 'appendTurn: history_turn_write_failed'
+    });
+    expect(storeB.health()).toMatchObject({
+      integrity_ok: false,
+      history_schema: expect.objectContaining({
+        status: 'degraded',
+        degraded_reason_code: 'history_write_failed'
+      })
+    });
+    expect(storeB.listHistoryWriteFailures()).toEqual([
+      {
+        operation: 'appendTurn',
+        reason_code: 'history_turn_write_failed',
+        detail: 'database locked token=***REDACTED***',
+        recorded_at: '2026-04-11T10:00:00.000Z'
+      }
+    ]);
+  });
+
+  it('restores write-failure diagnostics for already-applied history schemas', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-write-failure-upgrade-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const storeA = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
+    });
+    stores.push(storeA);
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 4, status: 'healthy' });
+    storeA.close();
+    stores.pop();
+
+    const db = openDatabase(dbPath);
+    try {
+      db.exec('DROP TABLE history_write_failure;');
+    } finally {
+      db.close();
+    }
+
+    const storeB = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-11T10:05:00.000Z')
+    });
+    stores.push(storeB);
+
+    storeB.recordHistoryWriteFailure({
+      operation: 'appendTicketTerminalOutcome',
+      reason_code: 'history_terminal_outcome_write_failed',
+      detail: 'no such table before idempotent ensure'
+    });
+
+    expect(storeB.historySchemaHealth()).toMatchObject({
+      applied_version: 4,
+      status: 'degraded',
+      degraded_reason_code: 'history_write_failed',
+      degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'
+    });
+    expect(storeB.listHistoryWriteFailures()).toEqual([
+      expect.objectContaining({
+        operation: 'appendTicketTerminalOutcome',
+        reason_code: 'history_terminal_outcome_write_failed',
+        detail: 'no such table before idempotent ensure',
+        recorded_at: '2026-04-11T10:05:00.000Z'
+      })
+    ]);
+  });
+
+  it('uses an explicit transaction for run start history facts', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-run-start-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(store);
+    const durableIdentity = identity({ issue_id: 'run-start-1', issue_identifier: 'RUN-START-1' });
+
+    const started = store.recordRunStarted({
+      issue_id: 'run-start-1',
+      issue_identifier: 'RUN-START-1',
+      identity: durableIdentity,
+      started_at: '2026-04-11T10:00:00.000Z',
+      attempt_number: 0,
+      status: 'running',
+      reason_code: 'dispatch_started',
+      reason_detail: 'worker spawned'
+    });
+    expect(() =>
+      store.recordRunStarted({
+        issue_id: 'run-start-1',
+        issue_identifier: 'RUN-START-1',
+        identity: durableIdentity,
+        started_at: '2026-04-11T10:00:00.000Z',
+        attempt_number: 0,
+        status: 'running',
+        reason_code: 'dispatch_started',
+        reason_detail: 'duplicate'
+      })
+    ).toThrow();
+
+    const reopened = store.reconstructTicketTimeline(durableIdentity);
+    expect(reopened.issue_runs.map((run) => run.issue_run_id)).toEqual([started.issue_run_id]);
+    expect(reopened.attempts.map((attempt) => attempt.attempt_id)).toEqual([started.attempt_id]);
+    expect(store.listRunHistory().filter((run) => run.issue_id === 'run-start-1')).toHaveLength(1);
   });
 
   it('persists UI continuity state', async () => {

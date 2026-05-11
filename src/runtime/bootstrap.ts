@@ -956,6 +956,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     persistence: persistenceStore
       ? {
           startRun: async (params) => persistenceStore.startRun({ ...params, identity: createIdentityForIssue(params) }),
+          recordRunStarted: async (params) =>
+            persistenceStore.recordRunStarted({ ...params, identity: createIdentityForIssue(params) }),
           appendIssueRun: async (params) =>
             persistenceStore.appendIssueRun({ ...params, identity: createIdentityForIssue(params) }),
           appendAttempt: async (params) => persistenceStore.appendAttempt(params),
@@ -967,6 +969,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           appendTicketTerminalOutcome: async (params) => persistenceStore.appendTicketTerminalOutcome(params),
           appendTicketBlocker: async (params) => persistenceStore.appendTicketBlocker(params),
           appendTicketEvidenceReference: async (params) => persistenceStore.appendTicketEvidenceReference(params),
+          recordHistoryWriteFailure: async (params) => persistenceStore.recordHistoryWriteFailure(params),
           recordSession: async (params) => {
             persistenceStore.recordSession(params.run_id, params.session_id);
           },
