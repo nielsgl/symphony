@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildProjectHistoryConsumerSummaryResponse } from '../../src/api/project-history';
+import { buildProjectHistoryConsumerSummaryResponse, buildProjectHistoryHealth } from '../../src/api/project-history';
 import type { DurableIdentity, TicketTimelineRecord } from '../../src/persistence';
 
 function identity(overrides: Partial<DurableIdentity['ticket']> = {}): DurableIdentity {
@@ -304,6 +304,166 @@ describe('Project History consumer summary', () => {
         expect.objectContaining({ fact: 'token_model_summaries', status: 'present' })
       ])
     );
+  });
+
+  it('builds healthy operator history diagnostics without raw payloads', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: true,
+        db_path: '/tmp/runtime.sqlite',
+        retention_days: 14,
+        run_count: 2,
+        ticket_count: 1,
+        last_pruned_at: '2026-04-11T00:00:00.000Z',
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: true,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 7,
+          applied_version: 7,
+          status: 'healthy',
+          degraded_reason_code: null,
+          degraded_detail: null,
+          updated_at: '2026-04-11T00:00:00.000Z',
+          migrations: []
+        },
+        recent_write_failures: []
+      },
+      timelines: [timeline()],
+      ticketCount: 1
+    });
+
+    expect(health).toMatchObject({
+      status: 'healthy',
+      enabled: true,
+      storage: { type: 'sqlite', target: '/tmp/runtime.sqlite' },
+      schema: { status: 'healthy', integrity_ok: true, target_version: 7, applied_version: 7 },
+      counts: { runs: 2, tickets: 1 },
+      retention: { retention_days: 14, last_prune: { status: 'succeeded' } },
+      writes: { status: 'healthy', recent_failures: [] },
+      projections: { status: 'healthy' },
+      app_server_lite: { status: 'healthy' }
+    });
+    expect(JSON.stringify(health)).not.toContain('raw transcript');
+  });
+
+  it('marks disabled history persistence as explicit disabled health', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: false,
+        db_path: null,
+        retention_days: 14,
+        run_count: 0,
+        ticket_count: 0,
+        last_pruned_at: null,
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: false,
+        recent_write_failures: []
+      },
+      timelines: [],
+      ticketCount: null,
+      projectionAvailable: false,
+      projectionFailureReasonCode: 'project_history_projection_unavailable'
+    });
+
+    expect(health).toMatchObject({
+      status: 'disabled',
+      enabled: false,
+      storage: { type: 'disabled', target: null },
+      counts: { runs: 0, tickets: 0 },
+      projections: { status: 'unavailable', reason_code: 'project_history_projection_unavailable' }
+    });
+  });
+
+  it('marks migration-needed schema health as degraded', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: true,
+        db_path: '/tmp/runtime.sqlite',
+        retention_days: 14,
+        run_count: 0,
+        ticket_count: 0,
+        last_pruned_at: null,
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: false,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 7,
+          applied_version: 6,
+          status: 'degraded',
+          degraded_reason_code: 'history_schema_migration_needed',
+          degraded_detail: 'target version 7 is not applied',
+          updated_at: '2026-04-11T00:00:00.000Z',
+          migrations: []
+        },
+        recent_write_failures: []
+      },
+      timelines: []
+    });
+
+    expect(health).toMatchObject({
+      status: 'degraded',
+      schema: {
+        status: 'degraded',
+        integrity_ok: false,
+        reason_code: 'history_schema_migration_needed',
+        detail: 'target version 7 is not applied'
+      }
+    });
+  });
+
+  it('surfaces write-failing and retention-failing states with redacted detail', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: true,
+        db_path: '/tmp/runtime.sqlite',
+        retention_days: 1,
+        run_count: 3,
+        ticket_count: 2,
+        last_pruned_at: null,
+        last_prune_failure_at: '2026-04-11T12:00:00.000Z',
+        last_prune_failure_reason: 'retention_prune_failed',
+        last_prune_failure_detail: 'token=***REDACTED*** prune exploded',
+        integrity_ok: false,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 7,
+          applied_version: 7,
+          status: 'degraded',
+          degraded_reason_code: 'history_write_failed',
+          degraded_detail: 'appendTurn: history_turn_write_failed',
+          updated_at: '2026-04-11T12:00:00.000Z',
+          migrations: []
+        },
+        recent_write_failures: [
+          {
+            operation: 'appendTurn',
+            reason_code: 'history_turn_write_failed',
+            detail: 'database locked token=***REDACTED***',
+            recorded_at: '2026-04-11T12:00:00.000Z'
+          }
+        ]
+      },
+      timelines: [timeline()]
+    });
+
+    expect(health.status).toBe('degraded');
+    expect(health.writes).toMatchObject({
+      status: 'degraded',
+      recent_failures: [expect.objectContaining({ reason_code: 'history_turn_write_failed' })]
+    });
+    expect(health.retention.last_prune).toMatchObject({
+      status: 'failed',
+      failure_reason_code: 'retention_prune_failed',
+      failure_detail: 'token=***REDACTED*** prune exploded'
+    });
+    expect(JSON.stringify(health)).not.toContain('secret');
   });
 
   it('marks optional app-server-lite and token facts as missing', () => {

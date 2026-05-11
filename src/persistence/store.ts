@@ -3346,6 +3346,14 @@ export class SqlitePersistenceStore {
 
   health(): PersistenceHealth {
     const runCountRow = this.db.prepare('SELECT COUNT(*) AS count FROM runs').get() as { count: number };
+    const ticketCountRow = this.hasTable('history_identity_projection')
+      ? (this.db
+          .prepare(
+            `SELECT COUNT(DISTINCT COALESCE(ticket_key, issue_identifier, issue_id)) AS count
+             FROM history_identity_projection`
+          )
+          .get() as { count: number })
+      : { count: 0 };
     const integrityRow = this.db.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
     const pruneRow = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('last_pruned_at') as
       | { value: string }
@@ -3374,12 +3382,14 @@ export class SqlitePersistenceStore {
       db_path: this.dbPath,
       retention_days: this.retentionDays,
       run_count: runCountRow.count,
+      ticket_count: ticketCountRow.count,
       last_pruned_at: pruneRow?.value ?? null,
       last_prune_failure_at: pruneFailureAtRow?.value ?? null,
       last_prune_failure_reason: pruneFailureReasonRow?.value ?? null,
       last_prune_failure_detail: pruneFailureDetailRow?.value ?? null,
       integrity_ok: integrityOk,
-      history_schema: historySchema
+      history_schema: historySchema,
+      recent_write_failures: this.listHistoryWriteFailures(5)
     };
   }
 

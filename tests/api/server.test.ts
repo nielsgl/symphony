@@ -3919,10 +3919,16 @@ describe('LocalApiServer', () => {
 
     const listResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets?limit=1`);
     const listPayload = (await listResponse.json()) as {
+      health: { status: string; counts: { runs: number; tickets: number | null }; retention: { last_prune: { status: string } } };
       page: { limit: number; has_more: boolean; total: number };
       tickets: Array<{ state: string; summary: { attempt_count: number; total_tokens: number | null }; facts: Array<{ status: string }> }>;
     };
     expect(listResponse.status).toBe(200);
+    expect(listPayload.health).toMatchObject({
+      status: 'degraded',
+      counts: { runs: 2, tickets: 2 },
+      retention: { last_prune: { status: 'never_run' } }
+    });
     expect(listPayload.page).toMatchObject({ limit: 1, has_more: true, total: 2 });
     expect(listPayload.tickets).toHaveLength(1);
     expect(listPayload.tickets[0]).toMatchObject({
@@ -4008,6 +4014,21 @@ describe('LocalApiServer', () => {
     expect(consumerSummaryPayload.recent_phases).toHaveLength(1);
     expect(consumerSummaryPayload.app_server_lite.excerpts).toHaveLength(1);
     expect(consumerSummaryPayload.evidence_references).toHaveLength(1);
+
+    const healthResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/health`);
+    const healthPayload = (await healthResponse.json()) as {
+      status: string;
+      writes: { status: string };
+      projections: { status: string };
+      app_server_lite: { status: string; redacted_event_count: number; truncated_event_count: number };
+    };
+    expect(healthResponse.status).toBe(200);
+    expect(healthPayload).toMatchObject({
+      status: 'degraded',
+      writes: { status: 'healthy' },
+      projections: { status: 'degraded' },
+      app_server_lite: { status: 'degraded', redacted_event_count: 1, truncated_event_count: 1 }
+    });
 
     const missingSummaryResponse = await fetch(
       `http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets/missing-ticket/consumer-summary`
