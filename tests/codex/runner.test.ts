@@ -656,10 +656,16 @@ describe('CodexRunner', () => {
     expect(settled).toBe(true);
   });
 
-  it('resumes an existing thread, interrupts the previous turn, and starts a guarded recovery turn', async () => {
+  it('resumes an existing thread in the provisioned workspace without forking or provisioning', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
-    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const spawnCalls: Array<{ command: string; cwd: string }> = [];
+    const runner = new CodexRunner({
+      spawnProcess: ({ command, cwd }) => {
+        spawnCalls.push({ command, cwd });
+        return fake;
+      }
+    });
     const events: string[] = [];
 
     const promise = runner.resumeThreadInterruptAndRunTurn(
@@ -687,6 +693,7 @@ describe('CodexRunner', () => {
       session_id: 'thread-recover-turn-recovery'
     });
 
+    expect(spawnCalls).toEqual([{ command: 'codex app-server', cwd: workspaceCwd }]);
     const messages = parseWrittenMessages(fake);
     expect(messages.map((message) => message.method).filter(Boolean)).toEqual([
       'initialize',
@@ -695,6 +702,8 @@ describe('CodexRunner', () => {
       'turn/interrupt',
       'turn/start'
     ]);
+    // Workspace provisioning belongs to WorkspaceManager; app-server resume only
+    // re-enters an existing conversation in the already-provisioned cwd.
     expect(messages).not.toContainEqual(expect.objectContaining({ method: 'thread/fork' }));
     const threadResume = messages.find((message) => message.method === 'thread/resume') as {
       params?: Record<string, unknown>;
@@ -964,8 +973,10 @@ describe('CodexRunner', () => {
   });
 
   it('maps invalid workspace cwd to invalid_workspace_cwd before launch', async () => {
+    let spawnCalled = false;
     const runner = new CodexRunner({
       spawnProcess: () => {
+        spawnCalled = true;
         throw new Error('should not be called');
       }
     });
@@ -975,11 +986,14 @@ describe('CodexRunner', () => {
         makeStartInput('/tmp/symphony-does-not-exist-123456789')
       )
     ).rejects.toMatchObject({ code: 'invalid_workspace_cwd' });
+    expect(spawnCalled).toBe(false);
   });
 
   it('maps invalid remote workspace cwd to invalid_remote_workspace_cwd before launch', async () => {
+    let spawnCalled = false;
     const runner = new CodexRunner({
       spawnProcess: () => {
+        spawnCalled = true;
         throw new Error('should not be called');
       }
     });
@@ -991,11 +1005,34 @@ describe('CodexRunner', () => {
         })
       )
     ).rejects.toMatchObject({ code: 'invalid_remote_workspace_cwd' });
+    expect(spawnCalled).toBe(false);
   });
 
-  it('guards invalid recovery cwd before app-server resume launch', async () => {
+  it('guards invalid local recovery cwd before app-server resume launch', async () => {
+    let spawnCalled = false;
     const runner = new CodexRunner({
       spawnProcess: () => {
+        spawnCalled = true;
+        throw new Error('should not be called');
+      }
+    });
+
+    await expect(
+      runner.resumeThreadInterruptAndRunTurn({
+        ...makeStartInput('/tmp/symphony-recovery-does-not-exist-123456789'),
+        previousThreadId: 'thread-recover',
+        previousTurnId: 'turn-old',
+        previousSessionId: 'session-old'
+      })
+    ).rejects.toMatchObject({ code: 'invalid_workspace_cwd' });
+    expect(spawnCalled).toBe(false);
+  });
+
+  it('guards invalid remote recovery cwd before app-server resume launch', async () => {
+    let spawnCalled = false;
+    const runner = new CodexRunner({
+      spawnProcess: () => {
+        spawnCalled = true;
         throw new Error('should not be called');
       }
     });
@@ -1010,6 +1047,7 @@ describe('CodexRunner', () => {
         previousSessionId: 'session-old'
       })
     ).rejects.toMatchObject({ code: 'invalid_remote_workspace_cwd' });
+    expect(spawnCalled).toBe(false);
   });
 
   it('auto-approves approval requests and rejects unsupported tool calls without stalling', async () => {
