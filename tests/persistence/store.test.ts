@@ -159,6 +159,10 @@ describe('SqlitePersistenceStore', () => {
         'history_ticket_terminal_outcome',
         'history_ticket_blocker',
         'history_ticket_evidence_reference',
+        'history_tracker_ticket_snapshot',
+        'history_ticket_reference',
+        'history_operator_action',
+        'history_blocked_input_event',
         'history_write_failure',
         'history_retention_metadata',
         'history_retention_prune_record',
@@ -174,8 +178,8 @@ describe('SqlitePersistenceStore', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 6,
-      applied_version: 6,
+      target_version: 7,
+      applied_version: 7,
       status: 'healthy',
       degraded_reason_code: null
     });
@@ -185,7 +189,8 @@ describe('SqlitePersistenceStore', () => {
       expect.objectContaining({ version: 3, name: 'app_server_event_ledger_lite_policy', status: 'applied' }),
       expect.objectContaining({ version: 4, name: 'existing_run_history_identity_backfill_v1', status: 'applied' }),
       expect.objectContaining({ version: 5, name: 'token_model_fact_dimensions_v1', status: 'applied' }),
-      expect.objectContaining({ version: 6, name: 'history_retention_prune_evidence_v1', status: 'applied' })
+      expect.objectContaining({ version: 6, name: 'operational_history_facts_v1', status: 'applied' }),
+      expect.objectContaining({ version: 7, name: 'history_retention_prune_evidence_v1', status: 'applied' })
     ]);
   });
 
@@ -663,6 +668,207 @@ describe('SqlitePersistenceStore', () => {
     expect(otherTimeline.attempts).toHaveLength(0);
   });
 
+  it('persists operational tracker facts, references, and operator actions across restart with duplicate coalescing', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-operational-history-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const durableIdentity = identity({ issue_id: 'remote-operational-1', issue_identifier: 'OPS-1' });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    const issueRunId = storeA.appendIssueRun({
+      issue_id: 'remote-operational-1',
+      issue_identifier: 'OPS-1',
+      identity: durableIdentity,
+      started_at: '2026-04-11T10:00:00.000Z',
+      status: 'running'
+    });
+    const attemptId = storeA.appendAttempt({
+      issue_run_id: issueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-11T10:00:01.000Z',
+      status: 'running'
+    });
+    const threadId = storeA.appendThread({
+      attempt_id: attemptId,
+      thread_id: 'thread-ops',
+      started_at: '2026-04-11T10:00:02.000Z',
+      status: 'running'
+    });
+    const turnId = storeA.appendTurn({
+      thread_id: threadId,
+      turn_id: 'turn-ops',
+      turn_index: 0,
+      started_at: '2026-04-11T10:00:03.000Z',
+      status: 'running'
+    });
+
+    storeA.appendTrackerTicketSnapshot({
+      identity: durableIdentity,
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      tracker_kind: 'linear',
+      remote_issue_id: 'remote-operational-1',
+      human_issue_identifier: 'OPS-1',
+      title: 'Record tracker facts token=secret',
+      tracker_status: 'In Progress',
+      labels: ['ready-for-agent', 'history'],
+      assignee_status: 'unknown',
+      assignee_reason: 'tracker_assignee_unobserved',
+      project_status: 'available',
+      project_identifier: 'symphony',
+      team_status: 'unavailable',
+      team_reason: 'tracker_team_unavailable',
+      observed_at: '2026-04-11T10:00:04.000Z'
+    });
+    storeA.appendTrackerTicketSnapshot({
+      identity: durableIdentity,
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      tracker_kind: 'linear',
+      remote_issue_id: 'remote-operational-1',
+      human_issue_identifier: 'OPS-1',
+      title: 'Record tracker facts token=secret',
+      tracker_status: 'In Progress',
+      labels: ['history', 'ready-for-agent'],
+      assignee_status: 'unknown',
+      assignee_reason: 'tracker_assignee_unobserved',
+      project_status: 'available',
+      project_identifier: 'symphony',
+      team_status: 'unavailable',
+      team_reason: 'tracker_team_unavailable',
+      observed_at: '2026-04-11T10:01:04.000Z'
+    });
+    storeA.appendTicketReference({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      reference_kind: 'pull_request',
+      availability: 'available',
+      uri: 'https://github.com/nielsgl/symphony/pull/242',
+      label: 'PR #242',
+      external_id: '242',
+      state: 'open',
+      metadata: { review_state: 'pending', token: 'abcd1234' },
+      observed_at: '2026-04-11T10:02:00.000Z'
+    });
+    storeA.appendTicketReference({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      reference_kind: 'review',
+      availability: 'unknown',
+      metadata: { reason: 'review_state_unobserved' },
+      observed_at: '2026-04-11T10:02:01.000Z'
+    });
+    storeA.appendOperatorActionHistory({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      action: 'submit_input',
+      actor: 'operator',
+      result: 'accepted',
+      result_code: 'native_applied',
+      message: 'operator answer accepted',
+      reason_note: 'continue after clarification token=abcd1234',
+      phase: 'implementation',
+      state_context: { pre_state: 'blocked', post_state: 'running', token: 'abcd1234' },
+      requested_at: '2026-04-11T10:03:00.000Z',
+      observed_at: '2026-04-11T10:03:01.000Z'
+    });
+    storeA.appendBlockedInputEvent({
+      issue_run_id: issueRunId,
+      attempt_id: attemptId,
+      thread_id: threadId,
+      turn_id: turnId,
+      issue_id: 'remote-operational-1',
+      issue_identifier: 'OPS-1',
+      phase: 'implementation',
+      runtime_state: 'blocked',
+      reason_code: 'operator_input_required',
+      reason_detail: 'Need operator answer token=abcd1234',
+      request_id: 'request-1',
+      request_method: 'input/request',
+      input_schema_type: 'options',
+      prompt_text: 'Choose deployment mode token=abcd1234',
+      pending_input: {
+        request_id: 'request-1',
+        questions: [{ id: 'mode', prompt: 'Mode?', options: [{ label: 'Fast', value: 'fast' }] }],
+        token: 'abcd1234'
+      },
+      state_context: {
+        branch_name: 'feature/OPS-1',
+        previous_session_id: 'session-1',
+        token: 'abcd1234'
+      },
+      blocked_at: '2026-04-11T10:03:10.000Z'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const timeline = storeB.reconstructTicketTimeline(durableIdentity);
+
+    expect(timeline.tracker_snapshots).toEqual([
+      expect.objectContaining({
+        project_key: durableIdentity.project.key,
+        ticket_key: durableIdentity.ticket.key,
+        issue_run_id: issueRunId,
+        labels: ['history', 'ready-for-agent'],
+        title: 'Record tracker facts token=***REDACTED***',
+        assignee_status: 'unknown',
+        project_identifier: 'symphony',
+        duplicate_count: 2,
+        observed_at: '2026-04-11T10:00:04.000Z',
+        last_observed_at: '2026-04-11T10:01:04.000Z'
+      })
+    ]);
+    expect(timeline.ticket_references).toEqual([
+      expect.objectContaining({
+        reference_kind: 'pull_request',
+        availability: 'available',
+        uri: 'https://github.com/nielsgl/symphony/pull/242',
+        metadata: { review_state: 'pending', token: '***REDACTED***' }
+      }),
+      expect.objectContaining({
+        reference_kind: 'review',
+        availability: 'unknown',
+        metadata: { reason: 'review_state_unobserved' }
+      })
+    ]);
+    expect(timeline.operator_actions).toEqual([
+      expect.objectContaining({
+        action: 'submit_input',
+        result: 'accepted',
+        reason_note: 'continue after clarification token=***REDACTED***',
+        phase: 'implementation',
+        state_context: { pre_state: 'blocked', post_state: 'running', token: '***REDACTED***' }
+      })
+    ]);
+    expect(timeline.blocked_input_events).toEqual([
+      expect.objectContaining({
+        issue_id: 'remote-operational-1',
+        issue_identifier: 'OPS-1',
+        phase: 'implementation',
+        runtime_state: 'blocked',
+        reason_code: 'operator_input_required',
+        reason_detail: 'Need operator answer token=***REDACTED***',
+        request_id: 'request-1',
+        request_method: 'input/request',
+        input_schema_type: 'options',
+        prompt_text: 'Choose deployment mode token=***REDACTED***',
+        pending_input: expect.objectContaining({ request_id: 'request-1', token: '***REDACTED***' }),
+        state_context: expect.objectContaining({ branch_name: 'feature/OPS-1', token: '***REDACTED***' })
+      })
+    ]);
+  });
+
   it('enforces execution graph references and monotonic timestamps', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-integrity-'));
     dirs.push(dir);
@@ -844,21 +1050,22 @@ describe('SqlitePersistenceStore', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(6);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(7);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 6, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 7, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
       expect.objectContaining({ version: 2, status: 'applied' }),
       expect.objectContaining({ version: 3, status: 'applied' }),
       expect.objectContaining({ version: 4, status: 'applied' }),
       expect.objectContaining({ version: 5, status: 'applied' }),
-      expect.objectContaining({ version: 6, status: 'applied' })
+      expect.objectContaining({ version: 6, status: 'applied' }),
+      expect.objectContaining({ version: 7, status: 'applied' })
     ]);
   });
 
@@ -980,7 +1187,7 @@ describe('SqlitePersistenceStore', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 6, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 7, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
       expect.arrayContaining([
         'history_token_model_fact',
@@ -1203,7 +1410,7 @@ describe('SqlitePersistenceStore', () => {
     stores.push(storeB);
     const backfillDbB = openDatabase(dbPath);
     try {
-      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 6, status: 'healthy' });
+      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 7, status: 'healthy' });
       expect(backfillDbB.prepare('SELECT COUNT(*) AS count FROM history_identity_projection').get()).toEqual({ count: 3 });
     } finally {
       backfillDbB.close();
@@ -1677,7 +1884,7 @@ describe('SqlitePersistenceStore', () => {
       nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
     });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 6, status: 'healthy' });
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 7, status: 'healthy' });
     storeA.close();
     stores.pop();
 
@@ -1702,7 +1909,7 @@ describe('SqlitePersistenceStore', () => {
     });
 
     expect(storeB.historySchemaHealth()).toMatchObject({
-      applied_version: 6,
+      applied_version: 7,
       status: 'degraded',
       degraded_reason_code: 'history_write_failed',
       degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'

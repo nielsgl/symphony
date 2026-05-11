@@ -94,6 +94,7 @@ interface ScheduleRetryParams {
   stop_reason_code?: string | null;
   stop_reason_detail?: string | null;
   previous_thread_id?: string | null;
+  previous_turn_id?: string | null;
   previous_session_id?: string | null;
   issue_snapshot?: Issue | null;
   progress_signals?: {
@@ -527,6 +528,7 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     stop_reason_code: entry.stop_reason_code,
     stop_reason_detail: entry.stop_reason_detail,
     previous_thread_id: entry.previous_thread_id,
+    previous_turn_id: entry.previous_turn_id ?? null,
     previous_session_id: entry.previous_session_id,
     last_phase: entry.last_phase,
     last_phase_at_ms: entry.last_phase_at_ms,
@@ -563,6 +565,7 @@ function cloneBlockedEntry(entry: BlockedEntry, options: Required<StateSnapshotO
     classification_summary: entry.classification_summary ? { ...entry.classification_summary } : undefined,
     resolution_hints: [...(entry.resolution_hints ?? [])],
     previous_thread_id: entry.previous_thread_id,
+    previous_turn_id: entry.previous_turn_id ?? null,
     previous_session_id: entry.previous_session_id,
     last_phase: entry.last_phase,
     last_phase_at_ms: entry.last_phase_at_ms,
@@ -1165,6 +1168,7 @@ export class OrchestratorCore {
       stop_reason_code: backpressure.reason_code,
       stop_reason_detail: backpressure.reason_detail,
       previous_thread_id: freshDispatch ? null : retryEntry.previous_thread_id ?? null,
+      previous_turn_id: freshDispatch ? null : retryEntry.previous_turn_id ?? null,
       previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
       progress_signals: retryEntry.progress_signals,
       budget: retryEntry.budget,
@@ -2506,6 +2510,163 @@ export class OrchestratorCore {
     }
   }
 
+  private async persistOperationalFactsForIssue(issue: Issue, runningEntry: RunningEntry, observedAt: string): Promise<void> {
+    if (!this.persistence || !runningEntry.issue_run_id) {
+      return;
+    }
+
+    const trackerKind = issue.tracker_meta?.tracker_kind ?? 'unknown';
+    const assigneeIdentifier = this.firstNonEmpty(issue.tracker_meta?.assignee?.id, issue.tracker_meta?.assignee?.name);
+    const projectIdentifier = this.firstNonEmpty(issue.tracker_meta?.project?.slug, issue.tracker_meta?.project?.id, issue.tracker_meta?.project?.name);
+    const teamIdentifier = this.firstNonEmpty(issue.tracker_meta?.team?.key, issue.tracker_meta?.team?.id, issue.tracker_meta?.team?.name);
+    try {
+      await this.persistence.appendTrackerTicketSnapshot?.({
+        issue_run_id: runningEntry.issue_run_id,
+        attempt_id: runningEntry.attempt_id ?? null,
+        thread_id: runningEntry.thread_id ?? null,
+        turn_id: runningEntry.turn_id ?? null,
+        tracker_kind: trackerKind,
+        remote_issue_id: issue.id,
+        human_issue_identifier: issue.identifier,
+        title: issue.title,
+        tracker_status: issue.state,
+        labels: issue.labels,
+        assignee_status: assigneeIdentifier ? 'available' : issue.tracker_meta?.assignee === null ? 'unavailable' : 'unknown',
+        assignee_identifier: assigneeIdentifier,
+        assignee_reason: assigneeIdentifier ? null : issue.tracker_meta?.assignee === null ? 'tracker_assignee_unavailable' : 'tracker_assignee_unobserved',
+        project_status: projectIdentifier ? 'available' : issue.tracker_meta?.project === null ? 'unavailable' : 'unknown',
+        project_identifier: projectIdentifier,
+        project_reason: projectIdentifier ? null : issue.tracker_meta?.project === null ? 'tracker_project_unavailable' : 'tracker_project_unobserved',
+        team_status: teamIdentifier ? 'available' : issue.tracker_meta?.team === null ? 'unavailable' : 'unknown',
+        team_identifier: teamIdentifier,
+        team_reason: teamIdentifier ? null : issue.tracker_meta?.team === null ? 'tracker_team_unavailable' : 'tracker_team_unobserved',
+        observed_at: observedAt
+      });
+      await this.persistTicketReference({
+        runningEntry,
+        reference_kind: 'branch',
+        availability: issue.branch_name ? 'available' : 'unavailable',
+        uri: issue.branch_name ? `git-branch:${issue.branch_name}` : null,
+        label: issue.branch_name,
+        external_id: issue.branch_name,
+        state: issue.branch_name ? 'observed' : 'unavailable',
+        metadata: issue.branch_name ? { branch_name: issue.branch_name } : { reason: 'tracker_branch_unavailable' },
+        observed_at: observedAt
+      });
+      const prLinks = issue.tracker_meta?.pr_links ?? [];
+      if (prLinks.length === 0) {
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'pull_request',
+          availability: 'unknown',
+          uri: null,
+          label: null,
+          external_id: null,
+          state: null,
+          metadata: { reason: 'tracker_pr_unobserved' },
+          observed_at: observedAt
+        });
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'review',
+          availability: 'unknown',
+          uri: null,
+          label: null,
+          external_id: null,
+          state: null,
+          metadata: { reason: 'review_state_unobserved' },
+          observed_at: observedAt
+        });
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'merge',
+          availability: 'unknown',
+          uri: null,
+          label: null,
+          external_id: null,
+          state: null,
+          metadata: { reason: 'merge_state_unobserved' },
+          observed_at: observedAt
+        });
+      }
+      for (const pr of prLinks) {
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'pull_request',
+          availability: 'available',
+          uri: pr.url,
+          label: `PR #${pr.number}`,
+          external_id: String(pr.number),
+          state: pr.state,
+          metadata: { merged: pr.merged, repository: issue.tracker_meta?.repository ?? null },
+          observed_at: observedAt
+        });
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'review',
+          availability: 'unknown',
+          uri: pr.url,
+          label: `PR #${pr.number}`,
+          external_id: String(pr.number),
+          state: null,
+          metadata: { reason: 'review_state_unobserved' },
+          observed_at: observedAt
+        });
+        await this.persistTicketReference({
+          runningEntry,
+          reference_kind: 'merge',
+          availability: pr.merged ? 'available' : 'unknown',
+          uri: pr.url,
+          label: `PR #${pr.number}`,
+          external_id: String(pr.number),
+          state: pr.merged ? 'merged' : pr.state,
+          metadata: { merged: pr.merged },
+          observed_at: observedAt
+        });
+      }
+    } catch (error) {
+      await this.recordHistoryWriteFailure('appendOperationalHistoryFacts', REASON_CODES.dispatchStarted, error);
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist operational history facts for ${issue.identifier}`,
+        context: {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          issue_run_id: runningEntry.issue_run_id,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+  }
+
+  private async persistTicketReference(params: {
+    runningEntry: RunningEntry;
+    reference_kind: 'branch' | 'pull_request' | 'review' | 'merge' | 'evidence';
+    availability: 'available' | 'unavailable' | 'unknown';
+    uri: string | null;
+    label: string | null;
+    external_id: string | null;
+    state: string | null;
+    metadata: Record<string, unknown> | null;
+    observed_at: string;
+  }): Promise<void> {
+    await this.persistence?.appendTicketReference?.({
+      issue_run_id: params.runningEntry.issue_run_id ?? null,
+      attempt_id: params.runningEntry.attempt_id ?? null,
+      thread_id: params.runningEntry.thread_id ?? null,
+      turn_id: params.runningEntry.turn_id ?? null,
+      reference_kind: params.reference_kind,
+      availability: params.availability,
+      uri: params.uri,
+      label: params.label,
+      external_id: params.external_id,
+      state: params.state,
+      metadata: params.metadata,
+      observed_at: params.observed_at
+    });
+  }
+
   private async persistExecutionGraphRetryTransition(
     retryEntry: RetryEntry,
     toStatus: string,
@@ -2522,7 +2683,7 @@ export class OrchestratorCore {
         issue_run_id: retryEntry.issue_run_id,
         attempt_id: retryEntry.previous_attempt_id,
         thread_id: retryEntry.previous_thread_id,
-        turn_id: null,
+        turn_id: retryEntry.previous_turn_id ?? null,
         from_status: null,
         to_status: toStatus,
         transitioned_at: asIso(this.nowMs()),
@@ -2915,6 +3076,7 @@ export class OrchestratorCore {
         stop_reason_detail: stopReasonDetail,
         session_console: running.recent_events,
         previous_thread_id: running.thread_id,
+        previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         required_actions: ['Increase budget and resume', 'Cancel and return to backlog'],
         budget: running.budget
@@ -3293,6 +3455,7 @@ export class OrchestratorCore {
           stop_reason_code: REASON_CODES.issueStateRefreshFailed,
           stop_reason_detail: stopReasonDetail,
           previous_thread_id: running.thread_id,
+          previous_turn_id: running.turn_id,
           previous_session_id: running.session_id,
           issue_snapshot: running.issue,
           budget: running.budget,
@@ -3410,6 +3573,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.normalCompletion,
         stop_reason_detail: 'normal worker completion, continuing while issue is active',
         previous_thread_id: running.thread_id,
+        previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
         budget: running.budget,
@@ -3478,6 +3642,7 @@ export class OrchestratorCore {
           pending_input: inputDetail,
           session_console: running.recent_events,
           previous_thread_id: running.thread_id,
+          previous_turn_id: running.turn_id,
           previous_session_id: running.session_id
         });
         this.logger?.log({
@@ -3532,6 +3697,7 @@ export class OrchestratorCore {
           resolution_hints: workspaceConflict.resolution_hints,
           session_console: running.recent_events,
           previous_thread_id: running.thread_id,
+          previous_turn_id: running.turn_id,
           previous_session_id: running.session_id
         });
         this.logger?.log({
@@ -3582,6 +3748,7 @@ export class OrchestratorCore {
         stop_reason_code: stopReasonCode,
         stop_reason_detail: error ?? `worker exited: ${reason}`,
         previous_thread_id: running.thread_id,
+        previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
         budget: running.budget,
@@ -3686,6 +3853,7 @@ export class OrchestratorCore {
       required_actions: diagnostic?.recommended_actions ?? [],
       session_console: running.recent_events,
       previous_thread_id: diagnostic?.thread_id ?? running.thread_id,
+      previous_turn_id: diagnostic?.turn_id ?? running.turn_id,
       previous_session_id: diagnostic?.session_id ?? running.session_id,
       last_progress_checkpoint_at: running.last_progress_transition_at_ms ?? running.started_at_ms,
       tool_output_wait: diagnostic,
@@ -3805,6 +3973,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.retryFetchFailed,
         stop_reason_detail: error instanceof Error ? error.message : 'unknown',
         previous_thread_id: retryEntry.previous_thread_id ?? null,
+        previous_turn_id: retryEntry.previous_turn_id ?? null,
         previous_session_id: retryEntry.previous_session_id ?? null,
         issue_snapshot: null
       });
@@ -3860,6 +4029,7 @@ export class OrchestratorCore {
           stop_reason_code: REASON_CODES.slotsExhausted,
           stop_reason_detail: 'no available orchestrator slots',
           previous_thread_id: freshDispatch ? null : retryEntry.previous_thread_id ?? null,
+          previous_turn_id: freshDispatch ? null : retryEntry.previous_turn_id ?? null,
           previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
           issue_snapshot: issue
         });
@@ -3924,6 +4094,7 @@ export class OrchestratorCore {
         stop_reason_code: stopReasonCode,
         stop_reason_detail: stopReasonDetail,
         previous_thread_id: retryEntry.previous_thread_id ?? null,
+        previous_turn_id: retryEntry.previous_turn_id ?? null,
         previous_session_id: retryEntry.previous_session_id ?? null,
         attempt_count_window: gateEvaluation.attempt_count_window,
         window_minutes: gateEvaluation.window_minutes,
@@ -4056,6 +4227,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.issueStateRefreshFailed,
         stop_reason_detail: detail,
         previous_thread_id: retryEntry.previous_thread_id ?? null,
+        previous_turn_id: retryEntry.previous_turn_id ?? null,
         previous_session_id: retryEntry.previous_session_id ?? null,
         issue_snapshot: null,
         progress_signals: retryEntry.progress_signals,
@@ -4113,6 +4285,7 @@ export class OrchestratorCore {
       stop_reason_code: REASON_CODES.normalCompletion,
       stop_reason_detail: 'tracker state refresh succeeded; continuing while issue is active',
       previous_thread_id: retryEntry.previous_thread_id ?? null,
+      previous_turn_id: retryEntry.previous_turn_id ?? null,
       previous_session_id: retryEntry.previous_session_id ?? null,
       issue_snapshot: issue,
       progress_signals: retryEntry.progress_signals,
@@ -4458,6 +4631,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.workerStalled,
         stop_reason_detail: stalledDetail,
         previous_thread_id: runningEntry.thread_id,
+        previous_turn_id: runningEntry.turn_id,
         previous_session_id: runningEntry.session_id,
         issue_snapshot: runningEntry.issue
       });
@@ -4779,6 +4953,7 @@ export class OrchestratorCore {
             });
           }
         }
+        await this.persistOperationalFactsForIssue(issue, runningEntry, startedAt);
       } catch (error) {
         await this.recordHistoryWriteFailure('recordRunStarted', REASON_CODES.dispatchStarted, error);
         this.logger?.log({
@@ -5019,6 +5194,7 @@ export class OrchestratorCore {
       stop_reason_code: params.stop_reason_code ?? null,
       stop_reason_detail: params.stop_reason_detail ?? null,
       previous_thread_id: params.previous_thread_id ?? null,
+      previous_turn_id: params.previous_turn_id ?? null,
       previous_session_id: params.previous_session_id ?? null,
       last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
@@ -5097,6 +5273,7 @@ export class OrchestratorCore {
     recovery?: BlockedEntry['recovery'];
     session_console?: Array<{ at_ms: number; event: string; message: string | null }>;
     previous_thread_id: string | null;
+    previous_turn_id?: string | null;
     previous_session_id: string | null;
     attempt_count_window?: number;
     window_minutes?: number;
@@ -5146,6 +5323,7 @@ export class OrchestratorCore {
       classification_summary: params.classification_summary ? { ...params.classification_summary } : undefined,
       resolution_hints: [...(params.resolution_hints ?? [])],
       previous_thread_id: params.previous_thread_id,
+      previous_turn_id: params.previous_turn_id ?? null,
       previous_session_id: params.previous_session_id,
       last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
@@ -5212,6 +5390,7 @@ export class OrchestratorCore {
 
     void this.persistence?.upsertBlockedInput?.(params.issue_id, JSON.stringify(blockedEntry));
     void this.persistTicketBlocker(blockedEntry);
+    void this.persistBlockedInputEvent(blockedEntry);
 
     this.logger?.log({
       level: 'warn',
@@ -5260,7 +5439,7 @@ export class OrchestratorCore {
         issue_run_id: blockedEntry.issue_run_id,
         attempt_id: blockedEntry.previous_attempt_id ?? null,
         thread_id: blockedEntry.previous_thread_id ?? null,
-        turn_id: null,
+        turn_id: blockedEntry.previous_turn_id ?? null,
         blocker_type: this.ticketBlockerTypeForBlockedEntry(blockedEntry),
         status: 'active',
         reason_code: blockedEntry.stop_reason_code,
@@ -5272,6 +5451,70 @@ export class OrchestratorCore {
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
         message: `failed to persist ticket blocker for ${blockedEntry.issue_identifier}`,
+        context: {
+          issue_id: blockedEntry.issue_id,
+          issue_identifier: blockedEntry.issue_identifier,
+          issue_run_id: blockedEntry.issue_run_id,
+          previous_attempt_id: blockedEntry.previous_attempt_id ?? null,
+          reason_code: blockedEntry.stop_reason_code,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+  }
+
+  private async persistBlockedInputEvent(blockedEntry: BlockedEntry): Promise<void> {
+    if (!this.persistence?.appendBlockedInputEvent || !blockedEntry.issue_run_id) {
+      return;
+    }
+
+    try {
+      await this.persistence.appendBlockedInputEvent({
+        issue_run_id: blockedEntry.issue_run_id,
+        attempt_id: blockedEntry.previous_attempt_id ?? null,
+        thread_id: blockedEntry.previous_thread_id ?? null,
+        turn_id: blockedEntry.previous_turn_id ?? null,
+        issue_id: blockedEntry.issue_id,
+        issue_identifier: blockedEntry.issue_identifier,
+        phase: blockedEntry.last_phase,
+        runtime_state: 'blocked',
+        reason_code: blockedEntry.stop_reason_code,
+        reason_detail: blockedEntry.stop_reason_detail,
+        request_id: blockedEntry.pending_input?.request_id ?? null,
+        request_method: blockedEntry.pending_input?.request_method ?? null,
+        input_schema_type: blockedEntry.pending_input?.input_schema_type ?? null,
+        prompt_text: blockedEntry.pending_input?.prompt_text ?? null,
+        pending_input: blockedEntry.pending_input
+          ? {
+              request_id: blockedEntry.pending_input.request_id,
+              request_method: blockedEntry.pending_input.request_method,
+              prompt_text: blockedEntry.pending_input.prompt_text,
+              input_schema_type: blockedEntry.pending_input.input_schema_type,
+              questions: blockedEntry.pending_input.questions
+            }
+          : null,
+        state_context: {
+          previous_session_id: blockedEntry.previous_session_id,
+          previous_turn_id: blockedEntry.previous_turn_id ?? null,
+          worker_host: blockedEntry.worker_host,
+          workspace_path: blockedEntry.workspace_path,
+          branch_name: blockedEntry.branch_name,
+          last_phase_at_ms: blockedEntry.last_phase_at_ms,
+          last_phase_detail: blockedEntry.last_phase_detail,
+          tool_output_wait: blockedEntry.tool_output_wait,
+          conflict_files: blockedEntry.conflict_files,
+          budget: blockedEntry.budget ?? null,
+          recovery: blockedEntry.recovery,
+          required_actions: blockedEntry.required_actions,
+          progress_signals: blockedEntry.progress_signals ?? null
+        },
+        blocked_at: asIso(blockedEntry.blocked_at_ms)
+      });
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: `failed to persist blocked input event for ${blockedEntry.issue_identifier}`,
         context: {
           issue_id: blockedEntry.issue_id,
           issue_identifier: blockedEntry.issue_identifier,
@@ -5443,6 +5686,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.operatorRequeueRequested,
         stop_reason_detail: reasonNote,
         previous_thread_id: running.thread_id,
+        previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue
       });
@@ -5488,6 +5732,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.operatorRequeueRequested,
         stop_reason_detail: reasonNote,
         previous_thread_id: blocked.previous_thread_id,
+        previous_turn_id: blocked.previous_turn_id ?? null,
         previous_session_id: blocked.previous_session_id,
         issue_snapshot: null
       });
@@ -5533,6 +5778,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.operatorRequeueRequested,
         stop_reason_detail: reasonNote,
         previous_thread_id: retry.previous_thread_id,
+        previous_turn_id: retry.previous_turn_id ?? null,
         previous_session_id: retry.previous_session_id,
         issue_snapshot: null
       });
@@ -5594,6 +5840,7 @@ export class OrchestratorCore {
       stop_reason_code: REASON_CODES.operatorRetryStepRequested,
       stop_reason_detail: reasonNote,
       previous_thread_id: retry.previous_thread_id,
+      previous_turn_id: retry.previous_turn_id ?? null,
       previous_session_id: retry.previous_session_id,
       issue_snapshot: null
     });
@@ -5767,6 +6014,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.slotsExhausted,
         stop_reason_detail: 'resume blocked by no available orchestrator slots',
         previous_thread_id: blocked.previous_thread_id,
+        previous_turn_id: blocked.previous_turn_id ?? null,
         previous_session_id: blocked.previous_session_id,
         issue_snapshot: issue
       });
@@ -5794,6 +6042,7 @@ export class OrchestratorCore {
         stop_reason_code: REASON_CODES.manualResume,
         stop_reason_detail: 'manual resume requested',
         previous_thread_id: blocked.previous_thread_id,
+        previous_turn_id: blocked.previous_turn_id ?? null,
         previous_session_id: blocked.previous_session_id,
         issue_snapshot: issue
       });
@@ -6530,7 +6779,8 @@ export class OrchestratorCore {
         runtime_state: 'running',
         issue_id: issueId,
         issue_identifier: running.identifier,
-        run_id: running.issue_run_id ?? running.run_id ?? null,
+        issue_run_id: running.issue_run_id ?? null,
+        run_id: running.run_id ?? null,
         attempt_id: running.attempt_id ?? null,
         retry_attempt: running.retry_attempt,
         thread_id: running.thread_id,
@@ -6544,7 +6794,8 @@ export class OrchestratorCore {
         runtime_state: 'blocked',
         issue_id: issueId,
         issue_identifier: blocked.issue_identifier,
-        run_id: blocked.issue_run_id ?? null,
+        issue_run_id: blocked.issue_run_id ?? null,
+        run_id: null,
         attempt_id: blocked.previous_attempt_id ?? null,
         retry_attempt: blocked.attempt,
         thread_id: blocked.previous_thread_id,
@@ -6558,7 +6809,8 @@ export class OrchestratorCore {
         runtime_state: 'retrying',
         issue_id: issueId,
         issue_identifier: retry.identifier,
-        run_id: retry.issue_run_id ?? null,
+        issue_run_id: retry.issue_run_id ?? null,
+        run_id: null,
         attempt_id: retry.previous_attempt_id ?? null,
         retry_attempt: retry.attempt,
         thread_id: retry.previous_thread_id,
@@ -6581,7 +6833,7 @@ export class OrchestratorCore {
       ...action,
       actor: action.actor ?? 'operator',
       reason_note: action.reason_note ?? null,
-      target_identifiers: action.target_identifiers ?? this.targetIdentifiersFromRuntimeState(issueId, currentState),
+      target_identifiers: action.target_identifiers ?? this.targetIdentifiersFromRuntimeState(issueId, action.pre_state ?? currentState),
       pre_state: action.pre_state ?? currentState,
       post_state: action.post_state ?? currentState
     };
@@ -6589,6 +6841,42 @@ export class OrchestratorCore {
     const updated = [...existing, normalized].slice(-20);
     operatorActions.set(issueId, updated);
     void this.persistence?.upsertOperatorActions?.(issueId, JSON.stringify(updated));
+    void this.persistence?.appendOperatorActionHistory?.({
+      issue_run_id: this.stringOrNull(normalized.target_identifiers?.issue_run_id) ?? this.stringOrNull((normalized.pre_state ?? {}).issue_run_id),
+      attempt_id: this.stringOrNull(normalized.target_identifiers?.attempt_id),
+      thread_id: this.stringOrNull(normalized.target_identifiers?.thread_id),
+      turn_id: this.stringOrNull(normalized.target_identifiers?.turn_id),
+      action: normalized.action,
+      actor: normalized.actor ?? 'operator',
+      result: normalized.result,
+      result_code: normalized.result_code,
+      message: normalized.message,
+      reason_note: normalized.reason_note,
+      phase: this.stringOrNull((normalized.pre_state ?? {}).current_phase) ?? this.stringOrNull((normalized.pre_state ?? {}).last_phase),
+      state_context: {
+        issue_id: issueId,
+        target_identifiers: normalized.target_identifiers ?? null,
+        pre_state: normalized.pre_state ?? null,
+        post_state: normalized.post_state ?? null
+      },
+      requested_at: asIso(normalized.requested_at_ms),
+      observed_at: asIso(this.nowMs())
+    })?.catch((error: unknown) => {
+      void this.recordHistoryWriteFailure('appendOperatorActionHistory', normalized.result_code ?? normalized.action, error);
+    });
+  }
+
+  private stringOrNull(value: unknown): string | null {
+    return typeof value === 'string' && value.trim() ? value : null;
+  }
+
+  private firstNonEmpty(...values: Array<string | null | undefined>): string | null {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
   }
 
   private targetIdentifiersFromRuntimeState(
@@ -6598,6 +6886,7 @@ export class OrchestratorCore {
     return {
       issue_id: issueId,
       issue_identifier: typeof runtimeState.issue_identifier === 'string' ? runtimeState.issue_identifier : null,
+      issue_run_id: typeof runtimeState.issue_run_id === 'string' ? runtimeState.issue_run_id : null,
       run_id: typeof runtimeState.run_id === 'string' ? runtimeState.run_id : null,
       attempt_id: typeof runtimeState.attempt_id === 'string' ? runtimeState.attempt_id : null,
       thread_id: typeof runtimeState.thread_id === 'string' ? runtimeState.thread_id : null,
@@ -7751,6 +8040,7 @@ export class OrchestratorCore {
       required_actions: recommendedActions,
       session_console: runningEntry.recent_events,
       previous_thread_id: diagnostic.thread_id,
+      previous_turn_id: diagnostic.turn_id,
       previous_session_id: diagnostic.session_id,
       last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
       tool_output_wait: diagnostic,
