@@ -1098,9 +1098,6 @@ Unsupported dynamic tool calls:
   be handled according to their extension contract.
 - If the agent requests a dynamic tool call (`item/tool/call`) that is not supported, return a tool
   failure response and continue the session.
-- Unsupported dynamic tool failure payloads must include the attempted tool name and the supported
-  tool names so runner events, agents, and operator surfaces can distinguish allowlist misses from
-  supported-tool execution failures.
 - This prevents the session from stalling on unsupported tool execution paths.
 
 Optional client-side tool extension:
@@ -1112,9 +1109,6 @@ Optional client-side tool extension:
   through Linear MCP tools when available rather than presenting raw GraphQL as
   an equivalent default path for issue lookup, comments, workpads, states,
   labels/statuses/projects, or normal links.
-- Adding support for any other dynamic tool requires an explicit documented exception; the
-  `linear_graphql` extension is not a general plugin, marketplace, realtime, filesystem, or process
-  dynamic API expansion path.
 - If implemented, supported tools should be advertised to the app-server session during startup
   using the protocol mechanism supported by the targeted Codex app-server version.
 - Unsupported tool names should still return a failure result and continue the session.
@@ -1157,18 +1151,6 @@ Optional client-side tool extension:
 - Record enough tool metadata in logs and diagnostics to identify that
   `linear_graphql` was used and which run/thread/tool call attempted it,
   without exposing Linear credentials or sensitive payloads.
-- Unsupported dynamic tool calls must use a structured failure payload equivalent to:
-
-  ```json
-  {
-    "error": {
-      "code": "unsupported_dynamic_tool",
-      "attemptedToolName": "filesystem.read",
-      "supportedTools": ["linear_graphql"],
-      "message": "Unsupported dynamic tool: \"filesystem.read\"."
-    }
-  }
-  ```
 
 Illustrative responses (equivalent payload shapes are acceptable if they preserve the same outcome):
 
