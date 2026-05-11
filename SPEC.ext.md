@@ -365,3 +365,45 @@ Interpretation:
 - No terminal state is used for handoff.
 - If the two extension fields are omitted, both resolve to `[]` and existing
   workflow behavior is preserved.
+
+## 11. Dynamic Tool Extension Boundary
+
+Symphony's app-server DynamicTool support is intentionally limited to the
+`linear_graphql` extension. This is a local extension boundary, not a general
+dynamic-tool expansion path.
+
+Supported dynamic tools:
+
+- `linear_graphql` is the only supported DynamicTool unless this file adds an
+  explicit documented exception.
+- `linear_graphql` is a low-level escape hatch for Linear attachment upload
+  flows, rich `bodyData` writes or verification, targeted schema introspection,
+  and rare Linear API gaps that the configured Linear MCP server cannot
+  express.
+- Routine Linear workflow operations, including issue lookup, comments,
+  workpads, state changes, labels, projects, and ordinary links, must prefer
+  Linear MCP tools when available.
+- This extension does not add plugin, marketplace, realtime, filesystem, or
+  process dynamic API behavior.
+
+Unsupported dynamic tool calls:
+
+- Unsupported DynamicTool calls must return a structured failure payload that
+  includes the attempted tool name and the supported tool names.
+- The failure payload must let runner events, agents, and operator surfaces
+  distinguish allowlist misses from supported-tool execution failures.
+- Capability mismatch events remain observable when the app-server cannot
+  support an advertised tool shape.
+
+Equivalent unsupported-tool failure payload:
+
+```json
+{
+  "error": {
+    "code": "unsupported_dynamic_tool",
+    "attemptedToolName": "filesystem.read",
+    "supportedTools": ["linear_graphql"],
+    "message": "Unsupported dynamic tool: \"filesystem.read\"."
+  }
+}
+```
