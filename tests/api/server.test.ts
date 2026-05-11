@@ -2965,6 +2965,14 @@ describe('LocalApiServer', () => {
 
     const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
     const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      stream: {
+        live_client_count: number;
+        last_client_connected_at: string | null;
+        last_snapshot_broadcast_at: string | null;
+        last_snapshot_broadcast_latency_ms: number | null;
+        last_snapshot_broadcast_status: string | null;
+        last_snapshot_broadcast_error: string | null;
+      };
       control_plane: {
         endpoints: Array<{ endpoint: string; transport: string; last_payload_bytes: number | null; last_broadcast_client_count: number | null }>;
       };
@@ -2978,6 +2986,14 @@ describe('LocalApiServer', () => {
       last_broadcast_client_count: 1
     });
     expect(sseHealth?.last_payload_bytes).toBeGreaterThan(0);
+    expect(diagnosticsPayload.stream).toMatchObject({
+      last_snapshot_broadcast_status: 'ok',
+      last_snapshot_broadcast_error: null
+    });
+    expect(diagnosticsPayload.stream.live_client_count).toBeGreaterThanOrEqual(0);
+    expect(diagnosticsPayload.stream.last_client_connected_at).toBeTruthy();
+    expect(diagnosticsPayload.stream.last_snapshot_broadcast_at).toBeTruthy();
+    expect(diagnosticsPayload.stream.last_snapshot_broadcast_latency_ms).toEqual(expect.any(Number));
   });
 
   it('emits refresh_accepted event envelopes on POST /api/v1/refresh', async () => {
