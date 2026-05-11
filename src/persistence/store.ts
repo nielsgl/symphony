@@ -3341,7 +3341,7 @@ export class SqlitePersistenceStore {
       .prepare(
         `SELECT issue_run.issue_run_id, issue_run.issue_id, issue_run.issue_identifier,
           issue_run.project_key, issue_run.ticket_key, issue_run.started_at, issue_run.ended_at, issue_run.status,
-          COALESCE(issue_run.ended_at, MIN(COALESCE(linked_run.completed_at, linked_run.ended_at))) AS completed_at,
+          issue_run.ended_at AS completed_at,
           (1
             + (SELECT COUNT(*) FROM attempt WHERE attempt.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM thread JOIN attempt ON attempt.attempt_id = thread.attempt_id WHERE attempt.issue_run_id = issue_run.issue_run_id)
@@ -3357,19 +3357,10 @@ export class SqlitePersistenceStore {
             + (SELECT COUNT(*) FROM history_app_server_event WHERE history_app_server_event.issue_run_id = issue_run.issue_run_id)
           ) AS pruned_record_count
          FROM issue_run
-         LEFT JOIN history_identity_projection AS linked_run_projection
-          ON linked_run_projection.source_table = 'runs'
-          AND linked_run_projection.issue_run_id = issue_run.issue_run_id
-         LEFT JOIN runs AS linked_run
-          ON linked_run.run_id = linked_run_projection.run_id
-         GROUP BY issue_run.issue_run_id
-         HAVING COALESCE(issue_run.ended_at, MIN(COALESCE(linked_run.completed_at, linked_run.ended_at))) IS NOT NULL
-          AND COALESCE(issue_run.ended_at, MIN(COALESCE(linked_run.completed_at, linked_run.ended_at))) < ?
-          AND (
-            (issue_run.ended_at IS NOT NULL AND issue_run.status IN ('succeeded', 'failed', 'cancelled'))
-            OR SUM(CASE WHEN linked_run.terminal_status IS NOT NULL THEN 1 ELSE 0 END) > 0
-          )
-         ORDER BY completed_at ASC, issue_run.issue_run_id ASC`
+         WHERE issue_run.ended_at IS NOT NULL
+          AND issue_run.ended_at < ?
+          AND issue_run.status IN ('succeeded', 'failed', 'cancelled')
+         ORDER BY issue_run.ended_at ASC, issue_run.issue_run_id ASC`
       )
       .all(cutoff) as Array<{
       issue_run_id: string;

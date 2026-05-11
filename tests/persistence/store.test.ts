@@ -2113,26 +2113,21 @@ describe('SqlitePersistenceStore', () => {
 
     const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
     stores.push(lateStore);
-    expect(lateStore.pruneExpiredRuns()).toBe(3);
+    expect(lateStore.pruneExpiredRuns()).toBe(2);
 
     expect(lateStore.listRunHistory(10).map((run) => run.run_id)).toContain(activeRunId);
     expect(lateStore.listRunHistory(10).map((run) => run.run_id)).not.toContain(expiredRunId);
     expect(lateStore.reconstructThreadLineage(activeThreadId)?.issue_run.issue_run_id).toBe(activeIssueRunId);
-    expect(lateStore.reconstructThreadLineage(expiredThreadId)).toBeNull();
+    expect(lateStore.reconstructThreadLineage(expiredThreadId)?.issue_run.issue_run_id).toBe(expiredGraph.issue_run_id);
     expect(lateStore.listAppServerEventLedger(activeIssueRunId)).toHaveLength(1);
-    expect(lateStore.listAppServerEventLedger(expiredGraph.issue_run_id)).toHaveLength(0);
+    expect(lateStore.listAppServerEventLedger(expiredGraph.issue_run_id)).toHaveLength(1);
 
     const db = openDatabase(dbPath);
     try {
       const records = db.prepare('SELECT source_table, source_id, reason_code FROM history_retention_prune_record ORDER BY source_table, source_id').all();
-      expect(records).toHaveLength(3);
+      expect(records).toHaveLength(2);
       expect(records).toEqual(
         expect.arrayContaining([
-          {
-            source_table: 'issue_run',
-            source_id: expiredGraph.issue_run_id,
-            reason_code: 'retention_policy_expired_completed_history'
-          },
           {
             source_table: 'runs',
             source_id: expiredRunId,
