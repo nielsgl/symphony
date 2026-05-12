@@ -316,10 +316,10 @@ The v1 reference implementation evidence is:
 - Fresh dispatch and stale retry behavior: `src/orchestrator/core.ts` dispatches
   fresh-dispatch candidates without inherited context and bypasses no-progress
   retry gating for stale fresh-dispatch retries; covered by
-  `tests/orchestrator/core.test.ts`.
+  `tests/orchestrator/core-handoff.test.ts`.
 - Terminal cleanup separation: `src/orchestrator/core.ts` cleans workspaces for
   terminal transitions and does not clean for handoff/fresh-dispatch exits;
-  covered by `tests/orchestrator/core.test.ts` and
+  covered by `tests/orchestrator/core-reconciliation.test.ts` and
   `tests/orchestrator/local-runner-bridge.test.ts`.
 - Workflow lifecycle instructions: `WORKFLOW.md` defines Agent Review, Human
   Review, Merging, and Rework routing; covered by

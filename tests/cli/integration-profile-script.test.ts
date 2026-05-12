@@ -199,7 +199,7 @@ describe('P9b integration profile script', () => {
     expect(result.stdout).toContain('P9B_PROFILE_RESULT=PASS');
     expect(result.stdout).toContain('P9B_COMMAND=npm test -- --run tests/orchestrator/local-runner-bridge.test.ts');
     expect(result.stdout).toContain(
-      'P9B_COMMAND=npm test -- --run tests/codex/ssh-target.test.ts tests/orchestrator/core.test.ts'
+      'P9B_COMMAND=npm test -- --run tests/codex/ssh-target.test.ts tests/orchestrator/core-dispatch.test.ts'
     );
     expect(result.stdout).toContain('P9B_COMMAND=npm test -- --run tests/cli/cli-args.test.ts');
     expect(result.stdout).toContain('P9B_COMMAND=npm test -- --run tests/workspace/workspace-manager.test.ts');

@@ -73,7 +73,8 @@ describe('workflow command examples', () => {
     expect(spec).toContain('### 5.3 Reconciliation and Cleanup Separation');
     expect(spec).toContain('## 9. Implementation and Test Evidence');
     expect(spec).toContain('src/orchestrator/local-worker-runner.ts');
-    expect(spec).toContain('tests/orchestrator/core.test.ts');
+    expect(spec).toContain('tests/orchestrator/core-handoff.test.ts');
+    expect(spec).toContain('tests/orchestrator/core-reconciliation.test.ts');
     expect(spec).not.toContain('Runtime stop, resume, and fresh-dispatch behavior is implemented by later slices');
     expect(spec).not.toContain('The following runtime behaviors are intentionally deferred');
   });

@@ -122,7 +122,7 @@ async function main() {
       {
         evidence: 'EVIDENCE_LIFECYCLE_SSH',
         command: 'npm',
-        args: ['test', '--', '--run', 'tests/codex/ssh-target.test.ts', 'tests/orchestrator/core.test.ts']
+        args: ['test', '--', '--run', 'tests/codex/ssh-target.test.ts', 'tests/orchestrator/core-dispatch.test.ts']
       },
       {
         evidence: 'EVIDENCE_BASELINE_CLI',
