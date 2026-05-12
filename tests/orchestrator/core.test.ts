@@ -1051,6 +1051,81 @@ describe('OrchestratorCore', () => {
     expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)).toBe(false);
   });
 
+  it('preserves worker-authored review comment provenance across heartbeat event churn before stalled-wait recovery', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review', 'In Progress'],
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 0
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-review-handback-churn', identifier: 'NIE-CHURN', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-review-handback-churn', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+    harness.orchestrator.onWorkerEvent('i-review-handback-churn', {
+      timestamp_ms: harness.now.value + 20,
+      event: 'linear.comment.created',
+      detail: 'Agent Review findings: routing back to In Progress',
+      tool_name: 'save_comment',
+      request_category: 'linear',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+    for (let index = 0; index < 25; index += 1) {
+      harness.orchestrator.onWorkerEvent('i-review-handback-churn', {
+        timestamp_ms: harness.now.value + 30 + index,
+        event: index % 2 === 0 ? CANONICAL_EVENT.codex.turnWaiting : CANONICAL_EVENT.codex.rateLimitsUpdated,
+        detail: 'heartbeat after handoff',
+        thread_id: 'review-thread',
+        turn_id: 'review-turn',
+        session_id: 'review-session'
+      });
+    }
+
+    expect(
+      harness.orchestrator
+        .getStateSnapshot()
+        .running.get('i-review-handback-churn')
+        ?.recent_events.some((event) => event.event === 'linear.comment.created')
+    ).toBe(false);
+
+    harness.now.value += 2_000;
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-review-handback-churn', identifier: 'NIE-CHURN', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-review-handback-churn')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-review-handback-churn')).toBe(false);
+    expect(snapshot.running.get('i-review-handback-churn')?.issue.state).toBe('In Progress');
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual([
+      'i-review-handback-churn',
+      'i-review-handback-churn'
+    ]);
+    expect(logs.some((entry) => entry.event === 'orchestration.agent_review_handoff_progress_observed')).toBe(true);
+  });
+
   it('does not treat Agent Review status movement alone as worker-owned handback progress', async () => {
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
     const logger: StructuredLogger = {
@@ -1204,6 +1279,57 @@ describe('OrchestratorCore', () => {
     expect(snapshot.blocked_inputs.has('i-gate-handback')).toBe(false);
     expect(snapshot.retry_attempts.has('i-gate-handback')).toBe(false);
     expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-gate-handback', 'i-gate-handback']);
+    expect(logs.some((entry) => entry.event === 'orchestration.no_progress_block_suppressed')).toBe(true);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)).toBe(false);
+  });
+
+  it('suppresses the no-progress redispatch block from production-captured worker handback progress', async () => {
+    const logs: Array<{ event: string; context?: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context });
+      }
+    };
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        fresh_dispatch_states: ['Agent Review'],
+        respawn_max_attempts_without_progress: 1
+      },
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: fallback_state_marker
+      })
+    });
+    const reviewIssue = makeIssue({ id: 'i-gate-handback-production', identifier: 'NIE-GATE-PROD', state: 'Agent Review' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([reviewIssue]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-gate-handback-production', {
+      timestamp_ms: harness.now.value + 10,
+      event: 'linear.comment.created',
+      detail: 'Agent Review findings: routing back to In Progress',
+      tool_name: 'save_comment',
+      request_category: 'linear',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+    await harness.orchestrator.onWorkerExit('i-gate-handback-production', 'abnormal', 'turn waiting threshold exceeded');
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-gate-handback-production', identifier: 'NIE-GATE-PROD', state: 'In Progress' })
+    ]);
+    await harness.scheduled.get('i-gate-handback-production')?.callback();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-gate-handback-production')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-gate-handback-production')).toBe(false);
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual([
+      'i-gate-handback-production',
+      'i-gate-handback-production'
+    ]);
     expect(logs.some((entry) => entry.event === 'orchestration.no_progress_block_suppressed')).toBe(true);
     expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)).toBe(false);
   });

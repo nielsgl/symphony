@@ -669,6 +669,10 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       commit_sha: string | null;
       checklist_checkpoint: string | null;
       state_marker: string | null;
+      tracker_comment_created?: boolean;
+      tracker_status_transition?: string | null;
+      agent_review_handoff?: string | null;
+      tracker_started_state?: string | null;
     };
     required_actions?: string[];
     resume_override_reason?: string | null;
@@ -1009,6 +1013,10 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       commit_sha: string | null;
       checklist_checkpoint: string | null;
       state_marker: string | null;
+      tracker_comment_created?: boolean;
+      tracker_status_transition?: string | null;
+      agent_review_handoff?: string | null;
+      tracker_started_state?: string | null;
     };
     required_actions?: string[];
     resume_override_reason?: string | null;

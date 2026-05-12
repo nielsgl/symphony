@@ -946,7 +946,11 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       resolveProgressSignals: async (params) => ({
         commit_sha: resolveBranchHeadSha(params.repo_root, params.branch_name),
         checklist_checkpoint: extractChecklistCheckpoint(params.issue?.description ?? null),
-        state_marker: params.fallback_state_marker
+        state_marker: params.fallback_state_marker,
+        tracker_comment_created: params.previous_progress_signals?.tracker_comment_created ?? false,
+        tracker_status_transition: params.previous_progress_signals?.tracker_status_transition ?? null,
+        agent_review_handoff: params.previous_progress_signals?.agent_review_handoff ?? null,
+        tracker_started_state: params.previous_progress_signals?.tracker_started_state ?? null
       }),
       notifyObservers: () => {
         apiServer?.notifyStateChanged('orchestrator_observer');

@@ -459,6 +459,7 @@ function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotO
     last_heartbeat_at_ms: entry.last_heartbeat_at_ms ?? null,
     heartbeat_only_event_emitted: entry.heartbeat_only_event_emitted ?? false,
     running_wait_stall_event_emitted: entry.running_wait_stall_event_emitted ?? false,
+    progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
     codex_thread_activity_at_ms: entry.codex_thread_activity_at_ms ?? null,
     codex_thread_activity_source: entry.codex_thread_activity_source ?? null,
     codex_thread_activity_status: entry.codex_thread_activity_status ?? null,
@@ -1346,6 +1347,7 @@ export class OrchestratorCore {
     runningEntry.last_event = workerEvent.event;
     runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
     runningEntry.last_message = workerEvent.detail ?? null;
+    this.captureWorkerProgressSignal(runningEntry, workerEvent);
     if (
       workerEvent.codex_thread_activity_at_ms !== undefined &&
       workerEvent.codex_thread_activity_at_ms !== null &&
@@ -3458,6 +3460,7 @@ export class OrchestratorCore {
           previous_turn_id: running.turn_id,
           previous_session_id: running.session_id,
           issue_snapshot: running.issue,
+          progress_signals: running.progress_signals,
           budget: running.budget,
           recovery: running.recovery ? { ...running.recovery } : null
         });
@@ -3576,6 +3579,7 @@ export class OrchestratorCore {
         previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
+        progress_signals: running.progress_signals,
         budget: running.budget,
         recovery: running.recovery ? { ...running.recovery } : null
       });
@@ -3751,6 +3755,7 @@ export class OrchestratorCore {
         previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
+        progress_signals: running.progress_signals,
         budget: running.budget,
         recovery: running.recovery ? { ...running.recovery } : null
       });
@@ -4359,13 +4364,25 @@ export class OrchestratorCore {
     const windowMinutes = Math.max(1, this.config.respawn_window_minutes ?? 30);
     const windowMs = windowMinutes * 60_000;
     const now = this.nowMs();
+    const startedState = retryEntry.progress_signals?.tracker_started_state ?? null;
+    const trackerStatusTransition =
+      retryEntry.progress_signals?.tracker_status_transition ??
+      (retryEntry.progress_signals?.tracker_comment_created &&
+      startedState &&
+      this.isKnownReviewHandoffTransition(startedState, issue.state)
+        ? `${startedState} -> ${issue.state}`
+        : null);
+    const agentReviewHandoff =
+      retryEntry.progress_signals?.agent_review_handoff ??
+      (trackerStatusTransition && this.isKnownReviewHandoffTransition(startedState, issue.state) ? issue.state : null);
     const currentSignals = {
       commit_sha: retryEntry.progress_signals?.commit_sha ?? null,
       checklist_checkpoint: retryEntry.progress_signals?.checklist_checkpoint ?? null,
       state_marker: retryEntry.progress_signals?.state_marker ?? null,
       tracker_comment_created: retryEntry.progress_signals?.tracker_comment_created ?? false,
-      tracker_status_transition: retryEntry.progress_signals?.tracker_status_transition ?? null,
-      agent_review_handoff: retryEntry.progress_signals?.agent_review_handoff ?? null
+      tracker_status_transition: trackerStatusTransition,
+      agent_review_handoff: agentReviewHandoff,
+      tracker_started_state: startedState
     };
     const progressMap = this.state.redispatch_progress ?? new Map<string, RedispatchProgressSample[]>();
     this.state.redispatch_progress = progressMap;
@@ -4418,6 +4435,22 @@ export class OrchestratorCore {
       reasons.push('agent_review_handoff');
     }
     return reasons;
+  }
+
+  private isKnownReviewHandoffTransition(startedState: string | null | undefined, currentState: string): boolean {
+    if (!startedState || normalizeStateName(startedState) !== normalizeStateName('Agent Review')) {
+      return false;
+    }
+    if (normalizeStateName(currentState) === normalizeStateName(startedState)) {
+      return false;
+    }
+    return (
+      normalizeStateName(currentState) === normalizeStateName('In Progress') ||
+      normalizeStateName(currentState) === normalizeStateName('Human Review') ||
+      normalizeStateName(currentState) === normalizeStateName('Merging') ||
+      isActiveState(currentState, this.config) ||
+      isTerminalState(currentState, this.config)
+    );
   }
 
   private hasOpenPullRequest(issue: Issue): boolean {
@@ -5288,14 +5321,13 @@ export class OrchestratorCore {
       }
     });
 
-    const resolvedProgressSignals =
-      params.progress_signals ??
-      (await this.captureProgressSignals({
-        issue: params.issue_snapshot ?? null,
-        issue_id: params.issue_id,
-        branch_name: params.branch_name ?? null,
-        repo_root: params.repo_root ?? null
-      }));
+    const resolvedProgressSignals = await this.captureProgressSignals({
+      issue: params.issue_snapshot ?? null,
+      issue_id: params.issue_id,
+      branch_name: params.branch_name ?? null,
+      repo_root: params.repo_root ?? null,
+      previous_progress_signals: params.progress_signals ?? null
+    });
     this.state.retry_attempts.set(params.issue_id, {
       issue_id: params.issue_id,
       identifier: params.identifier,
@@ -5467,7 +5499,8 @@ export class OrchestratorCore {
             state_marker: params.progress_signals.state_marker ?? null,
             tracker_comment_created: params.progress_signals.tracker_comment_created ?? false,
             tracker_status_transition: params.progress_signals.tracker_status_transition ?? null,
-            agent_review_handoff: params.progress_signals.agent_review_handoff ?? null
+            agent_review_handoff: params.progress_signals.agent_review_handoff ?? null,
+            tracker_started_state: params.progress_signals.tracker_started_state ?? null
           }
         : undefined,
       required_actions: [...(params.required_actions ?? [])],
@@ -5688,35 +5721,50 @@ export class OrchestratorCore {
     issue_id: string;
     branch_name: string | null;
     repo_root: string | null;
+    previous_progress_signals?: ProgressSignals | null;
   }): Promise<ProgressSignals> {
     const fallbackStateMarker = this.getLastPhaseMarker(params.issue_id)?.phase ?? null;
     if (!this.ports.resolveProgressSignals) {
       return {
-        commit_sha: null,
-        checklist_checkpoint: null,
-        state_marker: fallbackStateMarker,
-        tracker_comment_created: false,
-        tracker_status_transition: null,
-        agent_review_handoff: null
+        commit_sha: params.previous_progress_signals?.commit_sha ?? null,
+        checklist_checkpoint: params.previous_progress_signals?.checklist_checkpoint ?? null,
+        state_marker: params.previous_progress_signals?.state_marker ?? fallbackStateMarker,
+        tracker_comment_created: params.previous_progress_signals?.tracker_comment_created ?? false,
+        tracker_status_transition: params.previous_progress_signals?.tracker_status_transition ?? null,
+        agent_review_handoff: params.previous_progress_signals?.agent_review_handoff ?? null,
+        tracker_started_state: params.previous_progress_signals?.tracker_started_state ?? null
       };
     }
 
     try {
-      return await this.ports.resolveProgressSignals({
+      const resolved = await this.ports.resolveProgressSignals({
         issue: params.issue,
         issue_id: params.issue_id,
         branch_name: params.branch_name,
         repo_root: params.repo_root,
-        fallback_state_marker: fallbackStateMarker
+        fallback_state_marker: fallbackStateMarker,
+        previous_progress_signals: params.previous_progress_signals ?? null
       });
+      return {
+        commit_sha: resolved.commit_sha ?? params.previous_progress_signals?.commit_sha ?? null,
+        checklist_checkpoint: resolved.checklist_checkpoint ?? params.previous_progress_signals?.checklist_checkpoint ?? null,
+        state_marker: resolved.state_marker ?? params.previous_progress_signals?.state_marker ?? fallbackStateMarker,
+        tracker_comment_created:
+          resolved.tracker_comment_created ?? params.previous_progress_signals?.tracker_comment_created ?? false,
+        tracker_status_transition:
+          resolved.tracker_status_transition ?? params.previous_progress_signals?.tracker_status_transition ?? null,
+        agent_review_handoff: resolved.agent_review_handoff ?? params.previous_progress_signals?.agent_review_handoff ?? null,
+        tracker_started_state: resolved.tracker_started_state ?? params.previous_progress_signals?.tracker_started_state ?? null
+      };
     } catch {
       return {
-        commit_sha: null,
-        checklist_checkpoint: null,
-        state_marker: fallbackStateMarker,
-        tracker_comment_created: false,
-        tracker_status_transition: null,
-        agent_review_handoff: null
+        commit_sha: params.previous_progress_signals?.commit_sha ?? null,
+        checklist_checkpoint: params.previous_progress_signals?.checklist_checkpoint ?? null,
+        state_marker: params.previous_progress_signals?.state_marker ?? fallbackStateMarker,
+        tracker_comment_created: params.previous_progress_signals?.tracker_comment_created ?? false,
+        tracker_status_transition: params.previous_progress_signals?.tracker_status_transition ?? null,
+        agent_review_handoff: params.previous_progress_signals?.agent_review_handoff ?? null,
+        tracker_started_state: params.previous_progress_signals?.tracker_started_state ?? null
       };
     }
   }
@@ -5817,7 +5865,8 @@ export class OrchestratorCore {
         previous_thread_id: running.thread_id,
         previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
-        issue_snapshot: running.issue
+        issue_snapshot: running.issue,
+        progress_signals: running.progress_signals
       });
       this.recordOperatorAction(running.issue.id, {
         action: 'requeue',
@@ -7572,13 +7621,7 @@ export class OrchestratorCore {
       return null;
     }
 
-    const isKnownReviewHandoffTarget =
-      normalizeStateName(issue.state) === normalizeStateName('In Progress') ||
-      normalizeStateName(issue.state) === normalizeStateName('Human Review') ||
-      normalizeStateName(issue.state) === normalizeStateName('Merging') ||
-      isActiveState(issue.state, this.config) ||
-      isTerminalState(issue.state, this.config);
-    if (!isKnownReviewHandoffTarget) {
+    if (!this.isKnownReviewHandoffTransition(startedState, issue.state)) {
       return null;
     }
 
@@ -7588,7 +7631,8 @@ export class OrchestratorCore {
       state_marker: this.getLastPhaseMarker(issueId)?.phase ?? null,
       tracker_comment_created: this.hasWorkerTrackerCommentSignal(runningEntry),
       tracker_status_transition: `${startedState} -> ${issue.state}`,
-      agent_review_handoff: issue.state
+      agent_review_handoff: issue.state,
+      tracker_started_state: startedState
     };
     const reasons = this.classifyProgressSignals(signals);
     if (!reasons.includes('agent_review_handoff')) {
@@ -7598,6 +7642,9 @@ export class OrchestratorCore {
   }
 
   private hasWorkerTrackerCommentSignal(runningEntry: RunningEntry): boolean {
+    if (runningEntry.progress_signals?.tracker_comment_created) {
+      return true;
+    }
     return runningEntry.recent_events.some((event) => {
       const text = [event.event, event.message, event.tool_name, event.request_method, event.request_category]
         .filter((value): value is string => typeof value === 'string')
@@ -7610,6 +7657,42 @@ export class OrchestratorCore {
         text.includes('review comment')
       );
     });
+  }
+
+  private captureWorkerProgressSignal(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
+    if (!this.workerEventLooksLikeTrackerComment(workerEvent)) {
+      return;
+    }
+
+    runningEntry.progress_signals = {
+      commit_sha: runningEntry.progress_signals?.commit_sha ?? null,
+      checklist_checkpoint: runningEntry.progress_signals?.checklist_checkpoint ?? null,
+      state_marker: runningEntry.progress_signals?.state_marker ?? this.getLastPhaseMarker(runningEntry.issue.id)?.phase ?? null,
+      tracker_comment_created: true,
+      tracker_status_transition: runningEntry.progress_signals?.tracker_status_transition ?? null,
+      agent_review_handoff: runningEntry.progress_signals?.agent_review_handoff ?? null,
+      tracker_started_state:
+        runningEntry.progress_signals?.tracker_started_state ?? runningEntry.started_issue_state ?? runningEntry.issue.state
+    };
+  }
+
+  private workerEventLooksLikeTrackerComment(workerEvent: WorkerObservabilityEvent): boolean {
+    const text = [
+      workerEvent.event,
+      workerEvent.detail,
+      workerEvent.tool_name,
+      workerEvent.request_method,
+      workerEvent.request_category
+    ]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ')
+      .toLowerCase();
+    return (
+      text.includes('save_comment') ||
+      text.includes('create_comment') ||
+      text.includes('linear comment') ||
+      text.includes('review comment')
+    );
   }
 
   private async completeStalledReviewHandoff(

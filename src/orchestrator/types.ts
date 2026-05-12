@@ -140,6 +140,7 @@ export interface RunningEntry {
   budget_warning_emitted?: boolean;
   budget_hard_limit_enforced?: boolean;
   budget?: BudgetRuntimeProjection;
+  progress_signals?: ProgressSignals;
   recent_events: Array<{
     at_ms: number;
     event: string;
@@ -430,6 +431,7 @@ export interface RedispatchProgressSample {
   tracker_comment_created?: boolean;
   tracker_status_transition?: string | null;
   agent_review_handoff?: string | null;
+  tracker_started_state?: string | null;
 }
 
 export interface ProgressSignals {
@@ -439,6 +441,7 @@ export interface ProgressSignals {
   tracker_comment_created?: boolean;
   tracker_status_transition?: string | null;
   agent_review_handoff?: string | null;
+  tracker_started_state?: string | null;
 }
 
 export interface BlockedEntry {
@@ -759,6 +762,7 @@ export interface OrchestratorPorts {
     branch_name: string | null;
     repo_root: string | null;
     fallback_state_marker: string | null;
+    previous_progress_signals?: ProgressSignals | null;
   }) => Promise<ProgressSignals>;
   notifyObservers?: () => void;
 }
