@@ -2447,7 +2447,8 @@ export class OrchestratorCore {
         reason_code: reasonCode,
         reason_detail: reasonDetail
       });
-    } catch {
+    } catch (error) {
+      await this.recordHistoryWriteFailure('appendStateTransition.executionGraph', reasonCode, error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
@@ -2490,6 +2491,7 @@ export class OrchestratorCore {
         recorded_at: recordedAt
       });
     } catch (error) {
+      await this.recordHistoryWriteFailure('appendTicketEvidenceReference', this.reasonCodeForWorkerEvent(workerEvent.event), error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
@@ -2687,7 +2689,8 @@ export class OrchestratorCore {
         reason_code: reasonCode,
         reason_detail: reasonDetail
       });
-    } catch {
+    } catch (error) {
+      await this.recordHistoryWriteFailure('appendStateTransition.retry', reasonCode, error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
@@ -2789,7 +2792,8 @@ export class OrchestratorCore {
         issue_run_id: issueRunId,
         previous_attempt_id: attemptId ?? params.graphContext.previous_attempt_id ?? null
       };
-    } catch {
+    } catch (error) {
+      await this.recordHistoryWriteFailure('persistPreSpawnExecutionGraphAttempt', params.reasonCode, error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
@@ -5433,6 +5437,7 @@ export class OrchestratorCore {
         blocked_at: asIso(blockedEntry.blocked_at_ms)
       });
     } catch (error) {
+      await this.recordHistoryWriteFailure('appendTicketBlocker', blockedEntry.stop_reason_code, error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,
@@ -5497,6 +5502,7 @@ export class OrchestratorCore {
         blocked_at: asIso(blockedEntry.blocked_at_ms)
       });
     } catch (error) {
+      await this.recordHistoryWriteFailure('appendBlockedInputEvent', blockedEntry.stop_reason_code, error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.persistence.recordEventFailed,

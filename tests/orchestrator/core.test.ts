@@ -5609,6 +5609,7 @@ describe('OrchestratorCore', () => {
 
   it('includes issue/session context when session persistence logging fails', async () => {
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
     const logger: StructuredLogger = {
       log: ({ event, context }) => {
         logs.push({ event, context: context ?? {} });
@@ -5618,6 +5619,9 @@ describe('OrchestratorCore', () => {
       startRun: async () => 'run-1',
       recordSession: async () => {
         throw new Error('persistence unavailable');
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
       },
       recordEvent: async () => undefined,
       completeRun: async () => undefined
@@ -5637,6 +5641,7 @@ describe('OrchestratorCore', () => {
     expect(persistenceFailure?.context.issue_id).toBe('i-session-fail');
     expect(persistenceFailure?.context.issue_identifier).toBe('ABC-5');
     expect(persistenceFailure?.context.session_id).toBe('thread-9-turn-1');
+    expect(writeFailures).toEqual([]);
   });
 
   it('preserves unsupported approval method evidence beyond the runner callback', async () => {
@@ -6393,6 +6398,174 @@ describe('OrchestratorCore', () => {
       expect.objectContaining({
         operation: 'appendTicketTerminalOutcome',
         reason_code: REASON_CODES.normalCompletion,
+        detail: 'database locked token=***REDACTED***'
+      })
+    ]);
+  });
+
+  it('records named Project History write failures as degraded diagnostics', async () => {
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-history-failure',
+      appendStateTransition: async () => {
+        throw new Error('database locked token=transition-secret');
+      },
+      appendTicketEvidenceReference: async () => {
+        throw new Error('database locked token=evidence-secret');
+      },
+      appendIssueRun: async () => {
+        throw new Error('database locked token=pre-spawn-secret');
+      },
+      appendTicketBlocker: async () => {
+        throw new Error('database locked token=blocker-secret');
+      },
+      appendBlockedInputEvent: async () => {
+        throw new Error('database locked token=blocked-input-secret');
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
+      },
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined
+    };
+    const harness = createHarness({ persistence });
+    const internals = harness.orchestrator as unknown as {
+      persistExecutionGraphStateTransition: (
+        runningEntry: unknown,
+        toStatus: string,
+        status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying',
+        reasonCode: string,
+        reasonDetail: string | null
+      ) => Promise<void>;
+      persistTicketEvidenceReferenceForThread: (
+        runningEntry: unknown,
+        workerEvent: { event: string; turn_id?: string | null; session_id?: string | null },
+        threadId: string,
+        recordedAt: string
+      ) => Promise<void>;
+      persistExecutionGraphRetryTransition: (
+        retryEntry: unknown,
+        toStatus: string,
+        status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying',
+        reasonCode: string,
+        reasonDetail: string | null
+      ) => Promise<void>;
+      persistPreSpawnExecutionGraphAttempt: (params: {
+        issue: Issue;
+        attempt: number | null;
+        graphContext: { issue_run_id?: string | null; previous_attempt_id?: string | null };
+        status: 'failed' | 'blocked';
+        reasonCode: string;
+        reasonDetail: string | null;
+      }) => Promise<unknown>;
+      persistTicketBlocker: (blockedEntry: unknown) => Promise<void>;
+      persistBlockedInputEvent: (blockedEntry: unknown) => Promise<void>;
+    };
+    const issue = makeIssue({ id: 'i-history-failure', identifier: 'ABC-HISTORY-FAIL' });
+    const runningEntry = {
+      issue,
+      identifier: issue.identifier,
+      issue_run_id: 'issue-run-history-failure',
+      attempt_id: 'attempt-history-failure',
+      thread_id: 'thread-history-failure',
+      turn_id: 'turn-history-failure',
+      session_id: 'session-history-failure'
+    };
+    const retryEntry = {
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      issue_run_id: 'issue-run-history-failure',
+      previous_attempt_id: 'attempt-history-failure',
+      previous_thread_id: 'thread-history-failure',
+      previous_turn_id: 'turn-history-failure'
+    };
+    const blockedEntry = {
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_run_id: 'issue-run-history-failure',
+      previous_attempt_id: 'attempt-history-failure',
+      previous_thread_id: 'thread-history-failure',
+      previous_turn_id: 'turn-history-failure',
+      previous_session_id: 'session-history-failure',
+      worker_host: null,
+      workspace_path: null,
+      branch_name: null,
+      last_phase: 'blocked_input',
+      last_phase_at_ms: harness.now.value,
+      last_phase_detail: null,
+      blocked_at_ms: harness.now.value,
+      stop_reason_code: REASON_CODES.turnInputRequired,
+      stop_reason_detail: 'operator input required',
+      pending_input: null,
+      tool_output_wait: null,
+      conflict_files: [],
+      budget: null,
+      recovery: null,
+      required_actions: [],
+      progress_signals: null
+    };
+
+    await internals.persistExecutionGraphStateTransition(
+      runningEntry,
+      'blocked',
+      'blocked',
+      REASON_CODES.turnInputRequired,
+      'operator input required'
+    );
+    await internals.persistTicketEvidenceReferenceForThread(
+      runningEntry,
+      { event: CANONICAL_EVENT.codex.turnStarted, turn_id: 'turn-history-failure', session_id: 'session-history-failure' },
+      'thread-history-failure',
+      '2026-05-12T06:00:00.000Z'
+    );
+    await internals.persistExecutionGraphRetryTransition(
+      retryEntry,
+      'retrying',
+      'retrying',
+      REASON_CODES.retryFetchFailed,
+      'retry fetch failed'
+    );
+    await internals.persistPreSpawnExecutionGraphAttempt({
+      issue,
+      attempt: 0,
+      graphContext: {},
+      status: 'failed',
+      reasonCode: REASON_CODES.spawnFailed,
+      reasonDetail: 'spawn failed'
+    });
+    await internals.persistTicketBlocker(blockedEntry);
+    await internals.persistBlockedInputEvent(blockedEntry);
+
+    expect(writeFailures).toEqual([
+      expect.objectContaining({
+        operation: 'appendStateTransition.executionGraph',
+        reason_code: REASON_CODES.turnInputRequired,
+        detail: 'database locked token=***REDACTED***'
+      }),
+      expect.objectContaining({
+        operation: 'appendTicketEvidenceReference',
+        reason_code: 'codex_turn_started',
+        detail: 'database locked token=***REDACTED***'
+      }),
+      expect.objectContaining({
+        operation: 'appendStateTransition.retry',
+        reason_code: REASON_CODES.retryFetchFailed,
+        detail: 'database locked token=***REDACTED***'
+      }),
+      expect.objectContaining({
+        operation: 'persistPreSpawnExecutionGraphAttempt',
+        reason_code: REASON_CODES.spawnFailed,
+        detail: 'database locked token=***REDACTED***'
+      }),
+      expect.objectContaining({
+        operation: 'appendTicketBlocker',
+        reason_code: REASON_CODES.turnInputRequired,
+        detail: 'database locked token=***REDACTED***'
+      }),
+      expect.objectContaining({
+        operation: 'appendBlockedInputEvent',
+        reason_code: REASON_CODES.turnInputRequired,
         detail: 'database locked token=***REDACTED***'
       })
     ]);

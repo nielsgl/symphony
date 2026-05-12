@@ -437,14 +437,14 @@ describe('Project History consumer summary', () => {
           applied_version: 8,
           status: 'degraded',
           degraded_reason_code: 'history_write_failed',
-          degraded_detail: 'appendTurn: history_turn_write_failed',
+          degraded_detail: 'appendTicketBlocker: turn_input_required',
           updated_at: '2026-04-11T12:00:00.000Z',
           migrations: []
         },
         recent_write_failures: [
           {
-            operation: 'appendTurn',
-            reason_code: 'history_turn_write_failed',
+            operation: 'appendTicketBlocker',
+            reason_code: 'turn_input_required',
             detail: 'database locked token=***REDACTED***',
             recorded_at: '2026-04-11T12:00:00.000Z'
           }
@@ -456,7 +456,7 @@ describe('Project History consumer summary', () => {
     expect(health.status).toBe('degraded');
     expect(health.writes).toMatchObject({
       status: 'degraded',
-      recent_failures: [expect.objectContaining({ reason_code: 'history_turn_write_failed' })]
+      recent_failures: [expect.objectContaining({ operation: 'appendTicketBlocker', reason_code: 'turn_input_required' })]
     });
     expect(health.retention.last_prune).toMatchObject({
       status: 'failed',
