@@ -4411,7 +4411,7 @@ export class OrchestratorCore {
     const breakerHit = noProgress && !hasExternalProgress && attemptCountWindow >= Math.max(1, this.config.respawn_max_attempts_without_progress ?? 3);
     const awaitingHuman = Boolean(sample.pr_open && noProgress && !hasExternalProgress);
     return {
-      allow_redispatch: !noProgress || hasExternalProgress,
+      allow_redispatch: !awaitingHuman && !breakerHit,
       awaiting_human_review_scope_incomplete: awaitingHuman,
       breaker_hit: breakerHit,
       attempt_count_window: attemptCountWindow,

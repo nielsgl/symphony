@@ -1577,8 +1577,10 @@ describe('OrchestratorCore', () => {
     );
   });
 
-  it('opens a no-progress automation fault without creating an input-required latch when redispatch gate fails', async () => {
-    const harness = createHarness({ configOverrides: { max_retry_backoff_ms: 25_000 } });
+  it('opens a no-progress automation fault without creating an input-required latch when the configured threshold is reached', async () => {
+    const harness = createHarness({
+      configOverrides: { max_retry_backoff_ms: 25_000, respawn_max_attempts_without_progress: 1 }
+    });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
     await harness.orchestrator.tick('interval');
 
@@ -1918,7 +1920,7 @@ describe('OrchestratorCore', () => {
     expect(resumed).toEqual({ ok: true, issue_id: 'i-progress' });
   });
 
-  it('blocks redispatch immediately with explicit no-progress reason when completion gate fails', async () => {
+  it('keeps redispatching no-progress attempts until the configured threshold is reached', async () => {
     const logs: Array<{ event: string; context?: Record<string, unknown> }> = [];
     const logger: StructuredLogger = {
       log: ({ event, context }) => {
@@ -1938,14 +1940,40 @@ describe('OrchestratorCore', () => {
     harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
     await harness.orchestrator.tick('interval');
     await harness.orchestrator.onWorkerExit('i-gate-block', 'abnormal', 'worker exited');
+
     harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
     await harness.scheduled.get('i-gate-block')?.callback();
 
-    const snapshot = harness.orchestrator.getStateSnapshot();
+    let snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-gate-block')).toBe(false);
+    expect(snapshot.circuit_breakers.has('i-gate-block')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-gate-block')).toBe(false);
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-gate-block')).toHaveLength(2);
+    expect(
+      harness.orchestrator
+        .getStateSnapshot()
+        .recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)
+    ).toBe(false);
+
+    await harness.orchestrator.onWorkerExit('i-gate-block', 'abnormal', 'worker exited again');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-gate-block')?.callback();
+
+    snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-gate-block')).toBe(false);
+    expect(snapshot.circuit_breakers.has('i-gate-block')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-gate-block')).toBe(false);
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-gate-block')).toHaveLength(3);
+
+    await harness.orchestrator.onWorkerExit('i-gate-block', 'abnormal', 'worker exited a third time');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-gate-block')?.callback();
+
+    snapshot = harness.orchestrator.getStateSnapshot();
     expect(snapshot.blocked_inputs.has('i-gate-block')).toBe(false);
     expect(snapshot.circuit_breakers.get('i-gate-block')).toMatchObject({
       breaker_active: true,
-      breaker_hit_count: 1,
+      breaker_hit_count: 3,
       breaker_window_minutes: 30
     });
     expect(
@@ -1958,7 +1986,7 @@ describe('OrchestratorCore', () => {
     expect(completionGateLog?.context?.issue_identifier).toBe('ABC-GATE');
     expect(completionGateLog?.context?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
     expect(completionGateLog?.context?.next_operator_action).toBe('inspect_no_progress_fault');
-    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-gate-block')).toHaveLength(1);
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-gate-block')).toHaveLength(3);
   });
 
   it('maps no-progress redispatch to awaiting_human_review_scope_incomplete when PR is open', async () => {
@@ -7705,6 +7733,7 @@ describe('OrchestratorCore', () => {
       completeRun: async () => undefined
     };
     const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1 },
       persistence,
       resolveProgressSignals: async ({ fallback_state_marker }) => ({
         commit_sha: 'sha-same',
