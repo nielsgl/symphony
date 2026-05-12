@@ -529,6 +529,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     }
   }
 
+  function getRetryStateLabel(entry) {
+    if (entry && entry.due_state === 'overdue') {
+      return 'Retry Overdue';
+    }
+    return 'Retry Scheduled';
+  }
+
   function getTokenConfidenceLabel(confidence) {
     switch (confidence) {
       case 'observed_live':
@@ -1741,7 +1748,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         void loadIssue(entry.issue_identifier);
       });
       respondNow.disabled = !entry.awaiting_input;
-      const investigate = createActionButton('Investigate', 'ghost-button', function () {
+      const investigate = createActionButton('Inspect Diagnostics', 'ghost-button', function () {
         elements.issueInput.value = entry.issue_identifier;
         void loadIssue(entry.issue_identifier);
       });
@@ -1817,7 +1824,13 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       attemptCell.textContent = formatNumber(entry.attempt);
 
       const dueAtCell = document.createElement('td');
-      dueAtCell.textContent = formatDate(entry.due_at);
+      const retryState = document.createElement('div');
+      retryState.className = 'status-pill pending';
+      retryState.textContent = getRetryStateLabel(entry);
+      const retryDue = document.createElement('div');
+      retryDue.className = 'muted';
+      retryDue.textContent = formatDate(entry.due_at);
+      dueAtCell.append(retryState, retryDue);
 
       const errorCell = document.createElement('td');
       errorCell.textContent = entry.error || 'n/a';

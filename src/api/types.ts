@@ -1079,6 +1079,7 @@ export type ThreadDiagnosticsStatus = 'running' | 'completed' | 'failed' | 'canc
 
 export type ThreadDiagnosticsBlockerClassification =
   | typeof REASON_CODES.missingToolOutput
+  | 'stalled_waiting'
   | 'tool_waiting_long'
   | 'tracker_transition_pending'
   | 'input_required_pending'

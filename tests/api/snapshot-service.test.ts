@@ -621,12 +621,76 @@ describe('SnapshotService', () => {
       actionability: 'required',
       headline: 'Run is alive but waiting too long',
       detail: expect.any(String),
-      recommended_actions: ['Inspect recent events and decide whether to resume, cancel, or restart'],
-      expected_transition: null,
+      recommended_actions: ['Inspect issue diagnostics', 'Cancel the current turn', 'Requeue the run'],
+      expected_transition:
+        'Automatic recovery may schedule a retry; otherwise the operator can cancel the current turn or requeue.',
       reason_code: 'turn_waiting_threshold_exceeded',
       reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
     });
     expect(JSON.stringify(issue.operator_explainer)).toBe(JSON.stringify(service.projectIssue(state, 'ABC-1').operator_explainer));
+  });
+
+  it('projects stalled waiting state when rate-limit metadata is the latest raw event', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:08:00.000Z')
+    });
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            last_event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+            last_event_summary: 'rate limits updated',
+            last_message: 'rate limits updated',
+            running_waiting_started_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+            last_heartbeat_at_ms: Date.parse('2026-04-10T10:07:45.000Z'),
+            last_codex_timestamp_ms: Date.parse('2026-04-10T10:07:45.000Z'),
+            last_progress_transition_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+            stalled_waiting_since_ms: Date.parse('2026-04-10T10:05:00.000Z'),
+            stalled_waiting_reason: REASON_CODES.turnWaitingThresholdExceeded,
+            recent_events: [
+              {
+                at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+                event: CANONICAL_EVENT.codex.turnStarted,
+                message: 'turn started'
+              },
+              {
+                at_ms: Date.parse('2026-04-10T10:05:30.000Z'),
+                event: CANONICAL_EVENT.codex.turnWaiting,
+                message: 'waiting_for_turn_completion elapsed_s=330'
+              },
+              {
+                at_ms: Date.parse('2026-04-10T10:07:45.000Z'),
+                event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+                message: 'rate limits updated'
+              }
+            ],
+            rate_limits: {
+              primary: {
+                used_percent: 11,
+                window_minutes: 300,
+                resets_at: Date.parse('2026-04-10T12:00:00.000Z')
+              }
+            }
+          })
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+
+    expect(projected.counts.running_stalled_waiting_count).toBe(1);
+    expect(projected.running[0]).toMatchObject({
+      last_event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+      stalled_waiting: true,
+      progress_signal_state: 'stalled_waiting',
+      current_blocker_class: 'stalled_waiting',
+      stalled_waiting_reason: REASON_CODES.turnWaitingThresholdExceeded
+    });
+    expect(projected.running[0]?.operator_explainer_hint).toMatchObject({
+      classification: 'stalled_waiting',
+      actionability: 'required'
+    });
   });
 
   it('projects active long-running waiting turns with fresh thread activity as heartbeat-only without stalled-waiting blockers', () => {
