@@ -19,6 +19,9 @@ export interface ControlPlaneObservation {
   payload_bytes: number;
   projection_duration_ms?: number | null;
   enrichment_duration_ms?: number | null;
+  enrichment_status?: string | null;
+  enrichment_degraded?: boolean | null;
+  enrichment_reason_code?: string | null;
   serialization_duration_ms?: number | null;
   broadcast_client_count?: number | null;
   snapshot_age_ms?: number | null;
@@ -40,6 +43,9 @@ export interface ControlPlaneEndpointHealth {
   avg_payload_bytes: number | null;
   last_projection_duration_ms: number | null;
   last_enrichment_duration_ms: number | null;
+  last_enrichment_status: string | null;
+  last_enrichment_degraded: boolean | null;
+  last_enrichment_reason_code: string | null;
   last_serialization_duration_ms: number | null;
   last_broadcast_client_count: number | null;
   last_snapshot_age_ms: number | null;
@@ -80,11 +86,12 @@ function roundMs(value: number | null | undefined): number | null {
 }
 
 function classifyObservation(
-  observation: Pick<ControlPlaneObservation, 'duration_ms' | 'payload_bytes' | 'snapshot_error_code'>,
+  observation: Pick<ControlPlaneObservation, 'duration_ms' | 'payload_bytes' | 'snapshot_error_code' | 'enrichment_degraded'>,
   thresholds: ControlPlaneThresholds
 ): ControlPlaneHealthState {
   if (
     observation.snapshot_error_code ||
+    observation.enrichment_degraded ||
     observation.duration_ms >= thresholds.degraded_ms ||
     observation.payload_bytes >= thresholds.degraded_payload_bytes
   ) {
@@ -177,6 +184,9 @@ export class ControlPlaneHealthRecorder {
         avg_payload_bytes: average(payloadValues),
         last_projection_duration_ms: roundMs(last.projection_duration_ms),
         last_enrichment_duration_ms: roundMs(last.enrichment_duration_ms),
+        last_enrichment_status: last.enrichment_status ?? null,
+        last_enrichment_degraded: last.enrichment_degraded ?? null,
+        last_enrichment_reason_code: last.enrichment_reason_code ?? null,
         last_serialization_duration_ms: roundMs(last.serialization_duration_ms),
         last_broadcast_client_count: last.broadcast_client_count ?? null,
         last_snapshot_age_ms: roundMs(last.snapshot_age_ms),

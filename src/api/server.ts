@@ -1,6 +1,6 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 
-import type { StructuredLogger } from '../observability';
+import { REASON_CODES, type StructuredLogger } from '../observability';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../observability/events';
 import type { DurableRunHistoryRecord, TicketTimelineRecord } from '../persistence';
 import { redactUnknown } from '../security/redaction';
@@ -57,9 +57,21 @@ interface TimedStateSnapshot {
   payload: ApiStateSnapshotResponse;
   projectionDurationMs: number | null;
   enrichmentDurationMs: number | null;
+  enrichmentStatus: string | null;
+  enrichmentDegraded: boolean | null;
+  enrichmentReasonCode: string | null;
   snapshotAgeMs: number | null;
   snapshotFreshnessState: ApiStateResponse['snapshot_freshness_state'] | null;
   snapshotErrorCode: ApiStateErrorResponse['error']['code'] | null;
+}
+
+interface TimedDiagnosticsPayload {
+  payload: ApiDiagnosticsResponse;
+  projectionDurationMs: number | null;
+  enrichmentDurationMs: number | null;
+  enrichmentStatus: string | null;
+  enrichmentDegraded: boolean | null;
+  enrichmentReasonCode: string | null;
 }
 
 interface StreamDiagnosticsState {
@@ -487,6 +499,9 @@ export class LocalApiServer {
           payload_bytes: Math.round(observation.payload_bytes),
           projection_duration_ms: observation.projection_duration_ms,
           enrichment_duration_ms: observation.enrichment_duration_ms,
+          enrichment_status: observation.enrichment_status ?? null,
+          enrichment_degraded: observation.enrichment_degraded ?? null,
+          enrichment_reason_code: observation.enrichment_reason_code ?? null,
           serialization_duration_ms: observation.serialization_duration_ms,
           broadcast_client_count: observation.broadcast_client_count ?? null,
           snapshot_age_ms: observation.snapshot_age_ms ?? null,
@@ -557,12 +572,15 @@ export class LocalApiServer {
       const payload = this.snapshotService.projectState(state);
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
-      this.enrichLiveTokenFallbackState(payload);
+      const enrichment = this.resolveStateProjectionEnrichment(payload);
       const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
       return {
         payload,
         projectionDurationMs,
         enrichmentDurationMs,
+        enrichmentStatus: enrichment.status,
+        enrichmentDegraded: enrichment.degraded,
+        enrichmentReasonCode: enrichment.reason_code,
         snapshotAgeMs: payload.snapshot_age_ms,
         snapshotFreshnessState: payload.snapshot_freshness_state,
         snapshotErrorCode: null
@@ -592,6 +610,9 @@ export class LocalApiServer {
         },
         projectionDurationMs: this.nowMs() - projectionStartedAtMs,
         enrichmentDurationMs: null,
+        enrichmentStatus: null,
+        enrichmentDegraded: null,
+        enrichmentReasonCode: null,
         snapshotAgeMs: null,
         snapshotFreshnessState: null,
         snapshotErrorCode: code
@@ -606,12 +627,15 @@ export class LocalApiServer {
       const payload = this.snapshotService.projectState(state);
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
-      this.enrichLiveTokenFallbackState(payload);
+      const enrichment = this.resolveStateProjectionEnrichment(payload);
       const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
       return {
         payload,
         projectionDurationMs,
         enrichmentDurationMs,
+        enrichmentStatus: enrichment.status,
+        enrichmentDegraded: enrichment.degraded,
+        enrichmentReasonCode: enrichment.reason_code,
         snapshotAgeMs: payload.snapshot_age_ms,
         snapshotFreshnessState: payload.snapshot_freshness_state,
         snapshotErrorCode: null
@@ -641,6 +665,9 @@ export class LocalApiServer {
         },
         projectionDurationMs: this.nowMs() - projectionStartedAtMs,
         enrichmentDurationMs: null,
+        enrichmentStatus: null,
+        enrichmentDegraded: null,
+        enrichmentReasonCode: null,
         snapshotAgeMs: null,
         snapshotFreshnessState: null,
         snapshotErrorCode: code
@@ -702,6 +729,9 @@ export class LocalApiServer {
       payload_bytes: serialized.bytes,
       projection_duration_ms: snapshot.projectionDurationMs,
       enrichment_duration_ms: snapshot.enrichmentDurationMs,
+      enrichment_status: snapshot.enrichmentStatus,
+      enrichment_degraded: snapshot.enrichmentDegraded,
+      enrichment_reason_code: snapshot.enrichmentReasonCode,
       serialization_duration_ms: serializationDurationMs,
       broadcast_client_count: this.eventClients.size,
       snapshot_age_ms: snapshot.snapshotAgeMs,
@@ -782,6 +812,27 @@ export class LocalApiServer {
     }
   }
 
+  private resolveStateProjectionEnrichment(payload: ApiStateResponse): ApiDiagnosticsResponse['token_enrichment'] {
+    const needsLiveTokenFallback = payload.running.some(
+      (row) => row.tokens.total_tokens === 0 && row.thread_id && row.token_telemetry_status !== 'available'
+    );
+    if (!needsLiveTokenFallback) {
+      return {
+        status: 'not_required',
+        degraded: false,
+        reason_code: null,
+        duration_ms: 0
+      };
+    }
+
+    return {
+      status: 'degraded',
+      degraded: true,
+      reason_code: REASON_CODES.liveTokenFallbackNotOnHotPath,
+      duration_ms: 0
+    };
+  }
+
   private enrichLiveTokenFallbackIssue(payload: ApiIssueResponse): void {
     if (payload.status !== 'running' || !payload.running?.thread_id) {
       return;
@@ -833,11 +884,12 @@ export class LocalApiServer {
     };
   }
 
-  private buildDiagnosticsPayload(): ApiDiagnosticsResponse {
+  private buildDiagnosticsPayload(): TimedDiagnosticsPayload {
     if (!this.diagnosticsSource) {
       throw new LocalApiError('diagnostics_unavailable', 'Diagnostics source is not configured', 503);
     }
 
+    const projectionStartedAtMs = this.nowMs();
     let observedDimensions = {
       cached_input_tokens: false,
       reasoning_output_tokens: false,
@@ -851,10 +903,25 @@ export class LocalApiServer {
       token_telemetry_last_source: null,
       token_telemetry_last_at_ms: null
     };
+    let tokenEnrichment: ApiDiagnosticsResponse['token_enrichment'] = {
+      status: 'not_required',
+      degraded: false,
+      reason_code: null,
+      duration_ms: 0
+    };
+    let projectionDurationMs: number | null = null;
+    let enrichmentDurationMs: number | null = null;
     try {
       const snapshot = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const projected = this.snapshotService.projectState(snapshot);
-      this.enrichLiveTokenFallbackState(projected);
+      projectionDurationMs = this.nowMs() - projectionStartedAtMs;
+      const enrichmentStartedAtMs = this.nowMs();
+      tokenEnrichment = this.resolveStateProjectionEnrichment(projected);
+      enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
+      tokenEnrichment = {
+        ...tokenEnrichment,
+        duration_ms: Math.max(0, Math.round(enrichmentDurationMs))
+      };
       observedDimensions = {
         cached_input_tokens: typeof projected.codex_totals.cached_input_tokens === 'number',
         reasoning_output_tokens: typeof projected.codex_totals.reasoning_output_tokens === 'number',
@@ -863,11 +930,18 @@ export class LocalApiServer {
       tokenTelemetry = this.summarizeTokenTelemetry(projected);
     } catch {
       // Diagnostics should remain available even when state snapshotting is degraded.
+      projectionDurationMs = this.nowMs() - projectionStartedAtMs;
+      tokenEnrichment = {
+        status: 'degraded',
+        degraded: true,
+        reason_code: REASON_CODES.stateProjectionUnavailable,
+        duration_ms: 0
+      };
     }
 
     const runtimeResolution = this.diagnosticsSource.getRuntimeResolution();
 
-    return {
+    const payload: ApiDiagnosticsResponse = {
       active_profile: this.diagnosticsSource.getActiveProfile(),
       persistence: this.diagnosticsSource.getPersistenceHealth(),
       logging: this.diagnosticsSource.getLoggingHealth(),
@@ -897,6 +971,7 @@ export class LocalApiServer {
         observed_dimensions: observedDimensions
       },
       ...tokenTelemetry,
+      token_enrichment: tokenEnrichment,
       workflow: {
         prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
       },
@@ -948,6 +1023,14 @@ export class LocalApiServer {
       },
       workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner(),
       workspace_copy_ignored: this.diagnosticsSource.getWorkspaceCopyIgnored()
+    };
+    return {
+      payload,
+      projectionDurationMs,
+      enrichmentDurationMs,
+      enrichmentStatus: tokenEnrichment.status,
+      enrichmentDegraded: tokenEnrichment.degraded,
+      enrichmentReasonCode: tokenEnrichment.reason_code
     };
   }
 
@@ -1042,6 +1125,9 @@ export class LocalApiServer {
                 payload_bytes: serialized.bytes,
                 projection_duration_ms: snapshot.projectionDurationMs,
                 enrichment_duration_ms: snapshot.enrichmentDurationMs,
+                enrichment_status: snapshot.enrichmentStatus,
+                enrichment_degraded: snapshot.enrichmentDegraded,
+                enrichment_reason_code: snapshot.enrichmentReasonCode,
                 serialization_duration_ms: serializationDurationMs,
                 snapshot_age_ms: snapshot.snapshotAgeMs,
                 snapshot_freshness_state: snapshot.snapshotFreshnessState,
@@ -1060,6 +1146,10 @@ export class LocalApiServer {
                     duration_ms: this.nowMs() - startedAtMs,
                     payload_bytes: serialized.bytes,
                     projection_duration_ms: snapshot.projectionDurationMs,
+                    enrichment_duration_ms: snapshot.enrichmentDurationMs,
+                    enrichment_status: snapshot.enrichmentStatus,
+                    enrichment_degraded: snapshot.enrichmentDegraded,
+                    enrichment_reason_code: snapshot.enrichmentReasonCode,
                     serialization_duration_ms: serializationDurationMs,
                     snapshot_age_ms: snapshot.snapshotAgeMs,
                     snapshot_freshness_state: snapshot.snapshotFreshnessState,
@@ -1227,7 +1317,8 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (_request, response) => {
               const startedAtMs = this.nowMs();
-              const payload = this.buildDiagnosticsPayload();
+              const diagnostics = this.buildDiagnosticsPayload();
+              const payload = diagnostics.payload;
               const serializationStartedAtMs = this.nowMs();
               const serialized = serializeJsonPayload(payload);
               const serializationDurationMs = this.nowMs() - serializationStartedAtMs;
@@ -1238,8 +1329,11 @@ export class LocalApiServer {
                 duration_ms: this.nowMs() - startedAtMs,
                 status_code: 200,
                 payload_bytes: serialized.bytes,
-                projection_duration_ms: null,
-                enrichment_duration_ms: null,
+                projection_duration_ms: diagnostics.projectionDurationMs,
+                enrichment_duration_ms: diagnostics.enrichmentDurationMs,
+                enrichment_status: diagnostics.enrichmentStatus,
+                enrichment_degraded: diagnostics.enrichmentDegraded,
+                enrichment_reason_code: diagnostics.enrichmentReasonCode,
                 serialization_duration_ms: serializationDurationMs
               });
               sendJsonBody(response, 200, serialized.body);
@@ -1518,7 +1612,7 @@ export class LocalApiServer {
               const issueIdentifier = decodeURIComponent(match[1]);
               const generatedAtMs = Date.now();
               const state = this.snapshotSource.getStateSnapshot();
-              const runtimeDiagnostics = this.buildDiagnosticsPayload();
+              const runtimeDiagnostics = this.buildDiagnosticsPayload().payload;
               const latestLineage = this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier?.(issueIdentifier) ?? null;
               let terminalRun: DurableRunHistoryRecord | null = null;
               let payload = buildThreadDiagnosticsByIssueIdentifier({
