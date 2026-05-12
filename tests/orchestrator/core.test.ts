@@ -1803,6 +1803,68 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
+  it('recovers legacy persisted workspace residue with missing workspace metadata', async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-legacy-residue-'));
+    fs.mkdirSync(path.join(workspacePath, '.git'));
+    try {
+      const harness = createHarness();
+      harness.orchestrator.restoreSuppressionState({
+        blocked_entries: [
+          {
+            issue_id: 'i-legacy-residue',
+            issue_identifier: 'NIE-LEGACY',
+            attempt: 2,
+            worker_host: null,
+            workspace_path: workspacePath,
+            provisioner_type: null,
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'unknown',
+            workspace_provisioned: false,
+            workspace_is_git_worktree: false,
+            copy_ignored_applied: false,
+            copy_ignored_status: null,
+            copy_ignored_summary: null,
+            stop_reason_code: REASON_CODES.operatorWorkspaceConflict,
+            stop_reason_detail: 'tracked output/playwright artifacts remain after preflight cleanup',
+            conflict_files: [
+              { path: 'tests/orchestrator/core.test.ts', status: 'unstaged' },
+              { path: 'tests/orchestrator/core-dispatch.test.ts', status: 'staged' }
+            ],
+            classification_summary: { ephemeral: 0, tracked_ephemeral: 0, unknown_non_ephemeral: 2 },
+            resolution_hints: ['Remove tracked entries under output/playwright/ from git index/history.'],
+            previous_thread_id: null,
+            previous_turn_id: null,
+            previous_session_id: null,
+            blocked_at_ms: harness.now.value,
+            requires_manual_resume: true,
+            pending_input: null,
+            session_console: []
+          }
+        ],
+        breaker_entries: []
+      });
+      const issue = makeIssue({ id: 'i-legacy-residue', identifier: 'NIE-LEGACY', state: 'In Progress' });
+      harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+
+      await harness.orchestrator.reconcileBlockedInputs();
+      await harness.scheduled.get('i-legacy-residue')?.callback();
+
+      expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-legacy-residue')).toBe(false);
+      expect(harness.spawned).toEqual([
+        expect.objectContaining({
+          issue_id: 'i-legacy-residue',
+          attempt: 2,
+          recover_workspace_attempt_residue: true
+        })
+      ]);
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
   it('keeps tracked workspace artifacts blocked during restart reconciliation', async () => {
     const harness = createHarness();
     harness.orchestrator.restoreSuppressionState({

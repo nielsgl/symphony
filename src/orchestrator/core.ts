@@ -4746,10 +4746,10 @@ export class OrchestratorCore {
     if (blocked.pending_input || !isActiveState(issue.state, this.config)) {
       return false;
     }
-    if (blocked.attempt <= 0 || !blocked.workspace_path || !blocked.workspace_provisioned || !blocked.workspace_is_git_worktree) {
+    if (blocked.attempt <= 0 || !blocked.workspace_path) {
       return false;
     }
-    if (!blocked.branch_name || !blocked.repo_root) {
+    if (!this.isRecoverableWorkspaceResiduePath(blocked)) {
       return false;
     }
     if (blocked.conflict_files.length === 0) {
@@ -4761,8 +4761,54 @@ export class OrchestratorCore {
     }
     return blocked.conflict_files.every((file) => {
       const normalized = file.path.replace(/\\/g, '/');
-      return file.classification === 'unknown_non_ephemeral' && !normalized.startsWith('output/playwright/');
+      const classification = file.classification ?? (summary?.unknown_non_ephemeral === blocked.conflict_files.length ? 'unknown_non_ephemeral' : null);
+      return classification === 'unknown_non_ephemeral' && !normalized.startsWith('output/playwright/');
     });
+  }
+
+  private isRecoverableWorkspaceResiduePath(blocked: BlockedEntry): boolean {
+    if (!blocked.workspace_path) {
+      return false;
+    }
+    if (blocked.workspace_provisioned && blocked.workspace_is_git_worktree && blocked.branch_name && blocked.repo_root) {
+      return true;
+    }
+    const workspacePath = blocked.workspace_path;
+    try {
+      const stat = fs.statSync(workspacePath);
+      if (!stat.isDirectory()) {
+        return false;
+      }
+      const gitDir = this.resolveGitDirSync(workspacePath);
+      if (!gitDir) {
+        return false;
+      }
+      const activeGitStatePaths = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-merge', 'rebase-apply'];
+      return !activeGitStatePaths.some((entry) => fs.existsSync(path.join(gitDir, entry)));
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveGitDirSync(workspacePath: string): string | null {
+    const dotGitPath = path.join(workspacePath, '.git');
+    try {
+      const stat = fs.statSync(dotGitPath);
+      if (stat.isDirectory()) {
+        return dotGitPath;
+      }
+      if (!stat.isFile()) {
+        return null;
+      }
+      const content = fs.readFileSync(dotGitPath, 'utf8').trim();
+      const match = /^gitdir:\s*(.+)$/i.exec(content);
+      if (!match) {
+        return null;
+      }
+      return path.resolve(workspacePath, match[1]);
+    } catch {
+      return null;
+    }
   }
 
   updateCodexTimestamp(issue_id: string, timestampMs: number): void {
