@@ -321,8 +321,8 @@ describe('Project History consumer summary', () => {
         integrity_ok: true,
         history_schema: {
           schema_name: 'project_execution_history',
-          target_version: 7,
-          applied_version: 7,
+          target_version: 8,
+          applied_version: 8,
           status: 'healthy',
           degraded_reason_code: null,
           degraded_detail: null,
@@ -339,7 +339,7 @@ describe('Project History consumer summary', () => {
       status: 'healthy',
       enabled: true,
       storage: { type: 'sqlite', target: '/tmp/runtime.sqlite' },
-      schema: { status: 'healthy', integrity_ok: true, target_version: 7, applied_version: 7 },
+      schema: { status: 'healthy', integrity_ok: true, target_version: 8, applied_version: 8 },
       counts: { runs: 2, tickets: 1 },
       retention: { retention_days: 14, last_prune: { status: 'succeeded' } },
       writes: { status: 'healthy', recent_failures: [] },
@@ -394,11 +394,11 @@ describe('Project History consumer summary', () => {
         integrity_ok: false,
         history_schema: {
           schema_name: 'project_execution_history',
-          target_version: 7,
+          target_version: 8,
           applied_version: 6,
           status: 'degraded',
           degraded_reason_code: 'history_schema_migration_needed',
-          degraded_detail: 'target version 7 is not applied',
+          degraded_detail: 'target version 8 is not applied',
           updated_at: '2026-04-11T00:00:00.000Z',
           migrations: []
         },
@@ -413,7 +413,7 @@ describe('Project History consumer summary', () => {
         status: 'degraded',
         integrity_ok: false,
         reason_code: 'history_schema_migration_needed',
-        detail: 'target version 7 is not applied'
+        detail: 'target version 8 is not applied'
       }
     });
   });
@@ -433,18 +433,18 @@ describe('Project History consumer summary', () => {
         integrity_ok: false,
         history_schema: {
           schema_name: 'project_execution_history',
-          target_version: 7,
-          applied_version: 7,
+          target_version: 8,
+          applied_version: 8,
           status: 'degraded',
           degraded_reason_code: 'history_write_failed',
-          degraded_detail: 'appendTurn: history_turn_write_failed',
+          degraded_detail: 'appendTicketBlocker: turn_input_required',
           updated_at: '2026-04-11T12:00:00.000Z',
           migrations: []
         },
         recent_write_failures: [
           {
-            operation: 'appendTurn',
-            reason_code: 'history_turn_write_failed',
+            operation: 'appendTicketBlocker',
+            reason_code: 'turn_input_required',
             detail: 'database locked token=***REDACTED***',
             recorded_at: '2026-04-11T12:00:00.000Z'
           }
@@ -456,7 +456,7 @@ describe('Project History consumer summary', () => {
     expect(health.status).toBe('degraded');
     expect(health.writes).toMatchObject({
       status: 'degraded',
-      recent_failures: [expect.objectContaining({ reason_code: 'history_turn_write_failed' })]
+      recent_failures: [expect.objectContaining({ operation: 'appendTicketBlocker', reason_code: 'turn_input_required' })]
     });
     expect(health.retention.last_prune).toMatchObject({
       status: 'failed',

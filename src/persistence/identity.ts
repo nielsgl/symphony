@@ -29,12 +29,9 @@ export function buildProjectIdentity(params: {
   const workflowPath = path.resolve(params.workflowPath);
   const workflowHash = params.workflowHash ?? hashWorkflowFile(workflowPath);
   const repositoryRemote = params.repositoryRemote ?? resolveRepositoryRemote(projectRoot);
-  const workflowHashValue = workflowHash.status === 'present' ? workflowHash.value : `missing:${workflowHash.reason}`;
-  const repositoryRemoteValue =
-    repositoryRemote.status === 'present' ? repositoryRemote.value : `missing:${repositoryRemote.reason}`;
 
   return {
-    key: stableHash(['project', projectRoot, workflowPath, workflowHashValue, repositoryRemoteValue]),
+    key: stableHash(['project', projectRoot, workflowPath]),
     project_root: projectRoot,
     workflow_path: workflowPath,
     workflow_hash: workflowHash,
