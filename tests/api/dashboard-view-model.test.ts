@@ -236,7 +236,7 @@ describe('dashboard view model', () => {
   });
 
   it('identifies supported action-required reason codes', () => {
-    expect(isActionRequiredCode('operator_action_required_no_progress_redispatch_blocked')).toBe(true);
+    expect(isActionRequiredCode('operator_action_required_no_progress_redispatch_blocked')).toBe(false);
     expect(isActionRequiredCode('operator_action_required_budget_limit_exceeded')).toBe(true);
     expect(isActionRequiredCode(REASON_CODES.missingToolOutput)).toBe(true);
     expect(getActionRequiredLabel(REASON_CODES.missingToolOutput)).toBe('Missing Tool Output');

@@ -510,12 +510,12 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
   },
   [REASON_CODES.operatorNoProgressRedispatchBlocked]: {
     reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
-    classification: 'blocked_input',
-    actionability: 'required',
-    recommended_actions: ['Mark acceptance complete and resume', 'Commit progress and resume', 'Cancel and return to backlog'],
+    classification: 'failed',
+    actionability: 'recommended',
+    recommended_actions: ['Inspect no-progress diagnostics', 'Commit progress before redispatch', 'Cancel and return to backlog'],
     label: 'No Progress Redispatch Blocked',
-    headline: 'Run is blocked on operator input',
-    detail: 'Completion gate blocked redispatch because no progress signal was detected.',
+    headline: 'Redispatch stopped after no progress',
+    detail: 'Completion gate stopped redispatch because no progress signal was detected; no answerable input payload is pending.',
     expected_transition: null
   },
   [REASON_CODES.agentReviewHandoffProgressObserved]: {

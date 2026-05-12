@@ -1018,6 +1018,16 @@ describe('OrchestratorCore', () => {
       turn_id: 'review-turn',
       session_id: 'review-session'
     });
+    harness.orchestrator.onWorkerEvent('i-review-handback', {
+      timestamp_ms: harness.now.value + 30,
+      event: 'linear.comment.created',
+      detail: 'Agent Review findings: routing back to In Progress',
+      tool_name: 'save_comment',
+      request_category: 'linear',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
 
     harness.now.value += 2_000;
     harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
@@ -1037,6 +1047,114 @@ describe('OrchestratorCore', () => {
     expect(snapshot.retry_attempts.has('i-review-handback')).toBe(false);
     expect(snapshot.running.get('i-review-handback')?.issue.state).toBe('In Progress');
     expect(logs.some((entry) => entry.event === 'orchestration.agent_review_handoff_progress_observed')).toBe(true);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)).toBe(false);
+  });
+
+  it('does not treat Agent Review status movement alone as worker-owned handback progress', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review', 'In Progress'],
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 0
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-status-only-handback', identifier: 'NIE-STATUS', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-status-only-handback', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+    harness.orchestrator.onWorkerEvent('i-status-only-handback', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for rate limit',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+
+    harness.now.value += 2_000;
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-status-only-handback', identifier: 'NIE-STATUS', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-status-only-handback', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    expect(snapshot.retry_attempts.get('i-status-only-handback')?.stop_reason_code).toBe(
+      REASON_CODES.turnWaitingThresholdExceeded
+    );
+    expect(snapshot.running.has('i-status-only-handback')).toBe(false);
+    expect(logs.some((entry) => entry.event === 'orchestration.agent_review_handoff_progress_observed')).toBe(false);
+  });
+
+  it('classifies tracker refresh failures during stalled-wait recovery as tracker uncertainty retries', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review', 'In Progress'],
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 0
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-refresh-unknown', identifier: 'NIE-UNKNOWN', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-refresh-unknown', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'unknown-thread',
+      turn_id: 'unknown-turn',
+      session_id: 'unknown-session'
+    });
+    harness.orchestrator.onWorkerEvent('i-refresh-unknown', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for rate limit',
+      thread_id: 'unknown-thread',
+      turn_id: 'unknown-turn',
+      session_id: 'unknown-session'
+    });
+
+    harness.now.value += 2_000;
+    harness.tracker.fetch_issue_states_by_ids.mockRejectedValue(new Error('Linear request failed: AbortError'));
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-refresh-unknown')).toBe(false);
+    expect(snapshot.retry_attempts.get('i-refresh-unknown')?.stop_reason_code).toBe(REASON_CODES.issueStateRefreshFailed);
+    expect(snapshot.retry_attempts.get('i-refresh-unknown')?.stop_reason_detail).toContain('AbortError');
+    expect(harness.spawned).toHaveLength(1);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.tracker.stateRefreshFailed)).toBe(true);
     expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)).toBe(false);
   });
 
@@ -1332,7 +1450,7 @@ describe('OrchestratorCore', () => {
     );
   });
 
-  it('moves abnormal retry to blocked no-progress state when redispatch gate fails', async () => {
+  it('opens a no-progress automation fault without creating an input-required latch when redispatch gate fails', async () => {
     const harness = createHarness({ configOverrides: { max_retry_backoff_ms: 25_000 } });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-abnormal' })]);
     await harness.orchestrator.tick('interval');
@@ -1349,7 +1467,11 @@ describe('OrchestratorCore', () => {
     await harness.orchestrator.onRetryTimer('i-abnormal');
     const snapshot = harness.orchestrator.getStateSnapshot();
     expect(snapshot.retry_attempts.has('i-abnormal')).toBe(false);
-    expect(snapshot.blocked_inputs.get('i-abnormal')?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
+    expect(snapshot.blocked_inputs.has('i-abnormal')).toBe(false);
+    expect(snapshot.circuit_breakers.get('i-abnormal')).toMatchObject({
+      breaker_active: true,
+      breaker_hit_count: 1
+    });
   });
 
   it('moves turn_input_required exits into blocked input state without scheduling retries', async () => {
@@ -1692,13 +1814,13 @@ describe('OrchestratorCore', () => {
     harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
     await harness.scheduled.get('i-gate-block')?.callback();
 
-    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-gate-block');
-    expect(blocked?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
-    expect(blocked?.required_actions).toEqual([
-      'Mark acceptance complete and resume',
-      'Push additional commit and resume',
-      'Cancel and return to backlog'
-    ]);
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-gate-block')).toBe(false);
+    expect(snapshot.circuit_breakers.get('i-gate-block')).toMatchObject({
+      breaker_active: true,
+      breaker_hit_count: 1,
+      breaker_window_minutes: 30
+    });
     expect(
       harness.orchestrator
         .getStateSnapshot()
@@ -1708,7 +1830,7 @@ describe('OrchestratorCore', () => {
     expect(completionGateLog?.context?.issue_id).toBe('i-gate-block');
     expect(completionGateLog?.context?.issue_identifier).toBe('ABC-GATE');
     expect(completionGateLog?.context?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
-    expect(completionGateLog?.context?.next_operator_action).toBe('issue.resume');
+    expect(completionGateLog?.context?.next_operator_action).toBe('inspect_no_progress_fault');
     expect(harness.spawned.filter((entry) => entry.issue_id === 'i-gate-block')).toHaveLength(1);
   });
 
@@ -1779,7 +1901,8 @@ describe('OrchestratorCore', () => {
     const breakerLog = logs.find((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCircuitBreakerOpened);
     expect(breakerLog?.context?.issue_id).toBe('i-breaker');
     expect(breakerLog?.context?.issue_identifier).toBe('ABC-BREAKER');
-    expect(breakerLog?.context?.next_operator_action_endpoint).toBe('/api/v1/issues/:issue_identifier/resume');
+    expect(breakerLog?.context?.next_operator_action).toBe('inspect_no_progress_fault');
+    expect(breakerLog?.context?.next_operator_action_endpoint).toBeNull();
   });
 
   it('emits completion gate and breaker transition events once for an already blocked issue', async () => {
@@ -1816,10 +1939,13 @@ describe('OrchestratorCore', () => {
     ).length;
     expect(completionEventCount).toBe(1);
     expect(breakerEventCount).toBe(1);
-    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.size).toBe(1);
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.size).toBe(0);
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get('i-once')).toMatchObject({
+      breaker_active: true
+    });
   });
 
-  it('requires override for no-progress resume and allows resume with explicit override reason', async () => {
+  it('does not expose no-progress automation faults through the blocked-input resume path', async () => {
     const harness = createHarness({
       configOverrides: { respawn_max_attempts_without_progress: 1 },
       resolveProgressSignals: async () => ({
@@ -1842,8 +1968,8 @@ describe('OrchestratorCore', () => {
     });
     expect(withoutOverride).toEqual({
       ok: false,
-      code: 'resume_failed',
-      message: 'Issue ABC-OVERRIDE requires progress or an explicit resume override reason'
+      code: 'issue_not_blocked',
+      message: 'Issue ABC-OVERRIDE is not blocked'
     });
 
     const withOverride = await harness.orchestrator.resumeBlockedIssue(
@@ -1855,7 +1981,14 @@ describe('OrchestratorCore', () => {
         reason_note: 'operator approved redispatch without new progress'
       }
     );
-    expect(withOverride).toEqual({ ok: true, issue_id: 'i-resume-override' });
+    expect(withOverride).toEqual({
+      ok: false,
+      code: 'issue_not_blocked',
+      message: 'Issue ABC-OVERRIDE is not blocked'
+    });
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get('i-resume-override')).toMatchObject({
+      breaker_active: true
+    });
   });
 
   it('cancels blocked issue to Todo/backlog state via dedicated path', async () => {
@@ -4545,15 +4678,7 @@ describe('OrchestratorCore', () => {
     const snapshot = harness.orchestrator.getStateSnapshot();
     expect(snapshot.running.has('i-wait-breaker')).toBe(false);
     expect(snapshot.retry_attempts.has('i-wait-breaker')).toBe(false);
-    expect(snapshot.blocked_inputs.get('i-wait-breaker')).toMatchObject({
-      stop_reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
-      requires_manual_resume: true,
-      attempt_count_window: 1,
-      window_minutes: 30,
-      previous_thread_id: 'thread-breaker',
-      previous_turn_id: 'turn-breaker',
-      previous_session_id: 'thread-breaker-turn-breaker'
-    });
+    expect(snapshot.blocked_inputs.has('i-wait-breaker')).toBe(false);
     expect(snapshot.circuit_breakers.get('i-wait-breaker')).toMatchObject({
       breaker_active: true,
       breaker_hit_count: 1,
@@ -7257,11 +7382,12 @@ describe('OrchestratorCore', () => {
     harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
     await harness.scheduled.get('i-retry-blocked')?.callback();
 
-    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-retry-blocked');
     expect(issueRuns).toHaveLength(1);
-    expect(blocked?.issue_run_id).toBe('issue_run_1');
-    expect(blocked?.previous_attempt_id).toBe('attempt_1');
-    expect(blocked?.previous_turn_id).toBe('turn-0');
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-retry-blocked')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get('i-retry-blocked')).toMatchObject({
+      breaker_active: true,
+      breaker_hit_count: 1
+    });
     expect(transitions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         issue_run_id: 'issue_run_1',
@@ -7271,33 +7397,8 @@ describe('OrchestratorCore', () => {
         reason_code: 'operator_action_required_no_progress_redispatch_blocked'
       })
     ]));
-    expect(blockers).toEqual([
-      expect.objectContaining({
-        issue_run_id: 'issue_run_1',
-        attempt_id: 'attempt_1',
-        thread_id: 'thread-0',
-        turn_id: 'turn-0',
-        blocker_type: 'orchestration_blocker',
-        status: 'active',
-        reason_code: 'operator_action_required_no_progress_redispatch_blocked'
-      })
-    ]);
-    expect(blockedInputEvents).toEqual([
-      expect.objectContaining({
-        issue_run_id: 'issue_run_1',
-        attempt_id: 'attempt_1',
-        thread_id: 'thread-0',
-        turn_id: 'turn-0',
-        issue_id: 'i-retry-blocked',
-        issue_identifier: 'ABC-BLOCK',
-        runtime_state: 'blocked',
-        reason_code: 'operator_action_required_no_progress_redispatch_blocked',
-        state_context: expect.objectContaining({
-          branch_name: null,
-          progress_signals: expect.objectContaining({ commit_sha: 'sha-same' })
-        })
-      })
-    ]);
+    expect(blockers).toEqual([]);
+    expect(blockedInputEvents).toEqual([]);
     expect(harness.spawned.filter((entry) => entry.issue_id === 'i-retry-blocked')).toHaveLength(1);
   });
 
@@ -8885,7 +8986,7 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
-  it('accepts fresh dispatch phases for a resumed attempt after prior attempt reached planning', async () => {
+  it('records blocked-input phase after a prior attempt reached planning', async () => {
     const logEntries: Array<{
       event: string;
       context?: Record<string, string | number | boolean | null | undefined>;
@@ -8911,10 +9012,11 @@ describe('OrchestratorCore', () => {
       event: CANONICAL_EVENT.codex.phasePlanning,
       detail: 'waiting_for_turn_completion elapsed_s=0'
     });
-    await harness.orchestrator.onWorkerExit('i-redispatch', 'abnormal');
-
-    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-redispatch' })]);
-    await harness.orchestrator.onRetryTimer('i-redispatch');
+    await harness.orchestrator.onWorkerExit(
+      'i-redispatch',
+      'abnormal',
+      'tool requestUserInput could not be auto-answered (turn_input_required)'
+    );
     commit = 'sha-2';
     harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
       makeIssue({ id: 'i-redispatch', identifier: 'ABC-1', state: 'In Progress' })
@@ -8930,9 +9032,7 @@ describe('OrchestratorCore', () => {
       '0:dispatch_started',
       '0:workspace_ready',
       '0:planning',
-      '0:failed',
-      '1:dispatch_started',
-      '1:workspace_ready'
+      '1:blocked_input'
     ]);
 
     const ignoredDispatchStartedAttemptOne = logEntries.find(
@@ -8941,6 +9041,6 @@ describe('OrchestratorCore', () => {
         entry.context?.phase === 'dispatch_started' &&
         entry.context?.attempt === 1
     );
-    expect(ignoredDispatchStartedAttemptOne).toBeUndefined();
+    expect(ignoredDispatchStartedAttemptOne?.context?.previous_phase).toBe('blocked_input');
   });
 });

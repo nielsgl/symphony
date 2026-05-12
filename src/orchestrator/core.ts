@@ -4071,41 +4071,61 @@ export class OrchestratorCore {
       const stopReasonDetail = gateEvaluation.awaiting_human_review_scope_incomplete
         ? 'PR is open but scope is incomplete and no progress signal was detected'
         : 'completion gate blocked redispatch because no progress signal was detected';
-      const blockedResult = await this.scheduleBlockedInput({
-        issue_id,
-        issue_identifier: retryEntry.identifier,
-        attempt: retryEntry.attempt,
-        issue_run_id: retryEntry.issue_run_id,
-        previous_attempt_id: retryEntry.previous_attempt_id,
-        worker_host: retryEntry.worker_host ?? null,
-        workspace_path: retryEntry.workspace_path ?? null,
-        provisioner_type: retryEntry.provisioner_type ?? null,
-        branch_name: retryEntry.branch_name ?? null,
-        repo_root: retryEntry.repo_root ?? null,
-        workspace_exists: retryEntry.workspace_exists,
-        workspace_git_status: retryEntry.workspace_git_status,
-        workspace_provisioned: retryEntry.workspace_provisioned,
-        workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
-        copy_ignored_applied: retryEntry.copy_ignored_applied,
-        copy_ignored_status: retryEntry.copy_ignored_status,
-        copy_ignored_summary: retryEntry.copy_ignored_summary,
-        stop_reason_code: stopReasonCode,
-        stop_reason_detail: stopReasonDetail,
-        previous_thread_id: retryEntry.previous_thread_id ?? null,
-        previous_turn_id: retryEntry.previous_turn_id ?? null,
-        previous_session_id: retryEntry.previous_session_id ?? null,
-        attempt_count_window: gateEvaluation.attempt_count_window,
-        window_minutes: gateEvaluation.window_minutes,
-        last_known_commit_sha: gateEvaluation.last_known_commit_sha,
-        last_progress_checkpoint_at: gateEvaluation.last_progress_checkpoint_at,
-        progress_signals: gateEvaluation.progress_signals,
-        required_actions: [
-          'Mark acceptance complete and resume',
-          'Push additional commit and resume',
-          'Cancel and return to backlog'
-        ],
-        apply_circuit_breaker: gateEvaluation.breaker_hit
-      });
+      let blockedResult: { created: boolean };
+      if (gateEvaluation.awaiting_human_review_scope_incomplete) {
+        blockedResult = await this.scheduleBlockedInput({
+          issue_id,
+          issue_identifier: retryEntry.identifier,
+          attempt: retryEntry.attempt,
+          issue_run_id: retryEntry.issue_run_id,
+          previous_attempt_id: retryEntry.previous_attempt_id,
+          worker_host: retryEntry.worker_host ?? null,
+          workspace_path: retryEntry.workspace_path ?? null,
+          provisioner_type: retryEntry.provisioner_type ?? null,
+          branch_name: retryEntry.branch_name ?? null,
+          repo_root: retryEntry.repo_root ?? null,
+          workspace_exists: retryEntry.workspace_exists,
+          workspace_git_status: retryEntry.workspace_git_status,
+          workspace_provisioned: retryEntry.workspace_provisioned,
+          workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
+          copy_ignored_applied: retryEntry.copy_ignored_applied,
+          copy_ignored_status: retryEntry.copy_ignored_status,
+          copy_ignored_summary: retryEntry.copy_ignored_summary,
+          stop_reason_code: stopReasonCode,
+          stop_reason_detail: stopReasonDetail,
+          previous_thread_id: retryEntry.previous_thread_id ?? null,
+          previous_turn_id: retryEntry.previous_turn_id ?? null,
+          previous_session_id: retryEntry.previous_session_id ?? null,
+          attempt_count_window: gateEvaluation.attempt_count_window,
+          window_minutes: gateEvaluation.window_minutes,
+          last_known_commit_sha: gateEvaluation.last_known_commit_sha,
+          last_progress_checkpoint_at: gateEvaluation.last_progress_checkpoint_at,
+          progress_signals: gateEvaluation.progress_signals,
+          required_actions: [
+            'Mark acceptance complete and resume',
+            'Push additional commit and resume',
+            'Cancel and return to backlog'
+          ],
+          apply_circuit_breaker: gateEvaluation.breaker_hit
+        });
+      } else {
+        const existingRetry = this.state.retry_attempts.get(issue_id);
+        if (existingRetry) {
+          this.ports.cancelRetryTimer(existingRetry.timer_handle);
+          this.state.retry_attempts.delete(issue_id);
+        }
+        this.state.claimed.delete(issue_id);
+        await this.upsertCircuitBreaker({
+          issue_id,
+          issue_identifier: retryEntry.identifier,
+          breaker_active: true,
+          breaker_hit_count: Math.max(1, gateEvaluation.attempt_count_window),
+          breaker_window_minutes: Math.max(1, gateEvaluation.window_minutes),
+          breaker_first_hit_at_ms: this.nowMs(),
+          breaker_last_hit_at_ms: this.nowMs()
+        });
+        blockedResult = { created: true };
+      }
       await this.persistExecutionGraphRetryTransition(
         retryEntry,
         'blocked',
@@ -4137,8 +4157,12 @@ export class OrchestratorCore {
               last_known_commit_sha: gateEvaluation.last_known_commit_sha,
               signals: gateEvaluation.progress_signals
             }),
-            next_operator_action: 'issue.resume',
-            next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'
+            next_operator_action: gateEvaluation.awaiting_human_review_scope_incomplete
+              ? 'issue.resume'
+              : 'inspect_no_progress_fault',
+            next_operator_action_endpoint: gateEvaluation.awaiting_human_review_scope_incomplete
+              ? '/api/v1/issues/:issue_identifier/resume'
+              : null
           }
         });
       }
@@ -4163,8 +4187,12 @@ export class OrchestratorCore {
               last_known_commit_sha: gateEvaluation.last_known_commit_sha,
               signals: gateEvaluation.progress_signals
             }),
-            next_operator_action: 'issue.resume',
-            next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'
+            next_operator_action: gateEvaluation.awaiting_human_review_scope_incomplete
+              ? 'issue.resume'
+              : 'inspect_no_progress_fault',
+            next_operator_action_endpoint: gateEvaluation.awaiting_human_review_scope_incomplete
+              ? '/api/v1/issues/:issue_identifier/resume'
+              : null
           }
         });
       }
@@ -4382,10 +4410,10 @@ export class OrchestratorCore {
     if (signals.tracker_comment_created) {
       reasons.push('tracker_comment_created');
     }
-    if (signals.tracker_status_transition) {
+    if (signals.tracker_comment_created && signals.tracker_status_transition) {
       reasons.push('tracker_status_transition');
     }
-    if (signals.agent_review_handoff) {
+    if (signals.tracker_comment_created && signals.tracker_status_transition && signals.agent_review_handoff) {
       reasons.push('agent_review_handoff');
     }
     return reasons;
@@ -4504,6 +4532,7 @@ export class OrchestratorCore {
         severity: 'warn',
         detail: error instanceof Error ? error.message : 'unknown'
       });
+      await this.reconcileStalledRuns();
       return;
     }
 
@@ -7300,7 +7329,11 @@ export class OrchestratorCore {
     }
 
     const handoffProgress = await this.classifyTrackerHandoffProgress(issueId, runningEntry);
-    if (handoffProgress) {
+    if (handoffProgress?.kind === 'unknown') {
+      await this.completeStalledTrackerRefreshUncertain(issueId, runningEntry, handoffProgress.error_detail, observedAtMs, elapsedMs);
+      return;
+    }
+    if (handoffProgress?.kind === 'progress') {
       await this.completeStalledReviewHandoff(issueId, runningEntry, handoffProgress, observedAtMs, elapsedMs);
       return;
     }
@@ -7384,14 +7417,107 @@ export class OrchestratorCore {
     });
   }
 
+  private async completeStalledTrackerRefreshUncertain(
+    issueId: string,
+    runningEntry: RunningEntry,
+    errorDetail: string,
+    observedAtMs: number,
+    elapsedMs: number
+  ): Promise<void> {
+    const detail = [
+      'tracker state refresh failed during stalled-wait recovery',
+      `reason_code=${REASON_CODES.issueStateRefreshFailed}`,
+      `refresh_error=${errorDetail}`,
+      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
+      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
+      `session_id=${runningEntry.session_id ?? 'unknown'}`,
+      `elapsed_wait_ms=${elapsedMs}`,
+      `observed_at_ms=${observedAtMs}`
+    ].join(' ');
+    const terminationResult = await this.ports.terminateWorker({
+      issue_id: issueId,
+      worker_handle: runningEntry.worker_handle,
+      cleanup_workspace: false,
+      reason: REASON_CODES.turnWaitingThresholdExceeded
+    });
+    const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
+
+    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.issueStateRefreshFailed);
+    this.addRuntimeSecondsFromEntry(runningEntry);
+    await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.issueStateRefreshFailed, null, stalledDetail);
+    await this.persistExecutionGraphStateTransition(
+      runningEntry,
+      'failed',
+      'failed',
+      REASON_CODES.issueStateRefreshFailed,
+      stalledDetail
+    );
+    this.state.running.delete(issueId);
+
+    await this.scheduleRetry({
+      issue_id: issueId,
+      identifier: runningEntry.identifier,
+      attempt: runningEntry.retry_attempt + 1,
+      issue_run_id: runningEntry.issue_run_id ?? null,
+      previous_attempt_id: runningEntry.attempt_id ?? null,
+      delay_type: 'failure',
+      error: 'tracker state refresh failed during stalled-wait recovery',
+      worker_host: runningEntry.worker_host ?? null,
+      workspace_path: runningEntry.workspace_path ?? null,
+      provisioner_type: runningEntry.provisioner_type ?? null,
+      branch_name: runningEntry.branch_name ?? null,
+      repo_root: runningEntry.repo_root ?? null,
+      workspace_exists: runningEntry.workspace_exists,
+      workspace_git_status: runningEntry.workspace_git_status,
+      workspace_provisioned: runningEntry.workspace_provisioned,
+      workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
+      copy_ignored_applied: runningEntry.copy_ignored_applied,
+      copy_ignored_status: runningEntry.copy_ignored_status,
+      copy_ignored_summary: runningEntry.copy_ignored_summary,
+      stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+      stop_reason_detail: stalledDetail,
+      previous_thread_id: runningEntry.thread_id,
+      previous_turn_id: runningEntry.turn_id,
+      previous_session_id: runningEntry.session_id,
+      issue_snapshot: runningEntry.issue
+    });
+    this.state.health.last_error = `tracker state refresh failed during stalled-wait recovery for ${runningEntry.identifier}`;
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+      message: 'tracker refresh uncertainty scheduled bounded retry',
+      context: {
+        issue_id: issueId,
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id,
+        elapsed_ms: elapsedMs,
+        stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+        error: errorDetail,
+        ...workerTerminationResultContext(terminationResult)
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: stalledDetail
+    });
+  }
+
   private async classifyTrackerHandoffProgress(
     issueId: string,
     runningEntry: RunningEntry
-  ): Promise<{ issue: Issue; signals: ProgressSignals; reasons: string[] } | null> {
+  ): Promise<
+    | { kind: 'progress'; issue: Issue; signals: ProgressSignals; reasons: string[] }
+    | { kind: 'unknown'; error_detail: string }
+    | null
+  > {
     let refreshed: Issue[];
     try {
       refreshed = await this.ports.tracker.fetch_issue_states_by_ids([issueId]);
     } catch (error) {
+      const errorDetail = error instanceof Error ? error.message : String(error);
       this.logger?.log({
         level: 'warn',
         event: CANONICAL_EVENT.tracker.stateRefreshFailed,
@@ -7399,10 +7525,10 @@ export class OrchestratorCore {
         context: {
           issue_id: issueId,
           issue_identifier: runningEntry.identifier,
-          error: error instanceof Error ? error.message : String(error)
+          error: errorDetail
         }
       });
-      return null;
+      return { kind: 'unknown', error_detail: errorDetail };
     }
 
     const issue = refreshed.find((candidate) => candidate.id === issueId);
@@ -7436,7 +7562,11 @@ export class OrchestratorCore {
       tracker_status_transition: `${startedState} -> ${issue.state}`,
       agent_review_handoff: issue.state
     };
-    return { issue, signals, reasons: this.classifyProgressSignals(signals) };
+    const reasons = this.classifyProgressSignals(signals);
+    if (!reasons.includes('agent_review_handoff')) {
+      return null;
+    }
+    return { kind: 'progress', issue, signals, reasons };
   }
 
   private hasWorkerTrackerCommentSignal(runningEntry: RunningEntry): boolean {

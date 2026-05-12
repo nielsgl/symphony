@@ -1258,9 +1258,9 @@ describe('SnapshotService', () => {
     expect(stateProjection.blocked[0]).toMatchObject({
       issue_identifier: 'ABC-9',
       operator_explainer_hint: {
-        classification: 'blocked_input',
-        actionability: 'required',
-        headline: 'Run is blocked on operator input'
+        classification: 'failed',
+        actionability: 'recommended',
+        headline: 'Redispatch stopped after no progress'
       },
       breaker_active: true,
       breaker_hit_count: 5,
@@ -1272,8 +1272,8 @@ describe('SnapshotService', () => {
     const issueProjection = service.projectIssue(state, 'ABC-9');
     expect(issueProjection.status).toBe('blocked');
     expect(issueProjection.operator_explainer).toMatchObject({
-      classification: 'blocked_input',
-      actionability: 'required',
+      classification: 'failed',
+      actionability: 'recommended',
       reason_code: 'operator_action_required_no_progress_redispatch_blocked'
     });
     expect(issueProjection.blocked?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
