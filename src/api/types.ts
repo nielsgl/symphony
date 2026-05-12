@@ -9,6 +9,7 @@ import type {
   DurableRunHistoryRecord,
   ExecutionGraphThreadLineage,
   PersistenceHealth,
+  ProjectHistoryTicketSummaryPage,
   TicketTimelineRecord,
   UiContinuityState
 } from '../persistence';
@@ -92,6 +93,10 @@ export interface DiagnosticsSource {
     projectKey: string,
     options?: { limit?: number; offset?: number }
   ) => { items: DurableIdentity[]; limit: number; offset: number; has_more: boolean; total: number };
+  listProjectTicketSummaries?: (
+    projectKey: string,
+    options?: { limit?: number; offset?: number }
+  ) => ProjectHistoryTicketSummaryPage;
   getProjectTicketIdentity?: (projectKey: string, ticketKey: string) => DurableIdentity | null;
   reconstructTicketTimeline?: (identity: DurableIdentity) => TicketTimelineRecord;
   getLoggingHealth(): {

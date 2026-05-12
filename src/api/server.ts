@@ -2,7 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 
 import { REASON_CODES, type StructuredLogger } from '../observability';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../observability/events';
-import type { DurableRunHistoryRecord, TicketTimelineRecord } from '../persistence';
+import type { DurableRunHistoryRecord, ProjectHistoryTicketSummaryProjection } from '../persistence';
 import { redactUnknown } from '../security/redaction';
 import { ControlPlaneHealthRecorder, type ControlPlaneHealthState, type ControlPlaneObservation } from './control-plane-health';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
@@ -1387,7 +1387,7 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (request, response, match) => {
-              if (!this.diagnosticsSource?.listProjectTicketIdentities || !this.diagnosticsSource.reconstructTicketTimeline) {
+              if (!this.diagnosticsSource?.listProjectTicketSummaries) {
                 throw new LocalApiError('project_history_unavailable', 'Project ticket history source is not configured', 503);
               }
 
@@ -1395,13 +1395,12 @@ export class LocalApiServer {
               const requestUrl = new URL(request.url ?? '/', 'http://localhost');
               const limit = parseBoundedPositiveInteger(requestUrl.searchParams.get('limit'), 50, 100);
               const offset = parseNonNegativeInteger(requestUrl.searchParams.get('offset'));
-              const page = this.diagnosticsSource.listProjectTicketIdentities(projectKey, { limit, offset });
-              const timelines = page.items.map((identity) => this.diagnosticsSource!.reconstructTicketTimeline!(identity));
+              const page = this.diagnosticsSource.listProjectTicketSummaries(projectKey, { limit, offset });
               const persistenceHealth = this.diagnosticsSource.getPersistenceHealth();
 
               sendJson(response, 200, buildProjectHistoryListResponse({
                 projectKey,
-                timelines,
+                summaries: page.items,
                 page: {
                   limit: page.limit,
                   offset: page.offset,
@@ -1431,18 +1430,15 @@ export class LocalApiServer {
               }
 
               const projectKey = decodeURIComponent(match[1]);
-              const projectionAvailable = !!(
-                this.diagnosticsSource.listProjectTicketIdentities &&
-                this.diagnosticsSource.reconstructTicketTimeline
-              );
-              let timelines: TicketTimelineRecord[] = [];
+              const projectionAvailable = !!this.diagnosticsSource.listProjectTicketSummaries;
+              let summaries: ProjectHistoryTicketSummaryProjection[] = [];
               let ticketCount: number | null = null;
               let projectionFailureReasonCode: string | null = null;
               let projectionFailureDetail: string | null = null;
               if (projectionAvailable) {
                 try {
-                  const page = this.diagnosticsSource.listProjectTicketIdentities!(projectKey, { limit: 100, offset: 0 });
-                  timelines = page.items.map((identity) => this.diagnosticsSource!.reconstructTicketTimeline!(identity));
+                  const page = this.diagnosticsSource.listProjectTicketSummaries!(projectKey, { limit: 100, offset: 0 });
+                  summaries = page.items;
                   ticketCount = page.total;
                 } catch (error) {
                   projectionFailureReasonCode = 'project_history_projection_failed';
@@ -1454,7 +1450,7 @@ export class LocalApiServer {
 
               sendJson(response, 200, buildProjectHistoryHealth({
                 persistenceHealth: this.diagnosticsSource.getPersistenceHealth(),
-                timelines,
+                summaries,
                 ticketCount,
                 projectionAvailable: projectionAvailable && projectionFailureReasonCode === null,
                 projectionFailureReasonCode,

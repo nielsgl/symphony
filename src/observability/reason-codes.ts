@@ -91,6 +91,7 @@ export const REASON_CODES = {
   projectHistoryOperationalFactsMissing: 'project_history_operational_facts_missing',
   projectHistoryTokenModelSummariesMissing: 'project_history_token_model_summaries_missing',
   projectHistoryAppServerLiteSummariesMissing: 'project_history_app_server_lite_summaries_missing',
+  projectHistoryAppServerLiteDegraded: 'project_history_app_server_lite_degraded',
   projectHistoryPayloadRedacted: 'project_history_payload_redacted',
   projectHistoryPayloadTruncated: 'project_history_payload_truncated',
   liveTokenFallbackNotOnHotPath: 'live_token_fallback_not_on_hot_path',
@@ -779,6 +780,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'App-server-lite summaries are missing',
     detail: 'The ticket history exists, but app-server-lite summary events were not recorded for this ticket.',
     expected_transition: 'Future app-server-lite events may fill this fact'
+  },
+  [REASON_CODES.projectHistoryAppServerLiteDegraded]: {
+    reason_code: REASON_CODES.projectHistoryAppServerLiteDegraded,
+    classification: 'failed',
+    actionability: 'recommended',
+    recommended_actions: ['Inspect app-server-lite payload policy metadata for malformed or full-payload-stored events'],
+    label: 'Project History App Server Lite Degraded',
+    headline: 'App-server-lite payload policy is degraded',
+    detail: 'One or more project history app-server-lite events had malformed payload policy metadata or stored a full payload.',
+    expected_transition: 'Future app-server-lite writes should preserve summary-only or redacted payload policy metadata'
   },
   [REASON_CODES.projectHistoryPayloadRedacted]: {
     reason_code: REASON_CODES.projectHistoryPayloadRedacted,
