@@ -1159,7 +1159,7 @@ describe('OrchestratorCore', () => {
     harness.orchestrator.onWorkerEvent('i-status-only-handback', {
       timestamp_ms: harness.now.value + 20,
       event: CANONICAL_EVENT.codex.turnWaiting,
-      detail: 'waiting for rate limit',
+      detail: 'waiting for rate limit before I can post the review comment',
       thread_id: 'review-thread',
       turn_id: 'review-turn',
       session_id: 'review-session'
@@ -1220,15 +1220,30 @@ describe('OrchestratorCore', () => {
       turn_id: 'unknown-turn',
       session_id: 'unknown-session'
     });
+    harness.orchestrator.onWorkerEvent('i-refresh-unknown', {
+      timestamp_ms: harness.now.value + 30,
+      event: 'linear.comment.created',
+      detail: 'Agent Review findings: routing back to In Progress',
+      tool_name: 'save_comment',
+      request_category: 'linear',
+      thread_id: 'unknown-thread',
+      turn_id: 'unknown-turn',
+      session_id: 'unknown-session'
+    });
 
     harness.now.value += 2_000;
     harness.tracker.fetch_issue_states_by_ids.mockRejectedValue(new Error('Linear request failed: AbortError'));
     await harness.orchestrator.reconcileRunningIssues();
 
     const snapshot = harness.orchestrator.getStateSnapshot();
+    const retry = snapshot.retry_attempts.get('i-refresh-unknown');
     expect(snapshot.blocked_inputs.has('i-refresh-unknown')).toBe(false);
-    expect(snapshot.retry_attempts.get('i-refresh-unknown')?.stop_reason_code).toBe(REASON_CODES.issueStateRefreshFailed);
-    expect(snapshot.retry_attempts.get('i-refresh-unknown')?.stop_reason_detail).toContain('AbortError');
+    expect(retry?.stop_reason_code).toBe(REASON_CODES.issueStateRefreshFailed);
+    expect(retry?.stop_reason_detail).toContain('AbortError');
+    expect(retry?.progress_signals).toMatchObject({
+      tracker_comment_created: true,
+      tracker_started_state: 'Agent Review'
+    });
     expect(harness.spawned).toHaveLength(1);
     expect(logs.some((entry) => entry.event === CANONICAL_EVENT.tracker.stateRefreshFailed)).toBe(true);
     expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)).toBe(false);

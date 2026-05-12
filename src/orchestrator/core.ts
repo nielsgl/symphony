@@ -7469,7 +7469,8 @@ export class OrchestratorCore {
       previous_turn_id: runningEntry.turn_id,
       previous_session_id: runningEntry.session_id,
       last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
-      issue_snapshot: runningEntry.issue
+      issue_snapshot: runningEntry.issue,
+      progress_signals: runningEntry.progress_signals
     });
     this.state.health.last_error = `turn waiting threshold exceeded for ${runningEntry.identifier}`;
     this.logger?.log({
@@ -7556,7 +7557,8 @@ export class OrchestratorCore {
       previous_thread_id: runningEntry.thread_id,
       previous_turn_id: runningEntry.turn_id,
       previous_session_id: runningEntry.session_id,
-      issue_snapshot: runningEntry.issue
+      issue_snapshot: runningEntry.issue,
+      progress_signals: runningEntry.progress_signals
     });
     this.state.health.last_error = `tracker state refresh failed during stalled-wait recovery for ${runningEntry.identifier}`;
     this.logger?.log({
@@ -7646,16 +7648,7 @@ export class OrchestratorCore {
       return true;
     }
     return runningEntry.recent_events.some((event) => {
-      const text = [event.event, event.message, event.tool_name, event.request_method, event.request_category]
-        .filter((value): value is string => typeof value === 'string')
-        .join(' ')
-        .toLowerCase();
-      return (
-        text.includes('save_comment') ||
-        text.includes('create_comment') ||
-        text.includes('linear comment') ||
-        text.includes('review comment')
-      );
+      return this.workerEventLooksLikeTrackerComment(event);
     });
   }
 
@@ -7676,22 +7669,25 @@ export class OrchestratorCore {
     };
   }
 
-  private workerEventLooksLikeTrackerComment(workerEvent: WorkerObservabilityEvent): boolean {
-    const text = [
-      workerEvent.event,
-      workerEvent.detail,
-      workerEvent.tool_name,
-      workerEvent.request_method,
-      workerEvent.request_category
-    ]
-      .filter((value): value is string => typeof value === 'string')
-      .join(' ')
-      .toLowerCase();
+  private workerEventLooksLikeTrackerComment(
+    workerEvent: Pick<WorkerObservabilityEvent, 'event' | 'tool_name' | 'request_method' | 'request_category'>
+  ): boolean {
+    const event = workerEvent.event?.toLowerCase() ?? '';
+    const toolName = workerEvent.tool_name?.toLowerCase() ?? '';
+    const requestMethod = workerEvent.request_method?.toLowerCase() ?? '';
+    const requestCategory = workerEvent.request_category?.toLowerCase() ?? '';
+
+    if (event === 'linear.comment.created' || event === 'linear.comment.updated') {
+      return true;
+    }
+
+    const looksLikeLinearRequest = requestCategory === 'linear' || event.startsWith('linear.');
     return (
-      text.includes('save_comment') ||
-      text.includes('create_comment') ||
-      text.includes('linear comment') ||
-      text.includes('review comment')
+      looksLikeLinearRequest &&
+      (toolName === 'save_comment' ||
+        toolName === 'create_comment' ||
+        requestMethod === 'save_comment' ||
+        requestMethod === 'create_comment')
     );
   }
 
