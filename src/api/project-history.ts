@@ -67,8 +67,15 @@ export interface ProjectHistoryHealth {
     status: 'healthy' | 'degraded' | 'missing';
     redacted_event_count: number;
     truncated_event_count: number;
+    summary_only_event_count: number;
     unavailable_event_count: number;
     full_payload_stored_count: number;
+    degraded_event_count: number;
+    unavailable_reasons: Array<{
+      reason_code: string;
+      count: number;
+      classification: 'expected_policy' | 'failure';
+    }>;
   };
   diagnostics: ProjectHistoryFactState[];
 }
@@ -345,7 +352,9 @@ export function buildProjectHistoryConsumerSummaryResponse(
     resolved_at: blocker.resolved_at
   }));
   const recentTokenFacts = latestItems(timeline.token_model_facts, (fact) => fact.observed_at, 5);
-  const appServerExcerpts = latestItems(timeline.app_server_events, (event) => event.observed_at, 5).map((event) => ({
+  const recentAppServerEvents = latestItems(timeline.app_server_events, (event) => event.observed_at, 5);
+  const appServerPolicy = classifyAppServerLitePolicy(recentAppServerEvents);
+  const appServerExcerpts = recentAppServerEvents.map((event) => ({
     source_event_id: event.source_event_id,
     source_event_name: event.source_event_name,
     observed_at: event.observed_at,
@@ -410,7 +419,7 @@ export function buildProjectHistoryConsumerSummaryResponse(
       status:
         appServerExcerpts.length === 0
           ? 'missing'
-          : appServerExcerpts.some((event) => event.unavailable_reason_code || event.truncated || event.redaction_status !== 'not_required')
+          : appServerPolicy.degradedEventCount > 0
             ? 'degraded'
             : 'present',
       excerpts: appServerExcerpts
@@ -439,8 +448,18 @@ export function buildProjectHistoryHealth(params: {
   const historySchema = params.historySchemaHealth ?? persistenceHealth?.history_schema ?? null;
   const recentFailures = persistenceHealth?.recent_write_failures ?? [];
   const appServerEvents = timelines.flatMap((timeline) => timeline.app_server_events);
+  const appServerPolicy = classifyAppServerLitePolicy(appServerEvents);
+  const expectedAppServerUnavailableReasons = new Set(
+    appServerPolicy.unavailableReasons
+      .filter((reason) => reason.classification === 'expected_policy')
+      .map((reason) => reason.reason_code)
+  );
   const projectionFacts = timelines.flatMap((timeline) => timelineFacts(timeline, historySchema));
-  const projectionDegradedFact = projectionFacts.find((fact) => fact.status === 'degraded' || fact.status === 'unavailable');
+  const projectionDegradedFact = projectionFacts.find(
+    (fact) =>
+      (fact.status === 'degraded' || fact.status === 'unavailable') &&
+      !isExpectedAppServerPayloadPolicyFact(fact, expectedAppServerUnavailableReasons)
+  );
   const projectionMissingFact = projectionFacts.find((fact) => fact.status === 'missing');
   const projectionReason =
     params.projectionFailureReasonCode ?? projectionDegradedFact?.reason_code ?? projectionMissingFact?.reason_code ?? null;
@@ -451,14 +470,10 @@ export function buildProjectHistoryHealth(params: {
     : projectionReason
       ? 'degraded'
       : 'healthy';
-  const redactedEventCount = appServerEvents.filter((event) => event.redaction_status === 'redacted').length;
-  const truncatedEventCount = appServerEvents.filter((event) => event.truncation.truncated).length;
-  const unavailableEventCount = appServerEvents.filter((event) => event.unavailable_reason_code).length;
-  const fullPayloadStoredCount = appServerEvents.filter((event) => event.full_payload_stored).length;
   const appServerStatus: ProjectHistoryHealth['app_server_lite']['status'] =
     appServerEvents.length === 0
       ? 'missing'
-      : redactedEventCount > 0 || truncatedEventCount > 0 || unavailableEventCount > 0 || fullPayloadStoredCount > 0
+      : appServerPolicy.degradedEventCount > 0
         ? 'degraded'
         : 'healthy';
   const schemaStatus = historySchema?.status ?? (persistenceHealth?.enabled === false ? 'unavailable' : 'unavailable');
@@ -512,8 +527,12 @@ export function buildProjectHistoryHealth(params: {
           : appServerStatus === 'degraded'
             ? 'project_history_app_server_lite_degraded'
             : null,
-      detail: appServerStatus === 'degraded' ? `redacted=${redactedEventCount} truncated=${truncatedEventCount} unavailable=${unavailableEventCount}` : null
-    }
+      detail:
+        appServerStatus === 'missing'
+          ? null
+          : `redacted=${appServerPolicy.redactedEventCount} truncated=${appServerPolicy.truncatedEventCount} summary_only=${appServerPolicy.summaryOnlyEventCount} unavailable=${appServerPolicy.unavailableEventCount} full_payload_stored=${appServerPolicy.fullPayloadStoredCount} degraded=${appServerPolicy.degradedEventCount}`
+    },
+    ...appServerFactStates(appServerEvents).filter((fact) => fact.fact === 'app_server_lite_payload')
   ];
 
   return {
@@ -556,13 +575,111 @@ export function buildProjectHistoryHealth(params: {
     },
     app_server_lite: {
       status: appServerStatus,
-      redacted_event_count: redactedEventCount,
-      truncated_event_count: truncatedEventCount,
-      unavailable_event_count: unavailableEventCount,
-      full_payload_stored_count: fullPayloadStoredCount
+      redacted_event_count: appServerPolicy.redactedEventCount,
+      truncated_event_count: appServerPolicy.truncatedEventCount,
+      summary_only_event_count: appServerPolicy.summaryOnlyEventCount,
+      unavailable_event_count: appServerPolicy.unavailableEventCount,
+      full_payload_stored_count: appServerPolicy.fullPayloadStoredCount,
+      degraded_event_count: appServerPolicy.degradedEventCount,
+      unavailable_reasons: appServerPolicy.unavailableReasons
     },
     diagnostics
   };
+}
+
+function classifyAppServerLitePolicy(events: AppServerEventLedgerExcerpt[]): {
+  redactedEventCount: number;
+  truncatedEventCount: number;
+  summaryOnlyEventCount: number;
+  unavailableEventCount: number;
+  fullPayloadStoredCount: number;
+  degradedEventCount: number;
+  unavailableReasons: ProjectHistoryHealth['app_server_lite']['unavailable_reasons'];
+} {
+  const unavailableReasons = new Map<string, { count: number; classification: 'expected_policy' | 'failure' }>();
+  let redactedEventCount = 0;
+  let truncatedEventCount = 0;
+  let summaryOnlyEventCount = 0;
+  let unavailableEventCount = 0;
+  let fullPayloadStoredCount = 0;
+  let degradedEventCount = 0;
+
+  for (const event of events) {
+    if (event.redaction_status === 'redacted') {
+      redactedEventCount += 1;
+    }
+    if (event.truncation.truncated) {
+      truncatedEventCount += 1;
+    }
+    if (event.detail_status === 'summary_only') {
+      summaryOnlyEventCount += 1;
+    }
+    if (event.full_payload_stored) {
+      fullPayloadStoredCount += 1;
+    }
+
+    const unavailableClassification = classifyUnavailablePolicy(event);
+    if (event.unavailable_reason_code) {
+      unavailableEventCount += 1;
+      const existing = unavailableReasons.get(event.unavailable_reason_code);
+      unavailableReasons.set(event.unavailable_reason_code, {
+        count: (existing?.count ?? 0) + 1,
+        classification:
+          existing?.classification === 'failure' || unavailableClassification === 'failure'
+            ? 'failure'
+            : unavailableClassification
+      });
+    }
+
+    if (event.full_payload_stored || unavailableClassification === 'failure' || hasMalformedPayloadPolicyMetadata(event)) {
+      degradedEventCount += 1;
+    }
+  }
+
+  return {
+    redactedEventCount,
+    truncatedEventCount,
+    summaryOnlyEventCount,
+    unavailableEventCount,
+    fullPayloadStoredCount,
+    degradedEventCount,
+    unavailableReasons: [...unavailableReasons.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([reason_code, value]) => ({ reason_code, ...value }))
+  };
+}
+
+function classifyUnavailablePolicy(event: AppServerEventLedgerExcerpt): 'expected_policy' | 'failure' {
+  if (!event.unavailable_reason_code) {
+    return 'expected_policy';
+  }
+  return event.detail_status === 'unavailable_policy' && event.redaction_status === 'unavailable_policy' ? 'expected_policy' : 'failure';
+}
+
+function hasMalformedPayloadPolicyMetadata(event: AppServerEventLedgerExcerpt): boolean {
+  if (!Number.isFinite(event.policy_version) || event.policy_version < 1) {
+    return true;
+  }
+  if (event.detail_status === 'unavailable_policy') {
+    return event.redaction_status !== 'unavailable_policy' || !event.unavailable_reason_code;
+  }
+  if (event.detail_status === 'unavailable_source') {
+    return event.redaction_status !== 'unavailable_source' || !event.unavailable_reason_code;
+  }
+  if (event.unavailable_reason_code) {
+    return true;
+  }
+  return false;
+}
+
+function isExpectedAppServerPayloadPolicyFact(fact: ProjectHistoryFactState, expectedUnavailableReasons: Set<string>): boolean {
+  if (fact.fact !== 'app_server_lite_payload') {
+    return false;
+  }
+  if (fact.status === 'redacted' || fact.status === 'truncated') {
+    return true;
+  }
+  return fact.status === 'unavailable' && fact.reason_code !== null && expectedUnavailableReasons.has(fact.reason_code);
 }
 
 function buildProjectHistoryTicketRow(

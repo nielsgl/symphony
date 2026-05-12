@@ -4314,7 +4314,7 @@ describe('LocalApiServer', () => {
       attempts: { total: 1, repeated: false },
       blockers: { resolved_count: 1 },
       token_model: { status: 'present', total_tokens: 42, effective_models: ['gpt-5.4'] },
-      app_server_lite: { status: 'degraded' }
+      app_server_lite: { status: 'present' }
     });
     expect(consumerSummaryPayload.recent_phases).toHaveLength(1);
     expect(consumerSummaryPayload.app_server_lite.excerpts).toHaveLength(1);
@@ -4325,14 +4325,14 @@ describe('LocalApiServer', () => {
       status: string;
       writes: { status: string };
       projections: { status: string };
-      app_server_lite: { status: string; redacted_event_count: number; truncated_event_count: number };
+      app_server_lite: { status: string; redacted_event_count: number; truncated_event_count: number; summary_only_event_count: number };
     };
     expect(healthResponse.status).toBe(200);
     expect(healthPayload).toMatchObject({
       status: 'degraded',
       writes: { status: 'healthy' },
       projections: { status: 'degraded' },
-      app_server_lite: { status: 'degraded', redacted_event_count: 1, truncated_event_count: 1 }
+      app_server_lite: { status: 'healthy', redacted_event_count: 1, truncated_event_count: 1, summary_only_event_count: 0 }
     });
 
     const missingSummaryResponse = await fetch(
