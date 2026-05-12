@@ -96,6 +96,7 @@ interface ScheduleRetryParams {
   previous_thread_id?: string | null;
   previous_turn_id?: string | null;
   previous_session_id?: string | null;
+  last_progress_checkpoint_at?: number | null;
   issue_snapshot?: Issue | null;
   progress_signals?: {
     commit_sha: string | null;
@@ -530,6 +531,7 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     previous_thread_id: entry.previous_thread_id,
     previous_turn_id: entry.previous_turn_id ?? null,
     previous_session_id: entry.previous_session_id,
+    last_progress_checkpoint_at: entry.last_progress_checkpoint_at ?? null,
     last_phase: entry.last_phase,
     last_phase_at_ms: entry.last_phase_at_ms,
     last_phase_detail: entry.last_phase_detail,
@@ -1504,14 +1506,6 @@ export class OrchestratorCore {
     this.maybeEmitBudgetTelemetryUnavailable(runningEntry, workerEvent);
     this.maybeEnforceBudget(issue_id, runningEntry, workerEvent.timestamp_ms);
 
-    if (
-      workerEvent.event === CANONICAL_EVENT.codex.turnWaiting ||
-      runningEntry.running_waiting_started_at_ms != null ||
-      this.hasOutstandingToolCallEvidence(runningEntry)
-    ) {
-      void this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
-    }
-
     if (workerEvent.rate_limits) {
       this.state.codex_rate_limits = { ...workerEvent.rate_limits };
       runningEntry.rate_limits = { ...workerEvent.rate_limits };
@@ -1620,6 +1614,14 @@ export class OrchestratorCore {
     });
     if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
       this.emitMappedPhaseMarker(issue_id, workerEvent);
+    }
+
+    if (
+      workerEvent.event === CANONICAL_EVENT.codex.turnWaiting ||
+      runningEntry.running_waiting_started_at_ms != null ||
+      this.hasOutstandingToolCallEvidence(runningEntry)
+    ) {
+      void this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
     }
   }
 
@@ -4101,11 +4103,10 @@ export class OrchestratorCore {
         last_known_commit_sha: gateEvaluation.last_known_commit_sha,
         last_progress_checkpoint_at: gateEvaluation.last_progress_checkpoint_at,
         progress_signals: gateEvaluation.progress_signals,
-        required_actions: [
-          'Mark acceptance complete and resume',
-          'Push additional commit and resume',
-          'Cancel and return to backlog'
-        ],
+        required_actions:
+          retryEntry.stop_reason_code === REASON_CODES.turnWaitingThresholdExceeded
+            ? ['Inspect issue diagnostics', 'Resume manually after confirming meaningful progress path', 'Cancel and return to backlog']
+            : ['Mark acceptance complete and resume', 'Push additional commit and resume', 'Cancel and return to backlog'],
         apply_circuit_breaker: gateEvaluation.breaker_hit
       });
       await this.persistExecutionGraphRetryTransition(
@@ -4344,7 +4345,7 @@ export class OrchestratorCore {
       attempt_count_window: attemptCountWindow,
       window_minutes: windowMinutes,
       last_known_commit_sha: sample.commit_sha,
-      last_progress_checkpoint_at: noProgress ? null : sample.at_ms,
+      last_progress_checkpoint_at: noProgress ? retryEntry.last_progress_checkpoint_at ?? null : sample.at_ms,
       progress_signals: currentSignals
     };
   }
@@ -4966,6 +4967,31 @@ export class OrchestratorCore {
   }
 
   private recordDuplicateDispatchSkipped(issue: Issue, retryAttempt: number): void {
+    const runningEntry = this.state.running.get(issue.id);
+    if (runningEntry) {
+      const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
+      const waitingStartedAtMs = runningEntry.running_waiting_started_at_ms ?? null;
+      const lastMeaningfulActivityAtMs =
+        waitingStartedAtMs !== null &&
+        typeof runningEntry.last_progress_transition_at_ms === 'number' &&
+        runningEntry.last_progress_transition_at_ms > waitingStartedAtMs
+          ? runningEntry.last_progress_transition_at_ms
+          : waitingStartedAtMs;
+      if (
+        runningEntry.stalled_waiting_reason === REASON_CODES.turnWaitingThresholdExceeded ||
+        (waitThresholdMs > 0 &&
+          lastMeaningfulActivityAtMs !== null &&
+          this.nowMs() >= lastMeaningfulActivityAtMs + waitThresholdMs)
+      ) {
+        void this.maybeClassifyRunningWaitStall(issue.id, runningEntry, this.nowMs());
+        return;
+      }
+    }
+    const retryEntry = this.state.retry_attempts.get(issue.id);
+    if (retryEntry?.stop_reason_code === REASON_CODES.turnWaitingThresholdExceeded) {
+      return;
+    }
+
     this.logger?.log({
       level: 'warn',
       event: CANONICAL_EVENT.orchestration.dispatchDuplicateSkipped,
@@ -5187,6 +5213,7 @@ export class OrchestratorCore {
       previous_thread_id: params.previous_thread_id ?? null,
       previous_turn_id: params.previous_turn_id ?? null,
       previous_session_id: params.previous_session_id ?? null,
+      last_progress_checkpoint_at: params.last_progress_checkpoint_at ?? null,
       last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
       last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
@@ -7273,6 +7300,7 @@ export class OrchestratorCore {
       previous_thread_id: runningEntry.thread_id,
       previous_turn_id: runningEntry.turn_id,
       previous_session_id: runningEntry.session_id,
+      last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
       issue_snapshot: runningEntry.issue
     });
     this.state.health.last_error = `turn waiting threshold exceeded for ${runningEntry.identifier}`;

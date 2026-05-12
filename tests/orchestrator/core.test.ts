@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { OrchestratorCore } from '../../src/orchestrator/core';
+import { LocalApiServer } from '../../src/api';
 import { SnapshotService } from '../../src/api/snapshot-service';
 import type {
   OrchestratorConfig,
@@ -4211,6 +4212,198 @@ describe('OrchestratorCore', () => {
     expect(retryEntry?.previous_session_id).toBe('thread-phase-turn-1');
     expect(snapshot.blocked_inputs.has('i-wait-phase')).toBe(false);
   });
+
+  it('replays the NIE-146 heartbeat-only stall through API-visible retry and manual-resume states', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        progress_heartbeat_only_warn_ms: 500,
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 60_000,
+        respawn_window_minutes: 30,
+        respawn_max_attempts_without_progress: 1
+      },
+      spawnWorker: async ({ issue, attempt, worker_host, resume_context }) => {
+        const worker_instance_id = `${issue.id}-worker-${harness.spawned.length + 1}`;
+        harness.spawned.push({ issue_id: issue.id, attempt, worker_host, resume_context });
+        return {
+          ok: true,
+          worker_handle: { issue_id: issue.id, worker_instance_id },
+          worker_instance_id,
+          monitor_handle: { issue_id: issue.id },
+          workspace_path: '/tmp/symphony-workspaces/i-nie-146-replay',
+          provisioner_type: 'git-worktree',
+          branch_name: 'feature/NIE-146',
+          repo_root: '/repo/symphony',
+          workspace_exists: true,
+          workspace_git_status: 'dirty',
+          workspace_provisioned: true,
+          workspace_is_git_worktree: true
+        };
+      }
+    });
+    const issue = makeIssue({ id: 'i-nie-146-replay', identifier: 'NIE-146' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+
+    const server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: (options) => harness.orchestrator.getStateSnapshot(options)
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      nowMs: () => harness.now.value
+    });
+    await server.listen();
+    try {
+      const address = server.address();
+      const fetchJson = async (pathName: string) => {
+        const response = await fetch(`http://127.0.0.1:${address.port}${pathName}`, {
+          headers: { connection: 'close' }
+        });
+        return {
+          response,
+          payload: (await response.json()) as Record<string, unknown>
+        };
+      };
+
+      harness.orchestrator.onWorkerEvent('i-nie-146-replay', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        detail: 'turn started after build failure context',
+        thread_id: 'thread-nie-146',
+        turn_id: 'turn-nie-146',
+        session_id: 'session-nie-146'
+      });
+      harness.now.value += 100;
+      harness.orchestrator.onWorkerEvent('i-nie-146-replay', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.phaseValidation,
+        detail: 'npm run build failed before the live stall began',
+        thread_id: 'thread-nie-146',
+        turn_id: 'turn-nie-146',
+        session_id: 'session-nie-146'
+      });
+      harness.now.value += 100;
+      harness.orchestrator.onWorkerEvent('i-nie-146-replay', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting_for_turn_completion elapsed_s=0',
+        thread_id: 'thread-nie-146',
+        turn_id: 'turn-nie-146',
+        session_id: 'session-nie-146'
+      });
+      harness.now.value += 600;
+      harness.orchestrator.onWorkerEvent('i-nie-146-replay', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.phasePlanning,
+        detail: 'waiting_for_turn_completion elapsed_s=1',
+        thread_id: 'thread-nie-146',
+        turn_id: 'turn-nie-146',
+        session_id: 'session-nie-146'
+      });
+      harness.orchestrator.onWorkerEvent('i-nie-146-replay', {
+        timestamp_ms: harness.now.value + 1,
+        event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+        detail: 'rate limits updated during wait loop',
+        thread_id: 'thread-nie-146',
+        turn_id: 'turn-nie-146',
+        session_id: 'session-nie-146',
+        rate_limits: {
+          primary: {
+            used_percent: 97,
+            window_minutes: 300,
+            resets_at: harness.now.value + 600_000
+          }
+        }
+      });
+      await harness.orchestrator.tick('manual_refresh');
+
+      const heartbeatState = await fetchJson('/api/v1/state');
+      expect(heartbeatState.response.status).toBe(200);
+      expect(((heartbeatState.payload.running as Array<Record<string, unknown>>)[0] ?? {}).progress_signal_state).toBe('heartbeat_only');
+      expect(harness.orchestrator.getStateSnapshot().recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.progress.heartbeatOnlyDetected)).toBe(
+        true
+      );
+      expect(harness.orchestrator.getStateSnapshot().recent_runtime_events.some((event) => event.event === CANONICAL_EVENT.orchestration.dispatchDuplicateSkipped)).toBe(
+        true
+      );
+
+      harness.now.value += 700;
+      harness.orchestrator.onWorkerEvent('i-nie-146-replay', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting_for_turn_completion elapsed_s=2',
+        thread_id: 'thread-nie-146',
+        turn_id: 'turn-nie-146',
+        session_id: 'session-nie-146'
+      });
+      harness.orchestrator.onWorkerEvent('i-nie-146-replay', {
+        timestamp_ms: harness.now.value + 1,
+        event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+        detail: 'rate limits updated again during wait loop',
+        thread_id: 'thread-nie-146',
+        turn_id: 'turn-nie-146',
+        session_id: 'session-nie-146',
+        rate_limits: {
+          primary: {
+            used_percent: 98,
+            window_minutes: 300,
+            resets_at: harness.now.value + 600_000
+          }
+        }
+      });
+      await harness.orchestrator.tick('interval');
+
+      const retryState = await fetchJson('/api/v1/state');
+      expect(retryState.response.status).toBe(200);
+      expect(retryState.payload.running).toEqual([]);
+      expect((retryState.payload.retrying as Array<Record<string, unknown>>)[0]).toMatchObject({
+        issue_identifier: 'NIE-146',
+        stop_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+        previous_thread_id: 'thread-nie-146',
+        previous_session_id: 'session-nie-146'
+      });
+      expect((retryState.payload.recent_runtime_events as Array<Record<string, unknown>>).at(-1)?.event).not.toBe(
+        CANONICAL_EVENT.orchestration.dispatchDuplicateSkipped
+      );
+
+      const retryDiagnostics = await fetchJson('/api/v1/issues/NIE-146/diagnostics');
+      expect(retryDiagnostics.response.status).toBe(200);
+      expect(retryDiagnostics.payload.current_blocker).toMatchObject({
+        classification: 'retry_backoff_wait',
+        reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+        recommended_actions: expect.arrayContaining(['Wait for the scheduled retry or manually resume if the backoff should be bypassed.'])
+      });
+      expect(retryDiagnostics.payload.last_meaningful_progress_at_ms).toBe(1_000_100);
+
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+      await harness.orchestrator.onRetryTimer('i-nie-146-replay');
+
+      const blockedState = await fetchJson('/api/v1/state');
+      expect(blockedState.response.status).toBe(200);
+      expect((blockedState.payload.blocked as Array<Record<string, unknown>>)[0]).toMatchObject({
+        issue_identifier: 'NIE-146',
+        requires_manual_resume: true,
+        stop_reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+        previous_thread_id: 'thread-nie-146',
+        previous_session_id: 'session-nie-146',
+        last_progress_checkpoint_at: '1970-01-01T00:16:40.100Z',
+        required_actions: expect.arrayContaining(['Inspect issue diagnostics', 'Resume manually after confirming meaningful progress path'])
+      });
+
+      const blockedDiagnostics = await fetchJson('/api/v1/issues/NIE-146/diagnostics');
+      expect(blockedDiagnostics.response.status).toBe(200);
+      expect(blockedDiagnostics.payload.current_blocker).toMatchObject({
+        reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+        recommended_actions: expect.any(Array)
+      });
+      expect(blockedDiagnostics.payload.last_meaningful_progress_at_ms).toBe(1_000_100);
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
 
   it('recovers live stalled waiting turns by terminating ownership and scheduling retry with workspace metadata', async () => {
     const completedRuns: Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0][] = [];

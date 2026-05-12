@@ -365,6 +365,10 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
         }
       ]
     : [];
+  const retryTimeSinceProgress =
+    typeof retry?.last_progress_checkpoint_at === 'number' ? Math.max(0, nowMs - retry.last_progress_checkpoint_at) : null;
+  const blockedTimeSinceProgress =
+    typeof blocked?.last_progress_checkpoint_at === 'number' ? Math.max(0, nowMs - blocked.last_progress_checkpoint_at) : null;
   const currentBlocker = blocked
     ? classifyThreadBlocker({
         reason_code: blocked.stop_reason_code,
@@ -372,7 +376,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
         status: 'blocked',
         has_conflict_files: blocked.conflict_files.length > 0,
         has_pending_input: Boolean(blocked.pending_input),
-        time_since_progress: null,
+        time_since_progress: blockedTimeSinceProgress,
         tool_output_wait: blocked.tool_output_wait ?? null,
         missing_tool_output_recovery: projectMissingToolOutputRecovery(blocked)
       })
@@ -382,7 +386,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
           reason_detail: retry.stop_reason_detail ?? retry.error,
           status: 'retrying',
           retrying: true,
-          time_since_progress: null,
+          time_since_progress: retryTimeSinceProgress,
           missing_tool_output_recovery: projectMissingToolOutputRecovery(retry)
         })
       : classifyThreadBlocker({
@@ -401,6 +405,17 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
               : null
         });
 
+  const timelineLastMeaningfulProgress = lastMeaningfulProgressAtMs(timeline);
+  const runtimeLastMeaningfulProgress =
+    timelineLastMeaningfulProgress ??
+    (typeof source?.last_progress_transition_at_ms === 'number'
+      ? source.last_progress_transition_at_ms
+      : typeof retry?.last_progress_checkpoint_at === 'number'
+        ? retry.last_progress_checkpoint_at
+        : typeof blocked?.last_progress_checkpoint_at === 'number'
+          ? blocked.last_progress_checkpoint_at
+          : null);
+
   return {
     thread_id: threadId,
     issue_identifier: issueIdentifier,
@@ -412,7 +427,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
     wait_spans,
     capability_warnings: [],
     current_blocker: currentBlocker,
-    last_meaningful_progress_at_ms: lastMeaningfulProgressAtMs(timeline)
+    last_meaningful_progress_at_ms: runtimeLastMeaningfulProgress
   };
 }
 
