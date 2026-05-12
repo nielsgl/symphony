@@ -2122,7 +2122,7 @@ describe('OrchestratorCore', () => {
     ).toBe(true);
   });
 
-  it('classifies prolonged codex.turn.waiting as stalled waiting without moving issue to blocked', async () => {
+  it('recovers prolonged codex.turn.waiting as stalled waiting without moving issue to blocked', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
     });
@@ -2135,9 +2135,10 @@ describe('OrchestratorCore', () => {
     });
     harness.now.value += 2_000;
     await harness.orchestrator.tick('interval');
-    const running = harness.orchestrator.getStateSnapshot().running.get('i-wait');
-    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
-    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait')).toBe(false);
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-wait')).toBe(false);
+    expect(snapshot.retry_attempts.get('i-wait')?.stop_reason_code).toBe(REASON_CODES.turnWaitingThresholdExceeded);
+    expect(snapshot.blocked_inputs.has('i-wait')).toBe(false);
   });
 
   it('blocks a dynamic tool call that never records matching tool output by call id', async () => {
@@ -3139,7 +3140,7 @@ describe('OrchestratorCore', () => {
     await withTemporaryCodexHome(async (codexHome) => {
       const workspacePath = path.join(codexHome, 'workspaces', 'NIE-79-reused');
       const harness = createHarness({
-        configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 },
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 },
         spawnWorker: async ({ issue, worker_host }) => {
           return {
             ok: true,
@@ -3210,7 +3211,7 @@ describe('OrchestratorCore', () => {
   it('does not block when a transcript function_call_output matches the transcript function_call', async () => {
     await withTemporaryCodexHome(async (codexHome) => {
       const harness = createHarness({
-        configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 }
       });
       harness.tracker.fetch_candidate_issues.mockResolvedValue([
         makeIssue({ id: 'i-transcript-output', identifier: 'ABC-TRANSCRIPT-OUTPUT' })
@@ -3261,9 +3262,6 @@ describe('OrchestratorCore', () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-transcript-output')).toBe(false);
-      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-output')?.stalled_waiting_reason).toBe(
-        REASON_CODES.turnWaitingThresholdExceeded
-      );
       expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-output')?.tool_call_ledger?.call_transcript_output).toMatchObject({
         tool_name: 'linear_graphql',
         call_id: 'call_transcript_output',
@@ -3705,7 +3703,7 @@ describe('OrchestratorCore', () => {
 
   it('does not block when matching tool output arrives before the waiting threshold', async () => {
     const harness = createHarness({
-      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+      configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 }
     });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-tool-ok', identifier: 'ABC-TOOL-OK' })]);
     await harness.orchestrator.tick('interval');
@@ -3734,9 +3732,6 @@ describe('OrchestratorCore', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-tool-ok')).toBe(false);
-    expect(harness.orchestrator.getStateSnapshot().running.get('i-tool-ok')?.stalled_waiting_reason).toBe(
-      REASON_CODES.turnWaitingThresholdExceeded
-    );
     expect(harness.orchestrator.getStateSnapshot().running.get('i-tool-ok')?.tool_call_ledger?.call_ok).toMatchObject({
       call_id: 'call_ok',
       tool_name: 'dynamic_tool',
@@ -3755,7 +3750,7 @@ describe('OrchestratorCore', () => {
 
   it('preserves app-server protocol evidence for completed function calls', async () => {
     const harness = createHarness({
-      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+      configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 }
     });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-protocol-tool', identifier: 'ABC-PROTOCOL-TOOL' })]);
     await harness.orchestrator.tick('interval');
@@ -3808,7 +3803,7 @@ describe('OrchestratorCore', () => {
 
   it('does not classify healthy MCP tool events as missing dynamic GraphQL output', async () => {
     const harness = createHarness({
-      configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
+      configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 }
     });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-mcp-healthy', identifier: 'ABC-MCP-HEALTHY' })]);
     await harness.orchestrator.tick('interval');
@@ -3973,10 +3968,10 @@ describe('OrchestratorCore', () => {
     harness.now.value += 500;
     await harness.orchestrator.tick('interval');
 
-    const running = harness.orchestrator.getStateSnapshot().running.get('i-wait-heartbeat');
-    expect(running?.stalled_waiting_since_ms).toBe(1_001_000);
-    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
-    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait-heartbeat')).toBe(false);
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-wait-heartbeat')).toBe(false);
+    expect(snapshot.retry_attempts.get('i-wait-heartbeat')?.stop_reason_code).toBe(REASON_CODES.turnWaitingThresholdExceeded);
+    expect(snapshot.blocked_inputs.has('i-wait-heartbeat')).toBe(false);
   });
 
   it('does not classify prolonged codex.turn.waiting as stalled when token usage moves during the wait episode', async () => {
@@ -4021,7 +4016,7 @@ describe('OrchestratorCore', () => {
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-active-wait')).toBe(false);
   });
 
-  it('classifies prolonged codex.turn.waiting as stalled when only fresh thread activity metadata is observed', async () => {
+  it('recovers prolonged codex.turn.waiting as stalled when only fresh thread activity metadata is observed', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
     });
@@ -4040,11 +4035,10 @@ describe('OrchestratorCore', () => {
     harness.now.value += 500;
     await harness.orchestrator.tick('interval');
 
-    const running = harness.orchestrator.getStateSnapshot().running.get('i-active-thread');
-    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
-    expect(running?.stalled_waiting_since_ms).toBe(1_001_000);
-    expect(running?.last_progress_transition_at_ms).toBe(1_000_000);
-    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-active-thread')).toBe(false);
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-active-thread')).toBe(false);
+    expect(snapshot.retry_attempts.get('i-active-thread')?.stop_reason_code).toBe(REASON_CODES.turnWaitingThresholdExceeded);
+    expect(snapshot.blocked_inputs.has('i-active-thread')).toBe(false);
   });
 
   it('emits stalled-wait threshold event once per waiting episode', async () => {
@@ -4116,7 +4110,7 @@ describe('OrchestratorCore', () => {
     expect(snapshot.recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.progress.stalledWaitingDetected)).toBe(false);
   });
 
-  it('classifies synthetic wait-loop planning heartbeats and metadata as stalled waiting after the threshold', async () => {
+  it('recovers synthetic wait-loop planning heartbeats and metadata as stalled waiting after the threshold', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
     });
@@ -4209,15 +4203,199 @@ describe('OrchestratorCore', () => {
     });
     await harness.orchestrator.tick('interval');
 
-    const running = harness.orchestrator.getStateSnapshot().running.get('i-wait-phase');
-    expect(running?.last_event).toBe(CANONICAL_EVENT.codex.rateLimitsUpdated);
-    expect(running?.stalled_waiting_since_ms).toBe(1_001_000);
-    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
-    expect(running?.last_progress_transition_at_ms).toBe(1_000_000);
-    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait-phase')).toBe(false);
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const retryEntry = snapshot.retry_attempts.get('i-wait-phase');
+    expect(snapshot.running.has('i-wait-phase')).toBe(false);
+    expect(retryEntry?.stop_reason_code).toBe(REASON_CODES.turnWaitingThresholdExceeded);
+    expect(retryEntry?.previous_thread_id).toBe('thread-phase');
+    expect(retryEntry?.previous_session_id).toBe('thread-phase-turn-1');
+    expect(snapshot.blocked_inputs.has('i-wait-phase')).toBe(false);
+  });
 
-    const projected = new SnapshotService({ nowMs: () => harness.now.value }).projectState(harness.orchestrator.getStateSnapshot());
-    expect(projected.running.find((entry) => entry.issue_id === 'i-wait-phase')?.progress_signal_state).toBe('stalled_waiting');
+  it('recovers live stalled waiting turns by terminating ownership and scheduling retry with workspace metadata', async () => {
+    const completedRuns: Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0][] = [];
+    const harness = createHarness({
+      configOverrides: {
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 60_000,
+        max_retry_backoff_ms: 25_000
+      },
+      persistence: {
+        startRun: async () => 'run-stalled-wait',
+        appendIssueRun: async () => 'issue-run-stalled-wait',
+        appendAttempt: async () => 'attempt-stalled-wait',
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async (params) => {
+          completedRuns.push(params);
+        }
+      },
+      spawnWorker: async ({ issue }) => ({
+        ok: true,
+        worker_handle: { issue_id: issue.id, worker_instance_id: 'worker-stalled-wait' },
+        worker_instance_id: 'worker-stalled-wait',
+        monitor_handle: { issue_id: issue.id },
+        workspace_path: '/tmp/symphony-workspaces/i-stalled-wait',
+        worker_host: 'host-a',
+        provisioner_type: 'git-worktree',
+        branch_name: 'feature/stalled-wait',
+        repo_root: '/repo/symphony',
+        workspace_exists: true,
+        workspace_git_status: 'dirty',
+        workspace_provisioned: true,
+        workspace_is_git_worktree: true,
+        copy_ignored_applied: true,
+        copy_ignored_status: 'success',
+        copy_ignored_summary: {
+          copied_files: 2,
+          skipped_existing: 1,
+          blocked_files: 0,
+          bytes_copied: 128,
+          duration_ms: 9
+        }
+      })
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stalled-wait', identifier: 'ABC-STALLED-WAIT' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-stalled-wait', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat',
+      thread_id: 'thread-stalled-wait',
+      turn_id: 'turn-stalled-wait',
+      session_id: 'thread-stalled-wait-turn-stalled-wait'
+    });
+    harness.now.value += 1_250;
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const retryEntry = snapshot.retry_attempts.get('i-stalled-wait');
+    expect(snapshot.running.has('i-stalled-wait')).toBe(false);
+    expect(harness.terminated).toEqual([
+      {
+        issue_id: 'i-stalled-wait',
+        cleanup_workspace: false,
+        reason: REASON_CODES.turnWaitingThresholdExceeded
+      }
+    ]);
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        run_id: 'run-stalled-wait',
+        terminal_status: 'stalled',
+        terminal_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+        terminal_reason_detail: expect.stringContaining('no meaningful progress')
+      })
+    ]);
+    expect(retryEntry).toMatchObject({
+      attempt: 1,
+      error: 'turn waiting threshold exceeded',
+      stop_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+      previous_thread_id: 'thread-stalled-wait',
+      previous_turn_id: 'turn-stalled-wait',
+      previous_session_id: 'thread-stalled-wait-turn-stalled-wait',
+      workspace_path: '/tmp/symphony-workspaces/i-stalled-wait',
+      provisioner_type: 'git-worktree',
+      branch_name: 'feature/stalled-wait',
+      repo_root: '/repo/symphony',
+      workspace_exists: true,
+      workspace_git_status: 'dirty',
+      workspace_provisioned: true,
+      workspace_is_git_worktree: true,
+      copy_ignored_applied: true,
+      copy_ignored_status: 'success'
+    });
+    expect(retryEntry?.due_at_ms).toBe(harness.now.value + 10_000);
+    expect(harness.scheduled.has('i-stalled-wait')).toBe(true);
+
+    expect(harness.orchestrator.getStateSnapshot().running.has('i-stalled-wait')).toBe(false);
+  }, 20_000);
+
+  it('does not recover stalled waiting while the live turn is awaiting operator input', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 60_000
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-input-wait', identifier: 'ABC-INPUT-WAIT' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-input-wait', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnInputRequired,
+      detail: 'choose an option',
+      thread_id: 'thread-input',
+      turn_id: 'turn-input',
+      session_id: 'thread-input-turn-input'
+    });
+    harness.orchestrator.onWorkerEvent('i-input-wait', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for operator',
+      thread_id: 'thread-input',
+      turn_id: 'turn-input',
+      session_id: 'thread-input-turn-input'
+    });
+    harness.now.value += 1_250;
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-input-wait')).toBe(true);
+    expect(snapshot.retry_attempts.has('i-input-wait')).toBe(false);
+    expect(harness.terminated).toEqual([]);
+  });
+
+  it('blocks repeated no-progress stalled-wait recoveries with the redispatch circuit breaker', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 60_000,
+        respawn_window_minutes: 30,
+        respawn_max_attempts_without_progress: 1
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-wait-breaker', identifier: 'ABC-WAIT-BREAKER' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-wait-breaker', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat',
+      thread_id: 'thread-breaker',
+      turn_id: 'turn-breaker',
+      session_id: 'thread-breaker-turn-breaker'
+    });
+    harness.now.value += 1_250;
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.orchestrator.getStateSnapshot().retry_attempts.get('i-wait-breaker')?.stop_reason_code).toBe(
+      REASON_CODES.turnWaitingThresholdExceeded
+    );
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-wait-breaker', identifier: 'ABC-WAIT-BREAKER' })]);
+    await harness.orchestrator.onRetryTimer('i-wait-breaker');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.has('i-wait-breaker')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-wait-breaker')).toBe(false);
+    expect(snapshot.blocked_inputs.get('i-wait-breaker')).toMatchObject({
+      stop_reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+      requires_manual_resume: true,
+      attempt_count_window: 1,
+      window_minutes: 30,
+      previous_thread_id: 'thread-breaker',
+      previous_turn_id: 'turn-breaker',
+      previous_session_id: 'thread-breaker-turn-breaker'
+    });
+    expect(snapshot.circuit_breakers.get('i-wait-breaker')).toMatchObject({
+      breaker_active: true,
+      breaker_hit_count: 1,
+      breaker_window_minutes: 30
+    });
   });
 
   it('clears blocked issue state when tracker reports non-active or terminal state', async () => {
