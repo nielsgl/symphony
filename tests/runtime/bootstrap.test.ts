@@ -824,33 +824,24 @@ describe('createRuntimeEnvironment', () => {
       }>;
     };
     expect(diagnosticsResponse.status).toBe(200);
-    expect(diagnosticsPayload.breaker_statuses).toEqual([
-      {
-        issue_id: 'issue-1',
-        issue_identifier: 'ABC-1',
-        breaker_active: true,
-        breaker_hit_count: 2,
-        breaker_window_minutes: 30,
-        breaker_first_hit_at: '2026-04-11T10:00:00.000Z',
-        breaker_last_hit_at: '2026-04-11T10:02:00.000Z'
-      }
-    ]);
+    expect(diagnosticsPayload.breaker_statuses).toEqual([]);
 
     const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
     const statePayload = (await stateResponse.json()) as {
       blocked: Array<{
         operator_actions: Array<{ action: string; result: string; result_code: string | null }>;
       }>;
+      recent_runtime_events: Array<{ event: string; issue_identifier?: string; detail?: string }>;
     };
-    expect(statePayload.blocked[0]?.operator_actions).toEqual([
-      {
-        action: 'resume',
-        requested_at_ms: Date.parse('2026-04-11T10:03:00.000Z'),
-        result: 'rejected',
-        result_code: 'resume_failed',
-        message: 'requires progress'
-      }
-    ]);
+    expect(statePayload.blocked).toEqual([]);
+    expect(statePayload.recent_runtime_events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: CANONICAL_EVENT.orchestration.staleBlockedInputCleared,
+          issue_identifier: 'ABC-1'
+        })
+      ])
+    );
   });
 
   it('keeps HTTP extension disabled when neither CLI port nor workflow server.port is configured', async () => {

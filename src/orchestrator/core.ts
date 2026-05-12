@@ -30,6 +30,8 @@ import type {
   OrchestratorState,
   OutstandingToolCall,
   PhaseMarkerSettings,
+  ProgressSignals,
+  RedispatchProgressSample,
   RetryDelayType,
   RetryEntry,
   RunningEntry,
@@ -98,11 +100,7 @@ interface ScheduleRetryParams {
   previous_session_id?: string | null;
   last_progress_checkpoint_at?: number | null;
   issue_snapshot?: Issue | null;
-  progress_signals?: {
-    commit_sha: string | null;
-    checklist_checkpoint: string | null;
-    state_marker: string | null;
-  };
+  progress_signals?: ProgressSignals;
   budget?: BudgetRuntimeProjection;
   recovery?: MissingToolOutputRecoveryState | null;
   delay_ms?: number;
@@ -461,6 +459,7 @@ function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotO
     last_heartbeat_at_ms: entry.last_heartbeat_at_ms ?? null,
     heartbeat_only_event_emitted: entry.heartbeat_only_event_emitted ?? false,
     running_wait_stall_event_emitted: entry.running_wait_stall_event_emitted ?? false,
+    progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
     codex_thread_activity_at_ms: entry.codex_thread_activity_at_ms ?? null,
     codex_thread_activity_source: entry.codex_thread_activity_source ?? null,
     codex_thread_activity_status: entry.codex_thread_activity_status ?? null,
@@ -830,7 +829,7 @@ export class OrchestratorCore {
         Array.from(this.state.circuit_breakers.entries()).map(([issueId, entry]) => [issueId, cloneCircuitBreakerEntry(entry)])
       ),
       redispatch_progress: new Map(
-        Array.from((this.state.redispatch_progress ?? new Map<string, Array<{ at_ms: number; commit_sha: string | null; checklist_checkpoint: string | null; state_marker: string | null; pr_open: boolean }>>()).entries()).map(([issueId, entries]) => [
+        Array.from((this.state.redispatch_progress ?? new Map<string, RedispatchProgressSample[]>()).entries()).map(([issueId, entries]) => [
           issueId,
           entries.map((entry) => ({ ...entry }))
         ])
@@ -1348,6 +1347,7 @@ export class OrchestratorCore {
     runningEntry.last_event = workerEvent.event;
     runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
     runningEntry.last_message = workerEvent.detail ?? null;
+    this.captureWorkerProgressSignal(runningEntry, workerEvent);
     if (
       workerEvent.codex_thread_activity_at_ms !== undefined &&
       workerEvent.codex_thread_activity_at_ms !== null &&
@@ -3460,6 +3460,7 @@ export class OrchestratorCore {
           previous_turn_id: running.turn_id,
           previous_session_id: running.session_id,
           issue_snapshot: running.issue,
+          progress_signals: running.progress_signals,
           budget: running.budget,
           recovery: running.recovery ? { ...running.recovery } : null
         });
@@ -3578,6 +3579,7 @@ export class OrchestratorCore {
         previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
+        progress_signals: running.progress_signals,
         budget: running.budget,
         recovery: running.recovery ? { ...running.recovery } : null
       });
@@ -3753,6 +3755,7 @@ export class OrchestratorCore {
         previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
         issue_snapshot: running.issue,
+        progress_signals: running.progress_signals,
         budget: running.budget,
         recovery: running.recovery ? { ...running.recovery } : null
       });
@@ -4075,40 +4078,60 @@ export class OrchestratorCore {
       const stopReasonDetail = gateEvaluation.awaiting_human_review_scope_incomplete
         ? 'PR is open but scope is incomplete and no progress signal was detected'
         : 'completion gate blocked redispatch because no progress signal was detected';
-      const blockedResult = await this.scheduleBlockedInput({
-        issue_id,
-        issue_identifier: retryEntry.identifier,
-        attempt: retryEntry.attempt,
-        issue_run_id: retryEntry.issue_run_id,
-        previous_attempt_id: retryEntry.previous_attempt_id,
-        worker_host: retryEntry.worker_host ?? null,
-        workspace_path: retryEntry.workspace_path ?? null,
-        provisioner_type: retryEntry.provisioner_type ?? null,
-        branch_name: retryEntry.branch_name ?? null,
-        repo_root: retryEntry.repo_root ?? null,
-        workspace_exists: retryEntry.workspace_exists,
-        workspace_git_status: retryEntry.workspace_git_status,
-        workspace_provisioned: retryEntry.workspace_provisioned,
-        workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
-        copy_ignored_applied: retryEntry.copy_ignored_applied,
-        copy_ignored_status: retryEntry.copy_ignored_status,
-        copy_ignored_summary: retryEntry.copy_ignored_summary,
-        stop_reason_code: stopReasonCode,
-        stop_reason_detail: stopReasonDetail,
-        previous_thread_id: retryEntry.previous_thread_id ?? null,
-        previous_turn_id: retryEntry.previous_turn_id ?? null,
-        previous_session_id: retryEntry.previous_session_id ?? null,
-        attempt_count_window: gateEvaluation.attempt_count_window,
-        window_minutes: gateEvaluation.window_minutes,
-        last_known_commit_sha: gateEvaluation.last_known_commit_sha,
-        last_progress_checkpoint_at: gateEvaluation.last_progress_checkpoint_at,
-        progress_signals: gateEvaluation.progress_signals,
-        required_actions:
-          retryEntry.stop_reason_code === REASON_CODES.turnWaitingThresholdExceeded
-            ? ['Inspect issue diagnostics', 'Resume manually after confirming meaningful progress path', 'Cancel and return to backlog']
-            : ['Mark acceptance complete and resume', 'Push additional commit and resume', 'Cancel and return to backlog'],
-        apply_circuit_breaker: gateEvaluation.breaker_hit
-      });
+      let blockedResult: { created: boolean };
+      if (gateEvaluation.awaiting_human_review_scope_incomplete) {
+        blockedResult = await this.scheduleBlockedInput({
+          issue_id,
+          issue_identifier: retryEntry.identifier,
+          attempt: retryEntry.attempt,
+          issue_run_id: retryEntry.issue_run_id,
+          previous_attempt_id: retryEntry.previous_attempt_id,
+          worker_host: retryEntry.worker_host ?? null,
+          workspace_path: retryEntry.workspace_path ?? null,
+          provisioner_type: retryEntry.provisioner_type ?? null,
+          branch_name: retryEntry.branch_name ?? null,
+          repo_root: retryEntry.repo_root ?? null,
+          workspace_exists: retryEntry.workspace_exists,
+          workspace_git_status: retryEntry.workspace_git_status,
+          workspace_provisioned: retryEntry.workspace_provisioned,
+          workspace_is_git_worktree: retryEntry.workspace_is_git_worktree,
+          copy_ignored_applied: retryEntry.copy_ignored_applied,
+          copy_ignored_status: retryEntry.copy_ignored_status,
+          copy_ignored_summary: retryEntry.copy_ignored_summary,
+          stop_reason_code: stopReasonCode,
+          stop_reason_detail: stopReasonDetail,
+          previous_thread_id: retryEntry.previous_thread_id ?? null,
+          previous_turn_id: retryEntry.previous_turn_id ?? null,
+          previous_session_id: retryEntry.previous_session_id ?? null,
+          attempt_count_window: gateEvaluation.attempt_count_window,
+          window_minutes: gateEvaluation.window_minutes,
+          last_known_commit_sha: gateEvaluation.last_known_commit_sha,
+          last_progress_checkpoint_at: gateEvaluation.last_progress_checkpoint_at,
+          progress_signals: gateEvaluation.progress_signals,
+          required_actions:
+            retryEntry.stop_reason_code === REASON_CODES.turnWaitingThresholdExceeded
+              ? ['Inspect issue diagnostics', 'Resume manually after confirming meaningful progress path', 'Cancel and return to backlog']
+              : ['Mark acceptance complete and resume', 'Push additional commit and resume', 'Cancel and return to backlog'],
+          apply_circuit_breaker: gateEvaluation.breaker_hit
+        });
+      } else {
+        const existingRetry = this.state.retry_attempts.get(issue_id);
+        if (existingRetry) {
+          this.ports.cancelRetryTimer(existingRetry.timer_handle);
+          this.state.retry_attempts.delete(issue_id);
+        }
+        this.state.claimed.delete(issue_id);
+        await this.upsertCircuitBreaker({
+          issue_id,
+          issue_identifier: retryEntry.identifier,
+          breaker_active: true,
+          breaker_hit_count: Math.max(1, gateEvaluation.attempt_count_window),
+          breaker_window_minutes: Math.max(1, gateEvaluation.window_minutes),
+          breaker_first_hit_at_ms: this.nowMs(),
+          breaker_last_hit_at_ms: this.nowMs()
+        });
+        blockedResult = { created: true };
+      }
       await this.persistExecutionGraphRetryTransition(
         retryEntry,
         'blocked',
@@ -4140,8 +4163,12 @@ export class OrchestratorCore {
               last_known_commit_sha: gateEvaluation.last_known_commit_sha,
               signals: gateEvaluation.progress_signals
             }),
-            next_operator_action: 'issue.resume',
-            next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'
+            next_operator_action: gateEvaluation.awaiting_human_review_scope_incomplete
+              ? 'issue.resume'
+              : 'inspect_no_progress_fault',
+            next_operator_action_endpoint: gateEvaluation.awaiting_human_review_scope_incomplete
+              ? '/api/v1/issues/:issue_identifier/resume'
+              : null
           }
         });
       }
@@ -4166,12 +4193,36 @@ export class OrchestratorCore {
               last_known_commit_sha: gateEvaluation.last_known_commit_sha,
               signals: gateEvaluation.progress_signals
             }),
-            next_operator_action: 'issue.resume',
-            next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/resume'
+            next_operator_action: gateEvaluation.awaiting_human_review_scope_incomplete
+              ? 'issue.resume'
+              : 'inspect_no_progress_fault',
+            next_operator_action_endpoint: gateEvaluation.awaiting_human_review_scope_incomplete
+              ? '/api/v1/issues/:issue_identifier/resume'
+              : null
           }
         });
       }
       return;
+    }
+
+    if (gateEvaluation.progress_signal_reasons.length > 0) {
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.orchestration.noProgressBlockSuppressed,
+        severity: 'info',
+        issue_identifier: retryEntry.identifier,
+        detail: `progress_signals=${gateEvaluation.progress_signal_reasons.join(',')}`
+      });
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.orchestration.noProgressBlockSuppressed,
+        message: 'no-progress block suppressed by progress classifier',
+        context: {
+          issue_id,
+          issue_identifier: retryEntry.identifier,
+          progress_signal_reasons: gateEvaluation.progress_signal_reasons.join(','),
+          progress_signals: JSON.stringify(gateEvaluation.progress_signals)
+        }
+      });
     }
 
     this.state.claimed.delete(issue_id);
@@ -4307,17 +4358,33 @@ export class OrchestratorCore {
     window_minutes: number;
     last_known_commit_sha: string | null;
     last_progress_checkpoint_at: number | null;
-    progress_signals: { commit_sha: string | null; checklist_checkpoint: string | null; state_marker: string | null };
+    progress_signals: ProgressSignals;
+    progress_signal_reasons: string[];
   } {
     const windowMinutes = Math.max(1, this.config.respawn_window_minutes ?? 30);
     const windowMs = windowMinutes * 60_000;
     const now = this.nowMs();
+    const startedState = retryEntry.progress_signals?.tracker_started_state ?? null;
+    const trackerStatusTransition =
+      retryEntry.progress_signals?.tracker_status_transition ??
+      (retryEntry.progress_signals?.tracker_comment_created &&
+      startedState &&
+      this.isKnownReviewHandoffTransition(startedState, issue.state)
+        ? `${startedState} -> ${issue.state}`
+        : null);
+    const agentReviewHandoff =
+      retryEntry.progress_signals?.agent_review_handoff ??
+      (trackerStatusTransition && this.isKnownReviewHandoffTransition(startedState, issue.state) ? issue.state : null);
     const currentSignals = {
       commit_sha: retryEntry.progress_signals?.commit_sha ?? null,
       checklist_checkpoint: retryEntry.progress_signals?.checklist_checkpoint ?? null,
-      state_marker: retryEntry.progress_signals?.state_marker ?? null
+      state_marker: retryEntry.progress_signals?.state_marker ?? null,
+      tracker_comment_created: retryEntry.progress_signals?.tracker_comment_created ?? false,
+      tracker_status_transition: trackerStatusTransition,
+      agent_review_handoff: agentReviewHandoff,
+      tracker_started_state: startedState
     };
-    const progressMap = this.state.redispatch_progress ?? new Map<string, Array<{ at_ms: number; commit_sha: string | null; checklist_checkpoint: string | null; state_marker: string | null; pr_open: boolean }>>();
+    const progressMap = this.state.redispatch_progress ?? new Map<string, RedispatchProgressSample[]>();
     this.state.redispatch_progress = progressMap;
     const existing = progressMap.get(issue_id) ?? [];
     const sample = {
@@ -4325,7 +4392,10 @@ export class OrchestratorCore {
       commit_sha: currentSignals.commit_sha,
       checklist_checkpoint: currentSignals.checklist_checkpoint,
       state_marker: currentSignals.state_marker,
-      pr_open: this.hasOpenPullRequest(issue)
+      pr_open: this.hasOpenPullRequest(issue),
+      tracker_comment_created: currentSignals.tracker_comment_created,
+      tracker_status_transition: currentSignals.tracker_status_transition,
+      agent_review_handoff: currentSignals.agent_review_handoff
     };
     const kept = existing.filter((entry) => now - entry.at_ms <= windowMs);
     const updated = [...kept, sample];
@@ -4335,19 +4405,52 @@ export class OrchestratorCore {
       first.commit_sha === sample.commit_sha &&
       first.checklist_checkpoint === sample.checklist_checkpoint &&
       first.state_marker === sample.state_marker;
+    const progressSignalReasons = this.classifyProgressSignals(currentSignals);
+    const hasExternalProgress = progressSignalReasons.length > 0;
     const attemptCountWindow = updated.length;
-    const breakerHit = noProgress && attemptCountWindow >= Math.max(1, this.config.respawn_max_attempts_without_progress ?? 3);
-    const awaitingHuman = Boolean(sample.pr_open && noProgress);
+    const breakerHit = noProgress && !hasExternalProgress && attemptCountWindow >= Math.max(1, this.config.respawn_max_attempts_without_progress ?? 3);
+    const awaitingHuman = Boolean(sample.pr_open && noProgress && !hasExternalProgress);
     return {
-      allow_redispatch: !noProgress,
+      allow_redispatch: !awaitingHuman && !breakerHit,
       awaiting_human_review_scope_incomplete: awaitingHuman,
       breaker_hit: breakerHit,
       attempt_count_window: attemptCountWindow,
       window_minutes: windowMinutes,
       last_known_commit_sha: sample.commit_sha,
-      last_progress_checkpoint_at: noProgress ? retryEntry.last_progress_checkpoint_at ?? null : sample.at_ms,
-      progress_signals: currentSignals
+      last_progress_checkpoint_at: noProgress && !hasExternalProgress ? retryEntry.last_progress_checkpoint_at ?? null : sample.at_ms,
+      progress_signals: currentSignals,
+      progress_signal_reasons: progressSignalReasons
     };
+  }
+
+  private classifyProgressSignals(signals: ProgressSignals): string[] {
+    const reasons: string[] = [];
+    if (signals.tracker_comment_created) {
+      reasons.push('tracker_comment_created');
+    }
+    if (signals.tracker_comment_created && signals.tracker_status_transition) {
+      reasons.push('tracker_status_transition');
+    }
+    if (signals.tracker_comment_created && signals.tracker_status_transition && signals.agent_review_handoff) {
+      reasons.push('agent_review_handoff');
+    }
+    return reasons;
+  }
+
+  private isKnownReviewHandoffTransition(startedState: string | null | undefined, currentState: string): boolean {
+    if (!startedState || normalizeStateName(startedState) !== normalizeStateName('Agent Review')) {
+      return false;
+    }
+    if (normalizeStateName(currentState) === normalizeStateName(startedState)) {
+      return false;
+    }
+    return (
+      normalizeStateName(currentState) === normalizeStateName('In Progress') ||
+      normalizeStateName(currentState) === normalizeStateName('Human Review') ||
+      normalizeStateName(currentState) === normalizeStateName('Merging') ||
+      isActiveState(currentState, this.config) ||
+      isTerminalState(currentState, this.config)
+    );
   }
 
   private hasOpenPullRequest(issue: Issue): boolean {
@@ -4463,6 +4566,7 @@ export class OrchestratorCore {
         severity: 'warn',
         detail: error instanceof Error ? error.message : 'unknown'
       });
+      await this.reconcileStalledRuns();
       return;
     }
 
@@ -4537,6 +4641,30 @@ export class OrchestratorCore {
       }
 
       const issue = refreshedById.get(issueId);
+      if (issue && this.shouldClearStaleNoProgressBlockedInput(blocked, issue)) {
+        this.clearBlockedInput(issueId, REASON_CODES.staleBlockedInputCleared);
+        this.state.redispatch_progress?.delete(issueId);
+        void this.clearCircuitBreaker(issueId);
+        this.recordRuntimeEvent({
+          event: CANONICAL_EVENT.orchestration.staleBlockedInputCleared,
+          severity: 'info',
+          issue_identifier: blocked.issue_identifier,
+          detail: `tracker_state=${issue.state} stop_reason_code=${blocked.stop_reason_code}`
+        });
+        this.logger?.log({
+          level: 'info',
+          event: CANONICAL_EVENT.orchestration.staleBlockedInputCleared,
+          message: 'stale no-progress blocked input cleared for actionable tracker state',
+          context: {
+            issue_id: issueId,
+            issue_identifier: blocked.issue_identifier,
+            tracker_state: issue.state,
+            stop_reason_code: blocked.stop_reason_code,
+            pending_input: blocked.pending_input ? JSON.stringify(blocked.pending_input) : null
+          }
+        });
+        continue;
+      }
       if (!issue || isTerminalState(issue.state, this.config) || !isActiveState(issue.state, this.config)) {
         if (
           blocked.stop_reason_code === REASON_CODES.missingToolOutput ||
@@ -4549,6 +4677,19 @@ export class OrchestratorCore {
         this.clearBlockedInput(issueId, issue ? 'issue_no_longer_active' : 'issue_not_found');
       }
     }
+  }
+
+  private shouldClearStaleNoProgressBlockedInput(blocked: BlockedEntry, issue: Issue): boolean {
+    if (blocked.pending_input) {
+      return false;
+    }
+    if (!isActiveState(issue.state, this.config)) {
+      return false;
+    }
+    return (
+      blocked.stop_reason_code === REASON_CODES.operatorNoProgressRedispatchBlocked ||
+      blocked.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete
+    );
   }
 
   updateCodexTimestamp(issue_id: string, timestampMs: number): void {
@@ -5180,14 +5321,13 @@ export class OrchestratorCore {
       }
     });
 
-    const resolvedProgressSignals =
-      params.progress_signals ??
-      (await this.captureProgressSignals({
-        issue: params.issue_snapshot ?? null,
-        issue_id: params.issue_id,
-        branch_name: params.branch_name ?? null,
-        repo_root: params.repo_root ?? null
-      }));
+    const resolvedProgressSignals = await this.captureProgressSignals({
+      issue: params.issue_snapshot ?? null,
+      issue_id: params.issue_id,
+      branch_name: params.branch_name ?? null,
+      repo_root: params.repo_root ?? null,
+      previous_progress_signals: params.progress_signals ?? null
+    });
     this.state.retry_attempts.set(params.issue_id, {
       issue_id: params.issue_id,
       identifier: params.identifier,
@@ -5297,11 +5437,7 @@ export class OrchestratorCore {
     window_minutes?: number;
     last_known_commit_sha?: string | null;
     last_progress_checkpoint_at?: number | null;
-    progress_signals?: {
-      commit_sha: string | null;
-      checklist_checkpoint: string | null;
-      state_marker: string | null;
-    };
+    progress_signals?: ProgressSignals;
     required_actions?: string[];
     apply_circuit_breaker?: boolean;
     budget?: BudgetRuntimeProjection;
@@ -5360,7 +5496,11 @@ export class OrchestratorCore {
         ? {
             commit_sha: params.progress_signals.commit_sha ?? null,
             checklist_checkpoint: params.progress_signals.checklist_checkpoint ?? null,
-            state_marker: params.progress_signals.state_marker ?? null
+            state_marker: params.progress_signals.state_marker ?? null,
+            tracker_comment_created: params.progress_signals.tracker_comment_created ?? false,
+            tracker_status_transition: params.progress_signals.tracker_status_transition ?? null,
+            agent_review_handoff: params.progress_signals.agent_review_handoff ?? null,
+            tracker_started_state: params.progress_signals.tracker_started_state ?? null
           }
         : undefined,
       required_actions: [...(params.required_actions ?? [])],
@@ -5581,33 +5721,50 @@ export class OrchestratorCore {
     issue_id: string;
     branch_name: string | null;
     repo_root: string | null;
-  }): Promise<{
-    commit_sha: string | null;
-    checklist_checkpoint: string | null;
-    state_marker: string | null;
-  }> {
+    previous_progress_signals?: ProgressSignals | null;
+  }): Promise<ProgressSignals> {
     const fallbackStateMarker = this.getLastPhaseMarker(params.issue_id)?.phase ?? null;
     if (!this.ports.resolveProgressSignals) {
       return {
-        commit_sha: null,
-        checklist_checkpoint: null,
-        state_marker: fallbackStateMarker
+        commit_sha: params.previous_progress_signals?.commit_sha ?? null,
+        checklist_checkpoint: params.previous_progress_signals?.checklist_checkpoint ?? null,
+        state_marker: params.previous_progress_signals?.state_marker ?? fallbackStateMarker,
+        tracker_comment_created: params.previous_progress_signals?.tracker_comment_created ?? false,
+        tracker_status_transition: params.previous_progress_signals?.tracker_status_transition ?? null,
+        agent_review_handoff: params.previous_progress_signals?.agent_review_handoff ?? null,
+        tracker_started_state: params.previous_progress_signals?.tracker_started_state ?? null
       };
     }
 
     try {
-      return await this.ports.resolveProgressSignals({
+      const resolved = await this.ports.resolveProgressSignals({
         issue: params.issue,
         issue_id: params.issue_id,
         branch_name: params.branch_name,
         repo_root: params.repo_root,
-        fallback_state_marker: fallbackStateMarker
+        fallback_state_marker: fallbackStateMarker,
+        previous_progress_signals: params.previous_progress_signals ?? null
       });
+      return {
+        commit_sha: resolved.commit_sha ?? params.previous_progress_signals?.commit_sha ?? null,
+        checklist_checkpoint: resolved.checklist_checkpoint ?? params.previous_progress_signals?.checklist_checkpoint ?? null,
+        state_marker: resolved.state_marker ?? params.previous_progress_signals?.state_marker ?? fallbackStateMarker,
+        tracker_comment_created:
+          resolved.tracker_comment_created ?? params.previous_progress_signals?.tracker_comment_created ?? false,
+        tracker_status_transition:
+          resolved.tracker_status_transition ?? params.previous_progress_signals?.tracker_status_transition ?? null,
+        agent_review_handoff: resolved.agent_review_handoff ?? params.previous_progress_signals?.agent_review_handoff ?? null,
+        tracker_started_state: resolved.tracker_started_state ?? params.previous_progress_signals?.tracker_started_state ?? null
+      };
     } catch {
       return {
-        commit_sha: null,
-        checklist_checkpoint: null,
-        state_marker: fallbackStateMarker
+        commit_sha: params.previous_progress_signals?.commit_sha ?? null,
+        checklist_checkpoint: params.previous_progress_signals?.checklist_checkpoint ?? null,
+        state_marker: params.previous_progress_signals?.state_marker ?? fallbackStateMarker,
+        tracker_comment_created: params.previous_progress_signals?.tracker_comment_created ?? false,
+        tracker_status_transition: params.previous_progress_signals?.tracker_status_transition ?? null,
+        agent_review_handoff: params.previous_progress_signals?.agent_review_handoff ?? null,
+        tracker_started_state: params.previous_progress_signals?.tracker_started_state ?? null
       };
     }
   }
@@ -5708,7 +5865,8 @@ export class OrchestratorCore {
         previous_thread_id: running.thread_id,
         previous_turn_id: running.turn_id,
         previous_session_id: running.session_id,
-        issue_snapshot: running.issue
+        issue_snapshot: running.issue,
+        progress_signals: running.progress_signals
       });
       this.recordOperatorAction(running.issue.id, {
         action: 'requeue',
@@ -7246,6 +7404,16 @@ export class OrchestratorCore {
       return;
     }
 
+    const handoffProgress = await this.classifyTrackerHandoffProgress(issueId, runningEntry);
+    if (handoffProgress?.kind === 'unknown') {
+      await this.completeStalledTrackerRefreshUncertain(issueId, runningEntry, handoffProgress.error_detail, observedAtMs, elapsedMs);
+      return;
+    }
+    if (handoffProgress?.kind === 'progress') {
+      await this.completeStalledReviewHandoff(issueId, runningEntry, handoffProgress, observedAtMs, elapsedMs);
+      return;
+    }
+
     const detail = [
       'no meaningful progress while waiting for Codex turn completion',
       `reason_code=${REASON_CODES.turnWaitingThresholdExceeded}`,
@@ -7301,7 +7469,8 @@ export class OrchestratorCore {
       previous_turn_id: runningEntry.turn_id,
       previous_session_id: runningEntry.session_id,
       last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
-      issue_snapshot: runningEntry.issue
+      issue_snapshot: runningEntry.issue,
+      progress_signals: runningEntry.progress_signals
     });
     this.state.health.last_error = `turn waiting threshold exceeded for ${runningEntry.identifier}`;
     this.logger?.log({
@@ -7324,6 +7493,295 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: stalledDetail
     });
+  }
+
+  private async completeStalledTrackerRefreshUncertain(
+    issueId: string,
+    runningEntry: RunningEntry,
+    errorDetail: string,
+    observedAtMs: number,
+    elapsedMs: number
+  ): Promise<void> {
+    const detail = [
+      'tracker state refresh failed during stalled-wait recovery',
+      `reason_code=${REASON_CODES.issueStateRefreshFailed}`,
+      `refresh_error=${errorDetail}`,
+      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
+      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
+      `session_id=${runningEntry.session_id ?? 'unknown'}`,
+      `elapsed_wait_ms=${elapsedMs}`,
+      `observed_at_ms=${observedAtMs}`
+    ].join(' ');
+    const terminationResult = await this.ports.terminateWorker({
+      issue_id: issueId,
+      worker_handle: runningEntry.worker_handle,
+      cleanup_workspace: false,
+      reason: REASON_CODES.turnWaitingThresholdExceeded
+    });
+    const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
+
+    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.issueStateRefreshFailed);
+    this.addRuntimeSecondsFromEntry(runningEntry);
+    await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.issueStateRefreshFailed, null, stalledDetail);
+    await this.persistExecutionGraphStateTransition(
+      runningEntry,
+      'failed',
+      'failed',
+      REASON_CODES.issueStateRefreshFailed,
+      stalledDetail
+    );
+    this.state.running.delete(issueId);
+
+    await this.scheduleRetry({
+      issue_id: issueId,
+      identifier: runningEntry.identifier,
+      attempt: runningEntry.retry_attempt + 1,
+      issue_run_id: runningEntry.issue_run_id ?? null,
+      previous_attempt_id: runningEntry.attempt_id ?? null,
+      delay_type: 'failure',
+      error: 'tracker state refresh failed during stalled-wait recovery',
+      worker_host: runningEntry.worker_host ?? null,
+      workspace_path: runningEntry.workspace_path ?? null,
+      provisioner_type: runningEntry.provisioner_type ?? null,
+      branch_name: runningEntry.branch_name ?? null,
+      repo_root: runningEntry.repo_root ?? null,
+      workspace_exists: runningEntry.workspace_exists,
+      workspace_git_status: runningEntry.workspace_git_status,
+      workspace_provisioned: runningEntry.workspace_provisioned,
+      workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
+      copy_ignored_applied: runningEntry.copy_ignored_applied,
+      copy_ignored_status: runningEntry.copy_ignored_status,
+      copy_ignored_summary: runningEntry.copy_ignored_summary,
+      stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+      stop_reason_detail: stalledDetail,
+      previous_thread_id: runningEntry.thread_id,
+      previous_turn_id: runningEntry.turn_id,
+      previous_session_id: runningEntry.session_id,
+      issue_snapshot: runningEntry.issue,
+      progress_signals: runningEntry.progress_signals
+    });
+    this.state.health.last_error = `tracker state refresh failed during stalled-wait recovery for ${runningEntry.identifier}`;
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+      message: 'tracker refresh uncertainty scheduled bounded retry',
+      context: {
+        issue_id: issueId,
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id,
+        elapsed_ms: elapsedMs,
+        stop_reason_code: REASON_CODES.issueStateRefreshFailed,
+        error: errorDetail,
+        ...workerTerminationResultContext(terminationResult)
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: stalledDetail
+    });
+  }
+
+  private async classifyTrackerHandoffProgress(
+    issueId: string,
+    runningEntry: RunningEntry
+  ): Promise<
+    | { kind: 'progress'; issue: Issue; signals: ProgressSignals; reasons: string[] }
+    | { kind: 'unknown'; error_detail: string }
+    | null
+  > {
+    let refreshed: Issue[];
+    try {
+      refreshed = await this.ports.tracker.fetch_issue_states_by_ids([issueId]);
+    } catch (error) {
+      const errorDetail = error instanceof Error ? error.message : String(error);
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
+        message: 'failed to refresh tracker state before stalled-wait recovery',
+        context: {
+          issue_id: issueId,
+          issue_identifier: runningEntry.identifier,
+          error: errorDetail
+        }
+      });
+      return { kind: 'unknown', error_detail: errorDetail };
+    }
+
+    const issue = refreshed.find((candidate) => candidate.id === issueId);
+    if (!issue) {
+      return null;
+    }
+
+    const startedState = runningEntry.started_issue_state ?? runningEntry.issue.state;
+    if (normalizeStateName(startedState) !== normalizeStateName('Agent Review')) {
+      return null;
+    }
+    if (normalizeStateName(issue.state) === normalizeStateName(startedState)) {
+      return null;
+    }
+
+    if (!this.isKnownReviewHandoffTransition(startedState, issue.state)) {
+      return null;
+    }
+
+    const signals: ProgressSignals = {
+      commit_sha: null,
+      checklist_checkpoint: null,
+      state_marker: this.getLastPhaseMarker(issueId)?.phase ?? null,
+      tracker_comment_created: this.hasWorkerTrackerCommentSignal(runningEntry),
+      tracker_status_transition: `${startedState} -> ${issue.state}`,
+      agent_review_handoff: issue.state,
+      tracker_started_state: startedState
+    };
+    const reasons = this.classifyProgressSignals(signals);
+    if (!reasons.includes('agent_review_handoff')) {
+      return null;
+    }
+    return { kind: 'progress', issue, signals, reasons };
+  }
+
+  private hasWorkerTrackerCommentSignal(runningEntry: RunningEntry): boolean {
+    if (runningEntry.progress_signals?.tracker_comment_created) {
+      return true;
+    }
+    return runningEntry.recent_events.some((event) => {
+      return this.workerEventLooksLikeTrackerComment(event);
+    });
+  }
+
+  private captureWorkerProgressSignal(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
+    if (!this.workerEventLooksLikeTrackerComment(workerEvent)) {
+      return;
+    }
+
+    runningEntry.progress_signals = {
+      commit_sha: runningEntry.progress_signals?.commit_sha ?? null,
+      checklist_checkpoint: runningEntry.progress_signals?.checklist_checkpoint ?? null,
+      state_marker: runningEntry.progress_signals?.state_marker ?? this.getLastPhaseMarker(runningEntry.issue.id)?.phase ?? null,
+      tracker_comment_created: true,
+      tracker_status_transition: runningEntry.progress_signals?.tracker_status_transition ?? null,
+      agent_review_handoff: runningEntry.progress_signals?.agent_review_handoff ?? null,
+      tracker_started_state:
+        runningEntry.progress_signals?.tracker_started_state ?? runningEntry.started_issue_state ?? runningEntry.issue.state
+    };
+  }
+
+  private workerEventLooksLikeTrackerComment(
+    workerEvent: Pick<WorkerObservabilityEvent, 'event' | 'tool_name' | 'request_method' | 'request_category'>
+  ): boolean {
+    const event = workerEvent.event?.toLowerCase() ?? '';
+    const toolName = workerEvent.tool_name?.toLowerCase() ?? '';
+    const requestMethod = workerEvent.request_method?.toLowerCase() ?? '';
+    const requestCategory = workerEvent.request_category?.toLowerCase() ?? '';
+
+    if (event === 'linear.comment.created' || event === 'linear.comment.updated') {
+      return true;
+    }
+
+    const looksLikeLinearRequest = requestCategory === 'linear' || event.startsWith('linear.');
+    return (
+      looksLikeLinearRequest &&
+      (toolName === 'save_comment' ||
+        toolName === 'create_comment' ||
+        requestMethod === 'save_comment' ||
+        requestMethod === 'create_comment')
+    );
+  }
+
+  private async completeStalledReviewHandoff(
+    issueId: string,
+    runningEntry: RunningEntry,
+    handoffProgress: { issue: Issue; signals: ProgressSignals; reasons: string[] },
+    observedAtMs: number,
+    elapsedMs: number
+  ): Promise<void> {
+    const detail = [
+      'Agent Review handoff progress observed before stalled-wait cleanup',
+      `reason_code=${REASON_CODES.agentReviewHandoffProgressObserved}`,
+      `tracker_status_transition=${handoffProgress.signals.tracker_status_transition ?? 'unknown'}`,
+      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
+      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
+      `session_id=${runningEntry.session_id ?? 'unknown'}`,
+      `elapsed_wait_ms=${elapsedMs}`,
+      `observed_at_ms=${observedAtMs}`
+    ].join(' ');
+    const terminationResult = await this.ports.terminateWorker({
+      issue_id: issueId,
+      worker_handle: runningEntry.worker_handle,
+      cleanup_workspace: false,
+      reason: REASON_CODES.turnWaitingThresholdExceeded
+    });
+    const terminalDetail = workerTerminationResultDetail(detail, terminationResult);
+
+    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.turnWaitingThresholdExceeded);
+    this.addRuntimeSecondsFromEntry(runningEntry);
+    await this.completeRunRecord(
+      runningEntry,
+      'succeeded',
+      REASON_CODES.agentReviewHandoffProgressObserved,
+      null,
+      terminalDetail
+    );
+    await this.persistExecutionGraphStateTransition(
+      runningEntry,
+      'succeeded',
+      'succeeded',
+      REASON_CODES.agentReviewHandoffProgressObserved,
+      terminalDetail
+    );
+    this.rememberReleasedWorker(runningEntry, REASON_CODES.agentReviewHandoffProgressObserved, false);
+    this.state.running.delete(issueId);
+    this.state.retry_attempts.delete(issueId);
+    this.state.blocked_inputs.delete(issueId);
+    this.state.claimed.delete(issueId);
+    this.state.redispatch_progress?.delete(issueId);
+    await this.clearCircuitBreaker(issueId);
+
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.agentReviewHandoffProgressObserved,
+      severity: 'info',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail
+    });
+    this.logger?.log({
+      level: 'info',
+      event: CANONICAL_EVENT.orchestration.agentReviewHandoffProgressObserved,
+      message: 'Agent Review handoff progress observed during stalled-wait recovery',
+      context: {
+        issue_id: issueId,
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id,
+        progress_signal_reasons: handoffProgress.reasons.join(','),
+        progress_signals: JSON.stringify(handoffProgress.signals),
+        ...workerTerminationResultContext(terminationResult)
+      }
+    });
+
+    if (isActiveState(handoffProgress.issue.state, this.config) && this.isFreshDispatchState(handoffProgress.issue.state)) {
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.orchestration.freshDispatchAfterReviewHandoff,
+        severity: 'info',
+        issue_identifier: runningEntry.identifier,
+        detail: `tracker_state=${handoffProgress.issue.state}`
+      });
+      this.logger?.log({
+        level: 'info',
+        event: CANONICAL_EVENT.orchestration.freshDispatchAfterReviewHandoff,
+        message: 'fresh dispatch after Agent Review handoff',
+        context: {
+          issue_id: issueId,
+          issue_identifier: runningEntry.identifier,
+          tracker_state: handoffProgress.issue.state
+        }
+      });
+      await this.dispatchIssue(handoffProgress.issue, null);
+    } else {
+      this.state.completed.add(issueId);
+    }
   }
 
   private markRunningWaitStallRootCauseIfThresholdExceeded(runningEntry: RunningEntry, observedAtMs: number): void {

@@ -2,7 +2,7 @@ import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { BlockedEntry, OperatorActionRecord, RunningEntry } from '../orchestrator/types';
 
-export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume';
+export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume' | 'automation_fault';
 export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'stalled_waiting';
 export type SnapshotFreshnessState = 'fresh' | 'aging' | 'stale';
 export type TokenTelemetryConfidence = 'observed_live' | 'backfilled' | 'missing';

@@ -16,7 +16,7 @@ import type {
 import type { SecurityProfile } from '../security';
 import type { ControlPlaneHealthRecorder, ControlPlaneHealthSummary, ControlPlaneThresholds } from './control-plane-health';
 
-export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume';
+export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume' | 'automation_fault';
 export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'stalled_waiting';
 export type SnapshotFreshnessState = 'fresh' | 'aging' | 'stale';
 export type TokenTelemetryConfidence = 'observed_live' | 'backfilled' | 'missing';
@@ -636,8 +636,8 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       requested_model?: string | null;
       effective_model?: string | null;
     }>;
-    requires_manual_resume: true;
-    awaiting_operator: true;
+    requires_manual_resume: boolean;
+    awaiting_operator: boolean;
     awaiting_operator_reason_code: string;
     awaiting_operator_since: string;
     awaiting_operator_resume_nonce: number;
@@ -669,6 +669,10 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       commit_sha: string | null;
       checklist_checkpoint: string | null;
       state_marker: string | null;
+      tracker_comment_created?: boolean;
+      tracker_status_transition?: string | null;
+      agent_review_handoff?: string | null;
+      tracker_started_state?: string | null;
     };
     required_actions?: string[];
     resume_override_reason?: string | null;
@@ -989,8 +993,8 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       requested_model?: string | null;
       effective_model?: string | null;
     }>;
-    requires_manual_resume: true;
-    awaiting_operator: true;
+    requires_manual_resume: boolean;
+    awaiting_operator: boolean;
     awaiting_operator_reason_code: string;
     awaiting_operator_since: string;
     awaiting_operator_resume_nonce: number;
@@ -1009,6 +1013,10 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       commit_sha: string | null;
       checklist_checkpoint: string | null;
       state_marker: string | null;
+      tracker_comment_created?: boolean;
+      tracker_status_transition?: string | null;
+      agent_review_handoff?: string | null;
+      tracker_started_state?: string | null;
     };
     required_actions?: string[];
     resume_override_reason?: string | null;

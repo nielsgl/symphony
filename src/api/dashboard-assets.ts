@@ -511,6 +511,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         return 'Operator Turn';
       case 'blocked_manual_resume':
         return 'Manual Resume Required';
+      case 'automation_fault':
+        return 'Automation Fault';
       default:
         return 'Turn Unknown';
     }

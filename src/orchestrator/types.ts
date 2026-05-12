@@ -140,6 +140,7 @@ export interface RunningEntry {
   budget_warning_emitted?: boolean;
   budget_hard_limit_enforced?: boolean;
   budget?: BudgetRuntimeProjection;
+  progress_signals?: ProgressSignals;
   recent_events: Array<{
     at_ms: number;
     event: string;
@@ -416,11 +417,7 @@ export interface RetryEntry {
   last_phase_at_ms?: number | null;
   last_phase_detail?: string | null;
   timer_handle: unknown;
-  progress_signals?: {
-    commit_sha: string | null;
-    checklist_checkpoint: string | null;
-    state_marker: string | null;
-  };
+  progress_signals?: ProgressSignals;
   budget?: BudgetRuntimeProjection;
   recovery?: MissingToolOutputRecoveryState | null;
 }
@@ -431,6 +428,20 @@ export interface RedispatchProgressSample {
   checklist_checkpoint: string | null;
   state_marker: string | null;
   pr_open: boolean;
+  tracker_comment_created?: boolean;
+  tracker_status_transition?: string | null;
+  agent_review_handoff?: string | null;
+  tracker_started_state?: string | null;
+}
+
+export interface ProgressSignals {
+  commit_sha: string | null;
+  checklist_checkpoint: string | null;
+  state_marker: string | null;
+  tracker_comment_created?: boolean;
+  tracker_status_transition?: string | null;
+  agent_review_handoff?: string | null;
+  tracker_started_state?: string | null;
 }
 
 export interface BlockedEntry {
@@ -488,11 +499,7 @@ export interface BlockedEntry {
   window_minutes?: number;
   last_known_commit_sha?: string | null;
   last_progress_checkpoint_at?: number | null;
-  progress_signals?: {
-    commit_sha: string | null;
-    checklist_checkpoint: string | null;
-    state_marker: string | null;
-  };
+  progress_signals?: ProgressSignals;
   required_actions?: string[];
   resume_override_reason?: string | null;
   budget?: BudgetRuntimeProjection;
@@ -755,11 +762,8 @@ export interface OrchestratorPorts {
     branch_name: string | null;
     repo_root: string | null;
     fallback_state_marker: string | null;
-  }) => Promise<{
-    commit_sha: string | null;
-    checklist_checkpoint: string | null;
-    state_marker: string | null;
-  }>;
+    previous_progress_signals?: ProgressSignals | null;
+  }) => Promise<ProgressSignals>;
   notifyObservers?: () => void;
 }
 

@@ -1,5 +1,6 @@
 import type {
   BlockedEntry,
+  CircuitBreakerEntry,
   OrchestratorState,
   RetryEntry,
   RunningEntry
@@ -26,6 +27,7 @@ interface RuntimeMatch {
   running: RunningEntry | null;
   retry: RetryEntry | null;
   blocked: BlockedEntry | null;
+  breaker: CircuitBreakerEntry | null;
 }
 
 function toMs(value: string | null): number | null {
@@ -281,7 +283,8 @@ function findRuntimeByThreadId(state: OrchestratorState, threadId: string): Runt
         issue_id: issueId,
         running,
         retry: state.retry_attempts.get(issueId) ?? null,
-        blocked: state.blocked_inputs.get(issueId) ?? null
+        blocked: state.blocked_inputs.get(issueId) ?? null,
+        breaker: state.circuit_breakers.get(issueId) ?? null
       };
     }
   }
@@ -291,7 +294,8 @@ function findRuntimeByThreadId(state: OrchestratorState, threadId: string): Runt
         issue_id: blocked.issue_id,
         running: state.running.get(blocked.issue_id) ?? null,
         retry: state.retry_attempts.get(blocked.issue_id) ?? null,
-        blocked
+        blocked,
+        breaker: state.circuit_breakers.get(blocked.issue_id) ?? null
       };
     }
   }
@@ -301,7 +305,8 @@ function findRuntimeByThreadId(state: OrchestratorState, threadId: string): Runt
         issue_id: retry.issue_id,
         running: state.running.get(retry.issue_id) ?? null,
         retry,
-        blocked: state.blocked_inputs.get(retry.issue_id) ?? null
+        blocked: state.blocked_inputs.get(retry.issue_id) ?? null,
+        breaker: state.circuit_breakers.get(retry.issue_id) ?? null
       };
     }
   }
@@ -312,7 +317,8 @@ function findRuntimeByIssueIdentifier(state: OrchestratorState, issueIdentifier:
   const runningEntry = Array.from(state.running.entries()).find(([, entry]) => entry.identifier === issueIdentifier);
   const retryEntry = Array.from(state.retry_attempts.values()).find((entry) => entry.identifier === issueIdentifier);
   const blockedEntry = Array.from(state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issueIdentifier);
-  const issueId = runningEntry?.[0] ?? retryEntry?.issue_id ?? blockedEntry?.issue_id;
+  const breakerEntry = Array.from(state.circuit_breakers.values()).find((entry) => entry.issue_identifier === issueIdentifier);
+  const issueId = runningEntry?.[0] ?? retryEntry?.issue_id ?? blockedEntry?.issue_id ?? breakerEntry?.issue_id;
   if (!issueId) {
     return null;
   }
@@ -320,7 +326,8 @@ function findRuntimeByIssueIdentifier(state: OrchestratorState, issueIdentifier:
     issue_id: issueId,
     running: runningEntry?.[1] ?? state.running.get(issueId) ?? null,
     retry: retryEntry ?? state.retry_attempts.get(issueId) ?? null,
-    blocked: blockedEntry ?? state.blocked_inputs.get(issueId) ?? null
+    blocked: blockedEntry ?? state.blocked_inputs.get(issueId) ?? null,
+    breaker: breakerEntry ?? state.circuit_breakers.get(issueId) ?? null
   };
 }
 
@@ -328,7 +335,8 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
   const source = match.running;
   const retry = match.retry;
   const blocked = match.blocked;
-  const issueIdentifier = source?.identifier ?? retry?.identifier ?? blocked?.issue_identifier ?? '';
+  const breaker = match.breaker;
+  const issueIdentifier = source?.identifier ?? retry?.identifier ?? blocked?.issue_identifier ?? breaker?.issue_identifier ?? '';
   const attempt = source?.retry_attempt ?? retry?.attempt ?? blocked?.attempt ?? 0;
   const sessionId = source?.session_id ?? blocked?.previous_session_id ?? retry?.previous_session_id ?? null;
   const blockedConsole = blocked
@@ -389,21 +397,27 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
           time_since_progress: retryTimeSinceProgress,
           missing_tool_output_recovery: projectMissingToolOutputRecovery(retry)
         })
-      : classifyThreadBlocker({
-          reason_code: source?.recovery?.reason_code ?? source?.stalled_waiting_reason ?? null,
-          reason_detail:
-            source?.stalled_waiting_reason === REASON_CODES.turnWaitingThresholdExceeded
-              ? 'codex.turn.waiting heartbeat loop exceeded threshold'
-              : source?.recovery?.prompt_summary ?? source?.last_event_summary ?? source?.last_message ?? null,
-          status: source?.recovery || source?.stalled_waiting_reason ? 'blocked' : 'running',
-          has_pending_input: Boolean(source?.awaiting_input_since_ms),
-          stalled_waiting: Boolean(source?.stalled_waiting_since_ms && source?.stalled_waiting_reason),
-          missing_tool_output_recovery: source ? projectMissingToolOutputRecovery(source) : null,
-          time_since_progress:
-            typeof source?.last_progress_transition_at_ms === 'number'
-              ? Math.max(0, nowMs - source.last_progress_transition_at_ms)
-              : null
-        });
+      : breaker?.breaker_active
+        ? classifyThreadBlocker({
+            reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+            reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+            status: 'blocked'
+          })
+        : classifyThreadBlocker({
+            reason_code: source?.recovery?.reason_code ?? source?.stalled_waiting_reason ?? null,
+            reason_detail:
+              source?.stalled_waiting_reason === REASON_CODES.turnWaitingThresholdExceeded
+                ? 'codex.turn.waiting heartbeat loop exceeded threshold'
+                : source?.recovery?.prompt_summary ?? source?.last_event_summary ?? source?.last_message ?? null,
+            status: source?.recovery || source?.stalled_waiting_reason ? 'blocked' : 'running',
+            has_pending_input: Boolean(source?.awaiting_input_since_ms),
+            stalled_waiting: Boolean(source?.stalled_waiting_since_ms && source?.stalled_waiting_reason),
+            missing_tool_output_recovery: source ? projectMissingToolOutputRecovery(source) : null,
+            time_since_progress:
+              typeof source?.last_progress_transition_at_ms === 'number'
+                ? Math.max(0, nowMs - source.last_progress_transition_at_ms)
+                : null
+          });
 
   const timelineLastMeaningfulProgress = lastMeaningfulProgressAtMs(timeline);
   const runtimeLastMeaningfulProgress =
@@ -420,7 +434,7 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
     thread_id: threadId,
     issue_identifier: issueIdentifier,
     attempt,
-    status: blocked || retry || currentBlocker ? 'stalled' : 'running',
+    status: blocked || retry || breaker || currentBlocker ? 'stalled' : 'running',
     timeline,
     phase_spans: [],
     tool_spans: [],
@@ -662,7 +676,12 @@ export function buildThreadDiagnosticsByIssueIdentifier(params: {
     const lineage = params.reconstructLatestThreadLineageByIssueIdentifier?.(params.issue_identifier) ?? null;
     return lineage ? diagnosticsFromLineage(lineage, params.now_ms) : null;
   }
-  const threadId = runtimeMatch.running?.thread_id ?? runtimeMatch.running?.persisted_thread_id ?? runtimeMatch.blocked?.previous_thread_id ?? runtimeMatch.retry?.previous_thread_id;
+  const threadId =
+    runtimeMatch.running?.thread_id ??
+    runtimeMatch.running?.persisted_thread_id ??
+    runtimeMatch.blocked?.previous_thread_id ??
+    runtimeMatch.retry?.previous_thread_id ??
+    runtimeMatch.breaker?.issue_id;
   if (!threadId) {
     const lineage = params.reconstructLatestThreadLineageByIssueIdentifier?.(params.issue_identifier) ?? null;
     return lineage ? diagnosticsFromLineage(lineage, params.now_ms) : null;
