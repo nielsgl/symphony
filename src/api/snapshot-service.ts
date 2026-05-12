@@ -1,4 +1,10 @@
-import type { OperatorActionRecord, OrchestratorState, RunningEntry, TranscriptToolCallDiagnosticStats } from '../orchestrator';
+import type {
+  CircuitBreakerEntry,
+  OperatorActionRecord,
+  OrchestratorState,
+  RunningEntry,
+  TranscriptToolCallDiagnosticStats
+} from '../orchestrator';
 import { explainOperatorRuntimeState, getReasonCodeDefinition, REASON_CODES, toOperatorExplainerHint } from '../observability';
 import { redactUnknown } from '../security/redaction';
 import { LocalApiError } from './errors';
@@ -384,6 +390,95 @@ function projectCurrentOperatorBlock(entry: { stop_reason_code: string; stop_rea
   };
 }
 
+function projectCircuitBreakerMetadata(entry: CircuitBreakerEntry) {
+  return {
+    breaker_active: entry.breaker_active,
+    breaker_hit_count: entry.breaker_hit_count,
+    breaker_window_minutes: entry.breaker_window_minutes,
+    breaker_first_hit_at: entry.breaker_first_hit_at_ms ? asIsoDate(entry.breaker_first_hit_at_ms) : null,
+    breaker_last_hit_at: entry.breaker_last_hit_at_ms ? asIsoDate(entry.breaker_last_hit_at_ms) : null
+  };
+}
+
+function projectNoProgressCircuitBreakerFault(
+  entry: CircuitBreakerEntry,
+  state: OrchestratorState,
+  nowMs: number
+): ApiStateResponse['blocked'][number] {
+  const definition = getReasonCodeDefinition(REASON_CODES.operatorNoProgressRedispatchBlocked);
+  const detail =
+    definition?.detail ??
+    'Completion gate stopped redispatch because no progress signal was detected; no answerable input payload is pending.';
+  const observedAtMs = entry.breaker_last_hit_at_ms ?? entry.breaker_first_hit_at_ms ?? nowMs;
+  return {
+    ...defaultBudgetProjection(),
+    ...projectCircuitBreakerMetadata(entry),
+    issue_id: entry.issue_id,
+    issue_identifier: entry.issue_identifier,
+    attempt: 0,
+    blocked_at: asIsoDate(observedAtMs),
+    worker_host: null,
+    workspace_path: null,
+    provisioner_type: null,
+    branch_name: null,
+    repo_root: null,
+    workspace_exists: false,
+    workspace_git_status: null,
+    workspace_provisioned: false,
+    workspace_is_git_worktree: false,
+    copy_ignored_applied: false,
+    copy_ignored_status: null,
+    copy_ignored_summary: null,
+    stop_reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+    stop_reason_detail: detail,
+    worker_termination_result: null,
+    conflict_files: [],
+    resolution_hints: [...(definition?.recommended_actions ?? [])],
+    previous_thread_id: null,
+    previous_session_id: null,
+    last_phase: null,
+    last_phase_at: null,
+    last_phase_detail: null,
+    root_cause: null,
+    current_operator_block: {
+      reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+      detail
+    },
+    requires_manual_resume: false,
+    awaiting_operator: false,
+    awaiting_operator_reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+    awaiting_operator_since: asIsoDate(observedAtMs),
+    awaiting_operator_resume_nonce: 0,
+    quarantined_event_count: 0,
+    last_quarantined_event_at: null,
+    pending_input: null,
+    tool_output_wait: null,
+    transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary({
+      issue_identifier: entry.issue_identifier
+    }),
+    last_input_submit: null,
+    resume_history: [],
+    session_console: [],
+    turn_control_state: 'automation_fault',
+    turn_control_reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+    turn_control_since_ms: observedAtMs,
+    progress_signal_state: 'stalled_waiting',
+    last_progress_transition_at_ms: null,
+    last_heartbeat_at_ms: observedAtMs,
+    ownership_conflict: null,
+    operator_actions: projectOperatorActions(state, entry.issue_id),
+    recovery: null,
+    missing_tool_output_recovery: null,
+    operator_explainer_hint: toOperatorExplainerHint(
+      explainOperatorRuntimeState({
+        state_class: 'blocked',
+        reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+        reason_detail: detail
+      })
+    )
+  };
+}
+
 function projectRetryTiming(dueAtMs: number, nowMs: number) {
   const overdueMs = Math.max(0, nowMs - dueAtMs);
   const retryWaitMs = Math.max(0, dueAtMs - nowMs);
@@ -718,7 +813,7 @@ export class SnapshotService {
         last_phase: entry.retry_cause.last_phase
       }))
     };
-    const blocked = Array.from(state.blocked_inputs.values()).map((entry) => {
+    const blockedFromInputs = Array.from(state.blocked_inputs.values()).map((entry) => {
       const progressSignal = resolveBlockedProgressSignal(entry);
       return {
         ...projectBudget(entry),
@@ -823,6 +918,12 @@ export class SnapshotService {
         session_console: (entry.session_console ?? []).map(projectRunnerEventEvidence)
       };
     });
+    const blocked = [
+      ...blockedFromInputs,
+      ...Array.from(state.circuit_breakers.values())
+        .filter((entry) => entry.breaker_active && !state.blocked_inputs.has(entry.issue_id))
+        .map((entry) => projectNoProgressCircuitBreakerFault(entry, state, nowMs))
+    ];
 
     const activeSeconds = Array.from(state.running.values()).reduce((total, entry) => {
       const seconds = Math.max(0, Math.floor((nowMs - entry.started_at_ms) / 1000));
@@ -949,9 +1050,14 @@ export class SnapshotService {
     const runningEntry = Array.from(state.running.entries()).find(([, entry]) => entry.identifier === issueIdentifier);
     const retryEntry = Array.from(state.retry_attempts.values()).find((entry) => entry.identifier === issueIdentifier);
     const blockedEntry = Array.from(state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issueIdentifier);
-    const breakerEntry = blockedEntry ? state.circuit_breakers.get(blockedEntry.issue_id) : undefined;
+    const breakerEntry =
+      blockedEntry
+        ? state.circuit_breakers.get(blockedEntry.issue_id)
+        : Array.from(state.circuit_breakers.values()).find(
+            (entry) => entry.breaker_active && entry.issue_identifier === issueIdentifier
+          );
 
-    if (!runningEntry && !retryEntry && !blockedEntry) {
+    if (!runningEntry && !retryEntry && !blockedEntry && !breakerEntry) {
       throw new LocalApiError(
         'issue_not_found',
         `Issue ${issueIdentifier} is not in runtime state`,
@@ -1347,6 +1453,51 @@ export class SnapshotService {
         recent_events: [],
         stale_events: [],
         last_error: retryOnlyEntry.error,
+        logs: {
+          codex_session_logs: []
+        },
+        tracked: {}
+      }) as ApiIssueResponse;
+    }
+
+    if (!blockedEntry && breakerEntry) {
+      const issueId = breakerEntry.issue_id;
+      const blockedFault = projectNoProgressCircuitBreakerFault(breakerEntry, state, nowMs);
+      const operatorExplainer = explainOperatorRuntimeState({
+        state_class: 'blocked',
+        reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+        reason_detail: blockedFault.stop_reason_detail
+      });
+      return redactUnknown({
+        issue_identifier: issueIdentifier,
+        issue_id: issueId,
+        status: 'blocked',
+        ...freshness,
+        ...createApiDegradedDiagnostics(null, []),
+        operator_actions: projectOperatorActions(state, issueId),
+        operator_explainer: operatorExplainer,
+        workspace: {
+          path: null,
+          host: null
+        },
+        attempts: {
+          restart_count: 0,
+          current_retry_attempt: 0
+        },
+        running: null,
+        retry: null,
+        blocked: blockedFault,
+        phase_timeline: (state.phase_timeline?.get(issueId) ?? []).map((event) => ({
+          at: asIsoDate(event.at_ms),
+          phase: event.phase,
+          detail: event.detail,
+          attempt: event.attempt,
+          thread_id: event.thread_id ?? null,
+          session_id: event.session_id ?? null
+        })),
+        recent_events: [],
+        stale_events: [],
+        last_error: state.health.last_error,
         logs: {
           codex_session_logs: []
         },

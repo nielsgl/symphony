@@ -4804,7 +4804,15 @@ describe('OrchestratorCore', () => {
 
       const blockedState = await fetchJson('/api/v1/state');
       expect(blockedState.response.status).toBe(200);
-      expect(blockedState.payload.blocked).toEqual([]);
+      expect((blockedState.payload.blocked as Array<Record<string, unknown>>)[0]).toMatchObject({
+        issue_identifier: 'NIE-146',
+        stop_reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+        pending_input: null,
+        requires_manual_resume: false,
+        awaiting_operator: false,
+        breaker_active: true,
+        breaker_hit_count: 1
+      });
       expect(harness.orchestrator.getCircuitBreakerSnapshot()[0]).toMatchObject({
         issue_identifier: 'NIE-146',
         breaker_active: true,

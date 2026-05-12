@@ -1279,6 +1279,91 @@ describe('SnapshotService', () => {
     expect(issueProjection.blocked?.stop_reason_code).toBe('operator_action_required_no_progress_redispatch_blocked');
   });
 
+  it('projects circuit-breaker-only no-progress faults without input-required latches', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      circuit_breakers: new Map([
+        [
+          'issue-breaker-only',
+          {
+            issue_id: 'issue-breaker-only',
+            issue_identifier: 'ABC-BREAKER',
+            breaker_active: true,
+            breaker_hit_count: 3,
+            breaker_window_minutes: 30,
+            breaker_first_hit_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+            breaker_last_hit_at_ms: Date.parse('2026-04-10T10:04:00.000Z')
+          }
+        ]
+      ])
+    });
+
+    const stateProjection = service.projectState(state);
+    expect(stateProjection.counts.blocked).toBe(1);
+    expect(stateProjection.blocked).toHaveLength(1);
+    expect(stateProjection.blocked[0]).toMatchObject({
+      issue_id: 'issue-breaker-only',
+      issue_identifier: 'ABC-BREAKER',
+      stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+      stop_reason_detail:
+        'Completion gate stopped redispatch because no progress signal was detected; no answerable input payload is pending.',
+      pending_input: null,
+      requires_manual_resume: false,
+      awaiting_operator: false,
+      breaker_active: true,
+      breaker_hit_count: 3,
+      breaker_window_minutes: 30,
+      breaker_first_hit_at: '2026-04-10T10:00:00.000Z',
+      breaker_last_hit_at: '2026-04-10T10:04:00.000Z',
+      operator_explainer_hint: {
+        classification: 'failed',
+        actionability: 'recommended',
+        headline: 'Redispatch stopped after no progress'
+      }
+    });
+  });
+
+  it('returns issue detail for circuit-breaker-only no-progress faults', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      circuit_breakers: new Map([
+        [
+          'issue-breaker-only',
+          {
+            issue_id: 'issue-breaker-only',
+            issue_identifier: 'ABC-BREAKER',
+            breaker_active: true,
+            breaker_hit_count: 3,
+            breaker_window_minutes: 30,
+            breaker_first_hit_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+            breaker_last_hit_at_ms: Date.parse('2026-04-10T10:04:00.000Z')
+          }
+        ]
+      ])
+    });
+
+    const issueProjection = service.projectIssue(state, 'ABC-BREAKER');
+    expect(issueProjection.status).toBe('blocked');
+    expect(issueProjection.operator_explainer).toMatchObject({
+      classification: 'failed',
+      actionability: 'recommended',
+      reason_code: 'operator_action_required_no_progress_redispatch_blocked'
+    });
+    expect(issueProjection.blocked).toMatchObject({
+      issue_id: 'issue-breaker-only',
+      stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+      pending_input: null,
+      requires_manual_resume: false,
+      awaiting_operator: false,
+      breaker_active: true,
+      breaker_hit_count: 3
+    });
+  });
+
   it('projects failed health state and issue recent events for diagnostics', () => {
     const service = new SnapshotService({
       nowMs: () => Date.parse('2026-04-10T10:02:00.000Z')
