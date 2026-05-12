@@ -25,6 +25,9 @@ import type {
   PersistedBlockedInputRecord,
   PersistedOperatorActionsRecord,
   PersistenceHealth,
+  ProjectHistoryAppServerLiteSummary,
+  ProjectHistoryTicketSummaryPage,
+  ProjectHistoryTicketSummaryProjection,
   RunTerminalStatus,
   StateTransitionRecord,
   TicketBlockerRecord,
@@ -50,7 +53,7 @@ interface PersistenceStoreOptions {
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 8;
+const HISTORY_SCHEMA_VERSION = 9;
 
 interface HistoryMigration {
   version: number;
@@ -147,6 +150,13 @@ function parseHistoryPayloadTruncation(value: string): AppServerEventLedgerRecor
     excerpt_bytes: Number(parsed.excerpt_bytes),
     max_excerpt_bytes: Number(parsed.max_excerpt_bytes)
   };
+}
+
+function maxStringTimestamp(values: Array<string | null | undefined>): string | null {
+  return values
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .sort()
+    .at(-1) ?? null;
 }
 
 function serializeDurableIdentity(identity: DurableIdentity): string {
@@ -1627,6 +1637,17 @@ export class SqlitePersistenceStore {
     };
   }
 
+  listProjectTicketSummaries(
+    projectKey: string,
+    options: { limit?: number; offset?: number } = {}
+  ): ProjectHistoryTicketSummaryPage {
+    const page = this.listProjectTicketIdentities(projectKey, options);
+    return {
+      ...page,
+      items: page.items.map((identity) => this.getProjectTicketSummary(identity))
+    };
+  }
+
   getProjectTicketIdentity(projectKey: string, ticketKey: string): DurableIdentity | null {
     const row = this.db
       .prepare(
@@ -1638,6 +1659,52 @@ export class SqlitePersistenceStore {
       )
       .get(projectKey, ticketKey) as { identity: string | null } | undefined;
     return parseDurableIdentity(row?.identity ?? null);
+  }
+
+  private getProjectTicketSummary(identity: DurableIdentity): ProjectHistoryTicketSummaryProjection {
+    const issueRuns = this.db
+      .prepare(
+        `SELECT issue_run_id, issue_id, issue_identifier, identity, started_at, ended_at, status, reason_code, reason_detail
+         FROM issue_run
+         WHERE project_key = ? AND ticket_key = ?
+         ORDER BY started_at ASC, issue_run_id ASC`
+      )
+      .all(identity.project.key, identity.ticket.key) as Array<Omit<IssueRunRecord, 'identity'> & { identity: string | null }>;
+    const issueRunIds = issueRuns.map((run) => run.issue_run_id);
+    const latestIssueRun = issueRuns.at(-1) ?? null;
+    const latestAttempt = this.latestSummaryAttempt(issueRunIds);
+    const latestOutcome = this.latestSummaryOutcome(issueRunIds);
+    const latestTrackerSnapshot = this.latestSummaryTrackerSnapshot(issueRunIds);
+    const latestTransition = this.latestSummaryTransition(issueRunIds);
+    const lastKnownStatus = latestTrackerSnapshot?.tracker_status ?? latestTransition?.to_status ?? latestIssueRun?.status ?? 'unknown';
+    const summary = this.summaryCounts(issueRunIds);
+    const latestObservedAt = maxStringTimestamp([
+      latestIssueRun?.started_at ?? null,
+      latestAttempt?.started_at ?? null,
+      latestOutcome?.recorded_at ?? null,
+      latestTrackerSnapshot?.last_observed_at ?? null,
+      latestTransition?.transitioned_at ?? null,
+      this.latestAppServerObservedAt(issueRunIds)
+    ]);
+
+    return {
+      identity,
+      state: this.isSummaryActive(latestIssueRun) ? 'active' : 'completed',
+      current_status: lastKnownStatus,
+      last_known_status: lastKnownStatus,
+      latest_attempt: {
+        attempt_id: latestAttempt?.attempt_id ?? null,
+        attempt_number: latestAttempt?.attempt_number ?? null,
+        status: latestAttempt?.status ?? null,
+        started_at: latestAttempt?.started_at ?? null,
+        ended_at: latestAttempt?.ended_at ?? null,
+        outcome: latestOutcome?.outcome ?? null,
+        outcome_reason_code: latestOutcome?.reason_code ?? null
+      },
+      summary,
+      app_server_lite: this.summaryAppServerLite(issueRunIds),
+      latest_observed_at: latestObservedAt
+    };
   }
 
   reconstructTicketTimeline(identity: DurableIdentity): TicketTimelineRecord {
@@ -2057,6 +2124,13 @@ export class SqlitePersistenceStore {
         apply: (store) => {
           store.normalizeExistingProjectIdentityKeys();
         }
+      },
+      {
+        version: 9,
+        name: 'project_scoped_ticket_identity_v1',
+        apply: (store) => {
+          store.ensureProjectScopedTicketIdentityTable();
+        }
       }
     ];
 
@@ -2217,8 +2291,8 @@ export class SqlitePersistenceStore {
         updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS history_ticket_identity (
-        ticket_key TEXT PRIMARY KEY,
         project_key TEXT NOT NULL,
+        ticket_key TEXT NOT NULL,
         tracker_kind TEXT NOT NULL,
         tracker_scope_status TEXT NOT NULL,
         tracker_scope_value TEXT,
@@ -2227,6 +2301,7 @@ export class SqlitePersistenceStore {
         human_issue_identifier TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_key, ticket_key),
         FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT
       );
       CREATE TABLE IF NOT EXISTS history_protocol_summary (
@@ -2585,7 +2660,161 @@ export class SqlitePersistenceStore {
   private normalizeExistingProjectIdentityKeys(): void {
     this.normalizeRunProjectIdentityKeys();
     this.normalizeIssueRunProjectIdentityKeys();
+    this.collapseStaleProjectIdentityRows();
     this.recordHistoryHealthMetadata('healthy', null, null);
+  }
+
+  private collapseStaleProjectIdentityRows(): void {
+    const rows = this.db
+      .prepare(
+        `SELECT project_key, project_root, workflow_path, workflow_hash_status, workflow_hash_value, workflow_hash_reason,
+                repository_remote_status, repository_remote_value, repository_remote_reason, created_at, updated_at
+         FROM history_project_identity
+         ORDER BY updated_at ASC, project_key ASC`
+      )
+      .all() as Array<{
+      project_key: string;
+      project_root: string;
+      workflow_path: string;
+      workflow_hash_status: 'present' | 'missing';
+      workflow_hash_value: string | null;
+      workflow_hash_reason: string | null;
+      repository_remote_status: 'present' | 'missing';
+      repository_remote_value: string | null;
+      repository_remote_reason: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+    const upsertNormalizedProject = this.db.prepare(
+      `INSERT INTO history_project_identity
+        (project_key, project_root, workflow_path, workflow_hash_status, workflow_hash_value, workflow_hash_reason,
+         repository_remote_status, repository_remote_value, repository_remote_reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_key) DO UPDATE SET
+        project_root = excluded.project_root,
+        workflow_path = excluded.workflow_path,
+        workflow_hash_status = excluded.workflow_hash_status,
+        workflow_hash_value = excluded.workflow_hash_value,
+        workflow_hash_reason = excluded.workflow_hash_reason,
+        repository_remote_status = excluded.repository_remote_status,
+        repository_remote_value = excluded.repository_remote_value,
+        repository_remote_reason = excluded.repository_remote_reason,
+        updated_at = excluded.updated_at`
+    );
+    const deleteProject = this.db.prepare('DELETE FROM history_project_identity WHERE project_key = ?');
+
+    for (const row of rows) {
+      const normalizedProject = buildProjectIdentity({
+        projectRoot: row.project_root,
+        workflowPath: row.workflow_path,
+        workflowHash:
+          row.workflow_hash_status === 'present'
+            ? { status: 'present', value: row.workflow_hash_value ?? '' }
+            : { status: 'missing', reason: row.workflow_hash_reason ?? 'workflow_file_unreadable' },
+        repositoryRemote:
+          row.repository_remote_status === 'present'
+            ? { status: 'present', value: row.repository_remote_value ?? '' }
+            : { status: 'missing', reason: row.repository_remote_reason ?? 'repository_remote_unavailable' }
+      });
+      const normalizedProjectKey = normalizedProject.key;
+      upsertNormalizedProject.run(
+        normalizedProjectKey,
+        row.project_root,
+        row.workflow_path,
+        row.workflow_hash_status,
+        row.workflow_hash_status === 'present' ? row.workflow_hash_value : null,
+        row.workflow_hash_status === 'missing' ? row.workflow_hash_reason : null,
+        row.repository_remote_status,
+        row.repository_remote_status === 'present' ? row.repository_remote_value : null,
+        row.repository_remote_status === 'missing' ? row.repository_remote_reason : null,
+        row.created_at,
+        row.updated_at
+      );
+      if (row.project_key === normalizedProjectKey) {
+        continue;
+      }
+      this.rewriteProjectIdentityReferences(row.project_key, normalizedProjectKey);
+      deleteProject.run(row.project_key);
+    }
+  }
+
+  private rewriteProjectIdentityReferences(oldProjectKey: string, normalizedProjectKey: string): void {
+    const projectKeyTables = [
+      'history_ticket_identity',
+      'issue_run',
+      'history_identity_projection',
+      'history_tracker_ticket_snapshot',
+      'history_ticket_reference',
+      'history_operator_action',
+      'history_blocked_input_event',
+      'history_retention_prune_record'
+    ];
+    for (const table of projectKeyTables) {
+      if (!this.hasTable(table)) {
+        continue;
+      }
+      this.db.prepare(`UPDATE ${table} SET project_key = ? WHERE project_key = ?`).run(normalizedProjectKey, oldProjectKey);
+    }
+  }
+
+  private ensureProjectScopedTicketIdentityTable(): void {
+    const scopedPrimaryKey = (): boolean => {
+      if (!this.hasTable('history_ticket_identity')) {
+        return false;
+      }
+      const primaryKeyColumns = (this.db.prepare('PRAGMA table_info(history_ticket_identity)').all() as Array<{ name: string; pk: number }>)
+        .filter((column) => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((column) => column.name);
+      return primaryKeyColumns.join(',') === 'project_key,ticket_key';
+    };
+
+    if (!scopedPrimaryKey()) {
+      this.db.exec(`
+        ALTER TABLE history_ticket_identity RENAME TO history_ticket_identity_legacy_global;
+        CREATE TABLE history_ticket_identity (
+          project_key TEXT NOT NULL,
+          ticket_key TEXT NOT NULL,
+          tracker_kind TEXT NOT NULL,
+          tracker_scope_status TEXT NOT NULL,
+          tracker_scope_value TEXT,
+          tracker_scope_reason TEXT,
+          remote_issue_id TEXT NOT NULL,
+          human_issue_identifier TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (project_key, ticket_key),
+          FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT
+        );
+        INSERT OR REPLACE INTO history_ticket_identity
+          (project_key, ticket_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
+           remote_issue_id, human_issue_identifier, created_at, updated_at)
+        SELECT project_key, ticket_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
+          remote_issue_id, human_issue_identifier, created_at, updated_at
+        FROM history_ticket_identity_legacy_global;
+        DROP TABLE history_ticket_identity_legacy_global;
+      `);
+    }
+
+    this.backfillTicketIdentitiesFromDurableSnapshots();
+    this.recordHistoryHealthMetadata('healthy', null, null);
+  }
+
+  private backfillTicketIdentitiesFromDurableSnapshots(): void {
+    const rows = [
+      ...(this.db.prepare('SELECT identity FROM runs WHERE identity IS NOT NULL ORDER BY started_at ASC, run_id ASC').all() as Array<{
+        identity: string | null;
+      }>),
+      ...(this.db
+        .prepare('SELECT identity FROM issue_run WHERE identity IS NOT NULL ORDER BY started_at ASC, issue_run_id ASC')
+        .all() as Array<{ identity: string | null }>)
+    ];
+    for (const row of rows) {
+      const identity = parseDurableIdentity(row.identity);
+      if (identity) {
+        this.upsertHistoryIdentity(identity, { bypassHealthCheck: true });
+      }
+    }
   }
 
   private normalizeRunProjectIdentityKeys(): void {
@@ -2964,11 +3193,10 @@ export class SqlitePersistenceStore {
     this.db
       .prepare(
         `INSERT INTO history_ticket_identity
-          (ticket_key, project_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
+          (project_key, ticket_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
            remote_issue_id, human_issue_identifier, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(ticket_key) DO UPDATE SET
-          project_key = excluded.project_key,
+         ON CONFLICT(project_key, ticket_key) DO UPDATE SET
           tracker_kind = excluded.tracker_kind,
           tracker_scope_status = excluded.tracker_scope_status,
           tracker_scope_value = excluded.tracker_scope_value,
@@ -2978,8 +3206,8 @@ export class SqlitePersistenceStore {
           updated_at = excluded.updated_at`
       )
       .run(
-        identity.ticket.key,
         identity.project.key,
+        identity.ticket.key,
         identity.ticket.tracker_kind,
         trackerScope.status,
         trackerScope.status === 'present' ? trackerScope.value : null,
@@ -3219,6 +3447,278 @@ export class SqlitePersistenceStore {
 
   private placeholders(values: unknown[]): string {
     return values.map(() => '?').join(', ');
+  }
+
+  private isSummaryActive(latestIssueRun: Pick<IssueRunRecord, 'ended_at' | 'status'> | null): boolean {
+    if (!latestIssueRun) {
+      return false;
+    }
+    return latestIssueRun.ended_at === null || ['pending', 'running', 'retrying', 'blocked'].includes(latestIssueRun.status);
+  }
+
+  private latestSummaryAttempt(issueRunIds: string[]): AttemptRecord | null {
+    if (issueRunIds.length === 0) {
+      return null;
+    }
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM attempt
+           WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+           ORDER BY started_at DESC, attempt_number DESC, attempt_id DESC
+           LIMIT 1`
+        )
+        .get(...issueRunIds) as AttemptRecord | undefined
+    ) ?? null;
+  }
+
+  private latestSummaryOutcome(issueRunIds: string[]): TicketTerminalOutcomeRecord | null {
+    if (issueRunIds.length === 0) {
+      return null;
+    }
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM history_ticket_terminal_outcome
+           WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+           ORDER BY recorded_at DESC, terminal_outcome_id DESC
+           LIMIT 1`
+        )
+        .get(...issueRunIds) as TicketTerminalOutcomeRecord | undefined
+    ) ?? null;
+  }
+
+  private latestSummaryTrackerSnapshot(issueRunIds: string[]): TrackerTicketSnapshotRecord | null {
+    if (issueRunIds.length === 0) {
+      return null;
+    }
+    const row = this.db
+      .prepare(
+        `SELECT * FROM history_tracker_ticket_snapshot
+         WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+         ORDER BY last_observed_at DESC, tracker_snapshot_id DESC
+         LIMIT 1`
+      )
+      .get(...issueRunIds) as (Omit<TrackerTicketSnapshotRecord, 'labels'> & { labels: string }) | undefined;
+    return row ? { ...row, labels: parseStringArray(row.labels) } : null;
+  }
+
+  private latestSummaryTransition(issueRunIds: string[]): StateTransitionRecord | null {
+    if (issueRunIds.length === 0) {
+      return null;
+    }
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM state_transition
+           WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+           ORDER BY transitioned_at DESC, state_transition_id DESC
+           LIMIT 1`
+        )
+        .get(...issueRunIds) as StateTransitionRecord | undefined
+    ) ?? null;
+  }
+
+  private latestAppServerObservedAt(issueRunIds: string[]): string | null {
+    if (issueRunIds.length === 0) {
+      return null;
+    }
+    const row = this.db
+      .prepare(
+        `SELECT MAX(observed_at) AS observed_at
+         FROM history_app_server_event
+         WHERE issue_run_id IN (${this.placeholders(issueRunIds)})`
+      )
+      .get(...issueRunIds) as { observed_at: string | null } | undefined;
+    return row?.observed_at ?? null;
+  }
+
+  private summaryCounts(issueRunIds: string[]): ProjectHistoryTicketSummaryProjection['summary'] {
+    const count = (table: string, where: string = ''): number => {
+      if (issueRunIds.length === 0) {
+        return 0;
+      }
+      const row = this.db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM ${table}
+           WHERE issue_run_id IN (${this.placeholders(issueRunIds)})${where}`
+        )
+        .get(...issueRunIds) as { count: number };
+      return row.count;
+    };
+    const tokenRow =
+      issueRunIds.length === 0
+        ? { count: 0, total_tokens: null as number | null }
+        : (this.db
+            .prepare(
+              `SELECT COUNT(*) AS count, SUM(total_tokens) AS total_tokens
+               FROM history_token_model_fact
+               WHERE issue_run_id IN (${this.placeholders(issueRunIds)})`
+            )
+            .get(...issueRunIds) as { count: number; total_tokens: number | null });
+    return {
+      issue_run_count: issueRunIds.length,
+      attempt_count: count('attempt'),
+      thread_count: this.countThreads(issueRunIds),
+      turn_count: this.countTurns(issueRunIds),
+      phase_count: this.countPhaseSpans(issueRunIds),
+      state_transition_count: count('state_transition'),
+      active_blocker_count: count('history_ticket_blocker', ` AND status = 'active'`),
+      resolved_blocker_count: count('history_ticket_blocker', ` AND status = 'resolved'`),
+      evidence_reference_count: count('history_ticket_evidence_reference'),
+      tracker_snapshot_count: count('history_tracker_ticket_snapshot'),
+      ticket_reference_count: count('history_ticket_reference'),
+      operator_action_count: count('history_operator_action'),
+      blocked_input_event_count: count('history_blocked_input_event'),
+      app_server_event_count: count('history_app_server_event'),
+      token_model_fact_count: tokenRow.count,
+      total_tokens: tokenRow.total_tokens
+    };
+  }
+
+  private countThreads(issueRunIds: string[]): number {
+    if (issueRunIds.length === 0) {
+      return 0;
+    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM thread
+         JOIN attempt ON attempt.attempt_id = thread.attempt_id
+         WHERE attempt.issue_run_id IN (${this.placeholders(issueRunIds)})`
+      )
+      .get(...issueRunIds) as { count: number };
+    return row.count;
+  }
+
+  private countTurns(issueRunIds: string[]): number {
+    if (issueRunIds.length === 0) {
+      return 0;
+    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM turn
+         JOIN thread ON thread.thread_id = turn.thread_id
+         JOIN attempt ON attempt.attempt_id = thread.attempt_id
+         WHERE attempt.issue_run_id IN (${this.placeholders(issueRunIds)})`
+      )
+      .get(...issueRunIds) as { count: number };
+    return row.count;
+  }
+
+  private countPhaseSpans(issueRunIds: string[]): number {
+    if (issueRunIds.length === 0) {
+      return 0;
+    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM phase_span
+         JOIN turn ON turn.turn_id = phase_span.turn_id
+         JOIN thread ON thread.thread_id = turn.thread_id
+         JOIN attempt ON attempt.attempt_id = thread.attempt_id
+         WHERE attempt.issue_run_id IN (${this.placeholders(issueRunIds)})`
+      )
+      .get(...issueRunIds) as { count: number };
+    return row.count;
+  }
+
+  private summaryAppServerLite(issueRunIds: string[]): ProjectHistoryAppServerLiteSummary {
+    const summary: ProjectHistoryAppServerLiteSummary = {
+      redacted_event_count: 0,
+      truncated_event_count: 0,
+      summary_only_event_count: 0,
+      unavailable_event_count: 0,
+      full_payload_stored_count: 0,
+      degraded_event_count: 0,
+      unavailable_reasons: []
+    };
+    if (issueRunIds.length === 0) {
+      return summary;
+    }
+    const unavailableReasons = new Map<string, { count: number; classification: 'expected_policy' | 'failure' }>();
+    const rows = this.db
+      .prepare(
+        `SELECT detail_status, redaction_status, truncation, unavailable_reason_code, full_payload_stored, policy_version
+         FROM history_app_server_event
+         WHERE issue_run_id IN (${this.placeholders(issueRunIds)})`
+      )
+      .all(...issueRunIds) as Array<{
+        detail_status: AppServerEventLedgerRecord['detail_status'];
+        redaction_status: AppServerEventLedgerRecord['redaction_status'];
+        truncation: string;
+        unavailable_reason_code: string | null;
+        full_payload_stored: 0 | 1;
+        policy_version: number;
+      }>;
+
+    for (const row of rows) {
+      const truncated = parseHistoryPayloadTruncation(row.truncation).truncated;
+      const fullPayloadStored = row.full_payload_stored === 1;
+      if (row.redaction_status === 'redacted') {
+        summary.redacted_event_count += 1;
+      }
+      if (truncated) {
+        summary.truncated_event_count += 1;
+      }
+      if (row.detail_status === 'summary_only') {
+        summary.summary_only_event_count += 1;
+      }
+      if (fullPayloadStored) {
+        summary.full_payload_stored_count += 1;
+      }
+      const unavailableClassification = this.classifySummaryUnavailablePolicy(row);
+      if (row.unavailable_reason_code) {
+        summary.unavailable_event_count += 1;
+        const existing = unavailableReasons.get(row.unavailable_reason_code);
+        unavailableReasons.set(row.unavailable_reason_code, {
+          count: (existing?.count ?? 0) + 1,
+          classification:
+            existing?.classification === 'failure' || unavailableClassification === 'failure'
+              ? 'failure'
+              : unavailableClassification
+        });
+      }
+      if (fullPayloadStored || unavailableClassification === 'failure' || this.hasMalformedSummaryPayloadPolicyMetadata(row)) {
+        summary.degraded_event_count += 1;
+      }
+    }
+
+    summary.unavailable_reasons = [...unavailableReasons.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([reason_code, value]) => ({ reason_code, ...value }));
+    return summary;
+  }
+
+  private classifySummaryUnavailablePolicy(event: {
+    detail_status: AppServerEventLedgerRecord['detail_status'];
+    redaction_status: AppServerEventLedgerRecord['redaction_status'];
+    unavailable_reason_code: string | null;
+  }): 'expected_policy' | 'failure' {
+    if (!event.unavailable_reason_code) {
+      return 'expected_policy';
+    }
+    return event.detail_status === 'unavailable_policy' && event.redaction_status === 'unavailable_policy' ? 'expected_policy' : 'failure';
+  }
+
+  private hasMalformedSummaryPayloadPolicyMetadata(event: {
+    policy_version: number;
+    detail_status: AppServerEventLedgerRecord['detail_status'];
+    redaction_status: AppServerEventLedgerRecord['redaction_status'];
+    unavailable_reason_code: string | null;
+  }): boolean {
+    if (!Number.isFinite(event.policy_version) || event.policy_version < 1) {
+      return true;
+    }
+    if (event.detail_status === 'unavailable_policy') {
+      return event.redaction_status !== 'unavailable_policy' || !event.unavailable_reason_code;
+    }
+    if (event.detail_status === 'unavailable_source') {
+      return event.redaction_status !== 'unavailable_source' || !event.unavailable_reason_code;
+    }
+    return Boolean(event.unavailable_reason_code);
   }
 
   private selectByIssueRunIds<T>(sql: string, issueRunIds: string[]): T[] {

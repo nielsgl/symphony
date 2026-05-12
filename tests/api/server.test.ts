@@ -9,7 +9,7 @@ import { replayForensicsBundle, type ForensicsBundle } from '../../src/api/foren
 import type { OrchestratorState, TranscriptToolCallDiagnostic, TranscriptToolCallLineage } from '../../src/orchestrator';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
-import type { DurableIdentity, ExecutionGraphThreadLineage, TicketTimelineRecord } from '../../src/persistence';
+import type { DurableIdentity, ExecutionGraphThreadLineage, ProjectHistoryTicketSummaryProjection, TicketTimelineRecord } from '../../src/persistence';
 import type { Issue } from '../../src/tracker';
 
 function makeRunningEntry(overrides: Record<string, unknown> = {}) {
@@ -247,6 +247,76 @@ function makeProjectHistoryTimeline(identity: DurableIdentity, overrides: Partia
     app_server_events: [],
     token_model_facts: [],
     ...overrides
+  };
+}
+
+function makeProjectHistorySummary(timeline: TicketTimelineRecord): ProjectHistoryTicketSummaryProjection {
+  const latestIssueRun = timeline.issue_runs.at(-1) ?? null;
+  const latestAttempt = timeline.attempts.at(-1) ?? null;
+  const latestOutcome = timeline.terminal_outcomes.at(-1) ?? null;
+  const latestTrackerSnapshot = timeline.tracker_snapshots.at(-1) ?? null;
+  const latestTransition = timeline.state_transitions.at(-1) ?? null;
+  const lastKnownStatus = latestTrackerSnapshot?.tracker_status ?? latestTransition?.to_status ?? latestIssueRun?.status ?? 'unknown';
+  const appServerEvents = timeline.app_server_events;
+  return {
+    identity: timeline.identity,
+    state: latestIssueRun && (latestIssueRun.ended_at === null || ['pending', 'running', 'retrying', 'blocked'].includes(latestIssueRun.status))
+      ? 'active'
+      : 'completed',
+    current_status: lastKnownStatus,
+    last_known_status: lastKnownStatus,
+    latest_attempt: {
+      attempt_id: latestAttempt?.attempt_id ?? null,
+      attempt_number: latestAttempt?.attempt_number ?? null,
+      status: latestAttempt?.status ?? null,
+      started_at: latestAttempt?.started_at ?? null,
+      ended_at: latestAttempt?.ended_at ?? null,
+      outcome: latestOutcome?.outcome ?? null,
+      outcome_reason_code: latestOutcome?.reason_code ?? null
+    },
+    summary: {
+      issue_run_count: timeline.issue_runs.length,
+      attempt_count: timeline.attempts.length,
+      thread_count: timeline.threads.length,
+      turn_count: timeline.turns.length,
+      phase_count: timeline.phase_spans.length,
+      state_transition_count: timeline.state_transitions.length,
+      active_blocker_count: timeline.blockers.filter((blocker) => blocker.status === 'active').length,
+      resolved_blocker_count: timeline.blockers.filter((blocker) => blocker.status === 'resolved').length,
+      evidence_reference_count: timeline.evidence_references.length,
+      tracker_snapshot_count: timeline.tracker_snapshots.length,
+      ticket_reference_count: timeline.ticket_references.length,
+      operator_action_count: timeline.operator_actions.length,
+      blocked_input_event_count: timeline.blocked_input_events.length,
+      app_server_event_count: appServerEvents.length,
+      token_model_fact_count: timeline.token_model_facts.length,
+      total_tokens: timeline.token_model_facts.reduce<number | null>((sum, fact) => {
+        if (fact.total_tokens === null) {
+          return sum;
+        }
+        return (sum ?? 0) + fact.total_tokens;
+      }, null)
+    },
+    app_server_lite: {
+      redacted_event_count: appServerEvents.filter((event) => event.redaction_status === 'redacted').length,
+      truncated_event_count: appServerEvents.filter((event) => event.truncation.truncated).length,
+      summary_only_event_count: appServerEvents.filter((event) => event.detail_status === 'summary_only').length,
+      unavailable_event_count: appServerEvents.filter((event) => event.unavailable_reason_code).length,
+      full_payload_stored_count: appServerEvents.filter((event) => event.full_payload_stored).length,
+      degraded_event_count: appServerEvents.filter((event) => event.full_payload_stored).length,
+      unavailable_reasons: []
+    },
+    latest_observed_at: [
+      latestIssueRun?.started_at,
+      latestAttempt?.started_at,
+      latestOutcome?.recorded_at,
+      latestTrackerSnapshot?.last_observed_at,
+      latestTransition?.transitioned_at,
+      appServerEvents.at(-1)?.observed_at
+    ]
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1) ?? null
   };
 }
 
@@ -4178,6 +4248,14 @@ describe('LocalApiServer', () => {
       [completedIdentity.ticket.key, completedTimeline],
       [activeIdentity.ticket.key, activeTimeline]
     ]);
+    const summaries = [makeProjectHistorySummary(completedTimeline), makeProjectHistorySummary(activeTimeline)];
+    const reconstructTicketTimeline = vi.fn((identity: DurableIdentity) => {
+      const timeline = timelines.get(identity.ticket.key);
+      if (!timeline) {
+        throw new Error(`missing timeline for ${identity.ticket.key}`);
+      }
+      return timeline;
+    });
 
     server = new LocalApiServer({
       snapshotSource: { getStateSnapshot: () => makeState() },
@@ -4208,15 +4286,16 @@ describe('LocalApiServer', () => {
           has_more: (page.offset ?? 0) + (page.limit ?? 50) < 2,
           total: 2
         }),
+        listProjectTicketSummaries: (_projectKey: string, page: { limit?: number; offset?: number } = {}) => ({
+          items: summaries.slice(page.offset ?? 0, (page.offset ?? 0) + (page.limit ?? 50)),
+          limit: page.limit ?? 50,
+          offset: page.offset ?? 0,
+          has_more: (page.offset ?? 0) + (page.limit ?? 50) < 2,
+          total: 2
+        }),
         getProjectTicketIdentity: (_projectKey: string, ticketKey: string) =>
           ticketKey === completedIdentity.ticket.key ? completedIdentity : null,
-        reconstructTicketTimeline: (identity: DurableIdentity) => {
-          const timeline = timelines.get(identity.ticket.key);
-          if (!timeline) {
-            throw new Error(`missing timeline for ${identity.ticket.key}`);
-          }
-          return timeline;
-        }
+        reconstructTicketTimeline
       })
     });
     await server.listen();
@@ -4240,7 +4319,10 @@ describe('LocalApiServer', () => {
       state: 'completed',
       summary: { attempt_count: 1, total_tokens: 42 }
     });
+    expect(listPayload.tickets[0]).not.toHaveProperty('attempts');
+    expect(listPayload.tickets[0]).not.toHaveProperty('timeline');
     expect(listPayload.tickets[0].facts.map((fact) => fact.status)).toEqual(expect.arrayContaining(['degraded', 'present', 'redacted', 'truncated']));
+    expect(reconstructTicketTimeline).not.toHaveBeenCalled();
 
     const activeListResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets?limit=1&offset=1`);
     const activeListPayload = (await activeListResponse.json()) as {
@@ -4250,10 +4332,11 @@ describe('LocalApiServer', () => {
     expect(activeListPayload.tickets[0].state).toBe('active');
     expect(activeListPayload.tickets[0].facts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ status: 'missing', reason_code: 'project_history_terminal_outcome_missing' }),
-        expect.objectContaining({ status: 'missing', reason_code: 'project_history_app_server_lite_summaries_missing' })
+        expect.objectContaining({ status: 'lifecycle_pending', reason_code: 'project_history_terminal_outcome_missing' }),
+        expect.objectContaining({ status: 'optional_unavailable', reason_code: 'project_history_app_server_lite_summaries_missing' })
       ])
     );
+    expect(reconstructTicketTimeline).not.toHaveBeenCalled();
 
     const detailResponse = await fetch(
       `http://127.0.0.1:${address.port}/api/v1/projects/project-main/history/tickets/${completedIdentity.ticket.key}`
@@ -4276,6 +4359,7 @@ describe('LocalApiServer', () => {
     };
     expect(detailResponse.status).toBe(200);
     expect(detailPayload.ticket_identity.key).toBe(completedIdentity.ticket.key);
+    expect(reconstructTicketTimeline).toHaveBeenCalledTimes(1);
     expect(detailPayload.attempts).toHaveLength(1);
     expect(detailPayload.phases).toHaveLength(1);
     expect(detailPayload.state_transitions).toHaveLength(1);
@@ -4314,7 +4398,7 @@ describe('LocalApiServer', () => {
       attempts: { total: 1, repeated: false },
       blockers: { resolved_count: 1 },
       token_model: { status: 'present', total_tokens: 42, effective_models: ['gpt-5.4'] },
-      app_server_lite: { status: 'degraded' }
+      app_server_lite: { status: 'present' }
     });
     expect(consumerSummaryPayload.recent_phases).toHaveLength(1);
     expect(consumerSummaryPayload.app_server_lite.excerpts).toHaveLength(1);
@@ -4325,14 +4409,15 @@ describe('LocalApiServer', () => {
       status: string;
       writes: { status: string };
       projections: { status: string };
-      app_server_lite: { status: string; redacted_event_count: number; truncated_event_count: number };
+      app_server_lite: { status: string; redacted_event_count: number; truncated_event_count: number; summary_only_event_count: number };
     };
     expect(healthResponse.status).toBe(200);
+    expect(reconstructTicketTimeline).toHaveBeenCalledTimes(2);
     expect(healthPayload).toMatchObject({
       status: 'degraded',
       writes: { status: 'healthy' },
       projections: { status: 'degraded' },
-      app_server_lite: { status: 'degraded', redacted_event_count: 1, truncated_event_count: 1 }
+      app_server_lite: { status: 'healthy', redacted_event_count: 1, truncated_event_count: 1, summary_only_event_count: 0 }
     });
 
     const missingSummaryResponse = await fetch(

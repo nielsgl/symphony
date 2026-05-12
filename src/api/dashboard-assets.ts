@@ -2373,6 +2373,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     switch (status) {
       case 'present':
         return 'mini-badge mini-badge-good';
+      case 'lifecycle_pending':
+      case 'optional_unavailable':
       case 'missing':
         return 'mini-badge mini-badge-missing';
       case 'redacted':
@@ -2451,6 +2453,47 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     const writes = health.writes || {};
     const projections = health.projections || {};
     const appServerLite = health.app_server_lite || {};
+    const policyParts = [];
+    if (appServerLite.redacted_event_count || appServerLite.truncated_event_count || appServerLite.summary_only_event_count) {
+      policyParts.push(
+        'payload policy redacted ' +
+          formatNumber(appServerLite.redacted_event_count || 0) +
+          ' / truncated ' +
+          formatNumber(appServerLite.truncated_event_count || 0) +
+          ' / summary-only ' +
+          formatNumber(appServerLite.summary_only_event_count || 0)
+      );
+    }
+    if (appServerLite.unavailable_event_count) {
+      const reasons = Array.isArray(appServerLite.unavailable_reasons)
+        ? appServerLite.unavailable_reasons
+            .map(function (reason) {
+              return (reason.reason_code || 'unknown') + ' ' + formatNumber(reason.count || 0) + ' ' + (reason.classification || 'unknown');
+            })
+            .join(', ')
+        : 'reason unknown';
+      policyParts.push('payload unavailable ' + formatNumber(appServerLite.unavailable_event_count || 0) + ' (' + reasons + ')');
+    }
+    const diagnostics = Array.isArray(health.diagnostics) ? health.diagnostics : [];
+    const lifecyclePendingCount = diagnostics.filter(function (fact) {
+      return fact && fact.status === 'lifecycle_pending';
+    }).length;
+    const optionalUnavailableCount = diagnostics.filter(function (fact) {
+      return fact && fact.status === 'optional_unavailable';
+    }).length;
+    const degradedFactCount = diagnostics.filter(function (fact) {
+      return fact && (fact.status === 'missing' || fact.status === 'degraded' || fact.status === 'unavailable');
+    }).length;
+    if (lifecyclePendingCount || optionalUnavailableCount || degradedFactCount) {
+      policyParts.push(
+        'facts pending ' +
+          formatNumber(lifecyclePendingCount) +
+          ' / optional unavailable ' +
+          formatNumber(optionalUnavailableCount) +
+          ' / degraded ' +
+          formatNumber(degradedFactCount)
+      );
+    }
     return [
       'Health: ' + (health.status || 'unknown'),
       'enabled ' + (health.enabled ? 'yes' : 'no'),
@@ -2463,7 +2506,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       'writes ' + (writes.status || 'unknown'),
       'projection ' + (projections.status || 'unknown'),
       'app-server-lite ' + (appServerLite.status || 'unknown')
-    ].join(' • ');
+    ]
+      .concat(policyParts)
+      .join(' • ');
   }
 
   function renderProjectHistory() {

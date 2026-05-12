@@ -519,6 +519,10 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('Codex thread activity unavailable');
     expect(clientJs).toContain('entry.transcript_tool_call_diagnostic_summary');
     expect(clientJs).toContain('blockerCell.append(blockerValue, diagnosticSummary);');
+    expect(clientJs).toContain('payload policy redacted ');
+    expect(clientJs).toContain('payload unavailable ');
+    expect(clientJs).toContain('facts pending ');
+    expect(clientJs).toContain('optional unavailable ');
   });
 
   it('lazy-loads issue diagnostics only for opened detail surfaces', () => {

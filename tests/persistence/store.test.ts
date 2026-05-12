@@ -214,8 +214,8 @@ describe('SqlitePersistenceStore', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 8,
-      applied_version: 8,
+      target_version: 9,
+      applied_version: 9,
       status: 'healthy',
       degraded_reason_code: null
     });
@@ -227,7 +227,8 @@ describe('SqlitePersistenceStore', () => {
       expect.objectContaining({ version: 5, name: 'token_model_fact_dimensions_v1', status: 'applied' }),
       expect.objectContaining({ version: 6, name: 'operational_history_facts_v1', status: 'applied' }),
       expect.objectContaining({ version: 7, name: 'history_retention_prune_evidence_v1', status: 'applied' }),
-      expect.objectContaining({ version: 8, name: 'stable_project_identity_key_v1', status: 'applied' })
+      expect.objectContaining({ version: 8, name: 'stable_project_identity_key_v1', status: 'applied' }),
+      expect.objectContaining({ version: 9, name: 'project_scoped_ticket_identity_v1', status: 'applied' })
     ]);
   });
 
@@ -253,6 +254,74 @@ describe('SqlitePersistenceStore', () => {
           remote_issue_id: 'remote-history-1'
         }
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('scopes ticket identity rows by project identity', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-ticket-scope-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const projectA = identity({
+      issue_id: 'shared-remote-1',
+      issue_identifier: 'NIE-162',
+      projectRoot: path.join(dir, 'project-a'),
+      workflowPath: path.join(dir, 'project-a', 'WORKFLOW.md')
+    });
+    const projectB = identity({
+      issue_id: 'shared-remote-1',
+      issue_identifier: 'NIE-162',
+      projectRoot: path.join(dir, 'project-b'),
+      workflowPath: path.join(dir, 'project-b', 'WORKFLOW.md')
+    });
+    expect(projectA.ticket.key).toBe(projectB.ticket.key);
+    expect(projectA.project.key).not.toBe(projectB.project.key);
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(store);
+    store.startRun({ issue_id: 'shared-remote-1', issue_identifier: 'NIE-162', identity: projectA });
+    store.startRun({ issue_id: 'shared-remote-1', issue_identifier: 'NIE-162', identity: projectB });
+    store.startRun({ issue_id: 'shared-remote-1', issue_identifier: 'NIE-162', identity: projectA });
+    store.appendIssueRun({
+      issue_run_id: 'project-a-run-1',
+      issue_id: 'shared-remote-1',
+      issue_identifier: 'NIE-162',
+      identity: projectA,
+      started_at: '2026-04-11T10:00:00.000Z',
+      status: 'running'
+    });
+    store.appendIssueRun({
+      issue_run_id: 'project-b-run-1',
+      issue_id: 'shared-remote-1',
+      issue_identifier: 'NIE-162',
+      identity: projectB,
+      started_at: '2026-04-11T10:01:00.000Z',
+      status: 'running'
+    });
+    store.appendIssueRun({
+      issue_run_id: 'project-a-run-2',
+      issue_id: 'shared-remote-1',
+      issue_identifier: 'NIE-162',
+      identity: projectA,
+      started_at: '2026-04-11T10:02:00.000Z',
+      status: 'running'
+    });
+
+    const db = openDatabase(dbPath);
+    try {
+      const expectedRows = [
+        { project_key: projectA.project.key, ticket_key: projectA.ticket.key },
+        { project_key: projectB.project.key, ticket_key: projectB.ticket.key }
+      ].sort((a, b) => a.project_key.localeCompare(b.project_key));
+      expect(db.prepare('SELECT project_key, ticket_key FROM history_ticket_identity ORDER BY project_key').all()).toEqual(expectedRows);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM history_ticket_identity WHERE project_key = ? AND ticket_key = ?').get(projectA.project.key, projectA.ticket.key)).toEqual({
+        count: 1
+      });
+      expect(store.listProjectTicketIdentities(projectA.project.key).items).toEqual([projectA]);
+      expect(store.listProjectTicketIdentities(projectB.project.key).items).toEqual([projectB]);
+      expect(store.getProjectTicketIdentity(projectA.project.key, projectA.ticket.key)).toEqual(projectA);
+      expect(store.getProjectTicketIdentity(projectB.project.key, projectB.ticket.key)).toEqual(projectB);
     } finally {
       db.close();
     }
@@ -450,13 +519,24 @@ describe('SqlitePersistenceStore', () => {
            VALUES ('legacy-run-1', 'legacy-identity-1', 'LEGACY-1', ?, ?, ?, '2026-04-11T10:00:00.000Z', NULL, 'running', NULL, NULL)`
         )
         .run(JSON.stringify(oldEvidence), oldEvidence.project.key, oldEvidence.ticket.key);
+      dbA
+        .prepare(
+          `INSERT INTO history_ticket_reference
+            (ticket_reference_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
+             reference_kind, availability, uri, label, external_id, state, metadata, observed_at, observation_hash,
+             duplicate_count, last_observed_at)
+           VALUES ('legacy-reference-1', ?, ?, 'legacy-run-1', NULL, NULL, NULL,
+             'branch', 'available', 'https://github.com/nielsgl/symphony/tree/legacy', 'legacy', NULL, NULL, NULL,
+             '2026-04-11T10:00:00.000Z', 'legacy-reference-hash', 1, '2026-04-11T10:00:00.000Z')`
+        )
+        .run(oldEvidence.project.key, oldEvidence.ticket.key);
     } finally {
       dbA.close();
     }
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
     stores.push(storeB);
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
     expect(storeB.listProjectTicketIdentities(newEvidence.project.key).total).toBe(1);
     expect(storeB.reconstructTicketTimeline(newEvidence).issue_runs).toHaveLength(1);
     storeB.close();
@@ -464,16 +544,39 @@ describe('SqlitePersistenceStore', () => {
 
     const storeC = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
     stores.push(storeC);
-    expect(storeC.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
+    expect(storeC.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
     expect(storeC.reconstructTicketTimeline(newEvidence).issue_runs).toHaveLength(1);
 
     const dbC = openDatabase(dbPath);
     try {
       expect(dbC.prepare('SELECT COUNT(*) AS count FROM issue_run').get()).toEqual({ count: 1 });
-      expect(dbC.prepare('SELECT COUNT(*) AS count FROM history_project_identity').get()).toEqual({ count: 2 });
+      expect(dbC.prepare('SELECT COUNT(*) AS count FROM history_project_identity').get()).toEqual({ count: 1 });
+      expect(dbC.prepare('SELECT project_key, workflow_hash_value, repository_remote_value FROM history_project_identity').get()).toEqual({
+        project_key: newEvidence.project.key,
+        workflow_hash_value: 'workflow-hash-a',
+        repository_remote_value: 'git@github.com:nielsgl/symphony.git'
+      });
       expect(dbC.prepare('SELECT project_key FROM issue_run WHERE issue_run_id = ?').get('legacy-run-1')).toEqual({
         project_key: newEvidence.project.key
       });
+      expect(dbC.prepare('SELECT project_key FROM history_ticket_identity WHERE ticket_key = ?').get(oldEvidence.ticket.key)).toEqual({
+        project_key: newEvidence.project.key
+      });
+      expect(dbC.prepare('SELECT project_key FROM history_ticket_reference WHERE ticket_reference_id = ?').get('legacy-reference-1')).toEqual({
+        project_key: newEvidence.project.key
+      });
+      expect(
+        dbC
+          .prepare(
+            `SELECT COUNT(*) AS count FROM (
+              SELECT project_key FROM issue_run WHERE project_key = ?
+              UNION ALL SELECT project_key FROM history_ticket_identity WHERE project_key = ?
+              UNION ALL SELECT project_key FROM history_ticket_reference WHERE project_key = ?
+              UNION ALL SELECT project_key FROM history_identity_projection WHERE project_key = ?
+            )`
+          )
+          .get(oldEvidence.project.key, oldEvidence.project.key, oldEvidence.project.key, oldEvidence.project.key)
+      ).toEqual({ count: 0 });
     } finally {
       dbC.close();
     }
@@ -1055,6 +1158,8 @@ describe('SqlitePersistenceStore', () => {
     const timeline = storeB.reconstructTicketTimeline(durableIdentity);
     const firstProjectPage = storeB.listProjectTicketIdentities(durableIdentity.project.key, { limit: 1 });
     const secondProjectPage = storeB.listProjectTicketIdentities(durableIdentity.project.key, { limit: 1, offset: 1 });
+    const firstSummaryPage = storeB.listProjectTicketSummaries(durableIdentity.project.key, { limit: 1 });
+    const secondSummaryPage = storeB.listProjectTicketSummaries(durableIdentity.project.key, { limit: 1, offset: 1 });
 
     expect(firstProjectPage).toMatchObject({
       limit: 1,
@@ -1064,6 +1169,35 @@ describe('SqlitePersistenceStore', () => {
     });
     expect(firstProjectPage.items[0].ticket.human_issue_identifier).toBe('OPS-2');
     expect(secondProjectPage.items[0].ticket.human_issue_identifier).toBe('OPS-1');
+    expect(firstSummaryPage).toMatchObject({
+      limit: 1,
+      offset: 0,
+      has_more: true,
+      total: 2
+    });
+    expect(firstSummaryPage.items[0].identity.ticket.human_issue_identifier).toBe('OPS-2');
+    expect(secondSummaryPage.items[0]).toMatchObject({
+      identity: durableIdentity,
+      state: 'active',
+      current_status: 'In Progress',
+      summary: {
+        issue_run_count: 1,
+        attempt_count: 1,
+        thread_count: 1,
+        turn_count: 1,
+        tracker_snapshot_count: 1,
+        ticket_reference_count: 2,
+        operator_action_count: 1,
+        blocked_input_event_count: 1,
+        app_server_event_count: 1
+      },
+      app_server_lite: {
+        redacted_event_count: 1,
+        truncated_event_count: 0,
+        summary_only_event_count: 0
+      },
+      latest_observed_at: '2026-04-11T10:03:30.000Z'
+    });
     expect(storeB.getProjectTicketIdentity(durableIdentity.project.key, durableIdentity.ticket.key)).toEqual(durableIdentity);
     expect(timeline.tracker_snapshots).toEqual([
       expect.objectContaining({
@@ -1307,14 +1441,14 @@ describe('SqlitePersistenceStore', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(8);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(9);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
       expect.objectContaining({ version: 2, status: 'applied' }),
@@ -1323,8 +1457,106 @@ describe('SqlitePersistenceStore', () => {
       expect.objectContaining({ version: 5, status: 'applied' }),
       expect.objectContaining({ version: 6, status: 'applied' }),
       expect.objectContaining({ version: 7, status: 'applied' }),
-      expect.objectContaining({ version: 8, status: 'applied' })
+      expect.objectContaining({ version: 8, status: 'applied' }),
+      expect.objectContaining({ version: 9, status: 'applied' })
     ]);
+  });
+
+  it('migrates legacy global ticket identities from historical identity snapshots', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-ticket-scope-migration-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const projectA = identity({
+      issue_id: 'legacy-shared-remote-1',
+      issue_identifier: 'LEGACY-162',
+      projectRoot: path.join(dir, 'project-a'),
+      workflowPath: path.join(dir, 'project-a', 'WORKFLOW.md')
+    });
+    const projectB = identity({
+      issue_id: 'legacy-shared-remote-1',
+      issue_identifier: 'LEGACY-162',
+      projectRoot: path.join(dir, 'project-b'),
+      workflowPath: path.join(dir, 'project-b', 'WORKFLOW.md')
+    });
+    expect(projectA.ticket.key).toBe(projectB.ticket.key);
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    storeA.appendIssueRun({
+      issue_run_id: 'legacy-project-a-run',
+      issue_id: 'legacy-shared-remote-1',
+      issue_identifier: 'LEGACY-162',
+      identity: projectA,
+      started_at: '2026-04-11T10:00:00.000Z',
+      status: 'running'
+    });
+    storeA.appendIssueRun({
+      issue_run_id: 'legacy-project-b-run',
+      issue_id: 'legacy-shared-remote-1',
+      issue_identifier: 'LEGACY-162',
+      identity: projectB,
+      started_at: '2026-04-11T11:00:00.000Z',
+      status: 'running'
+    });
+    storeA.close();
+    stores.pop();
+
+    const dbA = openDatabase(dbPath);
+    try {
+      dbA.exec(`
+        DROP TABLE history_ticket_identity;
+        CREATE TABLE history_ticket_identity (
+          ticket_key TEXT PRIMARY KEY,
+          project_key TEXT NOT NULL,
+          tracker_kind TEXT NOT NULL,
+          tracker_scope_status TEXT NOT NULL,
+          tracker_scope_value TEXT,
+          tracker_scope_reason TEXT,
+          remote_issue_id TEXT NOT NULL,
+          human_issue_identifier TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT
+        );
+      `);
+      dbA
+        .prepare(
+          `INSERT INTO history_ticket_identity
+            (ticket_key, project_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
+             remote_issue_id, human_issue_identifier, created_at, updated_at)
+           VALUES (?, ?, 'linear', 'present', 'symphony', NULL, ?, ?, '2026-04-11T11:00:00.000Z', '2026-04-11T11:00:00.000Z')`
+        )
+        .run(projectB.ticket.key, projectB.project.key, projectB.ticket.remote_issue_id, projectB.ticket.human_issue_identifier);
+      dbA.prepare("DELETE FROM history_schema_migrations WHERE schema_name = 'project_execution_history' AND version = 9").run();
+      dbA
+        .prepare(
+          `UPDATE history_schema_state
+           SET applied_version = 8, status = 'healthy', degraded_reason_code = NULL, degraded_detail = NULL
+           WHERE schema_name = 'project_execution_history'`
+        )
+        .run();
+    } finally {
+      dbA.close();
+    }
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
+    expect(storeB.listProjectTicketIdentities(projectA.project.key).items).toEqual([projectA]);
+    expect(storeB.listProjectTicketIdentities(projectB.project.key).items).toEqual([projectB]);
+    expect(storeB.reconstructTicketTimeline(projectA).issue_runs.map((run) => run.issue_run_id)).toEqual(['legacy-project-a-run']);
+    expect(storeB.reconstructTicketTimeline(projectB).issue_runs.map((run) => run.issue_run_id)).toEqual(['legacy-project-b-run']);
+
+    const dbB = openDatabase(dbPath);
+    try {
+      const expectedRows = [
+        { project_key: projectA.project.key, ticket_key: projectA.ticket.key },
+        { project_key: projectB.project.key, ticket_key: projectB.ticket.key }
+      ].sort((a, b) => a.project_key.localeCompare(b.project_key));
+      expect(dbB.prepare('SELECT project_key, ticket_key FROM history_ticket_identity ORDER BY project_key').all()).toEqual(expectedRows);
+    } finally {
+      dbB.close();
+    }
   });
 
   it('upgrades partial legacy history tables and records applied migration state', async () => {
@@ -1445,7 +1677,7 @@ describe('SqlitePersistenceStore', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
       expect.arrayContaining([
         'history_token_model_fact',
@@ -1668,7 +1900,7 @@ describe('SqlitePersistenceStore', () => {
     stores.push(storeB);
     const backfillDbB = openDatabase(dbPath);
     try {
-      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
+      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
       expect(backfillDbB.prepare('SELECT COUNT(*) AS count FROM history_identity_projection').get()).toEqual({ count: 3 });
     } finally {
       backfillDbB.close();
@@ -2142,7 +2374,7 @@ describe('SqlitePersistenceStore', () => {
       nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
     });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
     storeA.close();
     stores.pop();
 
@@ -2167,7 +2399,7 @@ describe('SqlitePersistenceStore', () => {
     });
 
     expect(storeB.historySchemaHealth()).toMatchObject({
-      applied_version: 8,
+      applied_version: 9,
       status: 'degraded',
       degraded_reason_code: 'history_write_failed',
       degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'

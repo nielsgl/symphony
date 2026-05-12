@@ -347,6 +347,64 @@ export interface TicketTimelineRecord {
   token_model_facts: TokenModelFactRecord[];
 }
 
+export interface ProjectHistoryAppServerLiteSummary {
+  redacted_event_count: number;
+  truncated_event_count: number;
+  summary_only_event_count: number;
+  unavailable_event_count: number;
+  full_payload_stored_count: number;
+  degraded_event_count: number;
+  unavailable_reasons: Array<{
+    reason_code: string;
+    count: number;
+    classification: 'expected_policy' | 'failure';
+  }>;
+}
+
+export interface ProjectHistoryTicketSummaryProjection {
+  identity: DurableIdentity;
+  state: 'active' | 'completed';
+  current_status: string;
+  last_known_status: string;
+  latest_attempt: {
+    attempt_id: string | null;
+    attempt_number: number | null;
+    status: ExecutionGraphEntityStatus | null;
+    started_at: string | null;
+    ended_at: string | null;
+    outcome: string | null;
+    outcome_reason_code: string | null;
+  };
+  summary: {
+    issue_run_count: number;
+    attempt_count: number;
+    thread_count: number;
+    turn_count: number;
+    phase_count: number;
+    state_transition_count: number;
+    active_blocker_count: number;
+    resolved_blocker_count: number;
+    evidence_reference_count: number;
+    tracker_snapshot_count: number;
+    ticket_reference_count: number;
+    operator_action_count: number;
+    blocked_input_event_count: number;
+    app_server_event_count: number;
+    token_model_fact_count: number;
+    total_tokens: number | null;
+  };
+  app_server_lite: ProjectHistoryAppServerLiteSummary;
+  latest_observed_at: string | null;
+}
+
+export interface ProjectHistoryTicketSummaryPage {
+  items: ProjectHistoryTicketSummaryProjection[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  total: number;
+}
+
 export interface DurableRunHistoryRecord {
   run_id: string;
   issue_id: string;
