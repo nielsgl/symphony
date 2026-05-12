@@ -1,5 +1,14 @@
 export type RunTerminalStatus = 'succeeded' | 'failed' | 'timed_out' | 'stalled' | 'cancelled';
-export type ExecutionGraphEntityStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'retrying';
+export type ExecutionGraphEntityStatus =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'blocked'
+  | 'cancelled'
+  | 'retrying'
+  | 'timed_out'
+  | 'stalled';
 
 export type IdentityEvidence<T extends string = string> =
   | { status: 'present'; value: T }
