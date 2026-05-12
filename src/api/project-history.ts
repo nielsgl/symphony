@@ -3,6 +3,8 @@ import type {
   DurableIdentity,
   ExecutionGraphEntityStatus,
   HistorySchemaHealth,
+  ProjectHistoryAppServerLiteSummary,
+  ProjectHistoryTicketSummaryProjection,
   PersistenceHealth,
   IssueRunRecord,
   TicketTimelineRecord
@@ -250,15 +252,17 @@ export interface ProjectHistoryConsumerSummaryResponse {
 
 export function buildProjectHistoryListResponse(params: {
   projectKey: string;
-  timelines: TicketTimelineRecord[];
+  timelines?: TicketTimelineRecord[];
+  summaries?: ProjectHistoryTicketSummaryProjection[];
   page: ProjectHistoryPage;
   persistenceHealth?: PersistenceHealth | null;
   historySchemaHealth?: HistorySchemaHealth | null;
 }): ProjectHistoryTicketListResponse {
   const historySchemaHealth = params.historySchemaHealth ?? params.persistenceHealth?.history_schema ?? null;
+  const summaries = params.summaries ?? params.timelines?.map((timeline) => buildProjectHistoryTicketSummary(timeline)) ?? [];
   const health = buildProjectHistoryHealth({
     persistenceHealth: params.persistenceHealth ?? null,
-    timelines: params.timelines,
+    summaries,
     ticketCount: params.page.total,
     projectionAvailable: true,
     historySchemaHealth
@@ -269,7 +273,7 @@ export function buildProjectHistoryListResponse(params: {
     },
     health,
     page: params.page,
-    tickets: params.timelines.map((timeline) => buildProjectHistoryTicketRow(timeline, historySchemaHealth)),
+    tickets: summaries.map((summary) => buildProjectHistoryTicketRowFromSummary(summary, historySchemaHealth)),
     facts: health.diagnostics
   };
 }
@@ -445,6 +449,7 @@ export function buildProjectHistoryConsumerSummaryResponse(
 export function buildProjectHistoryHealth(params: {
   persistenceHealth?: PersistenceHealth | null;
   timelines?: TicketTimelineRecord[];
+  summaries?: ProjectHistoryTicketSummaryProjection[];
   ticketCount?: number | null;
   projectionAvailable?: boolean;
   projectionFailureReasonCode?: string | null;
@@ -452,17 +457,16 @@ export function buildProjectHistoryHealth(params: {
   historySchemaHealth?: HistorySchemaHealth | null;
 }): ProjectHistoryHealth {
   const persistenceHealth = params.persistenceHealth ?? null;
-  const timelines = params.timelines ?? [];
+  const summaries = params.summaries ?? params.timelines?.map((timeline) => buildProjectHistoryTicketSummary(timeline)) ?? [];
   const historySchema = params.historySchemaHealth ?? persistenceHealth?.history_schema ?? null;
   const recentFailures = persistenceHealth?.recent_write_failures ?? [];
-  const appServerEvents = timelines.flatMap((timeline) => timeline.app_server_events);
-  const appServerPolicy = classifyAppServerLitePolicy(appServerEvents);
+  const appServerPolicy = aggregateAppServerLiteSummaries(summaries.map((summary) => summary.app_server_lite));
   const expectedAppServerUnavailableReasons = new Set(
     appServerPolicy.unavailableReasons
       .filter((reason) => reason.classification === 'expected_policy')
       .map((reason) => reason.reason_code)
   );
-  const projectionFacts = timelines.flatMap((timeline) => timelineFacts(timeline, historySchema));
+  const projectionFacts = summaries.flatMap((summary) => summaryFacts(summary, historySchema));
   const projectionDegradedFact = projectionFacts.find(
     (fact) =>
       (fact.status === 'degraded' || fact.status === 'unavailable') &&
@@ -478,8 +482,9 @@ export function buildProjectHistoryHealth(params: {
     : projectionReason
       ? 'degraded'
       : 'healthy';
+  const appServerEventCount = summaries.reduce((sum, summary) => sum + summary.summary.app_server_event_count, 0);
   const appServerStatus: ProjectHistoryHealth['app_server_lite']['status'] =
-    appServerEvents.length === 0
+    appServerEventCount === 0
       ? 'missing'
       : appServerPolicy.degradedEventCount > 0
         ? 'degraded'
@@ -539,14 +544,14 @@ export function buildProjectHistoryHealth(params: {
         appServerStatus === 'missing'
           ? REASON_CODES.projectHistoryAppServerLiteSummariesMissing
           : appServerStatus === 'degraded'
-            ? 'project_history_app_server_lite_degraded'
+            ? REASON_CODES.projectHistoryAppServerLiteDegraded
             : null,
       detail:
         appServerStatus === 'missing'
           ? null
           : `redacted=${appServerPolicy.redactedEventCount} truncated=${appServerPolicy.truncatedEventCount} summary_only=${appServerPolicy.summaryOnlyEventCount} unavailable=${appServerPolicy.unavailableEventCount} full_payload_stored=${appServerPolicy.fullPayloadStoredCount} degraded=${appServerPolicy.degradedEventCount}`
     },
-    ...appServerFactStates(appServerEvents).filter((fact) => fact.fact === 'app_server_lite_payload')
+    ...appServerLitePolicyFacts(appServerPolicy).filter((fact) => fact.fact === 'app_server_lite_payload')
   ];
 
   return {
@@ -663,6 +668,122 @@ function classifyAppServerLitePolicy(events: AppServerEventLedgerExcerpt[]): {
   };
 }
 
+function toAppServerLiteSummary(policy: ReturnType<typeof classifyAppServerLitePolicy>): ProjectHistoryAppServerLiteSummary {
+  return {
+    redacted_event_count: policy.redactedEventCount,
+    truncated_event_count: policy.truncatedEventCount,
+    summary_only_event_count: policy.summaryOnlyEventCount,
+    unavailable_event_count: policy.unavailableEventCount,
+    full_payload_stored_count: policy.fullPayloadStoredCount,
+    degraded_event_count: policy.degradedEventCount,
+    unavailable_reasons: policy.unavailableReasons
+  };
+}
+
+function normalizeAppServerLiteSummary(summary: ProjectHistoryAppServerLiteSummary): ReturnType<typeof classifyAppServerLitePolicy> {
+  return {
+    redactedEventCount: summary.redacted_event_count,
+    truncatedEventCount: summary.truncated_event_count,
+    summaryOnlyEventCount: summary.summary_only_event_count,
+    unavailableEventCount: summary.unavailable_event_count,
+    fullPayloadStoredCount: summary.full_payload_stored_count,
+    degradedEventCount: summary.degraded_event_count,
+    unavailableReasons: summary.unavailable_reasons
+  };
+}
+
+function aggregateAppServerLiteSummaries(summaries: ProjectHistoryAppServerLiteSummary[]): ReturnType<typeof classifyAppServerLitePolicy> {
+  const unavailableReasons = new Map<string, { count: number; classification: 'expected_policy' | 'failure' }>();
+  const aggregate = {
+    redactedEventCount: 0,
+    truncatedEventCount: 0,
+    summaryOnlyEventCount: 0,
+    unavailableEventCount: 0,
+    fullPayloadStoredCount: 0,
+    degradedEventCount: 0,
+    unavailableReasons: [] as ProjectHistoryHealth['app_server_lite']['unavailable_reasons']
+  };
+
+  for (const summary of summaries) {
+    aggregate.redactedEventCount += summary.redacted_event_count;
+    aggregate.truncatedEventCount += summary.truncated_event_count;
+    aggregate.summaryOnlyEventCount += summary.summary_only_event_count;
+    aggregate.unavailableEventCount += summary.unavailable_event_count;
+    aggregate.fullPayloadStoredCount += summary.full_payload_stored_count;
+    aggregate.degradedEventCount += summary.degraded_event_count;
+    for (const reason of summary.unavailable_reasons) {
+      const existing = unavailableReasons.get(reason.reason_code);
+      unavailableReasons.set(reason.reason_code, {
+        count: (existing?.count ?? 0) + reason.count,
+        classification:
+          existing?.classification === 'failure' || reason.classification === 'failure'
+            ? 'failure'
+            : reason.classification
+      });
+    }
+  }
+
+  aggregate.unavailableReasons = [...unavailableReasons.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([reason_code, value]) => ({ reason_code, ...value }));
+  return aggregate;
+}
+
+function appServerLitePolicyFacts(policy: ReturnType<typeof classifyAppServerLitePolicy>): ProjectHistoryFactState[] {
+  const facts: ProjectHistoryFactState[] = [];
+  if (
+    policy.redactedEventCount === 0 &&
+    policy.truncatedEventCount === 0 &&
+    policy.summaryOnlyEventCount === 0 &&
+    policy.unavailableEventCount === 0 &&
+    policy.fullPayloadStoredCount === 0
+  ) {
+    return [
+      {
+        fact: 'app_server_lite_summaries',
+        status: 'optional_unavailable',
+        reason_code: REASON_CODES.projectHistoryAppServerLiteSummariesMissing,
+        detail: null
+      }
+    ];
+  }
+
+  facts.push({ fact: 'app_server_lite_summaries', status: 'present', reason_code: null, detail: null });
+  if (policy.redactedEventCount > 0) {
+    facts.push({
+      fact: 'app_server_lite_payload',
+      status: 'redacted',
+      reason_code: REASON_CODES.projectHistoryPayloadRedacted,
+      detail: `${policy.redactedEventCount} app-server event payload(s) were redacted`
+    });
+  }
+  if (policy.truncatedEventCount > 0) {
+    facts.push({
+      fact: 'app_server_lite_payload',
+      status: 'truncated',
+      reason_code: REASON_CODES.projectHistoryPayloadTruncated,
+      detail: `${policy.truncatedEventCount} app-server event payload excerpt(s) were truncated`
+    });
+  }
+  for (const reason of policy.unavailableReasons) {
+    facts.push({
+      fact: 'app_server_lite_payload',
+      status: 'unavailable',
+      reason_code: reason.reason_code,
+      detail: `${reason.count} app-server event payload(s) unavailable`
+    });
+  }
+  if (policy.fullPayloadStoredCount > 0 || policy.degradedEventCount > 0) {
+    facts.push({
+      fact: 'app_server_lite_payload',
+      status: 'degraded',
+      reason_code: REASON_CODES.projectHistoryAppServerLiteDegraded,
+      detail: `${policy.degradedEventCount} app-server event payload policy issue(s) detected`
+    });
+  }
+  return facts;
+}
+
 function classifyUnavailablePolicy(event: AppServerEventLedgerExcerpt): 'expected_policy' | 'failure' {
   if (!event.unavailable_reason_code) {
     return 'expected_policy';
@@ -700,6 +821,27 @@ function buildProjectHistoryTicketRow(
   timeline: TicketTimelineRecord,
   historySchemaHealth?: HistorySchemaHealth | null
 ): ProjectHistoryTicketRow {
+  return buildProjectHistoryTicketRowFromSummary(buildProjectHistoryTicketSummary(timeline), historySchemaHealth);
+}
+
+function buildProjectHistoryTicketRowFromSummary(
+  summary: ProjectHistoryTicketSummaryProjection,
+  historySchemaHealth?: HistorySchemaHealth | null
+): ProjectHistoryTicketRow {
+  return {
+    project_identity: summary.identity.project,
+    ticket_identity: summary.identity.ticket,
+    state: summary.state,
+    current_status: summary.current_status,
+    last_known_status: summary.last_known_status,
+    latest_attempt: summary.latest_attempt,
+    summary: summary.summary,
+    facts: summaryFacts(summary, historySchemaHealth),
+    latest_observed_at: summary.latest_observed_at
+  };
+}
+
+function buildProjectHistoryTicketSummary(timeline: TicketTimelineRecord): ProjectHistoryTicketSummaryProjection {
   const latestIssueRun = latestBy(timeline.issue_runs, (run) => run.started_at);
   const latestAttempt = latestBy(timeline.attempts, (attempt) => attempt.started_at);
   const latestOutcome = latestBy(timeline.terminal_outcomes, (outcome) => outcome.recorded_at);
@@ -707,8 +849,7 @@ function buildProjectHistoryTicketRow(
   const latestTransition = latestBy(timeline.state_transitions, (transition) => transition.transitioned_at);
   const lastKnownStatus = latestTrackerSnapshot?.tracker_status ?? latestTransition?.to_status ?? latestIssueRun?.status ?? 'unknown';
   return {
-    project_identity: timeline.identity.project,
-    ticket_identity: timeline.identity.ticket,
+    identity: timeline.identity,
     state: isTimelineActive(latestIssueRun) ? 'active' : 'completed',
     current_status: lastKnownStatus,
     last_known_status: lastKnownStatus,
@@ -739,7 +880,7 @@ function buildProjectHistoryTicketRow(
       token_model_fact_count: timeline.token_model_facts.length,
       total_tokens: sumNullable(timeline.token_model_facts.map((fact) => fact.total_tokens))
     },
-    facts: timelineFacts(timeline, historySchemaHealth),
+    app_server_lite: toAppServerLiteSummary(classifyAppServerLitePolicy(timeline.app_server_events)),
     latest_observed_at: maxTimestamp([
       latestIssueRun?.started_at ?? null,
       latestAttempt?.started_at ?? null,
@@ -758,22 +899,33 @@ function isTimelineActive(latestIssueRun: IssueRunRecord | null): boolean {
   return latestIssueRun.ended_at === null || ['pending', 'running', 'retrying', 'blocked'].includes(latestIssueRun.status);
 }
 
-function timelineFacts(timeline: TicketTimelineRecord, historySchemaHealth?: HistorySchemaHealth | null): ProjectHistoryFactState[] {
-  const active = isTimelineActive(latestBy(timeline.issue_runs, (run) => run.started_at));
+function summaryFacts(
+  summary: ProjectHistoryTicketSummaryProjection,
+  historySchemaHealth?: HistorySchemaHealth | null
+): ProjectHistoryFactState[] {
+  const active = summary.state === 'active';
   return [
     ...historyHealthFacts(historySchemaHealth),
-    presenceFact('tracker_snapshot', timeline.tracker_snapshots.length, REASON_CODES.projectHistoryTrackerSnapshotMissing),
-    terminalOutcomeFact(timeline.terminal_outcomes.length, active),
-    presenceFact('thread_turn_references', timeline.threads.length + timeline.turns.length, REASON_CODES.projectHistoryThreadTurnReferencesMissing),
-    presenceFact('evidence_references', timeline.evidence_references.length, REASON_CODES.projectHistoryEvidenceReferencesMissing),
+    presenceFact('tracker_snapshot', summary.summary.tracker_snapshot_count, REASON_CODES.projectHistoryTrackerSnapshotMissing),
+    terminalOutcomeFact(summary.latest_attempt.outcome ? 1 : 0, active),
+    presenceFact(
+      'thread_turn_references',
+      summary.summary.thread_count + summary.summary.turn_count,
+      REASON_CODES.projectHistoryThreadTurnReferencesMissing
+    ),
+    presenceFact('evidence_references', summary.summary.evidence_reference_count, REASON_CODES.projectHistoryEvidenceReferencesMissing),
     presenceFact(
       'tracker_pr_operator_facts',
-      timeline.tracker_snapshots.length + timeline.ticket_references.length + timeline.operator_actions.length,
+      summary.summary.tracker_snapshot_count + summary.summary.ticket_reference_count + summary.summary.operator_action_count,
       REASON_CODES.projectHistoryOperationalFactsMissing
     ),
-    optionalFact('token_model_summaries', timeline.token_model_facts.length, REASON_CODES.projectHistoryTokenModelSummariesMissing),
-    ...appServerFactStates(timeline.app_server_events)
+    optionalFact('token_model_summaries', summary.summary.token_model_fact_count, REASON_CODES.projectHistoryTokenModelSummariesMissing),
+    ...appServerLitePolicyFacts(normalizeAppServerLiteSummary(summary.app_server_lite))
   ];
+}
+
+function timelineFacts(timeline: TicketTimelineRecord, historySchemaHealth?: HistorySchemaHealth | null): ProjectHistoryFactState[] {
+  return summaryFacts(buildProjectHistoryTicketSummary(timeline), historySchemaHealth);
 }
 
 function historyHealthFacts(historySchemaHealth?: HistorySchemaHealth | null): ProjectHistoryFactState[] {

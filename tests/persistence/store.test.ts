@@ -1158,6 +1158,8 @@ describe('SqlitePersistenceStore', () => {
     const timeline = storeB.reconstructTicketTimeline(durableIdentity);
     const firstProjectPage = storeB.listProjectTicketIdentities(durableIdentity.project.key, { limit: 1 });
     const secondProjectPage = storeB.listProjectTicketIdentities(durableIdentity.project.key, { limit: 1, offset: 1 });
+    const firstSummaryPage = storeB.listProjectTicketSummaries(durableIdentity.project.key, { limit: 1 });
+    const secondSummaryPage = storeB.listProjectTicketSummaries(durableIdentity.project.key, { limit: 1, offset: 1 });
 
     expect(firstProjectPage).toMatchObject({
       limit: 1,
@@ -1167,6 +1169,35 @@ describe('SqlitePersistenceStore', () => {
     });
     expect(firstProjectPage.items[0].ticket.human_issue_identifier).toBe('OPS-2');
     expect(secondProjectPage.items[0].ticket.human_issue_identifier).toBe('OPS-1');
+    expect(firstSummaryPage).toMatchObject({
+      limit: 1,
+      offset: 0,
+      has_more: true,
+      total: 2
+    });
+    expect(firstSummaryPage.items[0].identity.ticket.human_issue_identifier).toBe('OPS-2');
+    expect(secondSummaryPage.items[0]).toMatchObject({
+      identity: durableIdentity,
+      state: 'active',
+      current_status: 'In Progress',
+      summary: {
+        issue_run_count: 1,
+        attempt_count: 1,
+        thread_count: 1,
+        turn_count: 1,
+        tracker_snapshot_count: 1,
+        ticket_reference_count: 2,
+        operator_action_count: 1,
+        blocked_input_event_count: 1,
+        app_server_event_count: 1
+      },
+      app_server_lite: {
+        redacted_event_count: 1,
+        truncated_event_count: 0,
+        summary_only_event_count: 0
+      },
+      latest_observed_at: '2026-04-11T10:03:30.000Z'
+    });
     expect(storeB.getProjectTicketIdentity(durableIdentity.project.key, durableIdentity.ticket.key)).toEqual(durableIdentity);
     expect(timeline.tracker_snapshots).toEqual([
       expect.objectContaining({

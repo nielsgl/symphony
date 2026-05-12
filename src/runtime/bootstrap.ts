@@ -1045,6 +1045,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               persistenceStore ? persistenceStore.reconstructLatestThreadLineageByIssueIdentifier(issueIdentifier) : null,
             listProjectTicketIdentities: (projectKey, page) =>
               persistenceStore ? persistenceStore.listProjectTicketIdentities(projectKey, page) : { items: [], limit: page?.limit ?? 50, offset: page?.offset ?? 0, has_more: false, total: 0 },
+            listProjectTicketSummaries: (projectKey, page) =>
+              persistenceStore ? persistenceStore.listProjectTicketSummaries(projectKey, page) : { items: [], limit: page?.limit ?? 50, offset: page?.offset ?? 0, has_more: false, total: 0 },
             getProjectTicketIdentity: (projectKey, ticketKey) =>
               persistenceStore ? persistenceStore.getProjectTicketIdentity(projectKey, ticketKey) : null,
             reconstructTicketTimeline: (identity) => persistenceStore
