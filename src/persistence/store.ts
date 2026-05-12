@@ -3580,7 +3580,7 @@ export class SqlitePersistenceStore {
          FROM issue_run
          WHERE issue_run.ended_at IS NOT NULL
           AND issue_run.ended_at < ?
-          AND issue_run.status IN ('succeeded', 'failed', 'cancelled')
+          AND issue_run.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'stalled')
          ORDER BY issue_run.ended_at ASC, issue_run.issue_run_id ASC`
       )
       .all(cutoff) as Array<{
