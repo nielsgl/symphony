@@ -349,6 +349,115 @@ describe('Project History consumer summary', () => {
     expect(JSON.stringify(health)).not.toContain('raw transcript');
   });
 
+  it('keeps active ticket health healthy while terminal outcome is lifecycle-pending', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: true,
+        db_path: '/tmp/runtime.sqlite',
+        retention_days: 14,
+        run_count: 1,
+        ticket_count: 1,
+        last_pruned_at: '2026-04-11T00:00:00.000Z',
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: true,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 8,
+          applied_version: 8,
+          status: 'healthy',
+          degraded_reason_code: null,
+          degraded_detail: null,
+          updated_at: '2026-04-11T00:00:00.000Z',
+          migrations: []
+        },
+        recent_write_failures: []
+      },
+      timelines: [
+        timeline({
+          issue_runs: [
+            {
+              ...timeline().issue_runs[0],
+              ended_at: null,
+              status: 'running'
+            }
+          ],
+          attempts: [
+            {
+              ...timeline().attempts[0],
+              ended_at: null,
+              status: 'running'
+            }
+          ],
+          terminal_outcomes: []
+        })
+      ],
+      ticketCount: 1
+    });
+
+    expect(health.status).toBe('healthy');
+    expect(health.projections).toMatchObject({ status: 'healthy', reason_code: null });
+    expect(health.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fact: 'terminal_outcome',
+          status: 'lifecycle_pending',
+          reason_code: 'project_history_terminal_outcome_missing'
+        })
+      ])
+    );
+  });
+
+  it('degrades completed ticket health when the terminal outcome fact is missing', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: true,
+        db_path: '/tmp/runtime.sqlite',
+        retention_days: 14,
+        run_count: 1,
+        ticket_count: 1,
+        last_pruned_at: '2026-04-11T00:00:00.000Z',
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: true,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 8,
+          applied_version: 8,
+          status: 'healthy',
+          degraded_reason_code: null,
+          degraded_detail: null,
+          updated_at: '2026-04-11T00:00:00.000Z',
+          migrations: []
+        },
+        recent_write_failures: []
+      },
+      timelines: [
+        timeline({
+          terminal_outcomes: []
+        })
+      ],
+      ticketCount: 1
+    });
+
+    expect(health.status).toBe('degraded');
+    expect(health.projections).toMatchObject({
+      status: 'degraded',
+      reason_code: 'project_history_terminal_outcome_missing'
+    });
+    expect(health.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fact: 'terminal_outcome',
+          status: 'missing',
+          reason_code: 'project_history_terminal_outcome_missing'
+        })
+      ])
+    );
+  });
+
   it('keeps expected app-server-lite payload policy facts healthy', () => {
     const health = buildProjectHistoryHealth({
       persistenceHealth: {
@@ -688,7 +797,7 @@ describe('Project History consumer summary', () => {
     expect(JSON.stringify(health)).not.toContain('secret');
   });
 
-  it('marks optional app-server-lite and token facts as missing', () => {
+  it('marks optional app-server-lite and token facts as explicitly optional', () => {
     const summary = buildProjectHistoryConsumerSummaryResponse(
       timeline({
         app_server_events: [],
@@ -709,12 +818,64 @@ describe('Project History consumer summary', () => {
       expect.arrayContaining([
         expect.objectContaining({
           fact: 'token_model_summaries',
-          status: 'missing',
+          status: 'optional_unavailable',
           reason_code: 'project_history_token_model_summaries_missing'
         }),
         expect.objectContaining({
           fact: 'app_server_lite_summaries',
-          status: 'missing',
+          status: 'optional_unavailable',
+          reason_code: 'project_history_app_server_lite_summaries_missing'
+        })
+      ])
+    );
+  });
+
+  it('keeps optional telemetry absence from degrading project history health', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: true,
+        db_path: '/tmp/runtime.sqlite',
+        retention_days: 14,
+        run_count: 1,
+        ticket_count: 1,
+        last_pruned_at: '2026-04-11T00:00:00.000Z',
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: true,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 8,
+          applied_version: 8,
+          status: 'healthy',
+          degraded_reason_code: null,
+          degraded_detail: null,
+          updated_at: '2026-04-11T00:00:00.000Z',
+          migrations: []
+        },
+        recent_write_failures: []
+      },
+      timelines: [
+        timeline({
+          app_server_events: [],
+          token_model_facts: []
+        })
+      ],
+      ticketCount: 1
+    });
+
+    expect(health.status).toBe('healthy');
+    expect(health.projections).toMatchObject({ status: 'healthy', reason_code: null });
+    expect(health.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fact: 'token_model_summaries',
+          status: 'optional_unavailable',
+          reason_code: 'project_history_token_model_summaries_missing'
+        }),
+        expect.objectContaining({
+          fact: 'app_server_lite_summaries',
+          status: 'optional_unavailable',
           reason_code: 'project_history_app_server_lite_summaries_missing'
         })
       ])
