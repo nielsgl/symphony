@@ -349,6 +349,228 @@ describe('Project History consumer summary', () => {
     expect(JSON.stringify(health)).not.toContain('raw transcript');
   });
 
+  it('keeps expected app-server-lite payload policy facts healthy', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: true,
+        db_path: '/tmp/runtime.sqlite',
+        retention_days: 14,
+        run_count: 2,
+        ticket_count: 1,
+        last_pruned_at: '2026-04-11T00:00:00.000Z',
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: true,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 8,
+          applied_version: 8,
+          status: 'healthy',
+          degraded_reason_code: null,
+          degraded_detail: null,
+          updated_at: '2026-04-11T00:00:00.000Z',
+          migrations: []
+        },
+        recent_write_failures: []
+      },
+      timelines: [
+        timeline({
+          app_server_events: [
+            {
+              app_server_event_id: 'app-event-redacted',
+              issue_run_id: 'issue-run-1',
+              attempt_id: 'attempt-1',
+              thread_id: 'thread-1',
+              turn_id: 'turn-1',
+              observed_at: '2026-04-10T10:25:00.000Z',
+              policy_version: 1,
+              payload_class: 'protocol_request_response',
+              detail_status: 'redacted_truncated_excerpt',
+              redaction_status: 'redacted',
+              source_event_id: 'event-redacted',
+              source_event_name: 'turn/completed',
+              summary: 'turn completed',
+              summary_fields: { status: 'succeeded' },
+              redacted_excerpt: 'token=***REDACTED***',
+              truncation: { truncated: true, original_bytes: 1024, excerpt_bytes: 64, max_excerpt_bytes: 64 },
+              unavailable_reason_code: null,
+              full_payload_stored: false
+            },
+            {
+              app_server_event_id: 'app-event-summary',
+              issue_run_id: 'issue-run-1',
+              attempt_id: 'attempt-1',
+              thread_id: 'thread-1',
+              turn_id: 'turn-1',
+              observed_at: '2026-04-10T10:26:00.000Z',
+              policy_version: 1,
+              payload_class: 'tool_payload',
+              detail_status: 'summary_only',
+              redaction_status: 'redacted',
+              source_event_id: 'event-summary',
+              source_event_name: 'tool/call',
+              summary: 'tool payload summarized',
+              summary_fields: { tool: 'shell' },
+              redacted_excerpt: null,
+              truncation: { truncated: false, original_bytes: 2048, excerpt_bytes: 0, max_excerpt_bytes: 64 },
+              unavailable_reason_code: null,
+              full_payload_stored: false
+            },
+            {
+              app_server_event_id: 'app-event-policy-unavailable',
+              issue_run_id: 'issue-run-1',
+              attempt_id: 'attempt-1',
+              thread_id: 'thread-1',
+              turn_id: 'turn-1',
+              observed_at: '2026-04-10T10:27:00.000Z',
+              policy_version: 1,
+              payload_class: 'conversation_transcript',
+              detail_status: 'unavailable_policy',
+              redaction_status: 'unavailable_policy',
+              source_event_id: 'event-policy-unavailable',
+              source_event_name: 'conversation/raw',
+              summary: null,
+              summary_fields: {},
+              redacted_excerpt: null,
+              truncation: { truncated: false, original_bytes: 8192, excerpt_bytes: 0, max_excerpt_bytes: 64 },
+              unavailable_reason_code: 'conversation_transcript_policy_unavailable',
+              full_payload_stored: false
+            }
+          ]
+        })
+      ],
+      ticketCount: 1
+    });
+
+    expect(health.status).toBe('healthy');
+    expect(health.app_server_lite).toMatchObject({
+      status: 'healthy',
+      redacted_event_count: 2,
+      truncated_event_count: 1,
+      summary_only_event_count: 1,
+      unavailable_event_count: 1,
+      full_payload_stored_count: 0,
+      degraded_event_count: 0,
+      unavailable_reasons: [
+        {
+          reason_code: 'conversation_transcript_policy_unavailable',
+          count: 1,
+          classification: 'expected_policy'
+        }
+      ]
+    });
+    expect(health.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fact: 'app_server_lite_health', status: 'present', reason_code: null }),
+        expect.objectContaining({ fact: 'app_server_lite_payload', status: 'redacted' }),
+        expect.objectContaining({ fact: 'app_server_lite_payload', status: 'truncated' })
+      ])
+    );
+  });
+
+  it('degrades app-server-lite health for full payloads and malformed unavailable policy state', () => {
+    const health = buildProjectHistoryHealth({
+      persistenceHealth: {
+        enabled: true,
+        db_path: '/tmp/runtime.sqlite',
+        retention_days: 14,
+        run_count: 2,
+        ticket_count: 1,
+        last_pruned_at: '2026-04-11T00:00:00.000Z',
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: true,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 8,
+          applied_version: 8,
+          status: 'healthy',
+          degraded_reason_code: null,
+          degraded_detail: null,
+          updated_at: '2026-04-11T00:00:00.000Z',
+          migrations: []
+        },
+        recent_write_failures: []
+      },
+      timelines: [
+        timeline({
+          app_server_events: [
+            {
+              app_server_event_id: 'app-event-full-payload',
+              issue_run_id: 'issue-run-1',
+              attempt_id: 'attempt-1',
+              thread_id: 'thread-1',
+              turn_id: 'turn-1',
+              observed_at: '2026-04-10T10:25:00.000Z',
+              policy_version: 1,
+              payload_class: 'protocol_lifecycle',
+              detail_status: 'redacted_excerpt',
+              redaction_status: 'not_required',
+              source_event_id: 'event-full-payload',
+              source_event_name: 'thread/started',
+              summary: 'thread started',
+              summary_fields: {},
+              redacted_excerpt: '{}',
+              truncation: { truncated: false, original_bytes: 2, excerpt_bytes: 2, max_excerpt_bytes: 64 },
+              unavailable_reason_code: null,
+              full_payload_stored: true
+            },
+            {
+              app_server_event_id: 'app-event-malformed',
+              issue_run_id: 'issue-run-1',
+              attempt_id: 'attempt-1',
+              thread_id: 'thread-1',
+              turn_id: 'turn-1',
+              observed_at: '2026-04-10T10:26:00.000Z',
+              policy_version: 1,
+              payload_class: 'protocol_lifecycle',
+              detail_status: 'redacted_excerpt',
+              redaction_status: 'redacted',
+              source_event_id: 'event-malformed',
+              source_event_name: 'turn/completed',
+              summary: 'turn completed',
+              summary_fields: {},
+              redacted_excerpt: null,
+              truncation: { truncated: false, original_bytes: 2, excerpt_bytes: 0, max_excerpt_bytes: 64 },
+              unavailable_reason_code: 'projection_payload_missing',
+              full_payload_stored: false
+            }
+          ]
+        })
+      ],
+      ticketCount: 1
+    });
+
+    expect(health.status).toBe('degraded');
+    expect(health.app_server_lite).toMatchObject({
+      status: 'degraded',
+      redacted_event_count: 1,
+      truncated_event_count: 0,
+      unavailable_event_count: 1,
+      full_payload_stored_count: 1,
+      degraded_event_count: 2,
+      unavailable_reasons: [
+        {
+          reason_code: 'projection_payload_missing',
+          count: 1,
+          classification: 'failure'
+        }
+      ]
+    });
+    expect(health.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fact: 'app_server_lite_health',
+          status: 'degraded',
+          reason_code: 'project_history_app_server_lite_degraded',
+          detail: expect.stringContaining('full_payload_stored=1')
+        })
+      ])
+    );
+  });
+
   it('marks disabled history persistence as explicit disabled health', () => {
     const health = buildProjectHistoryHealth({
       persistenceHealth: {

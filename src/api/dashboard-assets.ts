@@ -2451,6 +2451,27 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     const writes = health.writes || {};
     const projections = health.projections || {};
     const appServerLite = health.app_server_lite || {};
+    const policyParts = [];
+    if (appServerLite.redacted_event_count || appServerLite.truncated_event_count || appServerLite.summary_only_event_count) {
+      policyParts.push(
+        'payload policy redacted ' +
+          formatNumber(appServerLite.redacted_event_count || 0) +
+          ' / truncated ' +
+          formatNumber(appServerLite.truncated_event_count || 0) +
+          ' / summary-only ' +
+          formatNumber(appServerLite.summary_only_event_count || 0)
+      );
+    }
+    if (appServerLite.unavailable_event_count) {
+      const reasons = Array.isArray(appServerLite.unavailable_reasons)
+        ? appServerLite.unavailable_reasons
+            .map(function (reason) {
+              return (reason.reason_code || 'unknown') + ' ' + formatNumber(reason.count || 0) + ' ' + (reason.classification || 'unknown');
+            })
+            .join(', ')
+        : 'reason unknown';
+      policyParts.push('payload unavailable ' + formatNumber(appServerLite.unavailable_event_count || 0) + ' (' + reasons + ')');
+    }
     return [
       'Health: ' + (health.status || 'unknown'),
       'enabled ' + (health.enabled ? 'yes' : 'no'),
@@ -2463,7 +2484,9 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       'writes ' + (writes.status || 'unknown'),
       'projection ' + (projections.status || 'unknown'),
       'app-server-lite ' + (appServerLite.status || 'unknown')
-    ].join(' • ');
+    ]
+      .concat(policyParts)
+      .join(' • ');
   }
 
   function renderProjectHistory() {
