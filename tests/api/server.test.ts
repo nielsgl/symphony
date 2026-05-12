@@ -1513,7 +1513,7 @@ describe('LocalApiServer', () => {
     expect(reconstructThreadLineage).toHaveBeenCalledWith('thread-nie-68');
   });
 
-  it('fills running total tokens from CODEX_HOME state sqlite when protocol totals are absent', async () => {
+  it('fills issue-detail running total tokens from CODEX_HOME state sqlite when protocol totals are absent', async () => {
     const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
     const dbPath = path.join(codexHomeDir, 'state_5.sqlite');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1580,14 +1580,14 @@ describe('LocalApiServer', () => {
     };
 
     expect(response.status).toBe(200);
-    expect(payload.codex_totals.total_tokens).toBe(321);
-    expect(payload.running[0]?.tokens.total_tokens).toBe(321);
+    expect(payload.codex_totals.total_tokens).toBe(0);
+    expect(payload.running[0]?.tokens.total_tokens).toBe(0);
     expect(typeof payload.running[0]?.tokens.total_tokens).toBe('number');
     expect(typeof payload.running[0]?.tokens.input_tokens).toBe('number');
     expect(typeof payload.running[0]?.tokens.output_tokens).toBe('number');
-    expect(payload.running[0]?.token_telemetry_status).toBe('available');
-    expect(payload.running[0]?.token_telemetry_last_source).toBe('codex_home_state_sqlite');
-    expect(typeof payload.running[0]?.token_telemetry_last_at_ms).toBe('number');
+    expect(payload.running[0]?.token_telemetry_status).toBe('pending');
+    expect(payload.running[0]?.token_telemetry_last_source).toBeNull();
+    expect(payload.running[0]?.token_telemetry_last_at_ms).toBeNull();
 
     const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-1`);
     const issuePayload = (await issueResponse.json()) as {
@@ -1610,6 +1610,223 @@ describe('LocalApiServer', () => {
     expect(issuePayload.running.token_telemetry_status).toBe('available');
     expect(issuePayload.running.token_telemetry_last_source).toBe('codex_home_state_sqlite');
     expect(typeof issuePayload.running.token_telemetry_last_at_ms).toBe('number');
+
+    if (previousCodexHome === undefined) {
+      delete process.env.SYMPHONY_CODEX_HOME;
+    } else {
+      process.env.SYMPHONY_CODEX_HOME = previousCodexHome;
+    }
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
+  });
+
+  it('keeps GET /api/v1/state off the live token fallback hot path', async () => {
+    const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-hot-path-'));
+    const dbPath = path.join(codexHomeDir, 'state_5.sqlite');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sqlite = require('node:sqlite') as {
+      DatabaseSync: new (path: string) => {
+        exec: (sql: string) => void;
+        close: () => void;
+      };
+    };
+    const db = new sqlite.DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        tokens_used INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO threads (id, tokens_used) VALUES ('thread-live-stall', 999);
+    `);
+    db.close();
+
+    const previousCodexHome = process.env.SYMPHONY_CODEX_HOME;
+    process.env.SYMPHONY_CODEX_HOME = codexHomeDir;
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            thread_id: 'thread-live-stall',
+            tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            last_reported_tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            token_telemetry_status: 'pending',
+            token_telemetry_last_source: null,
+            token_telemetry_last_at_ms: null
+          })
+        ]
+      ]),
+      codex_totals: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        seconds_running: 0
+      }
+    });
+    let now = Date.parse('2026-04-10T10:05:00.000Z');
+
+    server = new LocalApiServer({
+      host: '127.0.0.1',
+      port: 0,
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: { tick: async () => {} },
+      diagnosticsSource: makeDiagnosticsSource(),
+      nowMs: () => {
+        now += 2;
+        return now;
+      }
+    });
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const payload = (await response.json()) as {
+      codex_totals: { total_tokens: number };
+      running: Array<{
+        token_telemetry_status: string;
+        token_telemetry_last_source: string | null;
+        tokens: { total_tokens: number };
+      }>;
+    };
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      control_plane: {
+        endpoints: Array<{
+          endpoint: string;
+          last_enrichment_status: string | null;
+          last_enrichment_degraded: boolean | null;
+        }>;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.codex_totals.total_tokens).toBe(0);
+    expect(payload.running[0]?.tokens.total_tokens).toBe(0);
+    expect(payload.running[0]?.token_telemetry_status).toBe('pending');
+    expect(payload.running[0]?.token_telemetry_last_source).toBeNull();
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.control_plane.endpoints.find((entry) => entry.endpoint === '/api/v1/state')).toMatchObject({
+      last_enrichment_status: 'degraded',
+      last_enrichment_degraded: true
+    });
+
+    if (previousCodexHome === undefined) {
+      delete process.env.SYMPHONY_CODEX_HOME;
+    } else {
+      process.env.SYMPHONY_CODEX_HOME = previousCodexHome;
+    }
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
+  });
+
+  it('keeps diagnostics and SSE snapshots available with degraded live enrichment', async () => {
+    const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-sse-hot-path-'));
+    const dbPath = path.join(codexHomeDir, 'state_5.sqlite');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sqlite = require('node:sqlite') as {
+      DatabaseSync: new (path: string) => {
+        exec: (sql: string) => void;
+        close: () => void;
+      };
+    };
+    const db = new sqlite.DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        tokens_used INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO threads (id, tokens_used) VALUES ('thread-live-stall', 777);
+    `);
+    db.close();
+
+    const previousCodexHome = process.env.SYMPHONY_CODEX_HOME;
+    process.env.SYMPHONY_CODEX_HOME = codexHomeDir;
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            thread_id: 'thread-live-stall',
+            tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            last_reported_tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            token_telemetry_status: 'pending',
+            token_telemetry_last_source: null,
+            token_telemetry_last_at_ms: null
+          })
+        ]
+      ]),
+      codex_totals: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        seconds_running: 0
+      }
+    });
+    let now = Date.parse('2026-04-10T10:05:00.000Z');
+
+    server = new LocalApiServer({
+      host: '127.0.0.1',
+      port: 0,
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: { tick: async () => {} },
+      diagnosticsSource: makeDiagnosticsSource(),
+      nowMs: () => {
+        now += 3;
+        return now;
+      }
+    });
+    await server.listen();
+    const address = server.address();
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      token_telemetry_status: string;
+      token_telemetry_last_source: string | null;
+      token_enrichment: { status: string; degraded: boolean; reason_code: string };
+    };
+    const streamResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/events`);
+    const events = await readSseEvents(streamResponse, 1);
+    const stateSnapshotEvent = events.find((entry) => entry.data.type === 'state_snapshot');
+    const ssePayload = stateSnapshotEvent?.data.payload as {
+      state?: {
+        running: Array<{ tokens: { total_tokens: number }; token_telemetry_status: string }>;
+        codex_totals: { total_tokens: number };
+      };
+    };
+    const diagnosticsAfterSseResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsAfterSse = (await diagnosticsAfterSseResponse.json()) as {
+      control_plane: {
+        endpoints: Array<{
+          endpoint: string;
+          transport: string;
+          last_enrichment_status: string | null;
+          last_enrichment_degraded: boolean | null;
+        }>;
+      };
+    };
+
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.token_telemetry_status).toBe('pending');
+    expect(diagnosticsPayload.token_telemetry_last_source).toBeNull();
+    expect(diagnosticsPayload.token_enrichment).toMatchObject({
+      status: 'degraded',
+      degraded: true,
+      reason_code: 'live_token_fallback_not_on_hot_path'
+    });
+    expect(streamResponse.status).toBe(200);
+    expect(ssePayload?.state?.codex_totals.total_tokens).toBe(0);
+    expect(ssePayload?.state?.running[0]?.tokens.total_tokens).toBe(0);
+    expect(ssePayload?.state?.running[0]?.token_telemetry_status).toBe('pending');
+    expect(
+      diagnosticsAfterSse.control_plane.endpoints.find(
+        (entry) => entry.endpoint === '/api/v1/events:state_snapshot' && entry.transport === 'sse'
+      )
+    ).toMatchObject({
+      last_enrichment_status: 'degraded',
+      last_enrichment_degraded: true
+    });
 
     if (previousCodexHome === undefined) {
       delete process.env.SYMPHONY_CODEX_HOME;

@@ -19,6 +19,7 @@ export const CANONICAL_EVENT = {
     turnCompleted: 'codex.turn.completed',
     turnFailed: 'codex.turn.failed',
     turnCancelled: 'codex.turn.cancelled',
+    turnTimedOut: 'codex.turn.timed_out',
     turnInputRequired: 'codex.turn.input_required',
     startupFailed: 'codex.startup.failed',
     approvalAutoApproved: 'codex.approval.auto_approved',

@@ -59,7 +59,7 @@ export function resolveProgressSignal(entry: RunningEntry): {
       last_heartbeat_at_ms: entry.last_heartbeat_at_ms ?? entry.last_codex_timestamp_ms ?? null
     };
   }
-  if (entry.last_event === CANONICAL_EVENT.codex.turnWaiting) {
+  if (entry.last_event === CANONICAL_EVENT.codex.turnWaiting || entry.running_waiting_started_at_ms != null) {
     return {
       progress_signal_state: 'heartbeat_only',
       last_progress_transition_at_ms: entry.last_progress_transition_at_ms ?? null,

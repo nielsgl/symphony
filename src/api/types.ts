@@ -1292,6 +1292,12 @@ export interface ApiDiagnosticsResponse {
   token_telemetry_status: 'unavailable' | 'pending' | 'available';
   token_telemetry_last_source: string | null;
   token_telemetry_last_at_ms: number | null;
+  token_enrichment: {
+    status: 'not_required' | 'available' | 'degraded';
+    degraded: boolean;
+    reason_code: string | null;
+    duration_ms: number;
+  };
   workflow: {
     prompt_fallback_active: boolean;
   };
