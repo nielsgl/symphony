@@ -24,6 +24,7 @@ export interface LocalWorkerRunInput {
   config: EffectiveConfig;
   renderPrompt: (params: { issue: Issue; attempt: number | null }) => Promise<string>;
   resumeContext?: string | null;
+  recoverWorkspaceAttemptResidue?: boolean;
   issueStateFetcher: (issue_ids: string[]) => Promise<Issue[]>;
   onCodexEvent?: (event: CodexRunnerEvent) => void;
   cancellationSignal?: AbortSignal;
@@ -60,7 +61,11 @@ export async function runLocalWorkerAttempt(input: LocalWorkerRunInput): Promise
         error: REASON_CODES.unsafeWorkspaceRoot
       };
     }
-    await input.workspaceManager.prepareAttempt(workspace.path);
+    if (input.recoverWorkspaceAttemptResidue === true) {
+      await input.workspaceManager.prepareAttempt(workspace.path, { allow_attempt_residue: true });
+    } else {
+      await input.workspaceManager.prepareAttempt(workspace.path);
+    }
     let currentIssue = input.issue;
     let lastSessionId: string | null = null;
     const maxTurns = Math.max(1, input.config.agent.max_turns);

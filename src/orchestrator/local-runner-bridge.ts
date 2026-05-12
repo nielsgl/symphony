@@ -87,6 +87,7 @@ export class LocalRunnerBridge {
     attempt: number | null;
     worker_host?: string | null;
     resume_context?: string | null;
+    recover_workspace_attempt_residue?: boolean;
   }): Promise<SpawnWorkerResult> {
     const workerHost = params.worker_host ?? null;
     let workspace;
@@ -107,6 +108,7 @@ export class LocalRunnerBridge {
       params.attempt,
       workerHost,
       params.resume_context ?? null,
+      params.recover_workspace_attempt_residue ?? false,
       workerInstanceId,
       cancellationController.signal,
       (outcome) => {
@@ -366,6 +368,7 @@ export class LocalRunnerBridge {
     attempt: number | null,
     worker_host: string | null,
     resume_context: string | null,
+    recoverWorkspaceAttemptResidue: boolean,
     workerInstanceId: string,
     cancellationSignal: AbortSignal,
     onRunnerSettled: (cancellationOutcome: CodexCancellationOutcome | null) => void
@@ -390,6 +393,7 @@ export class LocalRunnerBridge {
       config: this.config,
       renderPrompt: this.renderPrompt,
       resumeContext: resume_context,
+      recoverWorkspaceAttemptResidue,
       issueStateFetcher: this.issueStateFetcher,
       cancellationSignal,
       onCodexEvent: (event) => {

@@ -692,6 +692,20 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         });
         return;
       }
+      if (result.status === 'attempt_residue_recoverable') {
+        logger.log({
+          level: 'info',
+          event: CANONICAL_EVENT.workspace.preflightCleanupApplied,
+          message: 'workspace preflight allowed recoverable attempt residue',
+          context: {
+            ...context,
+            stop_reason_code: REASON_CODES.workspaceAttemptResidueRecovered,
+            next_operator_action: null,
+            next_operator_action_endpoint: null
+          }
+        });
+        return;
+      }
       logger.log({
         level: 'warn',
         event: CANONICAL_EVENT.workspace.preflightConflictDetected,
@@ -892,7 +906,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       tracker: trackerProxy,
       dispatchPreflight,
       getControlPlaneHealth: () => controlPlaneHealth.summarize(nowMs()),
-      spawnWorker: ({ issue, attempt, worker_host }) => bridge.spawnWorker({ issue, attempt, worker_host }),
+      spawnWorker: ({ issue, attempt, worker_host, resume_context, recover_workspace_attempt_residue }) =>
+        bridge.spawnWorker({ issue, attempt, worker_host, resume_context, recover_workspace_attempt_residue }),
       recoverMissingToolOutput: (params) => bridge.recoverMissingToolOutput(params),
       terminateWorker: createRuntimeTerminateWorkerPort(bridge),
       scheduleRetryTimer: ({ issue_id, due_at_ms, callback }) => {

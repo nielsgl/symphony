@@ -101,6 +101,7 @@ interface ScheduleRetryParams {
   last_progress_checkpoint_at?: number | null;
   issue_snapshot?: Issue | null;
   progress_signals?: ProgressSignals;
+  recover_workspace_attempt_residue?: boolean;
   budget?: BudgetRuntimeProjection;
   recovery?: MissingToolOutputRecoveryState | null;
   delay_ms?: number;
@@ -124,6 +125,7 @@ interface WorkspaceConflictContext {
 interface DispatchGraphContext {
   issue_run_id?: string | null;
   previous_attempt_id?: string | null;
+  recover_workspace_attempt_residue?: boolean;
 }
 
 interface AppServerLiteSummary {
@@ -536,6 +538,7 @@ function cloneRetryEntry(entry: RetryEntry): RetryEntry {
     last_phase_detail: entry.last_phase_detail,
     timer_handle: entry.timer_handle,
     progress_signals: entry.progress_signals ? { ...entry.progress_signals } : undefined,
+    recover_workspace_attempt_residue: entry.recover_workspace_attempt_residue ?? false,
     budget: entry.budget ? { ...entry.budget } : undefined,
     recovery: entry.recovery ? { ...entry.recovery } : null
   };
@@ -1172,6 +1175,7 @@ export class OrchestratorCore {
       previous_turn_id: freshDispatch ? null : retryEntry.previous_turn_id ?? null,
       previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
       progress_signals: retryEntry.progress_signals,
+      recover_workspace_attempt_residue: freshDispatch ? false : retryEntry.recover_workspace_attempt_residue ?? false,
       budget: retryEntry.budget,
       recovery: retryEntry.recovery,
       issue_snapshot: issue
@@ -3980,6 +3984,7 @@ export class OrchestratorCore {
         previous_thread_id: retryEntry.previous_thread_id ?? null,
         previous_turn_id: retryEntry.previous_turn_id ?? null,
         previous_session_id: retryEntry.previous_session_id ?? null,
+        recover_workspace_attempt_residue: retryEntry.recover_workspace_attempt_residue ?? false,
         issue_snapshot: null
       });
       return;
@@ -4036,6 +4041,7 @@ export class OrchestratorCore {
           previous_thread_id: freshDispatch ? null : retryEntry.previous_thread_id ?? null,
           previous_turn_id: freshDispatch ? null : retryEntry.previous_turn_id ?? null,
           previous_session_id: freshDispatch ? null : retryEntry.previous_session_id ?? null,
+          recover_workspace_attempt_residue: freshDispatch ? false : retryEntry.recover_workspace_attempt_residue ?? false,
           issue_snapshot: issue
         });
       } else {
@@ -4063,9 +4069,10 @@ export class OrchestratorCore {
       retryEntry.stop_reason_code === REASON_CODES.dispatchBackpressureHostLoad
     ) {
       this.state.claimed.delete(issue_id);
-      await this.dispatchIssue(issue, retryEntry.attempt, null, {
+      await this.dispatchIssue(issue, retryEntry.attempt, this.workspaceAttemptResidueResumeContext(retryEntry), {
         issue_run_id: retryEntry.issue_run_id,
-        previous_attempt_id: retryEntry.previous_attempt_id
+        previous_attempt_id: retryEntry.previous_attempt_id,
+        recover_workspace_attempt_residue: retryEntry.recover_workspace_attempt_residue ?? false
       });
       return;
     }
@@ -4226,9 +4233,10 @@ export class OrchestratorCore {
     }
 
     this.state.claimed.delete(issue_id);
-    await this.dispatchIssue(issue, retryEntry.attempt, null, {
+    await this.dispatchIssue(issue, retryEntry.attempt, this.workspaceAttemptResidueResumeContext(retryEntry), {
       issue_run_id: retryEntry.issue_run_id,
-      previous_attempt_id: retryEntry.previous_attempt_id
+      previous_attempt_id: retryEntry.previous_attempt_id,
+      recover_workspace_attempt_residue: retryEntry.recover_workspace_attempt_residue ?? false
     });
   }
 
@@ -4665,6 +4673,45 @@ export class OrchestratorCore {
         });
         continue;
       }
+      if (issue && this.shouldRecoverWorkspaceAttemptResidue(blocked, issue)) {
+        this.clearBlockedInput(issueId, REASON_CODES.workspaceAttemptResidueRecovered);
+        await this.scheduleRetry({
+          issue_id: issueId,
+          identifier: blocked.issue_identifier,
+          attempt: blocked.attempt,
+          issue_run_id: blocked.issue_run_id,
+          previous_attempt_id: blocked.previous_attempt_id,
+          delay_type: 'continuation',
+          error: 'workspace attempt residue recovered',
+          worker_host: blocked.worker_host,
+          workspace_path: blocked.workspace_path,
+          provisioner_type: blocked.provisioner_type,
+          branch_name: blocked.branch_name,
+          repo_root: blocked.repo_root,
+          workspace_exists: blocked.workspace_exists,
+          workspace_git_status: blocked.workspace_git_status,
+          workspace_provisioned: blocked.workspace_provisioned,
+          workspace_is_git_worktree: blocked.workspace_is_git_worktree,
+          copy_ignored_applied: blocked.copy_ignored_applied,
+          copy_ignored_status: blocked.copy_ignored_status,
+          copy_ignored_summary: blocked.copy_ignored_summary,
+          stop_reason_code: REASON_CODES.workspaceAttemptResidueRecovered,
+          stop_reason_detail: 'recoverable workspace attempt residue will be continued',
+          previous_thread_id: blocked.previous_thread_id,
+          previous_turn_id: blocked.previous_turn_id ?? null,
+          previous_session_id: blocked.previous_session_id,
+          progress_signals: blocked.progress_signals,
+          recover_workspace_attempt_residue: true,
+          issue_snapshot: issue
+        });
+        this.recordRuntimeEvent({
+          event: CANONICAL_EVENT.orchestration.blockedInputCleared,
+          severity: 'info',
+          issue_identifier: blocked.issue_identifier,
+          detail: `workspace_attempt_residue_recovered conflict_files=${blocked.conflict_files.length}`
+        });
+        continue;
+      }
       if (!issue || isTerminalState(issue.state, this.config) || !isActiveState(issue.state, this.config)) {
         if (
           blocked.stop_reason_code === REASON_CODES.missingToolOutput ||
@@ -4690,6 +4737,32 @@ export class OrchestratorCore {
       blocked.stop_reason_code === REASON_CODES.operatorNoProgressRedispatchBlocked ||
       blocked.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete
     );
+  }
+
+  private shouldRecoverWorkspaceAttemptResidue(blocked: BlockedEntry, issue: Issue): boolean {
+    if (blocked.stop_reason_code !== REASON_CODES.operatorWorkspaceConflict) {
+      return false;
+    }
+    if (blocked.pending_input || !isActiveState(issue.state, this.config)) {
+      return false;
+    }
+    if (blocked.attempt <= 0 || !blocked.workspace_path || !blocked.workspace_provisioned || !blocked.workspace_is_git_worktree) {
+      return false;
+    }
+    if (!blocked.branch_name || !blocked.repo_root) {
+      return false;
+    }
+    if (blocked.conflict_files.length === 0) {
+      return false;
+    }
+    const summary = blocked.classification_summary;
+    if (summary && (summary.tracked_ephemeral > 0 || summary.ephemeral > 0)) {
+      return false;
+    }
+    return blocked.conflict_files.every((file) => {
+      const normalized = file.path.replace(/\\/g, '/');
+      return file.classification === 'unknown_non_ephemeral' && !normalized.startsWith('output/playwright/');
+    });
   }
 
   updateCodexTimestamp(issue_id: string, timestampMs: number): void {
@@ -4874,7 +4947,13 @@ export class OrchestratorCore {
       return;
     }
 
-    const spawned = await this.ports.spawnWorker({ issue, attempt, worker_host: workerHost, resume_context });
+    const spawned = await this.ports.spawnWorker({
+      issue,
+      attempt,
+      worker_host: workerHost,
+      resume_context,
+      recover_workspace_attempt_residue: graphContext.recover_workspace_attempt_residue ?? false
+    });
 
     if (!spawned.ok) {
       this.emitPhaseMarker(issue.id, {
@@ -5358,6 +5437,7 @@ export class OrchestratorCore {
       last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
       last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
       progress_signals: resolvedProgressSignals,
+      recover_workspace_attempt_residue: params.recover_workspace_attempt_residue ?? false,
       budget: params.budget ? { ...params.budget } : undefined,
       recovery: params.recovery ? { ...params.recovery } : null,
       timer_handle: timerHandle
@@ -5378,6 +5458,20 @@ export class OrchestratorCore {
         stop_reason_code: params.stop_reason_code ?? null
       }
     });
+  }
+
+  private workspaceAttemptResidueResumeContext(retryEntry: RetryEntry): string | null {
+    if (!retryEntry.recover_workspace_attempt_residue) {
+      return null;
+    }
+    return [
+      'Workspace attempt residue recovery:',
+      '- The previous attempt left dirty files in this managed issue workspace.',
+      '- Continue from the current workspace state instead of restarting.',
+      '- First inspect `git status --short` and `git diff` / untracked files.',
+      '- Run the ticket-required validation before committing.',
+      '- Commit/push only if the dirty workspace matches the ticket scope; otherwise report the blocker.'
+    ].join('\n');
   }
 
   private async scheduleBlockedInput(params: {

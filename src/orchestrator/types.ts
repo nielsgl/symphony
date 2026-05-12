@@ -418,6 +418,7 @@ export interface RetryEntry {
   last_phase_detail?: string | null;
   timer_handle: unknown;
   progress_signals?: ProgressSignals;
+  recover_workspace_attempt_residue?: boolean;
   budget?: BudgetRuntimeProjection;
   recovery?: MissingToolOutputRecoveryState | null;
 }
@@ -715,6 +716,7 @@ export interface OrchestratorPorts {
     attempt: number | null;
     worker_host?: string | null;
     resume_context?: string | null;
+    recover_workspace_attempt_residue?: boolean;
   }) => Promise<SpawnWorkerResult>;
   recoverMissingToolOutput?: (params: {
     issue: Issue;

@@ -138,7 +138,13 @@ interface Harness {
   now: { value: number };
   scheduled: Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>;
   terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }>;
-  spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null; resume_context?: string | null }>;
+  spawned: Array<{
+    issue_id: string;
+    attempt: number | null;
+    worker_host?: string | null;
+    resume_context?: string | null;
+    recover_workspace_attempt_residue?: boolean;
+  }>;
 }
 
 function withTemporaryCodexHome<T>(callback: (codexHome: string) => Promise<T>): Promise<T> {
@@ -179,7 +185,13 @@ function createHarness(options: {
   const now = { value: 1_000_000 };
   const scheduled = new Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>();
   const terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }> = [];
-  const spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null; resume_context?: string | null }> = [];
+  const spawned: Array<{
+    issue_id: string;
+    attempt: number | null;
+    worker_host?: string | null;
+    resume_context?: string | null;
+    recover_workspace_attempt_residue?: boolean;
+  }> = [];
 
   const config: OrchestratorConfig = {
     poll_interval_ms: 30_000,
@@ -194,10 +206,16 @@ function createHarness(options: {
 
   const spawnWorker: OrchestratorPorts['spawnWorker'] =
     options.spawnWorker ??
-    (async ({ issue, attempt, worker_host, resume_context }) => {
+    (async ({ issue, attempt, worker_host, resume_context, recover_workspace_attempt_residue }) => {
       const worker_instance_id = `${issue.id}-worker-${spawned.length + 1}`;
       const worker_handle = { issue_id: issue.id, worker_instance_id };
-      spawned.push({ issue_id: issue.id, attempt, worker_host, resume_context });
+      spawned.push({
+        issue_id: issue.id,
+        attempt,
+        worker_host,
+        resume_context,
+        ...(recover_workspace_attempt_residue ? { recover_workspace_attempt_residue } : {})
+      });
       return {
         ok: true,
         worker_handle,
@@ -1728,6 +1746,104 @@ describe('OrchestratorCore', () => {
     });
     expect(resumed).toEqual({ ok: true, issue_id: 'i-workspace-conflict-blocked' });
     expect(harness.spawned.length).toBe(spawnedBeforeTicks + 1);
+  });
+
+  it('recovers restart-restored workspace attempt residue into a continuation retry', async () => {
+    const harness = createHarness();
+    harness.orchestrator.restoreSuppressionState({
+      blocked_entries: [
+        {
+          issue_id: 'i-attempt-residue',
+          issue_identifier: 'NIE-RESIDUE',
+          attempt: 1,
+          worker_host: null,
+          workspace_path: '/tmp/symphony/NIE-RESIDUE',
+          provisioner_type: 'worktree',
+          branch_name: 'feature/NIE-RESIDUE',
+          repo_root: '/tmp/symphony',
+          workspace_exists: true,
+          workspace_git_status: 'dirty',
+          workspace_provisioned: true,
+          workspace_is_git_worktree: true,
+          stop_reason_code: REASON_CODES.operatorWorkspaceConflict,
+          stop_reason_detail: 'workspace contains non-ephemeral dirty files after preflight cleanup',
+          conflict_files: [
+            { path: 'tests/orchestrator/core.test.ts', status: 'unstaged', classification: 'unknown_non_ephemeral' },
+            { path: 'tests/orchestrator/core-dispatch.test.ts', status: 'unknown', classification: 'unknown_non_ephemeral' }
+          ],
+          classification_summary: { ephemeral: 0, tracked_ephemeral: 0, unknown_non_ephemeral: 2 },
+          resolution_hints: ['Inspect the dirty files in the issue worktree.'],
+          previous_thread_id: 'thread-prev',
+          previous_turn_id: 'turn-prev',
+          previous_session_id: 'session-prev',
+          blocked_at_ms: harness.now.value,
+          requires_manual_resume: true,
+          pending_input: null,
+          session_console: []
+        }
+      ],
+      breaker_entries: []
+    });
+    const issue = makeIssue({ id: 'i-attempt-residue', identifier: 'NIE-RESIDUE', state: 'In Progress' });
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+
+    await harness.orchestrator.reconcileBlockedInputs();
+    await harness.scheduled.get('i-attempt-residue')?.callback();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-attempt-residue')).toBe(false);
+    expect(harness.spawned).toEqual([
+      expect.objectContaining({
+        issue_id: 'i-attempt-residue',
+        attempt: 1,
+        resume_context: expect.stringContaining('Workspace attempt residue recovery'),
+        recover_workspace_attempt_residue: true
+      })
+    ]);
+  });
+
+  it('keeps tracked workspace artifacts blocked during restart reconciliation', async () => {
+    const harness = createHarness();
+    harness.orchestrator.restoreSuppressionState({
+      blocked_entries: [
+        {
+          issue_id: 'i-tracked-artifact',
+          issue_identifier: 'NIE-ARTIFACT',
+          attempt: 1,
+          worker_host: null,
+          workspace_path: '/tmp/symphony/NIE-ARTIFACT',
+          provisioner_type: 'worktree',
+          branch_name: 'feature/NIE-ARTIFACT',
+          repo_root: '/tmp/symphony',
+          workspace_exists: true,
+          workspace_git_status: 'dirty',
+          workspace_provisioned: true,
+          workspace_is_git_worktree: true,
+          stop_reason_code: REASON_CODES.operatorWorkspaceConflict,
+          stop_reason_detail: 'tracked output/playwright artifacts remain after preflight cleanup',
+          conflict_files: [{ path: 'output/playwright/demo.webm', status: 'staged', classification: 'tracked_ephemeral' }],
+          classification_summary: { ephemeral: 0, tracked_ephemeral: 1, unknown_non_ephemeral: 0 },
+          resolution_hints: ['Remove tracked entries under output/playwright/ from git index/history.'],
+          previous_thread_id: 'thread-prev',
+          previous_turn_id: 'turn-prev',
+          previous_session_id: 'session-prev',
+          blocked_at_ms: harness.now.value,
+          requires_manual_resume: true,
+          pending_input: null,
+          session_console: []
+        }
+      ],
+      breaker_entries: []
+    });
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-tracked-artifact', identifier: 'NIE-ARTIFACT', state: 'In Progress' })
+    ]);
+
+    await harness.orchestrator.reconcileBlockedInputs();
+
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-tracked-artifact')).toBe(true);
+    expect(harness.scheduled.has('i-tracked-artifact')).toBe(false);
   });
 
   it('clears restored no-progress suppression for actionable issues without explicit resume', async () => {

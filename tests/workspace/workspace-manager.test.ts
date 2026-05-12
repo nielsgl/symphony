@@ -193,6 +193,72 @@ describe('WorkspaceManager', () => {
     });
   });
 
+  it('preflight allows explicit attempt residue for non-ephemeral dirty files and reports untracked files as unknown', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const preflightResults: Array<{
+      status: string;
+      conflict_files: Array<{ path: string; status: string; classification?: string }>;
+    }> = [];
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 },
+      onPreflightResult: (result) => {
+        preflightResults.push(result);
+      }
+    });
+    const workspace = await manager.ensureWorkspace('ABC-RESIDUE');
+    git(workspace.path, ['init']);
+    git(workspace.path, ['config', 'user.email', 'test@example.com']);
+    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
+    await fs.mkdir(path.join(workspace.path, 'tests/orchestrator'), { recursive: true });
+    await fs.writeFile(path.join(workspace.path, 'tests/orchestrator/core.test.ts'), 'test("old", () => {});\n', 'utf8');
+    git(workspace.path, ['add', '.']);
+    git(workspace.path, ['commit', '-m', 'initial']);
+
+    await fs.rm(path.join(workspace.path, 'tests/orchestrator/core.test.ts'));
+    await fs.writeFile(path.join(workspace.path, 'tests/orchestrator/core-dispatch.test.ts'), 'test("new", () => {});\n', 'utf8');
+
+    await manager.prepareAttempt(workspace.path, { allow_attempt_residue: true });
+
+    expect(preflightResults).toEqual([
+      expect.objectContaining({
+        status: 'attempt_residue_recoverable',
+        conflict_files: expect.arrayContaining([
+          { path: 'tests/orchestrator/core.test.ts', status: 'unstaged', classification: 'unknown_non_ephemeral' },
+          { path: 'tests/orchestrator/core-dispatch.test.ts', status: 'unknown', classification: 'unknown_non_ephemeral' }
+        ])
+      })
+    ]);
+  });
+
+  it('preflight does not allow attempt residue while a git merge is active', async () => {
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 }
+    });
+    const workspace = await manager.ensureWorkspace('ABC-MERGE');
+    git(workspace.path, ['init']);
+    git(workspace.path, ['config', 'user.email', 'test@example.com']);
+    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
+    await fs.writeFile(path.join(workspace.path, 'README.md'), 'base\n', 'utf8');
+    git(workspace.path, ['add', '.']);
+    git(workspace.path, ['commit', '-m', 'initial']);
+    await fs.writeFile(path.join(workspace.path, 'README.md'), 'dirty\n', 'utf8');
+    const mergeHeadPath = spawnSync('git', ['rev-parse', '--git-path', 'MERGE_HEAD'], {
+      cwd: workspace.path,
+      encoding: 'utf8'
+    }).stdout.trim();
+    await fs.writeFile(path.resolve(workspace.path, mergeHeadPath), '0000000000000000000000000000000000000000\n', 'utf8');
+
+    await expect(manager.prepareAttempt(workspace.path, { allow_attempt_residue: true })).rejects.toMatchObject({
+      code: 'workspace_unprovisioned_conflict',
+      message: expect.stringContaining('workspace contains non-ephemeral dirty files after preflight cleanup')
+    });
+  });
+
   it('preflight no-ops on clean workspace', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);
