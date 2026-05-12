@@ -2373,6 +2373,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     switch (status) {
       case 'present':
         return 'mini-badge mini-badge-good';
+      case 'lifecycle_pending':
+      case 'optional_unavailable':
       case 'missing':
         return 'mini-badge mini-badge-missing';
       case 'redacted':
@@ -2471,6 +2473,26 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
             .join(', ')
         : 'reason unknown';
       policyParts.push('payload unavailable ' + formatNumber(appServerLite.unavailable_event_count || 0) + ' (' + reasons + ')');
+    }
+    const diagnostics = Array.isArray(health.diagnostics) ? health.diagnostics : [];
+    const lifecyclePendingCount = diagnostics.filter(function (fact) {
+      return fact && fact.status === 'lifecycle_pending';
+    }).length;
+    const optionalUnavailableCount = diagnostics.filter(function (fact) {
+      return fact && fact.status === 'optional_unavailable';
+    }).length;
+    const degradedFactCount = diagnostics.filter(function (fact) {
+      return fact && (fact.status === 'missing' || fact.status === 'degraded' || fact.status === 'unavailable');
+    }).length;
+    if (lifecyclePendingCount || optionalUnavailableCount || degradedFactCount) {
+      policyParts.push(
+        'facts pending ' +
+          formatNumber(lifecyclePendingCount) +
+          ' / optional unavailable ' +
+          formatNumber(optionalUnavailableCount) +
+          ' / degraded ' +
+          formatNumber(degradedFactCount)
+      );
     }
     return [
       'Health: ' + (health.status || 'unknown'),

@@ -4250,8 +4250,8 @@ describe('LocalApiServer', () => {
     expect(activeListPayload.tickets[0].state).toBe('active');
     expect(activeListPayload.tickets[0].facts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ status: 'missing', reason_code: 'project_history_terminal_outcome_missing' }),
-        expect.objectContaining({ status: 'missing', reason_code: 'project_history_app_server_lite_summaries_missing' })
+        expect.objectContaining({ status: 'lifecycle_pending', reason_code: 'project_history_terminal_outcome_missing' }),
+        expect.objectContaining({ status: 'optional_unavailable', reason_code: 'project_history_app_server_lite_summaries_missing' })
       ])
     );
 

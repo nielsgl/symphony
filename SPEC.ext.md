@@ -545,3 +545,19 @@ tracker state, call validation commands, reuse validation evidence, generate
 Phase Handoff Packets, enter or inspect Drain Mode beyond already persisted
 facts, or steer operator actions. Those capabilities remain owned by their
 later SWP slices.
+
+Project History health diagnostics are lifecycle-aware:
+
+- Active, running, retrying, and blocked ticket timelines may report
+  `lifecycle_pending` terminal outcome facts. Those facts are operator-visible
+  but do not degrade projection health.
+- Completed ticket timelines require terminal outcome facts. Missing terminal
+  outcomes remain real projection gaps and degrade health.
+- Token/model summaries and app-server-lite summaries are optional or
+  conditionally available facts. Their absence is reported as
+  `optional_unavailable` with reason codes, and does not degrade health unless
+  a recorded event indicates malformed payload policy state, full payload
+  persistence, or another write/projection failure.
+- Schema migration failures, failed history writes, retention failures,
+  malformed app-server-lite policy facts, and required completed-run fact gaps
+  remain degraded diagnostics.
