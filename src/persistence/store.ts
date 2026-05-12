@@ -50,7 +50,7 @@ interface PersistenceStoreOptions {
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 8;
+const HISTORY_SCHEMA_VERSION = 9;
 
 interface HistoryMigration {
   version: number;
@@ -2057,6 +2057,13 @@ export class SqlitePersistenceStore {
         apply: (store) => {
           store.normalizeExistingProjectIdentityKeys();
         }
+      },
+      {
+        version: 9,
+        name: 'project_scoped_ticket_identity_v1',
+        apply: (store) => {
+          store.ensureProjectScopedTicketIdentityTable();
+        }
       }
     ];
 
@@ -2217,8 +2224,8 @@ export class SqlitePersistenceStore {
         updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS history_ticket_identity (
-        ticket_key TEXT PRIMARY KEY,
         project_key TEXT NOT NULL,
+        ticket_key TEXT NOT NULL,
         tracker_kind TEXT NOT NULL,
         tracker_scope_status TEXT NOT NULL,
         tracker_scope_value TEXT,
@@ -2227,6 +2234,7 @@ export class SqlitePersistenceStore {
         human_issue_identifier TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_key, ticket_key),
         FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT
       );
       CREATE TABLE IF NOT EXISTS history_protocol_summary (
@@ -2682,6 +2690,66 @@ export class SqlitePersistenceStore {
     }
   }
 
+  private ensureProjectScopedTicketIdentityTable(): void {
+    const scopedPrimaryKey = (): boolean => {
+      if (!this.hasTable('history_ticket_identity')) {
+        return false;
+      }
+      const primaryKeyColumns = (this.db.prepare('PRAGMA table_info(history_ticket_identity)').all() as Array<{ name: string; pk: number }>)
+        .filter((column) => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((column) => column.name);
+      return primaryKeyColumns.join(',') === 'project_key,ticket_key';
+    };
+
+    if (!scopedPrimaryKey()) {
+      this.db.exec(`
+        ALTER TABLE history_ticket_identity RENAME TO history_ticket_identity_legacy_global;
+        CREATE TABLE history_ticket_identity (
+          project_key TEXT NOT NULL,
+          ticket_key TEXT NOT NULL,
+          tracker_kind TEXT NOT NULL,
+          tracker_scope_status TEXT NOT NULL,
+          tracker_scope_value TEXT,
+          tracker_scope_reason TEXT,
+          remote_issue_id TEXT NOT NULL,
+          human_issue_identifier TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (project_key, ticket_key),
+          FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT
+        );
+        INSERT OR REPLACE INTO history_ticket_identity
+          (project_key, ticket_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
+           remote_issue_id, human_issue_identifier, created_at, updated_at)
+        SELECT project_key, ticket_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
+          remote_issue_id, human_issue_identifier, created_at, updated_at
+        FROM history_ticket_identity_legacy_global;
+        DROP TABLE history_ticket_identity_legacy_global;
+      `);
+    }
+
+    this.backfillTicketIdentitiesFromDurableSnapshots();
+    this.recordHistoryHealthMetadata('healthy', null, null);
+  }
+
+  private backfillTicketIdentitiesFromDurableSnapshots(): void {
+    const rows = [
+      ...(this.db.prepare('SELECT identity FROM runs WHERE identity IS NOT NULL ORDER BY started_at ASC, run_id ASC').all() as Array<{
+        identity: string | null;
+      }>),
+      ...(this.db
+        .prepare('SELECT identity FROM issue_run WHERE identity IS NOT NULL ORDER BY started_at ASC, issue_run_id ASC')
+        .all() as Array<{ identity: string | null }>)
+    ];
+    for (const row of rows) {
+      const identity = parseDurableIdentity(row.identity);
+      if (identity) {
+        this.upsertHistoryIdentity(identity, { bypassHealthCheck: true });
+      }
+    }
+  }
+
   private normalizeRunProjectIdentityKeys(): void {
     const rows = this.db
       .prepare('SELECT run_id, issue_id, issue_identifier, identity FROM runs WHERE identity IS NOT NULL ORDER BY started_at ASC, run_id ASC')
@@ -3058,11 +3126,10 @@ export class SqlitePersistenceStore {
     this.db
       .prepare(
         `INSERT INTO history_ticket_identity
-          (ticket_key, project_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
+          (project_key, ticket_key, tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason,
            remote_issue_id, human_issue_identifier, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(ticket_key) DO UPDATE SET
-          project_key = excluded.project_key,
+         ON CONFLICT(project_key, ticket_key) DO UPDATE SET
           tracker_kind = excluded.tracker_kind,
           tracker_scope_status = excluded.tracker_scope_status,
           tracker_scope_value = excluded.tracker_scope_value,
@@ -3072,8 +3139,8 @@ export class SqlitePersistenceStore {
           updated_at = excluded.updated_at`
       )
       .run(
-        identity.ticket.key,
         identity.project.key,
+        identity.ticket.key,
         identity.ticket.tracker_kind,
         trackerScope.status,
         trackerScope.status === 'present' ? trackerScope.value : null,
