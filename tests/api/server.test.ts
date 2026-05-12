@@ -1401,6 +1401,94 @@ describe('LocalApiServer', () => {
     expect(payload.runtime_diagnostics).toBeUndefined();
   });
 
+  it('serves stalled-waiting issue diagnostics with safe operator guidance', async () => {
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            last_event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+            last_event_summary: 'rate limits updated',
+            last_message: 'rate limits updated',
+            running_waiting_started_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+            last_heartbeat_at_ms: Date.parse('2026-04-10T10:07:45.000Z'),
+            last_codex_timestamp_ms: Date.parse('2026-04-10T10:07:45.000Z'),
+            last_progress_transition_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+            stalled_waiting_since_ms: Date.parse('2026-04-10T10:05:00.000Z'),
+            stalled_waiting_reason: REASON_CODES.turnWaitingThresholdExceeded,
+            recent_events: [
+              {
+                at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+                event: CANONICAL_EVENT.codex.turnStarted,
+                message: 'turn started'
+              },
+              {
+                at_ms: Date.parse('2026-04-10T10:05:30.000Z'),
+                event: CANONICAL_EVENT.codex.turnWaiting,
+                message: 'waiting_for_turn_completion elapsed_s=330'
+              },
+              {
+                at_ms: Date.parse('2026-04-10T10:07:45.000Z'),
+                event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+                message: 'rate limits updated'
+              }
+            ]
+          })
+        ]
+      ])
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      nowMs: () => Date.parse('2026-04-10T10:08:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as {
+      counts: { running_stalled_waiting_count: number };
+      running: Array<{ progress_signal_state: string; last_event: string }>;
+    };
+    expect(stateResponse.status).toBe(200);
+    expect(statePayload.counts.running_stalled_waiting_count).toBeGreaterThan(0);
+    expect(statePayload.running[0]).toMatchObject({
+      progress_signal_state: 'stalled_waiting',
+      last_event: CANONICAL_EVENT.codex.rateLimitsUpdated
+    });
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      current_blocker: {
+        classification: string;
+        reason_code: string;
+        reason_detail: string;
+        time_since_progress: number;
+        expected_auto_transition: string;
+        recommended_actions: string[];
+      };
+    };
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.current_blocker).toMatchObject({
+      classification: 'stalled_waiting',
+      reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+      reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold',
+      time_since_progress: 480000,
+      expected_auto_transition: 'Automatic recovery may schedule a retry; otherwise the operator can cancel the current turn or requeue.'
+    });
+    expect(diagnosticsPayload.current_blocker.recommended_actions).toEqual([
+      'Inspect issue diagnostics',
+      'Cancel the current turn',
+      'Requeue the run'
+    ]);
+  });
+
   it('serves thread-only issue diagnostics when runtime diagnostics are unavailable', async () => {
     server = new LocalApiServer({
       snapshotSource: {
@@ -4359,7 +4447,7 @@ describe('LocalApiServer', () => {
       ended_at_ms: null,
       duration_ms: null
     });
-    expect(byThreadPayload.current_blocker?.classification).toBe('tool_waiting_long');
+    expect(byThreadPayload.current_blocker?.classification).toBe('stalled_waiting');
     expect(byThreadPayload.current_blocker?.recommended_actions.length).toBeGreaterThan(0);
     expect(byThreadPayload.last_meaningful_progress_at_ms).toBe(Date.parse('2026-04-10T10:00:10.000Z'));
 
@@ -4367,7 +4455,7 @@ describe('LocalApiServer', () => {
     const byIssuePayload = (await byIssueResponse.json()) as { thread_id: string; current_blocker: { classification: string } };
     expect(byIssueResponse.status).toBe(200);
     expect(byIssuePayload.thread_id).toBe('thread-1');
-    expect(byIssuePayload.current_blocker.classification).toBe('tool_waiting_long');
+    expect(byIssuePayload.current_blocker.classification).toBe('stalled_waiting');
   });
 
   it('serves deterministic persisted thread diagnostics with spans and additive null-safe fields', async () => {
@@ -4876,7 +4964,7 @@ describe('LocalApiServer', () => {
     expect(payload.phase_spans[0]).toMatchObject({ phase: 'implementation', duration_ms: 10_000 });
     expect(payload.tool_spans[0]).toMatchObject({ tool_name: 'exec_command', duration_ms: 2_000 });
     expect(payload.wait_spans[0]).toMatchObject({ started_at_ms: Date.parse('2026-04-10T10:03:00.000Z') });
-    expect(payload.current_blocker?.classification).toBe('tool_waiting_long');
+    expect(payload.current_blocker?.classification).toBe('stalled_waiting');
     expect(payload.timeline.map((event) => event.event)).toContain(CANONICAL_EVENT.codex.turnWaiting);
   });
 

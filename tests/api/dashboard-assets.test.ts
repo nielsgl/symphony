@@ -888,6 +888,19 @@ describe('dashboard assets', () => {
     `);
   });
 
+  it('renders distinct operator copy and safe actions for stalled waiting recovery states', () => {
+    const clientJs = renderDashboardClientJs();
+
+    expect(clientJs).toContain("return 'Heartbeat Only'");
+    expect(clientJs).toContain("return 'Stalled Waiting'");
+    expect(clientJs).toContain("return 'Retry Scheduled'");
+    expect(clientJs).toContain("return 'Manual Resume Required'");
+    expect(clientJs).toContain("createActionButton('Inspect Diagnostics'");
+    expect(clientJs).toContain("createActionButton('Cancel Turn'");
+    expect(clientJs).toContain("createActionButton('Requeue'");
+    expect(clientJs).not.toContain("createActionButton('Cleanup Workspace'");
+  });
+
   it('renders reason-note prompts for blocked resume and input submission actions', () => {
     const clientJs = renderDashboardClientJs();
 

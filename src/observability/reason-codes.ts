@@ -336,11 +336,12 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     reason_code: REASON_CODES.turnWaitingThresholdExceeded,
     classification: 'stalled_waiting',
     actionability: 'required',
-    recommended_actions: ['Inspect recent events and decide whether to resume, cancel, or restart'],
+    recommended_actions: ['Inspect issue diagnostics', 'Cancel the current turn', 'Requeue the run'],
     label: 'Turn Waiting Threshold Exceeded',
     headline: 'Run is alive but waiting too long',
     detail: 'The run is still alive through codex.turn.waiting heartbeats after the configured wait threshold.',
-    expected_transition: null
+    expected_transition:
+      'Automatic recovery may schedule a retry; otherwise the operator can cancel the current turn or requeue.'
   },
   [REASON_CODES.missingToolOutput]: {
     reason_code: REASON_CODES.missingToolOutput,

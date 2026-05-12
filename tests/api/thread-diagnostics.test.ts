@@ -326,8 +326,8 @@ function makeConsoleResumeLineage(includeDynamicToolMismatch: boolean): Executio
 describe('thread diagnostics blocker classification', () => {
   it.each([
     [
-      'tool_waiting_long',
-      'recommended',
+      'stalled_waiting',
+      'required',
       {
         reason_code: 'turn_waiting_threshold_exceeded',
         reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold',
@@ -515,9 +515,9 @@ describe('thread diagnostics blocker classification', () => {
 
     expect(diagnostics?.status).toBe('stalled');
     expect(diagnostics?.current_blocker).toMatchObject({
-      classification: 'tool_waiting_long',
+      classification: 'stalled_waiting',
       reason_code: 'turn_waiting_threshold_exceeded',
-      actionability: 'recommended'
+      actionability: 'required'
     });
     expect(diagnostics?.wait_spans[0]).toMatchObject({
       status: 'blocked',

@@ -127,6 +127,11 @@ function blockerDetails(classification: ThreadDiagnosticsBlockerClassification):
         actionability: 'required',
         recommended_actions: ['Inspect the Codex thread', 'Resume the blocked run', 'Cancel the blocked run']
       };
+    case 'stalled_waiting':
+      return {
+        actionability: 'required',
+        recommended_actions: ['Inspect issue diagnostics', 'Cancel the current turn', 'Requeue the run']
+      };
     case 'tool_waiting_long':
       return {
         actionability: 'recommended',
@@ -249,7 +254,7 @@ export function classifyThreadBlocker(params: {
     return buildBlocker('retry_backoff_wait', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   if (params.stalled_waiting || reasonCode === REASON_CODES.turnWaitingThresholdExceeded) {
-    return buildBlocker('tool_waiting_long', reasonCode, reasonDetail, params.time_since_progress ?? null);
+    return buildBlocker('stalled_waiting', reasonCode, reasonDetail, params.time_since_progress ?? null);
   }
   if (params.has_conflict_files || normalized.includes('workspace') || normalized.includes('conflict')) {
     return buildBlocker('workspace_integrity_conflict', reasonCode, reasonDetail, params.time_since_progress ?? null);
@@ -382,7 +387,10 @@ function diagnosticsFromRuntime(threadId: string, match: RuntimeMatch, nowMs: nu
         })
       : classifyThreadBlocker({
           reason_code: source?.recovery?.reason_code ?? source?.stalled_waiting_reason ?? null,
-          reason_detail: source?.recovery?.prompt_summary ?? source?.last_event_summary ?? source?.last_message ?? null,
+          reason_detail:
+            source?.stalled_waiting_reason === REASON_CODES.turnWaitingThresholdExceeded
+              ? 'codex.turn.waiting heartbeat loop exceeded threshold'
+              : source?.recovery?.prompt_summary ?? source?.last_event_summary ?? source?.last_message ?? null,
           status: source?.recovery || source?.stalled_waiting_reason ? 'blocked' : 'running',
           has_pending_input: Boolean(source?.awaiting_input_since_ms),
           stalled_waiting: Boolean(source?.stalled_waiting_since_ms && source?.stalled_waiting_reason),

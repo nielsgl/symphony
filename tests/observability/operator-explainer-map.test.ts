@@ -94,8 +94,9 @@ describe('operator explainer map', () => {
       classification: 'stalled_waiting',
       actionability: 'required',
       headline: 'Run is alive but waiting too long',
-      recommended_actions: ['Inspect recent events and decide whether to resume, cancel, or restart'],
-      expected_transition: null,
+      recommended_actions: ['Inspect issue diagnostics', 'Cancel the current turn', 'Requeue the run'],
+      expected_transition:
+        'Automatic recovery may schedule a retry; otherwise the operator can cancel the current turn or requeue.',
       reason_code: REASON_CODES.turnWaitingThresholdExceeded,
       reason_detail: 'codex.turn.waiting heartbeat loop exceeded threshold'
     });
