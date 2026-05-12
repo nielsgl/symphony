@@ -2585,7 +2585,101 @@ export class SqlitePersistenceStore {
   private normalizeExistingProjectIdentityKeys(): void {
     this.normalizeRunProjectIdentityKeys();
     this.normalizeIssueRunProjectIdentityKeys();
+    this.collapseStaleProjectIdentityRows();
     this.recordHistoryHealthMetadata('healthy', null, null);
+  }
+
+  private collapseStaleProjectIdentityRows(): void {
+    const rows = this.db
+      .prepare(
+        `SELECT project_key, project_root, workflow_path, workflow_hash_status, workflow_hash_value, workflow_hash_reason,
+                repository_remote_status, repository_remote_value, repository_remote_reason, created_at, updated_at
+         FROM history_project_identity
+         ORDER BY updated_at ASC, project_key ASC`
+      )
+      .all() as Array<{
+      project_key: string;
+      project_root: string;
+      workflow_path: string;
+      workflow_hash_status: 'present' | 'missing';
+      workflow_hash_value: string | null;
+      workflow_hash_reason: string | null;
+      repository_remote_status: 'present' | 'missing';
+      repository_remote_value: string | null;
+      repository_remote_reason: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+    const upsertNormalizedProject = this.db.prepare(
+      `INSERT INTO history_project_identity
+        (project_key, project_root, workflow_path, workflow_hash_status, workflow_hash_value, workflow_hash_reason,
+         repository_remote_status, repository_remote_value, repository_remote_reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_key) DO UPDATE SET
+        project_root = excluded.project_root,
+        workflow_path = excluded.workflow_path,
+        workflow_hash_status = excluded.workflow_hash_status,
+        workflow_hash_value = excluded.workflow_hash_value,
+        workflow_hash_reason = excluded.workflow_hash_reason,
+        repository_remote_status = excluded.repository_remote_status,
+        repository_remote_value = excluded.repository_remote_value,
+        repository_remote_reason = excluded.repository_remote_reason,
+        updated_at = excluded.updated_at`
+    );
+    const deleteProject = this.db.prepare('DELETE FROM history_project_identity WHERE project_key = ?');
+
+    for (const row of rows) {
+      const normalizedProject = buildProjectIdentity({
+        projectRoot: row.project_root,
+        workflowPath: row.workflow_path,
+        workflowHash:
+          row.workflow_hash_status === 'present'
+            ? { status: 'present', value: row.workflow_hash_value ?? '' }
+            : { status: 'missing', reason: row.workflow_hash_reason ?? 'workflow_file_unreadable' },
+        repositoryRemote:
+          row.repository_remote_status === 'present'
+            ? { status: 'present', value: row.repository_remote_value ?? '' }
+            : { status: 'missing', reason: row.repository_remote_reason ?? 'repository_remote_unavailable' }
+      });
+      const normalizedProjectKey = normalizedProject.key;
+      upsertNormalizedProject.run(
+        normalizedProjectKey,
+        row.project_root,
+        row.workflow_path,
+        row.workflow_hash_status,
+        row.workflow_hash_status === 'present' ? row.workflow_hash_value : null,
+        row.workflow_hash_status === 'missing' ? row.workflow_hash_reason : null,
+        row.repository_remote_status,
+        row.repository_remote_status === 'present' ? row.repository_remote_value : null,
+        row.repository_remote_status === 'missing' ? row.repository_remote_reason : null,
+        row.created_at,
+        row.updated_at
+      );
+      if (row.project_key === normalizedProjectKey) {
+        continue;
+      }
+      this.rewriteProjectIdentityReferences(row.project_key, normalizedProjectKey);
+      deleteProject.run(row.project_key);
+    }
+  }
+
+  private rewriteProjectIdentityReferences(oldProjectKey: string, normalizedProjectKey: string): void {
+    const projectKeyTables = [
+      'history_ticket_identity',
+      'issue_run',
+      'history_identity_projection',
+      'history_tracker_ticket_snapshot',
+      'history_ticket_reference',
+      'history_operator_action',
+      'history_blocked_input_event',
+      'history_retention_prune_record'
+    ];
+    for (const table of projectKeyTables) {
+      if (!this.hasTable(table)) {
+        continue;
+      }
+      this.db.prepare(`UPDATE ${table} SET project_key = ? WHERE project_key = ?`).run(normalizedProjectKey, oldProjectKey);
+    }
   }
 
   private normalizeRunProjectIdentityKeys(): void {

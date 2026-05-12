@@ -450,6 +450,17 @@ describe('SqlitePersistenceStore', () => {
            VALUES ('legacy-run-1', 'legacy-identity-1', 'LEGACY-1', ?, ?, ?, '2026-04-11T10:00:00.000Z', NULL, 'running', NULL, NULL)`
         )
         .run(JSON.stringify(oldEvidence), oldEvidence.project.key, oldEvidence.ticket.key);
+      dbA
+        .prepare(
+          `INSERT INTO history_ticket_reference
+            (ticket_reference_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
+             reference_kind, availability, uri, label, external_id, state, metadata, observed_at, observation_hash,
+             duplicate_count, last_observed_at)
+           VALUES ('legacy-reference-1', ?, ?, 'legacy-run-1', NULL, NULL, NULL,
+             'branch', 'available', 'https://github.com/nielsgl/symphony/tree/legacy', 'legacy', NULL, NULL, NULL,
+             '2026-04-11T10:00:00.000Z', 'legacy-reference-hash', 1, '2026-04-11T10:00:00.000Z')`
+        )
+        .run(oldEvidence.project.key, oldEvidence.ticket.key);
     } finally {
       dbA.close();
     }
@@ -470,10 +481,33 @@ describe('SqlitePersistenceStore', () => {
     const dbC = openDatabase(dbPath);
     try {
       expect(dbC.prepare('SELECT COUNT(*) AS count FROM issue_run').get()).toEqual({ count: 1 });
-      expect(dbC.prepare('SELECT COUNT(*) AS count FROM history_project_identity').get()).toEqual({ count: 2 });
+      expect(dbC.prepare('SELECT COUNT(*) AS count FROM history_project_identity').get()).toEqual({ count: 1 });
+      expect(dbC.prepare('SELECT project_key, workflow_hash_value, repository_remote_value FROM history_project_identity').get()).toEqual({
+        project_key: newEvidence.project.key,
+        workflow_hash_value: 'workflow-hash-a',
+        repository_remote_value: 'git@github.com:nielsgl/symphony.git'
+      });
       expect(dbC.prepare('SELECT project_key FROM issue_run WHERE issue_run_id = ?').get('legacy-run-1')).toEqual({
         project_key: newEvidence.project.key
       });
+      expect(dbC.prepare('SELECT project_key FROM history_ticket_identity WHERE ticket_key = ?').get(oldEvidence.ticket.key)).toEqual({
+        project_key: newEvidence.project.key
+      });
+      expect(dbC.prepare('SELECT project_key FROM history_ticket_reference WHERE ticket_reference_id = ?').get('legacy-reference-1')).toEqual({
+        project_key: newEvidence.project.key
+      });
+      expect(
+        dbC
+          .prepare(
+            `SELECT COUNT(*) AS count FROM (
+              SELECT project_key FROM issue_run WHERE project_key = ?
+              UNION ALL SELECT project_key FROM history_ticket_identity WHERE project_key = ?
+              UNION ALL SELECT project_key FROM history_ticket_reference WHERE project_key = ?
+              UNION ALL SELECT project_key FROM history_identity_projection WHERE project_key = ?
+            )`
+          )
+          .get(oldEvidence.project.key, oldEvidence.project.key, oldEvidence.project.key, oldEvidence.project.key)
+      ).toEqual({ count: 0 });
     } finally {
       dbC.close();
     }
