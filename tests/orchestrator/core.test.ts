@@ -4213,7 +4213,7 @@ describe('OrchestratorCore', () => {
     expect(snapshot.blocked_inputs.has('i-wait-phase')).toBe(false);
   });
 
-  it('replays the NIE-146 heartbeat-only stall through API-visible retry and manual-resume states', async () => {
+  it('replays the NIE-146 heartbeat-only stall through API-visible retry and manual-resume states', async () => withTemporaryCodexHome(async () => {
     const harness = createHarness({
       configOverrides: {
         progress_heartbeat_only_warn_ms: 500,
@@ -4403,9 +4403,9 @@ describe('OrchestratorCore', () => {
     } finally {
       await server.close();
     }
-  }, 60_000);
+  }), 60_000);
 
-  it('recovers live stalled waiting turns by terminating ownership and scheduling retry with workspace metadata', async () => {
+  it('recovers live stalled waiting turns by terminating ownership and scheduling retry with workspace metadata', async () => withTemporaryCodexHome(async () => {
     const completedRuns: Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0][] = [];
     const harness = createHarness({
       configOverrides: {
@@ -4503,7 +4503,7 @@ describe('OrchestratorCore', () => {
     expect(harness.scheduled.has('i-stalled-wait')).toBe(true);
 
     expect(harness.orchestrator.getStateSnapshot().running.has('i-stalled-wait')).toBe(false);
-  }, 20_000);
+  }), 20_000);
 
   it('does not recover stalled waiting while the live turn is awaiting operator input', async () => {
     const harness = createHarness({
