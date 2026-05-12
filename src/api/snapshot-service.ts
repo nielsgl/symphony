@@ -687,6 +687,7 @@ export class SnapshotService {
         stop_reason_detail: entry.stop_reason_detail ?? null,
         previous_thread_id: entry.previous_thread_id ?? null,
         previous_session_id: entry.previous_session_id ?? null,
+        last_progress_checkpoint_at: entry.last_progress_checkpoint_at ? asIsoDate(entry.last_progress_checkpoint_at) : null,
         last_phase: entry.last_phase ?? null,
         last_phase_at: entry.last_phase_at_ms ? asIsoDate(entry.last_phase_at_ms) : null,
         last_phase_detail: entry.last_phase_detail ?? null,

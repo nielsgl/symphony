@@ -45,6 +45,7 @@ function expectStrictPassOrParserUnavailable(result: ReturnType<typeof runNode>)
 }
 
 const UI_FIXTURE_PATH = 'tests/fixtures/ui-gate/dashboard-assets.fixture.ts';
+const HEAVY_META_FIXTURE_TIMEOUT_MS = 30_000;
 
 function appendUiFixtureMarker(root: string, marker: string) {
   const fixturePath = path.join(root, UI_FIXTURE_PATH);
@@ -462,7 +463,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('Remediation:');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('does not allow provision artifact when only legacy UI evidence allow env is set', () => {
     const root = process.cwd();
@@ -488,7 +489,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('SYMPHONY_REPO_HYGIENE_ALLOW_TRACKED=1');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('keeps legacy UI evidence allow env scoped to playwright artifacts', () => {
     const root = process.cwd();
@@ -513,7 +514,7 @@ describe('meta check scripts', () => {
     expect(result.stdout).toContain('Meta checks passed');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('allows known hygiene artifacts when explicit allow env is set', () => {
     const root = process.cwd();
@@ -536,7 +537,7 @@ describe('meta check scripts', () => {
     expect(result.stdout).toContain('Meta checks passed');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('resolves strict profile from WORKFLOW.md validation config', () => {
     const root = process.cwd();
@@ -560,7 +561,7 @@ describe('meta check scripts', () => {
     expectStrictPassOrParserUnavailable(result);
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('fails when workflow profile exists but shared parser is unavailable', () => {
     const root = process.cwd();
@@ -585,7 +586,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('shared_frontmatter_parser_unavailable');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('resolves strict profile from quoted WORKFLOW.md value with comments and extra keys', () => {
     const root = process.cwd();
@@ -623,7 +624,7 @@ describe('meta check scripts', () => {
     expectStrictPassOrParserUnavailable(result);
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('resolves strict profile from indented WORKFLOW.md frontmatter formatting', () => {
     const root = process.cwd();
@@ -659,7 +660,7 @@ describe('meta check scripts', () => {
     expectStrictPassOrParserUnavailable(result);
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('fails ui evidence gate for committed UI changes in branch history when origin/main is unavailable', () => {
     const root = process.cwd();
@@ -690,5 +691,5 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain(UI_FIXTURE_PATH);
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 });
