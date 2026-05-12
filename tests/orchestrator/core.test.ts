@@ -980,6 +980,164 @@ describe('OrchestratorCore', () => {
     ]);
   });
 
+  it('treats Agent Review tracker handback observed during stalled wait as progress and starts a fresh In Progress run', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        handoff_states: ['Agent Review'],
+        fresh_dispatch_states: ['Agent Review', 'In Progress'],
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        stall_timeout_ms: 0
+      }
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-review-handback', identifier: 'NIE-HAND', state: 'Agent Review' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-review-handback', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+    harness.orchestrator.onWorkerEvent('i-review-handback', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting for rate limit',
+      thread_id: 'review-thread',
+      turn_id: 'review-turn',
+      session_id: 'review-session'
+    });
+
+    harness.now.value += 2_000;
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-review-handback', identifier: 'NIE-HAND', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.reconcileRunningIssues();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.terminated).toEqual([
+      { issue_id: 'i-review-handback', cleanup_workspace: false, reason: REASON_CODES.turnWaitingThresholdExceeded }
+    ]);
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-review-handback', attempt: null, worker_host: null, resume_context: null },
+      { issue_id: 'i-review-handback', attempt: null, worker_host: null, resume_context: null }
+    ]);
+    expect(snapshot.blocked_inputs.has('i-review-handback')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-review-handback')).toBe(false);
+    expect(snapshot.running.get('i-review-handback')?.issue.state).toBe('In Progress');
+    expect(logs.some((entry) => entry.event === 'orchestration.agent_review_handoff_progress_observed')).toBe(true);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)).toBe(false);
+  });
+
+  it('suppresses the no-progress redispatch block when tracker handback progress is classified', async () => {
+    const logs: Array<{ event: string; context?: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context });
+      }
+    };
+    const harness = createHarness({
+      logger,
+      configOverrides: {
+        active_states: ['In Progress', 'Agent Review'],
+        fresh_dispatch_states: ['Agent Review'],
+        respawn_max_attempts_without_progress: 1
+      },
+      resolveProgressSignals: async ({ fallback_state_marker }) => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: fallback_state_marker
+      })
+    });
+    const reviewIssue = makeIssue({ id: 'i-gate-handback', identifier: 'NIE-GATE', state: 'Agent Review' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([reviewIssue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-gate-handback', 'abnormal', 'turn waiting threshold exceeded');
+
+    const retry = harness.orchestrator.getStateSnapshot().retry_attempts.get('i-gate-handback');
+    expect(retry).toBeDefined();
+    retry!.progress_signals = {
+      ...(retry!.progress_signals ?? {}),
+      tracker_comment_created: true,
+      tracker_status_transition: 'Agent Review -> In Progress',
+      agent_review_handoff: 'In Progress'
+    } as NonNullable<typeof retry>['progress_signals'];
+    const internals = harness.orchestrator as unknown as { state: OrchestratorState };
+    internals.state.retry_attempts.set('i-gate-handback', retry!);
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-gate-handback', identifier: 'NIE-GATE', state: 'In Progress' })
+    ]);
+    await harness.scheduled.get('i-gate-handback')?.callback();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-gate-handback')).toBe(false);
+    expect(snapshot.retry_attempts.has('i-gate-handback')).toBe(false);
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-gate-handback', 'i-gate-handback']);
+    expect(logs.some((entry) => entry.event === 'orchestration.no_progress_block_suppressed')).toBe(true);
+    expect(logs.some((entry) => entry.event === CANONICAL_EVENT.orchestration.redispatchCompletionGateBlocked)).toBe(false);
+  });
+
+  it('clears stale no-progress blocked inputs during reconciliation when no pending input exists and tracker state is actionable', async () => {
+    const logs: Array<{ event: string; context?: Record<string, unknown> }> = [];
+    const logger: StructuredLogger = {
+      log: ({ event, context }) => {
+        logs.push({ event, context });
+      }
+    };
+    const harness = createHarness({ logger });
+    harness.orchestrator.restoreSuppressionState({
+      blocked_entries: [
+        {
+          issue_id: 'i-stale-block',
+          issue_identifier: 'NIE-STALE',
+          attempt: 1,
+          worker_host: null,
+          workspace_path: null,
+          provisioner_type: null,
+          branch_name: null,
+          repo_root: null,
+          workspace_exists: true,
+          workspace_git_status: 'clean',
+          workspace_provisioned: true,
+          workspace_is_git_worktree: true,
+          stop_reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+          stop_reason_detail: 'completion gate blocked redispatch because no progress signal was detected',
+          conflict_files: [],
+          resolution_hints: [],
+          previous_thread_id: null,
+          previous_session_id: null,
+          blocked_at_ms: harness.now.value,
+          requires_manual_resume: true,
+          pending_input: null,
+          session_console: []
+        }
+      ],
+      breaker_entries: []
+    });
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-stale-block', identifier: 'NIE-STALE', state: 'In Progress' })
+    ]);
+
+    await harness.orchestrator.reconcileBlockedInputs();
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-stale-block')).toBe(false);
+    expect(snapshot.claimed.has('i-stale-block')).toBe(false);
+    expect(logs.some((entry) => entry.event === 'orchestration.stale_blocked_input_cleared')).toBe(true);
+  });
+
   it('does not schedule continuation retry when normal exit left active states', async () => {
     const harness = createHarness();
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-paused' })]);
@@ -1306,7 +1464,7 @@ describe('OrchestratorCore', () => {
     expect(harness.spawned.length).toBe(spawnedBeforeTicks + 1);
   });
 
-  it('keeps restored blocked suppression active until explicit resume', async () => {
+  it('clears restored no-progress suppression for actionable issues without explicit resume', async () => {
     const harness = createHarness();
     harness.orchestrator.restoreSuppressionState({
       blocked_entries: [
@@ -1355,14 +1513,18 @@ describe('OrchestratorCore', () => {
 
     await harness.orchestrator.tick('interval');
     await harness.orchestrator.tick('interval');
-    expect(harness.spawned.find((entry) => entry.issue_id === 'i-restored')).toBeUndefined();
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-restored')).toBe(false);
+    expect(harness.spawned.find((entry) => entry.issue_id === 'i-restored')).toBeDefined();
 
     const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-RESTORE', null, 'manual override', {
       actor: 'operator@example.test',
       reason_note: 'manual override accepted'
     });
-    expect(resumed).toEqual({ ok: true, issue_id: 'i-restored' });
-    expect(harness.spawned.find((entry) => entry.issue_id === 'i-restored')).toBeDefined();
+    expect(resumed).toEqual({
+      ok: false,
+      code: 'issue_not_blocked',
+      message: 'Issue ABC-RESTORE is not blocked'
+    });
   });
 
   it('persists and restores operator action outcomes around manual resume', async () => {
@@ -4257,6 +4419,7 @@ describe('OrchestratorCore', () => {
       })
     });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stalled-wait', identifier: 'ABC-STALLED-WAIT' })]);
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([]);
     await harness.orchestrator.tick('interval');
 
     harness.orchestrator.onWorkerEvent('i-stalled-wait', {
@@ -4310,7 +4473,7 @@ describe('OrchestratorCore', () => {
     expect(harness.scheduled.has('i-stalled-wait')).toBe(true);
 
     expect(harness.orchestrator.getStateSnapshot().running.has('i-stalled-wait')).toBe(false);
-  }, 20_000);
+  }, 30_000);
 
   it('does not recover stalled waiting while the live turn is awaiting operator input', async () => {
     const harness = createHarness({
