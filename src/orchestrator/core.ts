@@ -4434,8 +4434,6 @@ export class OrchestratorCore {
   }
 
   async reconcileRunningIssues(): Promise<void> {
-    await this.reconcileStalledRuns();
-
     if (this.state.running.size === 0) {
       return;
     }
@@ -4497,8 +4495,11 @@ export class OrchestratorCore {
         continue;
       }
 
+      this.markRunningWaitStallRootCauseIfThresholdExceeded(runningEntry, this.nowMs());
       await this.terminateRunningIssue(refreshedIssue.id, false, 'non_active_state_transition');
     }
+
+    await this.reconcileStalledRuns();
   }
 
   async reconcileBlockedInputs(): Promise<void> {
@@ -7155,6 +7156,10 @@ export class OrchestratorCore {
       return true;
     }
 
+    if (runningEntry.awaiting_input_since_ms !== null) {
+      return false;
+    }
+
     if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting && runningEntry.running_waiting_started_at_ms == null) {
       return false;
     }
@@ -7176,27 +7181,138 @@ export class OrchestratorCore {
     }
 
     runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
-    if (runningEntry.running_wait_stall_event_emitted) {
-      return false;
+    const elapsedMs = Math.max(0, observedAtMs - waitingStartedAtMs);
+    if (!runningEntry.running_wait_stall_event_emitted) {
+      runningEntry.running_wait_stall_event_emitted = true;
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.progress.stalledWaitingDetected,
+        severity: 'warn',
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id ?? undefined,
+        detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
+      });
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.orchestration.runningWaitStallThresholdExceeded,
+        severity: 'warn',
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id ?? undefined,
+        detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
+      });
+    }
+    await this.recoverRunningWaitStall(issueId, runningEntry, observedAtMs, elapsedMs);
+    return true;
+  }
+
+  private async recoverRunningWaitStall(
+    issueId: string,
+    runningEntry: RunningEntry,
+    observedAtMs: number,
+    elapsedMs: number
+  ): Promise<void> {
+    if (this.state.running.get(issueId) !== runningEntry) {
+      return;
     }
 
-    runningEntry.running_wait_stall_event_emitted = true;
-    const elapsedMs = Math.max(0, observedAtMs - waitingStartedAtMs);
+    const detail = [
+      'no meaningful progress while waiting for Codex turn completion',
+      `reason_code=${REASON_CODES.turnWaitingThresholdExceeded}`,
+      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
+      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
+      `session_id=${runningEntry.session_id ?? 'unknown'}`,
+      `elapsed_wait_ms=${elapsedMs}`,
+      `observed_at_ms=${observedAtMs}`
+    ].join(' ');
+    const terminationResult = await this.ports.terminateWorker({
+      issue_id: issueId,
+      worker_handle: runningEntry.worker_handle,
+      cleanup_workspace: false,
+      reason: REASON_CODES.turnWaitingThresholdExceeded
+    });
+    const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
+
+    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.turnWaitingThresholdExceeded);
+    this.addRuntimeSecondsFromEntry(runningEntry);
+    await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.turnWaitingThresholdExceeded, null, stalledDetail);
+    await this.persistExecutionGraphStateTransition(
+      runningEntry,
+      'failed',
+      'failed',
+      REASON_CODES.turnWaitingThresholdExceeded,
+      stalledDetail
+    );
+    this.state.running.delete(issueId);
+
+    await this.scheduleRetry({
+      issue_id: issueId,
+      identifier: runningEntry.identifier,
+      attempt: runningEntry.retry_attempt + 1,
+      issue_run_id: runningEntry.issue_run_id ?? null,
+      previous_attempt_id: runningEntry.attempt_id ?? null,
+      delay_type: 'failure',
+      error: 'turn waiting threshold exceeded',
+      worker_host: runningEntry.worker_host ?? null,
+      workspace_path: runningEntry.workspace_path ?? null,
+      provisioner_type: runningEntry.provisioner_type ?? null,
+      branch_name: runningEntry.branch_name ?? null,
+      repo_root: runningEntry.repo_root ?? null,
+      workspace_exists: runningEntry.workspace_exists,
+      workspace_git_status: runningEntry.workspace_git_status,
+      workspace_provisioned: runningEntry.workspace_provisioned,
+      workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
+      copy_ignored_applied: runningEntry.copy_ignored_applied,
+      copy_ignored_status: runningEntry.copy_ignored_status,
+      copy_ignored_summary: runningEntry.copy_ignored_summary,
+      stop_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+      stop_reason_detail: stalledDetail,
+      previous_thread_id: runningEntry.thread_id,
+      previous_turn_id: runningEntry.turn_id,
+      previous_session_id: runningEntry.session_id,
+      issue_snapshot: runningEntry.issue
+    });
+    this.state.health.last_error = `turn waiting threshold exceeded for ${runningEntry.identifier}`;
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.workerStalled,
+      message: 'turn waiting threshold exceeded; retrying',
+      context: {
+        issue_id: issueId,
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id,
+        elapsed_ms: elapsedMs,
+        stop_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+        ...workerTerminationResultContext(terminationResult)
+      }
+    });
     this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.progress.stalledWaitingDetected,
+      event: CANONICAL_EVENT.orchestration.workerStalled,
       severity: 'warn',
       issue_identifier: runningEntry.identifier,
       session_id: runningEntry.session_id ?? undefined,
-      detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
+      detail: stalledDetail
     });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.orchestration.runningWaitStallThresholdExceeded,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
-    });
-    return false;
+  }
+
+  private markRunningWaitStallRootCauseIfThresholdExceeded(runningEntry: RunningEntry, observedAtMs: number): void {
+    const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
+    if (waitThresholdMs <= 0 || runningEntry.awaiting_input_since_ms !== null) {
+      return;
+    }
+    if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting && runningEntry.running_waiting_started_at_ms == null) {
+      return;
+    }
+
+    const waitingStartedAtMs =
+      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
+    const lastMeaningfulActivityAtMs =
+      typeof runningEntry.last_progress_transition_at_ms === 'number' &&
+      runningEntry.last_progress_transition_at_ms > waitingStartedAtMs
+        ? runningEntry.last_progress_transition_at_ms
+        : waitingStartedAtMs;
+    const thresholdCrossedAtMs = lastMeaningfulActivityAtMs + waitThresholdMs;
+    runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
+    if (observedAtMs >= thresholdCrossedAtMs) {
+      runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
+    }
   }
 
   private hasOutstandingToolCallEvidence(runningEntry: RunningEntry): boolean {
