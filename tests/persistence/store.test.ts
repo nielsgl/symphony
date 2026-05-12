@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -19,12 +20,47 @@ describe('SqlitePersistenceStore', () => {
       run(...args: unknown[]): unknown;
     };
   };
-  const identity = (params: { issue_id?: string; issue_identifier?: string; projectRoot?: string; workflowPath?: string; trackerScope?: string | null } = {}) =>
+  const legacyStableHash = (parts: Array<string | null | undefined>): string => {
+    const hash = createHash('sha256');
+    for (const part of parts) {
+      hash.update(part ?? '');
+      hash.update('\0');
+    }
+    return hash.digest('hex');
+  };
+  const legacyEvidenceValue = (evidence: { status: 'present'; value: string } | { status: 'missing'; reason: string }): string =>
+    evidence.status === 'present' ? evidence.value : `missing:${evidence.reason}`;
+  const legacyProjectKey = (identity: ReturnType<typeof buildDurableIdentity>): string =>
+    legacyStableHash([
+      'project',
+      identity.project.project_root,
+      identity.project.workflow_path,
+      legacyEvidenceValue(identity.project.workflow_hash),
+      legacyEvidenceValue(identity.project.repository_remote)
+    ]);
+  const withLegacyProjectKey = (durableIdentity: ReturnType<typeof buildDurableIdentity>): ReturnType<typeof buildDurableIdentity> => ({
+    ...durableIdentity,
+    project: {
+      ...durableIdentity.project,
+      key: legacyProjectKey(durableIdentity)
+    }
+  });
+  const identity = (
+    params: {
+      issue_id?: string;
+      issue_identifier?: string;
+      projectRoot?: string;
+      workflowPath?: string;
+      workflowHash?: string;
+      repositoryRemote?: string;
+      trackerScope?: string | null;
+    } = {}
+  ) =>
     buildDurableIdentity({
       projectRoot: params.projectRoot ?? '/repo/main',
       workflowPath: params.workflowPath ?? '/repo/main/WORKFLOW.md',
-      workflowHash: { status: 'present', value: 'workflow-hash' },
-      repositoryRemote: { status: 'present', value: 'git@github.com:nielsgl/symphony.git' },
+      workflowHash: { status: 'present', value: params.workflowHash ?? 'workflow-hash' },
+      repositoryRemote: { status: 'present', value: params.repositoryRemote ?? 'git@github.com:nielsgl/symphony.git' },
       trackerKind: 'linear',
       trackerScope: 'trackerScope' in params ? params.trackerScope : 'symphony',
       remoteIssueId: params.issue_id ?? 'issue-1',
@@ -178,8 +214,8 @@ describe('SqlitePersistenceStore', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 7,
-      applied_version: 7,
+      target_version: 8,
+      applied_version: 8,
       status: 'healthy',
       degraded_reason_code: null
     });
@@ -190,7 +226,8 @@ describe('SqlitePersistenceStore', () => {
       expect.objectContaining({ version: 4, name: 'existing_run_history_identity_backfill_v1', status: 'applied' }),
       expect.objectContaining({ version: 5, name: 'token_model_fact_dimensions_v1', status: 'applied' }),
       expect.objectContaining({ version: 6, name: 'operational_history_facts_v1', status: 'applied' }),
-      expect.objectContaining({ version: 7, name: 'history_retention_prune_evidence_v1', status: 'applied' })
+      expect.objectContaining({ version: 7, name: 'history_retention_prune_evidence_v1', status: 'applied' }),
+      expect.objectContaining({ version: 8, name: 'stable_project_identity_key_v1', status: 'applied' })
     ]);
   });
 
@@ -259,6 +296,187 @@ describe('SqlitePersistenceStore', () => {
     expect(rootA.ticket.key).toBe(renamedTicket.ticket.key);
     expect(rootA.ticket.human_issue_identifier).not.toBe(renamedTicket.ticket.human_issue_identifier);
     expect(rootA.ticket.key).not.toBe(reusedHumanIdOtherScope.ticket.key);
+  });
+
+  it('keeps project identity stable when workflow hash and repository remote evidence change', () => {
+    const originalEvidence = identity({
+      issue_id: 'remote-1',
+      issue_identifier: 'TASK-1',
+      projectRoot: '/work/a/service',
+      workflowPath: '/work/a/service/WORKFLOW.md',
+      workflowHash: 'workflow-hash-a',
+      repositoryRemote: 'git@github.com:nielsgl/symphony.git'
+    });
+    const changedWorkflowContent = identity({
+      issue_id: 'remote-1',
+      issue_identifier: 'TASK-1',
+      projectRoot: '/work/a/service',
+      workflowPath: '/work/a/service/WORKFLOW.md',
+      workflowHash: 'workflow-hash-b',
+      repositoryRemote: 'git@github.com:nielsgl/symphony.git'
+    });
+    const changedRepositoryRemote = identity({
+      issue_id: 'remote-1',
+      issue_identifier: 'TASK-1',
+      projectRoot: '/work/a/service',
+      workflowPath: '/work/a/service/WORKFLOW.md',
+      workflowHash: 'workflow-hash-b',
+      repositoryRemote: 'https://github.com/nielsgl/symphony.git'
+    });
+
+    expect(originalEvidence.project.key).toBe(changedWorkflowContent.project.key);
+    expect(originalEvidence.project.key).toBe(changedRepositoryRemote.project.key);
+    expect(changedRepositoryRemote.project.workflow_hash).toEqual({ status: 'present', value: 'workflow-hash-b' });
+    expect(changedRepositoryRemote.project.repository_remote).toEqual({
+      status: 'present',
+      value: 'https://github.com/nielsgl/symphony.git'
+    });
+  });
+
+  it('groups project history for the same root and workflow path while updating identity evidence', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-stable-project-identity-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const originalEvidence = identity({
+      issue_id: 'stable-identity-1',
+      issue_identifier: 'STABLE-1',
+      projectRoot: path.join(dir, 'project'),
+      workflowPath: path.join(dir, 'project', 'WORKFLOW.md'),
+      workflowHash: 'workflow-hash-a',
+      repositoryRemote: 'git@github.com:nielsgl/symphony.git'
+    });
+    const changedEvidence = identity({
+      issue_id: 'stable-identity-1',
+      issue_identifier: 'STABLE-1',
+      projectRoot: path.join(dir, 'project'),
+      workflowPath: path.join(dir, 'project', 'WORKFLOW.md'),
+      workflowHash: 'workflow-hash-b',
+      repositoryRemote: 'https://github.com/nielsgl/symphony.git'
+    });
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(store);
+    store.appendIssueRun({
+      issue_id: 'stable-identity-1',
+      issue_identifier: 'STABLE-1',
+      identity: originalEvidence,
+      started_at: '2026-04-11T10:00:00.000Z',
+      status: 'succeeded',
+      ended_at: '2026-04-11T10:02:00.000Z'
+    });
+    store.appendIssueRun({
+      issue_id: 'stable-identity-1',
+      issue_identifier: 'STABLE-1',
+      identity: changedEvidence,
+      started_at: '2026-04-11T11:00:00.000Z',
+      status: 'succeeded',
+      ended_at: '2026-04-11T11:02:00.000Z'
+    });
+
+    expect(originalEvidence.project.key).toBe(changedEvidence.project.key);
+    expect(store.reconstructTicketTimeline(changedEvidence).issue_runs).toHaveLength(2);
+
+    const db = openDatabase(dbPath);
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS count FROM history_project_identity').get()).toEqual({ count: 1 });
+      expect(db.prepare('SELECT workflow_hash_value, repository_remote_value FROM history_project_identity').get()).toEqual({
+        workflow_hash_value: 'workflow-hash-b',
+        repository_remote_value: 'https://github.com/nielsgl/symphony.git'
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('normalizes legacy project identity keys idempotently without dropping history rows', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-legacy-project-identity-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const oldEvidence = withLegacyProjectKey(
+      identity({
+        issue_id: 'legacy-identity-1',
+        issue_identifier: 'LEGACY-1',
+        projectRoot: path.join(dir, 'project'),
+        workflowPath: path.join(dir, 'project', 'WORKFLOW.md'),
+        workflowHash: 'workflow-hash-a',
+        repositoryRemote: 'git@github.com:nielsgl/symphony.git'
+      })
+    );
+    const newEvidence = identity({
+      issue_id: 'legacy-identity-1',
+      issue_identifier: 'LEGACY-1',
+      projectRoot: path.join(dir, 'project'),
+      workflowPath: path.join(dir, 'project', 'WORKFLOW.md'),
+      workflowHash: 'workflow-hash-b',
+      repositoryRemote: 'https://github.com/nielsgl/symphony.git'
+    });
+    expect(oldEvidence.project.key).not.toBe(newEvidence.project.key);
+
+    const storeA = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      migrationFailureForTest: 'stable_project_identity_key_v1'
+    });
+    storeA.close();
+    const dbA = openDatabase(dbPath);
+    try {
+      dbA.prepare("DELETE FROM history_schema_migrations WHERE schema_name = 'project_execution_history' AND version = 8").run();
+      dbA
+        .prepare(
+          `UPDATE history_schema_state
+           SET applied_version = 7, status = 'healthy', degraded_reason_code = NULL, degraded_detail = NULL
+           WHERE schema_name = 'project_execution_history'`
+        )
+        .run();
+      dbA
+        .prepare(
+          `INSERT INTO history_project_identity
+            (project_key, project_root, workflow_path, workflow_hash_status, workflow_hash_value, workflow_hash_reason,
+             repository_remote_status, repository_remote_value, repository_remote_reason, created_at, updated_at)
+           VALUES (?, ?, ?, 'present', 'workflow-hash-a', NULL, 'present', ?, NULL, ?, ?)`
+        )
+        .run(
+          oldEvidence.project.key,
+          oldEvidence.project.project_root,
+          oldEvidence.project.workflow_path,
+          'git@github.com:nielsgl/symphony.git',
+          '2026-04-11T10:00:00.000Z',
+          '2026-04-11T10:00:00.000Z'
+        );
+      dbA
+        .prepare(
+          `INSERT INTO issue_run
+            (issue_run_id, issue_id, issue_identifier, identity, project_key, ticket_key, started_at, ended_at, status, reason_code, reason_detail)
+           VALUES ('legacy-run-1', 'legacy-identity-1', 'LEGACY-1', ?, ?, ?, '2026-04-11T10:00:00.000Z', NULL, 'running', NULL, NULL)`
+        )
+        .run(JSON.stringify(oldEvidence), oldEvidence.project.key, oldEvidence.ticket.key);
+    } finally {
+      dbA.close();
+    }
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
+    expect(storeB.listProjectTicketIdentities(newEvidence.project.key).total).toBe(1);
+    expect(storeB.reconstructTicketTimeline(newEvidence).issue_runs).toHaveLength(1);
+    storeB.close();
+    stores.pop();
+
+    const storeC = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeC);
+    expect(storeC.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
+    expect(storeC.reconstructTicketTimeline(newEvidence).issue_runs).toHaveLength(1);
+
+    const dbC = openDatabase(dbPath);
+    try {
+      expect(dbC.prepare('SELECT COUNT(*) AS count FROM issue_run').get()).toEqual({ count: 1 });
+      expect(dbC.prepare('SELECT COUNT(*) AS count FROM history_project_identity').get()).toEqual({ count: 2 });
+      expect(dbC.prepare('SELECT project_key FROM issue_run WHERE issue_run_id = ?').get('legacy-run-1')).toEqual({
+        project_key: newEvidence.project.key
+      });
+    } finally {
+      dbC.close();
+    }
   });
 
   it('represents missing optional identity evidence explicitly', () => {
@@ -1089,14 +1307,14 @@ describe('SqlitePersistenceStore', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(7);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(8);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 7, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
       expect.objectContaining({ version: 2, status: 'applied' }),
@@ -1104,7 +1322,8 @@ describe('SqlitePersistenceStore', () => {
       expect.objectContaining({ version: 4, status: 'applied' }),
       expect.objectContaining({ version: 5, status: 'applied' }),
       expect.objectContaining({ version: 6, status: 'applied' }),
-      expect.objectContaining({ version: 7, status: 'applied' })
+      expect.objectContaining({ version: 7, status: 'applied' }),
+      expect.objectContaining({ version: 8, status: 'applied' })
     ]);
   });
 
@@ -1226,7 +1445,7 @@ describe('SqlitePersistenceStore', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 7, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
       expect.arrayContaining([
         'history_token_model_fact',
@@ -1449,7 +1668,7 @@ describe('SqlitePersistenceStore', () => {
     stores.push(storeB);
     const backfillDbB = openDatabase(dbPath);
     try {
-      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 7, status: 'healthy' });
+      expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
       expect(backfillDbB.prepare('SELECT COUNT(*) AS count FROM history_identity_projection').get()).toEqual({ count: 3 });
     } finally {
       backfillDbB.close();
@@ -1923,7 +2142,7 @@ describe('SqlitePersistenceStore', () => {
       nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
     });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 7, status: 'healthy' });
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 8, status: 'healthy' });
     storeA.close();
     stores.pop();
 
@@ -1948,7 +2167,7 @@ describe('SqlitePersistenceStore', () => {
     });
 
     expect(storeB.historySchemaHealth()).toMatchObject({
-      applied_version: 7,
+      applied_version: 8,
       status: 'degraded',
       degraded_reason_code: 'history_write_failed',
       degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'

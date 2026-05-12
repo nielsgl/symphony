@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { redactUnknown } from '../security/redaction';
 import { buildHistoryPayloadDetails } from './history-payload-policy';
+import { buildProjectIdentity } from './identity';
 import type {
   AppServerEventLedgerRecord,
   BlockedInputEventRecord,
@@ -49,7 +50,7 @@ interface PersistenceStoreOptions {
 }
 
 const HISTORY_SCHEMA_NAME = 'project_execution_history';
-const HISTORY_SCHEMA_VERSION = 7;
+const HISTORY_SCHEMA_VERSION = 8;
 
 interface HistoryMigration {
   version: number;
@@ -150,6 +151,18 @@ function parseHistoryPayloadTruncation(value: string): AppServerEventLedgerRecor
 
 function serializeDurableIdentity(identity: DurableIdentity): string {
   return JSON.stringify(redactUnknown(identity));
+}
+
+function normalizeProjectIdentityKey(identity: DurableIdentity): DurableIdentity {
+  return {
+    ...identity,
+    project: buildProjectIdentity({
+      projectRoot: identity.project.project_root,
+      workflowPath: identity.project.workflow_path,
+      workflowHash: identity.project.workflow_hash,
+      repositoryRemote: identity.project.repository_remote
+    })
+  };
 }
 
 function stableOperationalHash(parts: unknown[]): string {
@@ -2037,6 +2050,13 @@ export class SqlitePersistenceStore {
         apply: (store) => {
           store.createHistoryRetentionPruneRecordTable();
         }
+      },
+      {
+        version: 8,
+        name: 'stable_project_identity_key_v1',
+        apply: (store) => {
+          store.normalizeExistingProjectIdentityKeys();
+        }
       }
     ];
 
@@ -2562,6 +2582,88 @@ export class SqlitePersistenceStore {
     this.recordHistoryHealthMetadata('healthy', null, null);
   }
 
+  private normalizeExistingProjectIdentityKeys(): void {
+    this.normalizeRunProjectIdentityKeys();
+    this.normalizeIssueRunProjectIdentityKeys();
+    this.recordHistoryHealthMetadata('healthy', null, null);
+  }
+
+  private normalizeRunProjectIdentityKeys(): void {
+    const rows = this.db
+      .prepare('SELECT run_id, issue_id, issue_identifier, identity FROM runs WHERE identity IS NOT NULL ORDER BY started_at ASC, run_id ASC')
+      .all() as Array<{ run_id: string; issue_id: string; issue_identifier: string; identity: string | null }>;
+    const updateIdentity = this.db.prepare('UPDATE runs SET identity = ? WHERE run_id = ?');
+    for (const row of rows) {
+      const identity = parseDurableIdentity(row.identity);
+      if (!identity) {
+        continue;
+      }
+      const normalizedIdentity = normalizeProjectIdentityKey(identity);
+      this.upsertHistoryIdentity(normalizedIdentity, { bypassHealthCheck: true });
+      updateIdentity.run(serializeDurableIdentity(normalizedIdentity), row.run_id);
+      this.recordIdentityProjection({
+        source_table: 'runs',
+        source_id: row.run_id,
+        run_id: row.run_id,
+        issue_run_id: null,
+        issue_id: row.issue_id,
+        issue_identifier: row.issue_identifier,
+        projection_status: 'projected',
+        reason_code: null,
+        reason_detail: null,
+        project_key: normalizedIdentity.project.key,
+        ticket_key: normalizedIdentity.ticket.key
+      });
+    }
+  }
+
+  private normalizeIssueRunProjectIdentityKeys(): void {
+    const rows = this.db
+      .prepare('SELECT issue_run_id, issue_id, issue_identifier, identity FROM issue_run WHERE identity IS NOT NULL ORDER BY started_at ASC, issue_run_id ASC')
+      .all() as Array<{ issue_run_id: string; issue_id: string; issue_identifier: string; identity: string | null }>;
+    const updateIdentity = this.db.prepare('UPDATE issue_run SET identity = ?, project_key = ?, ticket_key = ? WHERE issue_run_id = ?');
+    const projectKeyFacts = [
+      'history_tracker_ticket_snapshot',
+      'history_ticket_reference',
+      'history_operator_action',
+      'history_blocked_input_event'
+    ];
+    const factUpdates = projectKeyFacts
+      .filter((table) => this.hasTable(table))
+      .map((table) => this.db.prepare(`UPDATE ${table} SET project_key = ?, ticket_key = ? WHERE issue_run_id = ?`));
+
+    for (const row of rows) {
+      const identity = parseDurableIdentity(row.identity);
+      if (!identity) {
+        continue;
+      }
+      const normalizedIdentity = normalizeProjectIdentityKey(identity);
+      this.upsertHistoryIdentity(normalizedIdentity, { bypassHealthCheck: true });
+      updateIdentity.run(
+        serializeDurableIdentity(normalizedIdentity),
+        normalizedIdentity.project.key,
+        normalizedIdentity.ticket.key,
+        row.issue_run_id
+      );
+      for (const updateFact of factUpdates) {
+        updateFact.run(normalizedIdentity.project.key, normalizedIdentity.ticket.key, row.issue_run_id);
+      }
+      this.recordIdentityProjection({
+        source_table: 'issue_run',
+        source_id: row.issue_run_id,
+        run_id: null,
+        issue_run_id: row.issue_run_id,
+        issue_id: row.issue_id,
+        issue_identifier: row.issue_identifier,
+        projection_status: 'projected',
+        reason_code: null,
+        reason_detail: null,
+        project_key: normalizedIdentity.project.key,
+        ticket_key: normalizedIdentity.ticket.key
+      });
+    }
+  }
+
   private backfillRunHistoryIdentities(): void {
     const rows = this.db
       .prepare('SELECT run_id, issue_id, issue_identifier, identity FROM runs ORDER BY started_at ASC, run_id ASC')
@@ -2821,8 +2923,8 @@ export class SqlitePersistenceStore {
     };
   }
 
-  private upsertHistoryIdentity(identity: DurableIdentity): void {
-    if (this.readHistorySchemaHealth().status !== 'healthy') {
+  private upsertHistoryIdentity(identity: DurableIdentity, options: { bypassHealthCheck?: boolean } = {}): void {
+    if (!options.bypassHealthCheck && this.readHistorySchemaHealth().status !== 'healthy') {
       return;
     }
     const now = asIso(this.nowMs());
