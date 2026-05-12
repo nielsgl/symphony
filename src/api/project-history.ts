@@ -9,7 +9,15 @@ import type {
 } from '../persistence';
 import { REASON_CODES } from '../observability/reason-codes';
 
-export type ProjectHistoryFactStatus = 'present' | 'missing' | 'degraded' | 'redacted' | 'truncated' | 'unavailable';
+export type ProjectHistoryFactStatus =
+  | 'present'
+  | 'missing'
+  | 'lifecycle_pending'
+  | 'optional_unavailable'
+  | 'degraded'
+  | 'redacted'
+  | 'truncated'
+  | 'unavailable';
 
 export interface ProjectHistoryFactState {
   fact: string;
@@ -518,9 +526,15 @@ export function buildProjectHistoryHealth(params: {
       reason_code: projectionReason,
       detail: projectionDetail
     },
+    ...projectionFacts.filter((fact) => fact.fact !== 'history_schema'),
     {
       fact: 'app_server_lite_health',
-      status: appServerStatus === 'healthy' ? 'present' : appServerStatus === 'missing' ? 'missing' : 'degraded',
+      status:
+        appServerStatus === 'healthy'
+          ? 'present'
+          : appServerStatus === 'missing'
+            ? 'optional_unavailable'
+            : 'degraded',
       reason_code:
         appServerStatus === 'missing'
           ? REASON_CODES.projectHistoryAppServerLiteSummariesMissing
@@ -745,10 +759,11 @@ function isTimelineActive(latestIssueRun: IssueRunRecord | null): boolean {
 }
 
 function timelineFacts(timeline: TicketTimelineRecord, historySchemaHealth?: HistorySchemaHealth | null): ProjectHistoryFactState[] {
+  const active = isTimelineActive(latestBy(timeline.issue_runs, (run) => run.started_at));
   return [
     ...historyHealthFacts(historySchemaHealth),
     presenceFact('tracker_snapshot', timeline.tracker_snapshots.length, REASON_CODES.projectHistoryTrackerSnapshotMissing),
-    presenceFact('terminal_outcome', timeline.terminal_outcomes.length, REASON_CODES.projectHistoryTerminalOutcomeMissing),
+    terminalOutcomeFact(timeline.terminal_outcomes.length, active),
     presenceFact('thread_turn_references', timeline.threads.length + timeline.turns.length, REASON_CODES.projectHistoryThreadTurnReferencesMissing),
     presenceFact('evidence_references', timeline.evidence_references.length, REASON_CODES.projectHistoryEvidenceReferencesMissing),
     presenceFact(
@@ -756,7 +771,7 @@ function timelineFacts(timeline: TicketTimelineRecord, historySchemaHealth?: His
       timeline.tracker_snapshots.length + timeline.ticket_references.length + timeline.operator_actions.length,
       REASON_CODES.projectHistoryOperationalFactsMissing
     ),
-    presenceFact('token_model_summaries', timeline.token_model_facts.length, REASON_CODES.projectHistoryTokenModelSummariesMissing),
+    optionalFact('token_model_summaries', timeline.token_model_facts.length, REASON_CODES.projectHistoryTokenModelSummariesMissing),
     ...appServerFactStates(timeline.app_server_events)
   ];
 }
@@ -791,12 +806,30 @@ function presenceFact(fact: string, count: number, missingReasonCode: string): P
     : { fact, status: 'missing', reason_code: missingReasonCode, detail: null };
 }
 
+function terminalOutcomeFact(count: number, active: boolean): ProjectHistoryFactState {
+  if (count > 0) {
+    return { fact: 'terminal_outcome', status: 'present', reason_code: null, detail: null };
+  }
+  return {
+    fact: 'terminal_outcome',
+    status: active ? 'lifecycle_pending' : 'missing',
+    reason_code: REASON_CODES.projectHistoryTerminalOutcomeMissing,
+    detail: active ? 'Terminal outcome is expected after the active ticket reaches a terminal lifecycle state.' : null
+  };
+}
+
+function optionalFact(fact: string, count: number, unavailableReasonCode: string): ProjectHistoryFactState {
+  return count > 0
+    ? { fact, status: 'present', reason_code: null, detail: null }
+    : { fact, status: 'optional_unavailable', reason_code: unavailableReasonCode, detail: null };
+}
+
 function appServerFactStates(events: AppServerEventLedgerExcerpt[]): ProjectHistoryFactState[] {
   if (events.length === 0) {
     return [
       {
         fact: 'app_server_lite_summaries',
-        status: 'missing',
+        status: 'optional_unavailable',
         reason_code: REASON_CODES.projectHistoryAppServerLiteSummariesMissing,
         detail: null
       }
