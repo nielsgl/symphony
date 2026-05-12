@@ -918,11 +918,163 @@ describe('CodexRunner', () => {
     fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-1"}}}\n');
 
     await expect(promise).rejects.toMatchObject({
-      code: 'turn_timeout'
+      code: REASON_CODES.turnTimeout
     });
   });
 
-  it('keeps waiting beyond the original turn timeout while real progress is still arriving', async () => {
+  it('enforces turn timeout as a hard deadline despite repeated rate-limit metadata notifications', async () => {
+    vi.useFakeTimers();
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: CodexRunnerEvent[] = [];
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    try {
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          turnTimeoutMs: 100,
+          onEvent: (event) => events.push(event)
+        })
+      );
+      const rejection = expect(promise).rejects.toMatchObject({
+        code: REASON_CODES.turnTimeout,
+        message: expect.stringContaining('hard wall-clock deadline')
+      });
+
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-rate-limit-stall"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-rate-limit-stall"}}}\n');
+      await vi.advanceTimersByTimeAsync(40);
+      fake.emitStdout(
+        `${JSON.stringify({
+          method: 'account/rateLimits/updated',
+          params: {
+            account: {
+              rateLimits: {
+                primary: { remaining: 41, limit: 100, resetAt: '2026-05-11T13:30:00.000Z' }
+              }
+            }
+          }
+        } satisfies AccountRateLimitsUpdatedNotification & Record<string, unknown>)}\n`
+      );
+      await vi.advanceTimersByTimeAsync(40);
+      fake.emitStdout(
+        `${JSON.stringify({
+          method: 'account/rateLimits/updated',
+          params: {
+            account: {
+              rateLimits: {
+                primary: { remaining: 40, limit: 100, resetAt: '2026-05-11T13:30:00.000Z' }
+              }
+            }
+          }
+        } satisfies AccountRateLimitsUpdatedNotification & Record<string, unknown>)}\n`
+      );
+      await vi.advanceTimersByTimeAsync(21);
+
+      await rejection;
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.turnTimedOut,
+          reason_code: REASON_CODES.turnTimeout,
+          thread_id: 'thread-rate-limit-stall',
+          turn_id: 'turn-rate-limit-stall',
+          session_id: 'thread-rate-limit-stall-turn-rate-limit-stall',
+          detail: expect.stringContaining('timeout_ms=100')
+        })
+      );
+      expect(events).not.toContainEqual(expect.objectContaining({ event: CANONICAL_EVENT.codex.startupFailed }));
+    } finally {
+      fake.emitExit();
+      vi.useRealTimers();
+    }
+  });
+
+  it('enforces turn timeout as a hard deadline while synthetic wait heartbeats continue', async () => {
+    vi.useFakeTimers();
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const events: CodexRunnerEvent[] = [];
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    try {
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          turnTimeoutMs: 5100,
+          onEvent: (event) => events.push(event)
+        })
+      );
+      const rejection = expect(promise).rejects.toMatchObject({
+        code: REASON_CODES.turnTimeout,
+        message: expect.stringContaining('hard wall-clock deadline')
+      });
+
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-heartbeat-stall"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-heartbeat-stall"}}}\n');
+      await vi.advanceTimersByTimeAsync(5101);
+
+      await rejection;
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.turnWaiting,
+          detail: 'waiting_for_turn_completion elapsed_s=5'
+        })
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: CANONICAL_EVENT.codex.turnTimedOut,
+          reason_code: REASON_CODES.turnTimeout,
+          thread_id: 'thread-heartbeat-stall',
+          turn_id: 'turn-heartbeat-stall',
+          session_id: 'thread-heartbeat-stall-turn-heartbeat-stall'
+        })
+      );
+      expect(events).not.toContainEqual(expect.objectContaining({ event: CANONICAL_EVENT.codex.startupFailed }));
+    } finally {
+      fake.emitExit();
+      vi.useRealTimers();
+    }
+  });
+
+  it('completes when app-server terminal evidence arrives before the hard turn deadline', async () => {
+    vi.useFakeTimers();
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const runner = new CodexRunner({
+      spawnProcess: () => fake
+    });
+
+    try {
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          turnTimeoutMs: 100
+        })
+      );
+
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-terminal-before-deadline"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-terminal-before-deadline"}}}\n');
+      await vi.advanceTimersByTimeAsync(90);
+      fake.emitStdout('{"method":"turn/completed"}\n');
+
+      await expect(promise).resolves.toMatchObject({
+        status: 'completed',
+        thread_id: 'thread-terminal-before-deadline',
+        turn_id: 'turn-terminal-before-deadline',
+        terminal_source: 'app_server_protocol'
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('completes when transcript terminal evidence arrives before the hard turn deadline', async () => {
+    vi.useFakeTimers();
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
@@ -930,36 +1082,38 @@ describe('CodexRunner', () => {
       spawnProcess: () => fake
     });
 
-    const promise = runner.startSessionAndRunTurn(
-      makeStartInput(workspaceCwd, {
-        commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 100
-      })
-    );
+    try {
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          commandEnv: { CODEX_HOME: codexHome },
+          turnTimeoutMs: 200
+        })
+      );
 
-    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
-    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-progress"}}}\n');
-    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-progress"}}}\n');
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-transcript-before-deadline"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-transcript-before-deadline"}}}\n');
 
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    fake.emitStdout('{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}}\n');
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    writeTranscriptRecord(codexHome, 'rollout-thread-progress.jsonl', {
-      timestamp: '2026-05-07T19:45:20.171Z',
-      type: 'event_msg',
-      payload: {
-        type: 'task_complete',
-        turn_id: 'turn-progress'
-      }
-    });
-    fake.emitStdout('{"method":"token/count","params":{"info":{"last_token_usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}}\n');
+      await vi.advanceTimersByTimeAsync(90);
+      writeTranscriptRecord(codexHome, 'rollout-thread-transcript-before-deadline.jsonl', {
+        timestamp: '2026-05-07T19:45:20.171Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: 'turn-transcript-before-deadline'
+        }
+      });
+      await vi.advanceTimersByTimeAsync(10);
 
-    await expect(promise).resolves.toMatchObject({
-      status: 'completed',
-      thread_id: 'thread-progress',
-      turn_id: 'turn-progress',
-      terminal_source: 'session_transcript'
-    });
+      await expect(promise).resolves.toMatchObject({
+        status: 'completed',
+        thread_id: 'thread-transcript-before-deadline',
+        turn_id: 'turn-transcript-before-deadline',
+        terminal_source: 'session_transcript'
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('maps process exit to port_exit', async () => {

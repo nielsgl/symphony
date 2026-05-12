@@ -117,6 +117,9 @@ function makeControlPlaneHealthSummary(
         avg_payload_bytes: payloadByHealth[health],
         last_projection_duration_ms: null,
         last_enrichment_duration_ms: null,
+        last_enrichment_status: null,
+        last_enrichment_degraded: null,
+        last_enrichment_reason_code: null,
         last_serialization_duration_ms: null,
         last_broadcast_client_count: null,
         last_snapshot_age_ms: null,
@@ -4018,7 +4021,7 @@ describe('OrchestratorCore', () => {
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-active-wait')).toBe(false);
   });
 
-  it('does not classify prolonged codex.turn.waiting as stalled when fresh thread activity is observed', async () => {
+  it('classifies prolonged codex.turn.waiting as stalled when only fresh thread activity metadata is observed', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
     });
@@ -4038,9 +4041,9 @@ describe('OrchestratorCore', () => {
     await harness.orchestrator.tick('interval');
 
     const running = harness.orchestrator.getStateSnapshot().running.get('i-active-thread');
-    expect(running?.stalled_waiting_reason).toBeNull();
-    expect(running?.stalled_waiting_since_ms).toBe(1_001_750);
-    expect(running?.last_progress_transition_at_ms).toBe(1_000_750);
+    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+    expect(running?.stalled_waiting_since_ms).toBe(1_001_000);
+    expect(running?.last_progress_transition_at_ms).toBe(1_000_000);
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-active-thread')).toBe(false);
   });
 
@@ -4113,7 +4116,7 @@ describe('OrchestratorCore', () => {
     expect(snapshot.recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.progress.stalledWaitingDetected)).toBe(false);
   });
 
-  it('does not classify prolonged codex.turn.waiting as stalled when phase progress interleaves with waiting heartbeats', async () => {
+  it('classifies synthetic wait-loop planning heartbeats and metadata as stalled waiting after the threshold', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
     });
@@ -4131,11 +4134,57 @@ describe('OrchestratorCore', () => {
     harness.orchestrator.onWorkerEvent('i-wait-phase', {
       timestamp_ms: harness.now.value,
       event: CANONICAL_EVENT.codex.phasePlanning,
-      detail: 'planning heartbeat',
+      detail: 'waiting_for_turn_completion elapsed_s=0',
       thread_id: 'thread-phase',
       session_id: 'thread-phase-turn-1'
     });
-    harness.now.value += 700;
+    harness.now.value += 300;
+    harness.orchestrator.onWorkerEvent('i-wait-phase', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+      detail: 'rate limits updated',
+      thread_id: 'thread-phase',
+      session_id: 'thread-phase-turn-1',
+      rate_limits: {
+        primary: {
+          used_percent: 10,
+          window_minutes: 300,
+          resets_at: 1_000_000
+        }
+      }
+    });
+    harness.now.value += 100;
+    harness.orchestrator.onWorkerEvent('i-wait-phase', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.protocolWarning,
+      detail: 'guardian policy warning',
+      thread_id: 'thread-phase',
+      session_id: 'thread-phase-turn-1',
+      protocol_warning: {
+        method: 'warning',
+        reason_code: REASON_CODES.codexProtocolGuardianWarning,
+        message: 'guardian policy warning',
+        severity: 'warn',
+        source: 'app_server_protocol'
+      }
+    });
+    harness.now.value += 100;
+    harness.orchestrator.onWorkerEvent('i-wait-phase', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.modelRerouted,
+      detail: 'model/account metadata',
+      thread_id: 'thread-phase',
+      session_id: 'thread-phase-turn-1',
+      requested_model: 'gpt-5.2',
+      effective_model: 'gpt-5.2-mini',
+      model_reroute: {
+        requested_model: 'gpt-5.2',
+        effective_model: 'gpt-5.2-mini',
+        reason_code: 'model_metadata_observed',
+        source: 'app_server_protocol'
+      }
+    });
+    harness.now.value += 200;
     harness.orchestrator.onWorkerEvent('i-wait-phase', {
       timestamp_ms: harness.now.value,
       event: CANONICAL_EVENT.codex.turnWaiting,
@@ -4143,12 +4192,32 @@ describe('OrchestratorCore', () => {
       thread_id: 'thread-phase',
       session_id: 'thread-phase-turn-1'
     });
+    harness.now.value += 200;
+    harness.orchestrator.onWorkerEvent('i-wait-phase', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.rateLimitsUpdated,
+      detail: 'rate limits updated again',
+      thread_id: 'thread-phase',
+      session_id: 'thread-phase-turn-1',
+      rate_limits: {
+        primary: {
+          used_percent: 11,
+          window_minutes: 300,
+          resets_at: 1_000_000
+        }
+      }
+    });
     await harness.orchestrator.tick('interval');
 
     const running = harness.orchestrator.getStateSnapshot().running.get('i-wait-phase');
-    expect(running?.stalled_waiting_since_ms).toBe(1_001_400);
-    expect(running?.stalled_waiting_reason).toBeNull();
+    expect(running?.last_event).toBe(CANONICAL_EVENT.codex.rateLimitsUpdated);
+    expect(running?.stalled_waiting_since_ms).toBe(1_001_000);
+    expect(running?.stalled_waiting_reason).toBe('turn_waiting_threshold_exceeded');
+    expect(running?.last_progress_transition_at_ms).toBe(1_000_000);
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-wait-phase')).toBe(false);
+
+    const projected = new SnapshotService({ nowMs: () => harness.now.value }).projectState(harness.orchestrator.getStateSnapshot());
+    expect(projected.running.find((entry) => entry.issue_id === 'i-wait-phase')?.progress_signal_state).toBe('stalled_waiting');
   });
 
   it('clears blocked issue state when tracker reports non-active or terminal state', async () => {

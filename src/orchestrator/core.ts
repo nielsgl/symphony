@@ -1380,13 +1380,8 @@ export class OrchestratorCore {
       runningEntry.stalled_waiting_reason = null;
       this.maybeEmitHeartbeatOnly(issue_id, runningEntry, workerEvent.timestamp_ms);
     } else if (this.shouldResetRunningWaitEpisode(workerEvent.event)) {
-      runningEntry.running_waiting_started_at_ms = null;
-      runningEntry.running_wait_stall_event_emitted = false;
-      runningEntry.heartbeat_only_event_emitted = false;
-      runningEntry.stalled_waiting_since_ms = null;
-      runningEntry.stalled_waiting_reason = null;
-      runningEntry.last_progress_transition_at_ms = workerEvent.timestamp_ms;
-    } else if (this.isMeaningfulWorkerProgressEvent(workerEvent.event)) {
+      this.resetRunningWaitEpisode(runningEntry, workerEvent.timestamp_ms);
+    } else if (this.isMeaningfulWorkerProgressEvent(workerEvent)) {
       runningEntry.last_progress_transition_at_ms = workerEvent.timestamp_ms;
     }
 
@@ -1482,7 +1477,7 @@ export class OrchestratorCore {
       runningEntry.token_telemetry_last_source = workerEvent.token_telemetry_last_source ?? 'worker_event_usage';
       runningEntry.token_telemetry_last_at_ms = workerEvent.token_telemetry_last_at_ms ?? workerEvent.timestamp_ms;
       if (totalDelta > 0) {
-        runningEntry.last_progress_transition_at_ms = runningEntry.token_telemetry_last_at_ms;
+        this.resetRunningWaitEpisode(runningEntry, runningEntry.token_telemetry_last_at_ms);
       }
       if (totalDelta > 0) {
         this.throughputTracker.observe({
@@ -1511,6 +1506,7 @@ export class OrchestratorCore {
 
     if (
       workerEvent.event === CANONICAL_EVENT.codex.turnWaiting ||
+      runningEntry.running_waiting_started_at_ms != null ||
       this.hasOutstandingToolCallEvidence(runningEntry)
     ) {
       void this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
@@ -4555,17 +4551,7 @@ export class OrchestratorCore {
       return;
     }
 
-    const previousTimestampMs = runningEntry.last_codex_timestamp_ms;
     runningEntry.last_codex_timestamp_ms = timestampMs;
-    const isFreshThreadActivity =
-      previousTimestampMs === null || previousTimestampMs === undefined || timestampMs > previousTimestampMs;
-    if (isFreshThreadActivity && runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting) {
-      const previousProgressAtMs = runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms;
-      if (timestampMs > previousProgressAtMs) {
-        runningEntry.last_progress_transition_at_ms = timestampMs;
-        runningEntry.stalled_waiting_reason = null;
-      }
-    }
   }
 
   private async reconcileStalledRuns(): Promise<void> {
@@ -6934,21 +6920,30 @@ export class OrchestratorCore {
       event === CANONICAL_EVENT.codex.turnStarted ||
       event === CANONICAL_EVENT.codex.promptSent ||
       event === CANONICAL_EVENT.codex.turnInputRequired ||
-      event === CANONICAL_EVENT.codex.startupFailed
+      event === CANONICAL_EVENT.codex.startupFailed ||
+      event === CANONICAL_EVENT.codex.phaseImplementation ||
+      event === CANONICAL_EVENT.codex.phaseValidation ||
+      event === CANONICAL_EVENT.codex.toolCallStarted ||
+      event === CANONICAL_EVENT.codex.toolCallCompleted ||
+      event === CANONICAL_EVENT.codex.toolCallFailed
     );
   }
 
-  private isMeaningfulWorkerProgressEvent(event: string): boolean {
+  private resetRunningWaitEpisode(runningEntry: RunningEntry, progressAtMs: number): void {
+    runningEntry.running_waiting_started_at_ms = null;
+    runningEntry.running_wait_stall_event_emitted = false;
+    runningEntry.heartbeat_only_event_emitted = false;
+    runningEntry.stalled_waiting_since_ms = null;
+    runningEntry.stalled_waiting_reason = null;
+    runningEntry.last_progress_transition_at_ms = progressAtMs;
+  }
+
+  private isMeaningfulWorkerProgressEvent(workerEvent: WorkerObservabilityEvent): boolean {
     return (
-      event === CANONICAL_EVENT.codex.phasePlanning ||
-      event === CANONICAL_EVENT.codex.phaseImplementation ||
-      event === CANONICAL_EVENT.codex.phaseValidation ||
-      event === CANONICAL_EVENT.codex.toolCallCompleted ||
-      event === CANONICAL_EVENT.codex.toolCallFailed ||
-      event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch ||
-      event === CANONICAL_EVENT.codex.approvalAutoApproved ||
-      event === CANONICAL_EVENT.codex.toolInputAutoAnswered ||
-      event === CANONICAL_EVENT.codex.sideOutput
+      workerEvent.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch ||
+      workerEvent.event === CANONICAL_EVENT.codex.approvalAutoApproved ||
+      workerEvent.event === CANONICAL_EVENT.codex.toolInputAutoAnswered ||
+      workerEvent.event === CANONICAL_EVENT.codex.sideOutput
     );
   }
 
@@ -7122,7 +7117,7 @@ export class OrchestratorCore {
 
   private maybeEmitHeartbeatOnly(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
     const thresholdMs = this.config.progress_heartbeat_only_warn_ms ?? 120_000;
-    if (thresholdMs <= 0 || runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
+    if (thresholdMs <= 0 || (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting && runningEntry.running_waiting_started_at_ms == null)) {
       return;
     }
     const waitingStartedAtMs =
@@ -7160,7 +7155,7 @@ export class OrchestratorCore {
       return true;
     }
 
-    if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting) {
+    if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting && runningEntry.running_waiting_started_at_ms == null) {
       return false;
     }
 
