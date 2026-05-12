@@ -2478,7 +2478,7 @@ describe('SqlitePersistenceStore', () => {
     expect(secondPrune.health().last_pruned_at).toBe('2026-04-13T12:01:00.000Z');
   });
 
-  it('prunes terminal expired app-server-lite history with retention tombstone metadata', async () => {
+  it('prunes all terminal expired app-server-lite history with retention tombstone metadata', async () => {
     const base = Date.parse('2026-04-11T12:00:00.000Z');
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-retention-app-server-prune-'));
     dirs.push(dir);
@@ -2486,150 +2486,186 @@ describe('SqlitePersistenceStore', () => {
 
     const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base });
     stores.push(store);
-    const issueRunId = store.appendIssueRun({
-      issue_id: 'expired-app-server-lite',
-      issue_identifier: 'EXP-LEDGER-1',
-      identity: identity({ issue_id: 'expired-app-server-lite', issue_identifier: 'EXP-LEDGER-1' }),
-      started_at: '2026-04-10T10:00:00.000Z',
-      ended_at: '2026-04-10T10:30:00.000Z',
-      status: 'succeeded'
-    });
-    const attemptId = store.appendAttempt({
-      issue_run_id: issueRunId,
-      attempt_number: 0,
-      started_at: '2026-04-10T10:00:01.000Z',
-      ended_at: '2026-04-10T10:30:00.000Z',
-      status: 'succeeded'
-    });
-    const threadId = store.appendThread({
-      attempt_id: attemptId,
-      thread_id: 'expired-app-server-thread',
-      started_at: '2026-04-10T10:00:02.000Z',
-      ended_at: '2026-04-10T10:30:00.000Z',
-      status: 'succeeded'
-    });
-    const turnId = store.appendTurn({
-      thread_id: threadId,
-      turn_id: 'expired-app-server-turn',
-      turn_index: 0,
-      started_at: '2026-04-10T10:00:03.000Z',
-      ended_at: '2026-04-10T10:30:00.000Z',
-      status: 'succeeded'
-    });
-    store.appendAppServerEvent({
-      issue_run_id: issueRunId,
-      attempt_id: attemptId,
-      thread_id: threadId,
-      turn_id: turnId,
-      observed_at: '2026-04-10T10:00:04.000Z',
-      source_event_id: 'expired-app-server-event',
-      source_event_name: 'rawResponseItem/completed',
-      payload_class: 'protocol_request_response',
-      raw_payload: { message: 'expired protocol evidence' },
-      summary: 'expired protocol evidence'
-    });
-    store.appendTrackerTicketSnapshot({
-      issue_run_id: issueRunId,
-      attempt_id: attemptId,
-      thread_id: threadId,
-      turn_id: turnId,
-      tracker_kind: 'linear',
-      remote_issue_id: 'expired-app-server-lite',
-      human_issue_identifier: 'EXP-LEDGER-1',
-      title: 'Expired history ticket',
-      tracker_status: 'Done',
-      observed_at: '2026-04-10T10:00:05.000Z'
-    });
-    store.appendTicketReference({
-      issue_run_id: issueRunId,
-      attempt_id: attemptId,
-      thread_id: threadId,
-      turn_id: turnId,
-      reference_kind: 'pull_request',
-      availability: 'available',
-      uri: 'https://github.com/nielsgl/symphony/pull/999',
-      observed_at: '2026-04-10T10:00:06.000Z'
-    });
-    store.appendOperatorActionHistory({
-      issue_run_id: issueRunId,
-      attempt_id: attemptId,
-      thread_id: threadId,
-      turn_id: turnId,
-      action: 'resume_blocked_input',
-      result: 'accepted',
-      requested_at: '2026-04-10T10:00:07.000Z',
-      observed_at: '2026-04-10T10:00:07.000Z'
-    });
-    store.appendBlockedInputEvent({
-      issue_run_id: issueRunId,
-      attempt_id: attemptId,
-      thread_id: threadId,
-      turn_id: turnId,
-      issue_id: 'expired-app-server-lite',
-      issue_identifier: 'EXP-LEDGER-1',
-      runtime_state: 'blocked',
-      reason_code: 'operator_input_required',
-      blocked_at: '2026-04-10T10:00:08.000Z'
-    });
+
+    const terminalStatuses = ['succeeded', 'failed', 'cancelled', 'timed_out', 'stalled'] as const;
+    const activeStatuses = ['pending', 'running', 'retrying', 'blocked'] as const;
+    const issueRunIdsByStatus = new Map<string, string>();
+    const threadIdsByStatus = new Map<string, string>();
+
+    const appendIssueRunHistory = (status: (typeof terminalStatuses)[number] | (typeof activeStatuses)[number], ended: boolean): string => {
+      const issueRunId = store.appendIssueRun({
+        issue_id: `expired-app-server-lite-${status}`,
+        issue_identifier: `EXP-${status.toUpperCase()}`,
+        identity: identity({
+          issue_id: `expired-app-server-lite-${status}`,
+          issue_identifier: `EXP-${status.toUpperCase()}`
+        }),
+        started_at: '2026-04-10T10:00:00.000Z',
+        ended_at: ended ? '2026-04-10T10:30:00.000Z' : null,
+        status
+      });
+      const attemptId = store.appendAttempt({
+        issue_run_id: issueRunId,
+        attempt_number: 0,
+        started_at: '2026-04-10T10:00:01.000Z',
+        ended_at: ended ? '2026-04-10T10:30:00.000Z' : null,
+        status
+      });
+      const threadId = store.appendThread({
+        attempt_id: attemptId,
+        thread_id: `expired-app-server-thread-${status}`,
+        started_at: '2026-04-10T10:00:02.000Z',
+        ended_at: ended ? '2026-04-10T10:30:00.000Z' : null,
+        status
+      });
+      const turnId = store.appendTurn({
+        thread_id: threadId,
+        turn_id: `expired-app-server-turn-${status}`,
+        turn_index: 0,
+        started_at: '2026-04-10T10:00:03.000Z',
+        ended_at: ended ? '2026-04-10T10:30:00.000Z' : null,
+        status
+      });
+      store.appendAppServerEvent({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: turnId,
+        observed_at: '2026-04-10T10:00:04.000Z',
+        source_event_id: `expired-app-server-event-${status}`,
+        source_event_name: 'rawResponseItem/completed',
+        payload_class: 'protocol_request_response',
+        raw_payload: { message: `expired protocol evidence ${status}` },
+        summary: `expired protocol evidence ${status}`
+      });
+      store.appendTrackerTicketSnapshot({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: turnId,
+        tracker_kind: 'linear',
+        remote_issue_id: `expired-app-server-lite-${status}`,
+        human_issue_identifier: `EXP-${status.toUpperCase()}`,
+        title: `Expired history ticket ${status}`,
+        tracker_status: ended ? 'Done' : 'In Progress',
+        observed_at: '2026-04-10T10:00:05.000Z'
+      });
+      store.appendTicketReference({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: turnId,
+        reference_kind: 'pull_request',
+        availability: 'available',
+        uri: `https://github.com/nielsgl/symphony/pull/${900 + issueRunIdsByStatus.size}`,
+        observed_at: '2026-04-10T10:00:06.000Z'
+      });
+      store.appendOperatorActionHistory({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: turnId,
+        action: 'resume_blocked_input',
+        result: 'accepted',
+        requested_at: '2026-04-10T10:00:07.000Z',
+        observed_at: '2026-04-10T10:00:07.000Z'
+      });
+      store.appendBlockedInputEvent({
+        issue_run_id: issueRunId,
+        attempt_id: attemptId,
+        thread_id: threadId,
+        turn_id: turnId,
+        issue_id: `expired-app-server-lite-${status}`,
+        issue_identifier: `EXP-${status.toUpperCase()}`,
+        runtime_state: 'blocked',
+        reason_code: 'operator_input_required',
+        blocked_at: '2026-04-10T10:00:08.000Z'
+      });
+      issueRunIdsByStatus.set(status, issueRunId);
+      threadIdsByStatus.set(status, threadId);
+      return issueRunId;
+    };
+
+    for (const status of terminalStatuses) {
+      appendIssueRunHistory(status, true);
+    }
+    for (const status of activeStatuses) {
+      appendIssueRunHistory(status, false);
+    }
 
     const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
     stores.push(lateStore);
-    expect(lateStore.listAppServerEventLedger(issueRunId)).toHaveLength(1);
+    for (const status of terminalStatuses) {
+      expect(lateStore.listAppServerEventLedger(issueRunIdsByStatus.get(status)!)).toHaveLength(1);
+    }
 
-    expect(lateStore.pruneExpiredRuns()).toBe(1);
+    expect(lateStore.pruneExpiredRuns()).toBe(terminalStatuses.length);
 
-    expect(lateStore.listAppServerEventLedger(issueRunId)).toEqual([]);
-    expect(lateStore.reconstructThreadLineage(threadId)).toBeNull();
+    for (const status of terminalStatuses) {
+      expect(lateStore.listAppServerEventLedger(issueRunIdsByStatus.get(status)!)).toEqual([]);
+      expect(lateStore.reconstructThreadLineage(threadIdsByStatus.get(status)!)).toBeNull();
+    }
+    for (const status of activeStatuses) {
+      expect(lateStore.listAppServerEventLedger(issueRunIdsByStatus.get(status)!)).toHaveLength(1);
+      expect(lateStore.reconstructThreadLineage(threadIdsByStatus.get(status)!)?.issue_run.issue_run_id).toBe(issueRunIdsByStatus.get(status));
+    }
     const db = openDatabase(dbPath);
     try {
-      const appServerRows = db
-        .prepare('SELECT COUNT(*) AS count FROM history_app_server_event WHERE issue_run_id = ?')
-        .get(issueRunId) as { count: number };
-      expect(appServerRows.count).toBe(0);
-      for (const table of [
-        'history_tracker_ticket_snapshot',
-        'history_ticket_reference',
-        'history_operator_action',
-        'history_blocked_input_event'
-      ]) {
-        const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE issue_run_id = ?`).get(issueRunId) as { count: number };
-        expect(row.count).toBe(0);
-      }
-      const tombstone = db
-        .prepare(
-          `SELECT source_table, source_id, reason_code, pruned_record_count, metadata
-           FROM history_retention_prune_record
-           WHERE source_table = 'issue_run' AND source_id = ?`
-        )
-        .get(issueRunId) as
-        | {
-            source_table: string;
-            source_id: string;
-            reason_code: string;
-            pruned_record_count: number;
-            metadata: string;
-          }
-        | undefined;
-      expect(tombstone).toMatchObject({
-        source_table: 'issue_run',
-        source_id: issueRunId,
-        reason_code: 'retention_policy_expired_completed_history',
-        pruned_record_count: 9
-      });
-      expect(JSON.parse(tombstone?.metadata ?? '{}')).toMatchObject({
-        status: 'succeeded',
-        pruned_tables: expect.arrayContaining([
-          'history_app_server_event',
+      for (const status of terminalStatuses) {
+        const issueRunId = issueRunIdsByStatus.get(status)!;
+        const appServerRows = db
+          .prepare('SELECT COUNT(*) AS count FROM history_app_server_event WHERE issue_run_id = ?')
+          .get(issueRunId) as { count: number };
+        expect(appServerRows.count).toBe(0);
+        for (const table of [
           'history_tracker_ticket_snapshot',
           'history_ticket_reference',
           'history_operator_action',
-          'history_blocked_input_event',
-          'turn',
-          'thread',
-          'attempt',
-          'issue_run'
-        ])
-      });
+          'history_blocked_input_event'
+        ]) {
+          const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE issue_run_id = ?`).get(issueRunId) as { count: number };
+          expect(row.count).toBe(0);
+        }
+      }
+      const tombstones = db
+        .prepare(
+          `SELECT source_table, source_id, reason_code, pruned_record_count, metadata
+           FROM history_retention_prune_record
+           WHERE source_table = 'issue_run'
+           ORDER BY source_id ASC`
+        )
+        .all() as Array<{
+        source_table: string;
+        source_id: string;
+        reason_code: string;
+        pruned_record_count: number;
+        metadata: string;
+      }>;
+      expect(tombstones).toHaveLength(terminalStatuses.length);
+      for (const status of terminalStatuses) {
+        const issueRunId = issueRunIdsByStatus.get(status)!;
+        const tombstone = tombstones.find((record) => record.source_id === issueRunId);
+        expect(tombstone).toMatchObject({
+          source_table: 'issue_run',
+          source_id: issueRunId,
+          reason_code: 'retention_policy_expired_completed_history',
+          pruned_record_count: 9
+        });
+        expect(JSON.parse(tombstone?.metadata ?? '{}')).toMatchObject({
+          status,
+          pruned_tables: expect.arrayContaining([
+            'history_app_server_event',
+            'history_tracker_ticket_snapshot',
+            'history_ticket_reference',
+            'history_operator_action',
+            'history_blocked_input_event',
+            'turn',
+            'thread',
+            'attempt',
+            'issue_run'
+          ])
+        });
+      }
     } finally {
       db.close();
     }
