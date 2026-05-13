@@ -306,6 +306,71 @@ describe('SqlitePersistenceStore', () => {
     ]);
   });
 
+  it('does not reopen a terminal issue run when retry append fails', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-retry-failed-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    let nowMs = Date.parse('2026-04-11T10:00:00.000Z');
+    const durableIdentity = identity({ issue_id: 'i-retry-failed', issue_identifier: 'ABC-RETRY-FAIL' });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => nowMs });
+    stores.push(storeA);
+    const started = storeA.recordRunStarted({
+      issue_id: 'i-retry-failed',
+      issue_identifier: 'ABC-RETRY-FAIL',
+      identity: durableIdentity,
+      started_at: '2026-04-11T10:00:00.000Z',
+      attempt_number: 0,
+      status: 'running',
+      reason_code: 'dispatch_started'
+    });
+    nowMs = Date.parse('2026-04-11T10:05:00.000Z');
+    storeA.completeRun({
+      run_id: started.run_id,
+      issue_run_id: started.issue_run_id,
+      attempt_id: started.attempt_id,
+      terminal_status: 'stalled',
+      error_code: 'worker_stalled',
+      terminal_reason_code: 'worker_stalled',
+      terminal_reason_detail: 'stalled before retry'
+    });
+
+    expect(() =>
+      storeA.appendAttempt({
+        issue_run_id: started.issue_run_id,
+        attempt_number: 0,
+        started_at: '2026-04-11T10:10:00.000Z',
+        status: 'running',
+        reason_code: 'attempt_started',
+        reason_detail: 'duplicate retry attempt'
+      })
+    ).toThrow(/UNIQUE constraint failed/);
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const timeline = storeB.reconstructTicketTimeline(durableIdentity);
+
+    expect(timeline.issue_runs).toEqual([
+      expect.objectContaining({
+        issue_run_id: started.issue_run_id,
+        ended_at: '2026-04-11T10:05:00.000Z',
+        status: 'stalled',
+        reason_code: 'worker_stalled'
+      })
+    ]);
+    expect(timeline.attempts).toEqual([
+      expect.objectContaining({
+        attempt_id: started.attempt_id,
+        attempt_number: 0,
+        ended_at: '2026-04-11T10:05:00.000Z',
+        status: 'stalled',
+        reason_code: 'worker_stalled'
+      })
+    ]);
+  });
+
   it('closes linked normalized rows for succeeded cancelled and timed-out terminals', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-terminals-'));
     dirs.push(dir);

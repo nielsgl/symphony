@@ -236,6 +236,7 @@ export class SqlitePersistenceStore {
   private readonly nowMs: () => number;
   private readonly migrationFailureForTest: string | undefined;
   private readonly pruneFailureForTest: string | undefined;
+  private transactionDepth = 0;
   private readonly db: {
     exec(sql: string): void;
     close(): void;
@@ -767,34 +768,36 @@ export class SqlitePersistenceStore {
     }
     ensureMonotonicTimestamp(params.started_at, parent.started_at, 'attempt');
     const attemptId = params.attempt_id ?? asExecutionGraphId('attempt', [params.issue_run_id, params.attempt_number]);
-    if (params.status === 'running' && !params.ended_at) {
+    this.transaction(() => {
       this.db
         .prepare(
-          `UPDATE issue_run SET
-            ended_at = NULL,
-            status = 'running',
-            reason_code = ?,
-            reason_detail = ?
-          WHERE issue_run_id = ?`
+          `INSERT INTO attempt
+          (attempt_id, issue_run_id, attempt_number, started_at, ended_at, status, reason_code, reason_detail)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(params.reason_code ?? null, redactUnknown(params.reason_detail ?? null), params.issue_run_id);
-    }
-    this.db
-      .prepare(
-        `INSERT INTO attempt
-        (attempt_id, issue_run_id, attempt_number, started_at, ended_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        attemptId,
-        params.issue_run_id,
-        params.attempt_number,
-        params.started_at,
-        params.ended_at ?? null,
-        params.status,
-        params.reason_code ?? null,
-        redactUnknown(params.reason_detail ?? null)
-      );
+        .run(
+          attemptId,
+          params.issue_run_id,
+          params.attempt_number,
+          params.started_at,
+          params.ended_at ?? null,
+          params.status,
+          params.reason_code ?? null,
+          redactUnknown(params.reason_detail ?? null)
+        );
+      if (params.status === 'running' && !params.ended_at) {
+        this.db
+          .prepare(
+            `UPDATE issue_run SET
+              ended_at = NULL,
+              status = 'running',
+              reason_code = ?,
+              reason_detail = ?
+            WHERE issue_run_id = ?`
+          )
+          .run(params.reason_code ?? null, redactUnknown(params.reason_detail ?? null), params.issue_run_id);
+      }
+    });
     return attemptId;
   }
 
@@ -4355,10 +4358,15 @@ export class SqlitePersistenceStore {
   }
 
   private transaction<T>(fn: () => T): T {
+    if (this.transactionDepth > 0) {
+      return fn();
+    }
     this.db.exec('BEGIN;');
+    this.transactionDepth += 1;
     try {
       const result = fn();
       this.db.exec('COMMIT;');
+      this.transactionDepth -= 1;
       return result;
     } catch (error) {
       try {
@@ -4366,6 +4374,7 @@ export class SqlitePersistenceStore {
       } catch {
         // Preserve the original write error for callers.
       }
+      this.transactionDepth -= 1;
       throw error;
     }
   }
