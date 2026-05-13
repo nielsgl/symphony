@@ -8,7 +8,7 @@
   },
   "test_index": {
     "SPEC-4.1-1": {
-      "file": "tests/orchestrator/core.test.ts",
+      "file": "tests/orchestrator/core-dispatch.test.ts",
       "title_contains": "dispatches in priority->created_at->identifier order"
     },
     "SPEC-5.1-1": {
@@ -24,11 +24,11 @@
       "title_contains": "keeps last known good config on invalid reload"
     },
     "SPEC-7.1-1": {
-      "file": "tests/orchestrator/core.test.ts",
+      "file": "tests/orchestrator/core-dispatch.test.ts",
       "title_contains": "dispatches in priority->created_at->identifier order"
     },
     "SPEC-8.1-1": {
-      "file": "tests/orchestrator/core.test.ts",
+      "file": "tests/orchestrator/core-dispatch.test.ts",
       "title_contains": "dispatches in priority->created_at->identifier order"
     },
     "SPEC-9.1-1": {
@@ -56,7 +56,7 @@
       "title_contains": "[SPEC-13.7-1][SPEC-17.6-1] serves GET /api/v1/state with required baseline fields"
     },
     "SPEC-14.1-1": {
-      "file": "tests/orchestrator/core.test.ts",
+      "file": "tests/orchestrator/core-reconciliation.test.ts",
       "title_contains": "[SPEC-14.1-1] logs tracker state refresh failure and keeps workers running"
     },
     "SPEC-15.1-1": {
@@ -80,7 +80,7 @@
       "title_contains": "[SPEC-11.2-1][SPEC-17.3-1] uses project slugId + active-state filter and preserves pagination order"
     },
     "SPEC-17.4-1": {
-      "file": "tests/orchestrator/core.test.ts",
+      "file": "tests/orchestrator/core-dispatch.test.ts",
       "title_contains": "dispatches in priority->created_at->identifier order"
     },
     "SPEC-17.5-1": {
