@@ -51,6 +51,7 @@ codex:
   turn_timeout_ms: 1800000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
+  worker_opaque_activity_hard_timeout_ms: 1800000
 server:
   port: 3000
 ---

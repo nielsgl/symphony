@@ -3,7 +3,7 @@ import { REASON_CODES } from '../observability/reason-codes';
 import type { BlockedEntry, OperatorActionRecord, RunningEntry } from '../orchestrator/types';
 
 export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume' | 'automation_fault';
-export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'stalled_waiting';
+export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'active_but_opaque' | 'stalled_waiting';
 export type SnapshotFreshnessState = 'fresh' | 'aging' | 'stale';
 export type TokenTelemetryConfidence = 'observed_live' | 'backfilled' | 'missing';
 export type NotBlockedExplainerCode =
@@ -57,6 +57,17 @@ export function resolveProgressSignal(entry: RunningEntry): {
       progress_signal_state: 'stalled_waiting',
       last_progress_transition_at_ms: entry.last_progress_transition_at_ms ?? null,
       last_heartbeat_at_ms: entry.last_heartbeat_at_ms ?? entry.last_codex_timestamp_ms ?? null
+    };
+  }
+  if (
+    typeof entry.codex_thread_activity_at_ms === 'number' &&
+    typeof entry.last_progress_transition_at_ms === 'number' &&
+    entry.codex_thread_activity_at_ms > entry.last_progress_transition_at_ms
+  ) {
+    return {
+      progress_signal_state: 'active_but_opaque',
+      last_progress_transition_at_ms: entry.last_progress_transition_at_ms ?? null,
+      last_heartbeat_at_ms: entry.last_heartbeat_at_ms ?? entry.last_codex_timestamp_ms ?? entry.codex_thread_activity_at_ms
     };
   }
   if (entry.last_event === CANONICAL_EVENT.codex.turnWaiting || entry.running_waiting_started_at_ms != null) {

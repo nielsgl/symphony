@@ -32,7 +32,7 @@ import type {
 } from './core-test-harness';
 
 describe('OrchestratorCore stalled waiting', () => {
-  it('recovers prolonged codex.turn.waiting as stalled waiting without moving issue to blocked', async () => {
+  it('keeps prolonged codex.turn.waiting running at the warning threshold', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
     });
@@ -46,8 +46,8 @@ describe('OrchestratorCore stalled waiting', () => {
     harness.now.value += 2_000;
     await harness.orchestrator.tick('interval');
     const snapshot = harness.orchestrator.getStateSnapshot();
-    expect(snapshot.running.has('i-wait')).toBe(false);
-    expect(snapshot.retry_attempts.get('i-wait')?.stop_reason_code).toBe(REASON_CODES.turnWaitingThresholdExceeded);
+    expect(snapshot.running.has('i-wait')).toBe(true);
+    expect(snapshot.retry_attempts.has('i-wait')).toBe(false);
     expect(snapshot.blocked_inputs.has('i-wait')).toBe(false);
   });
 
@@ -77,8 +77,8 @@ describe('OrchestratorCore stalled waiting', () => {
     await harness.orchestrator.tick('interval');
 
     const snapshot = harness.orchestrator.getStateSnapshot();
-    expect(snapshot.running.has('i-wait-heartbeat')).toBe(false);
-    expect(snapshot.retry_attempts.get('i-wait-heartbeat')?.stop_reason_code).toBe(REASON_CODES.turnWaitingThresholdExceeded);
+    expect(snapshot.running.has('i-wait-heartbeat')).toBe(true);
+    expect(snapshot.retry_attempts.has('i-wait-heartbeat')).toBe(false);
     expect(snapshot.blocked_inputs.has('i-wait-heartbeat')).toBe(false);
   });
 
@@ -124,7 +124,7 @@ describe('OrchestratorCore stalled waiting', () => {
     expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-active-wait')).toBe(false);
   });
 
-  it('recovers prolonged codex.turn.waiting as stalled when only fresh thread activity metadata is observed', async () => {
+  it('keeps prolonged codex.turn.waiting running when fresh activity metadata is observed', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
     });
@@ -144,8 +144,8 @@ describe('OrchestratorCore stalled waiting', () => {
     await harness.orchestrator.tick('interval');
 
     const snapshot = harness.orchestrator.getStateSnapshot();
-    expect(snapshot.running.has('i-active-thread')).toBe(false);
-    expect(snapshot.retry_attempts.get('i-active-thread')?.stop_reason_code).toBe(REASON_CODES.turnWaitingThresholdExceeded);
+    expect(snapshot.running.has('i-active-thread')).toBe(true);
+    expect(snapshot.retry_attempts.has('i-active-thread')).toBe(false);
     expect(snapshot.blocked_inputs.has('i-active-thread')).toBe(false);
   });
 
@@ -218,7 +218,7 @@ describe('OrchestratorCore stalled waiting', () => {
     expect(snapshot.recent_runtime_events.some((entry) => entry.event === CANONICAL_EVENT.progress.stalledWaitingDetected)).toBe(false);
   });
 
-  it('recovers synthetic wait-loop planning heartbeats and metadata as stalled waiting after the threshold', async () => {
+  it('keeps synthetic wait-loop planning heartbeats and metadata running after the warning threshold', async () => {
     const harness = createHarness({
       configOverrides: { running_wait_stall_threshold_ms: 1_000, stall_timeout_ms: 60_000 }
     });
@@ -312,11 +312,8 @@ describe('OrchestratorCore stalled waiting', () => {
     await harness.orchestrator.tick('interval');
 
     const snapshot = harness.orchestrator.getStateSnapshot();
-    const retryEntry = snapshot.retry_attempts.get('i-wait-phase');
-    expect(snapshot.running.has('i-wait-phase')).toBe(false);
-    expect(retryEntry?.stop_reason_code).toBe(REASON_CODES.turnWaitingThresholdExceeded);
-    expect(retryEntry?.previous_thread_id).toBe('thread-phase');
-    expect(retryEntry?.previous_session_id).toBe('thread-phase-turn-1');
+    expect(snapshot.running.has('i-wait-phase')).toBe(true);
+    expect(snapshot.retry_attempts.has('i-wait-phase')).toBe(false);
     expect(snapshot.blocked_inputs.has('i-wait-phase')).toBe(false);
   });
 
@@ -326,6 +323,7 @@ describe('OrchestratorCore stalled waiting', () => {
         progress_heartbeat_only_warn_ms: 500,
         progress_stalled_waiting_ms: 1_000,
         running_wait_stall_threshold_ms: 1_000,
+        worker_opaque_activity_hard_timeout_ms: 1_000,
         stall_timeout_ms: 60_000,
         respawn_window_minutes: 30,
         respawn_max_attempts_without_progress: 1
@@ -468,19 +466,21 @@ describe('OrchestratorCore stalled waiting', () => {
       expect(retryState.payload.running).toEqual([]);
       expect((retryState.payload.retrying as Array<Record<string, unknown>>)[0]).toMatchObject({
         issue_identifier: 'NIE-146',
-        stop_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+        stop_reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
         previous_thread_id: 'thread-nie-146',
         previous_session_id: 'session-nie-146'
       });
-      expect((retryState.payload.recent_runtime_events as Array<Record<string, unknown>>).at(-1)?.event).not.toBe(
-        CANONICAL_EVENT.orchestration.dispatchDuplicateSkipped
-      );
+      expect(
+        (retryState.payload.recent_runtime_events as Array<Record<string, unknown>>).some(
+          (event) => event.event === CANONICAL_EVENT.orchestration.workerStalled
+        )
+      ).toBe(true);
 
       const retryDiagnostics = await fetchJson('/api/v1/issues/NIE-146/diagnostics');
       expect(retryDiagnostics.response.status).toBe(200);
       expect(retryDiagnostics.payload.current_blocker).toMatchObject({
         classification: 'retry_backoff_wait',
-        reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+        reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
         recommended_actions: expect.arrayContaining(['Wait for the scheduled retry or manually resume if the backoff should be bypassed.'])
       });
       expect(retryDiagnostics.payload.last_meaningful_progress_at_ms).toBe(1_000_100);
@@ -544,6 +544,7 @@ describe('OrchestratorCore stalled waiting', () => {
       configOverrides: {
         progress_stalled_waiting_ms: 1_000,
         running_wait_stall_threshold_ms: 1_000,
+        worker_opaque_activity_hard_timeout_ms: 1_000,
         stall_timeout_ms: 60_000,
         max_retry_backoff_ms: 25_000
       },
@@ -604,21 +605,21 @@ describe('OrchestratorCore stalled waiting', () => {
       {
         issue_id: 'i-stalled-wait',
         cleanup_workspace: false,
-        reason: REASON_CODES.turnWaitingThresholdExceeded
+        reason: REASON_CODES.workerOpaqueActivityHardTimeout
       }
     ]);
     expect(completedRuns).toEqual([
       expect.objectContaining({
         run_id: 'run-stalled-wait',
         terminal_status: 'stalled',
-        terminal_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
-        terminal_reason_detail: expect.stringContaining('no meaningful progress')
+        terminal_reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
+        terminal_reason_detail: expect.stringContaining('active but opaque hard timeout')
       })
     ]);
     expect(retryEntry).toMatchObject({
       attempt: 1,
-      error: 'turn waiting threshold exceeded',
-      stop_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
+      error: 'active but opaque hard timeout',
+      stop_reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
       previous_thread_id: 'thread-stalled-wait',
       previous_turn_id: 'turn-stalled-wait',
       previous_session_id: 'thread-stalled-wait-turn-stalled-wait',
@@ -631,7 +632,8 @@ describe('OrchestratorCore stalled waiting', () => {
       workspace_provisioned: true,
       workspace_is_git_worktree: true,
       copy_ignored_applied: true,
-      copy_ignored_status: 'success'
+      copy_ignored_status: 'success',
+      recover_workspace_attempt_residue: true
     });
     expect(retryEntry?.due_at_ms).toBe(harness.now.value + 10_000);
     expect(harness.scheduled.has('i-stalled-wait')).toBe(true);
@@ -680,6 +682,7 @@ describe('OrchestratorCore stalled waiting', () => {
       configOverrides: {
         progress_stalled_waiting_ms: 1_000,
         running_wait_stall_threshold_ms: 1_000,
+        worker_opaque_activity_hard_timeout_ms: 1_000,
         stall_timeout_ms: 60_000,
         respawn_window_minutes: 30,
         respawn_max_attempts_without_progress: 1
@@ -700,7 +703,7 @@ describe('OrchestratorCore stalled waiting', () => {
     await harness.orchestrator.tick('interval');
 
     expect(harness.orchestrator.getStateSnapshot().retry_attempts.get('i-wait-breaker')?.stop_reason_code).toBe(
-      REASON_CODES.turnWaitingThresholdExceeded
+      REASON_CODES.workerOpaqueActivityHardTimeout
     );
 
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-wait-breaker', identifier: 'ABC-WAIT-BREAKER' })]);

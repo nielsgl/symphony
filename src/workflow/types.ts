@@ -44,6 +44,7 @@ export type ValidationErrorCode =
   | 'invalid_codex_running_wait_stall_threshold_ms'
   | 'invalid_codex_progress_heartbeat_only_warn_ms'
   | 'invalid_codex_progress_stalled_waiting_ms'
+  | 'invalid_codex_worker_opaque_activity_hard_timeout_ms'
   | 'invalid_worker_max_concurrent_agents_per_host'
   | 'invalid_server_host'
   | 'invalid_workspace_provisioner_type'
@@ -149,6 +150,7 @@ export interface CodexConfig {
   running_wait_stall_threshold_ms?: number;
   progress_heartbeat_only_warn_ms?: number;
   progress_stalled_waiting_ms?: number;
+  worker_opaque_activity_hard_timeout_ms?: number;
 }
 
 export interface PersistenceConfig {

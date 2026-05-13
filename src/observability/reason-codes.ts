@@ -37,6 +37,7 @@ export const REASON_CODES = {
   codexSessionStarted: 'codex_session_started',
   workerExitAbnormal: 'worker_exit_abnormal',
   workerStalled: 'worker_stalled',
+  workerOpaqueActivityHardTimeout: 'worker_opaque_activity_hard_timeout',
   slotsExhausted: 'slots_exhausted',
   dispatchBackpressureControlPlane: 'dispatch_backpressure_control_plane',
   dispatchBackpressureHostLoad: 'dispatch_backpressure_host_load',
@@ -236,6 +237,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     label: 'Worker Stalled',
     headline: 'Run is waiting to retry',
     detail: 'The worker stopped producing progress before the configured stall timeout.',
+    expected_transition: 'Automatic retry at the scheduled due time'
+  },
+  [REASON_CODES.workerOpaqueActivityHardTimeout]: {
+    reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Monitor the retry; inspect Codex thread activity if opaque runs repeat'],
+    label: 'Opaque Activity Hard Timeout',
+    headline: 'Run is waiting to retry',
+    detail: 'The worker stayed alive without observable meaningful progress past the configured opaque activity hard timeout.',
     expected_transition: 'Automatic retry at the scheduled due time'
   },
   [REASON_CODES.slotsExhausted]: {

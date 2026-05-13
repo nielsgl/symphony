@@ -1,5 +1,6 @@
 import type { Issue } from '../tracker';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -143,6 +144,15 @@ interface AppServerLiteSummary {
   summary: string;
   summary_fields: Record<string, unknown>;
   unavailable_reason_code?: string | null;
+}
+
+type WorkerActivityState = 'advancing' | 'active_but_opaque' | 'heartbeat_only' | 'stale';
+
+interface WorkerActivityClassification {
+  latest_meaningful_progress_at_ms: number | null;
+  latest_liveness_at_ms: number | null;
+  latest_thread_activity_at_ms: number | null;
+  activity_state: WorkerActivityState;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -753,6 +763,7 @@ export class OrchestratorCore {
     this.config.progress_heartbeat_only_warn_ms = this.config.progress_heartbeat_only_warn_ms ?? 120_000;
     this.config.progress_stalled_waiting_ms = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
     this.config.running_wait_stall_threshold_ms = this.config.progress_stalled_waiting_ms;
+    this.config.worker_opaque_activity_hard_timeout_ms = this.config.worker_opaque_activity_hard_timeout_ms ?? 1_800_000;
     this.config.inactive_worker_pid_ttl_ms = this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS;
     this.ports = options.ports;
     this.nowMs = options.nowMs ?? (() => Date.now());
@@ -903,6 +914,7 @@ export class OrchestratorCore {
     running_wait_stall_threshold_ms?: number;
     progress_heartbeat_only_warn_ms?: number;
     progress_stalled_waiting_ms?: number;
+    worker_opaque_activity_hard_timeout_ms?: number;
     inactive_worker_pid_ttl_ms?: number;
     worker_hosts?: string[];
     max_concurrent_agents_per_host?: number | null;
@@ -927,6 +939,7 @@ export class OrchestratorCore {
     this.config.progress_heartbeat_only_warn_ms = config.progress_heartbeat_only_warn_ms ?? 120_000;
     this.config.progress_stalled_waiting_ms = config.progress_stalled_waiting_ms ?? config.running_wait_stall_threshold_ms ?? 300_000;
     this.config.running_wait_stall_threshold_ms = this.config.progress_stalled_waiting_ms;
+    this.config.worker_opaque_activity_hard_timeout_ms = config.worker_opaque_activity_hard_timeout_ms ?? 1_800_000;
     this.config.inactive_worker_pid_ttl_ms = config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS;
     this.config.worker_hosts = config.worker_hosts ? [...config.worker_hosts] : [];
     this.config.max_concurrent_agents_per_host = config.max_concurrent_agents_per_host ?? null;
@@ -4770,9 +4783,6 @@ export class OrchestratorCore {
     if (!blocked.workspace_path) {
       return false;
     }
-    if (blocked.workspace_provisioned && blocked.workspace_is_git_worktree && blocked.branch_name && blocked.repo_root) {
-      return true;
-    }
     const workspacePath = blocked.workspace_path;
     try {
       const stat = fs.statSync(workspacePath);
@@ -4783,8 +4793,25 @@ export class OrchestratorCore {
       if (!gitDir) {
         return false;
       }
-      const activeGitStatePaths = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-merge', 'rebase-apply'];
-      return !activeGitStatePaths.some((entry) => fs.existsSync(path.join(gitDir, entry)));
+      const activeGitStatePaths = [
+        'MERGE_HEAD',
+        'REBASE_HEAD',
+        'AUTO_MERGE',
+        'CHERRY_PICK_HEAD',
+        'REVERT_HEAD',
+        'BISECT_LOG',
+        'sequencer',
+        'rebase-merge',
+        'rebase-apply'
+      ];
+      if (activeGitStatePaths.some((entry) => fs.existsSync(path.join(gitDir, entry)))) {
+        return false;
+      }
+      const unmerged = spawnSync('git', ['ls-files', '-u'], { cwd: workspacePath, encoding: 'utf8' });
+      if (unmerged.status !== 0 || unmerged.stdout.trim()) {
+        return false;
+      }
+      return !blocked.workspace_provisioned || (blocked.workspace_is_git_worktree && Boolean(blocked.branch_name && blocked.repo_root));
     } catch {
       return false;
     }
@@ -4840,73 +4867,77 @@ export class OrchestratorCore {
         runningEntry.stalled_waiting_since_ms = null;
         runningEntry.stalled_waiting_reason = null;
       }
-      if (this.config.stall_timeout_ms <= 0) {
-        continue;
-      }
-      if (elapsedMs <= this.config.stall_timeout_ms) {
-        continue;
-      }
-
-      const terminationResult = await this.ports.terminateWorker({
-        issue_id: issueId,
-        worker_handle: runningEntry.worker_handle,
-        cleanup_workspace: false,
-        reason: 'stall_timeout'
-      });
-
-      this.addRuntimeSecondsFromEntry(runningEntry);
-      this.state.running.delete(issueId);
-
-      const stalledDetail = workerTerminationResultDetail('worker stalled', terminationResult);
-      await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.workerStalled, null, stalledDetail);
-
-      await this.scheduleRetry({
-        issue_id: issueId,
-        identifier: runningEntry.identifier,
-        attempt: runningEntry.retry_attempt + 1,
-        issue_run_id: runningEntry.issue_run_id ?? null,
-        previous_attempt_id: runningEntry.attempt_id ?? null,
-        delay_type: 'failure',
-        error: 'worker stalled',
-        worker_host: runningEntry.worker_host ?? null,
-        workspace_path: runningEntry.workspace_path ?? null,
-        provisioner_type: runningEntry.provisioner_type ?? null,
-        branch_name: runningEntry.branch_name ?? null,
-        repo_root: runningEntry.repo_root ?? null,
-        workspace_exists: runningEntry.workspace_exists,
-        workspace_git_status: runningEntry.workspace_git_status,
-        workspace_provisioned: runningEntry.workspace_provisioned,
-        workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
-        copy_ignored_applied: runningEntry.copy_ignored_applied,
-        copy_ignored_status: runningEntry.copy_ignored_status,
-        copy_ignored_summary: runningEntry.copy_ignored_summary,
-        stop_reason_code: REASON_CODES.workerStalled,
-        stop_reason_detail: stalledDetail,
-        previous_thread_id: runningEntry.thread_id,
-        previous_turn_id: runningEntry.turn_id,
-        previous_session_id: runningEntry.session_id,
-        issue_snapshot: runningEntry.issue
-      });
-      this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.orchestration.workerStalled,
-        message: 'worker stalled; retrying',
-        context: {
+      if (this.config.stall_timeout_ms > 0 && elapsedMs > this.config.stall_timeout_ms) {
+        const terminationResult = await this.ports.terminateWorker({
           issue_id: issueId,
+          worker_handle: runningEntry.worker_handle,
+          cleanup_workspace: false,
+          reason: 'stall_timeout'
+        });
+
+        this.addRuntimeSecondsFromEntry(runningEntry);
+        this.state.running.delete(issueId);
+
+        const stalledDetail = workerTerminationResultDetail('worker stalled', terminationResult);
+        await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.workerStalled, null, stalledDetail);
+
+        await this.scheduleRetry({
+          issue_id: issueId,
+          identifier: runningEntry.identifier,
+          attempt: runningEntry.retry_attempt + 1,
+          issue_run_id: runningEntry.issue_run_id ?? null,
+          previous_attempt_id: runningEntry.attempt_id ?? null,
+          delay_type: 'failure',
+          error: 'worker stalled',
+          worker_host: runningEntry.worker_host ?? null,
+          workspace_path: runningEntry.workspace_path ?? null,
+          provisioner_type: runningEntry.provisioner_type ?? null,
+          branch_name: runningEntry.branch_name ?? null,
+          repo_root: runningEntry.repo_root ?? null,
+          workspace_exists: runningEntry.workspace_exists,
+          workspace_git_status: runningEntry.workspace_git_status,
+          workspace_provisioned: runningEntry.workspace_provisioned,
+          workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
+          copy_ignored_applied: runningEntry.copy_ignored_applied,
+          copy_ignored_status: runningEntry.copy_ignored_status,
+          copy_ignored_summary: runningEntry.copy_ignored_summary,
+          stop_reason_code: REASON_CODES.workerStalled,
+          stop_reason_detail: stalledDetail,
+          previous_thread_id: runningEntry.thread_id,
+          previous_turn_id: runningEntry.turn_id,
+          previous_session_id: runningEntry.session_id,
+          last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
+          issue_snapshot: runningEntry.issue,
+          progress_signals: runningEntry.progress_signals,
+          recover_workspace_attempt_residue: true
+        });
+        this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
+        this.logger?.log({
+          level: 'warn',
+          event: CANONICAL_EVENT.orchestration.workerStalled,
+          message: 'worker stalled; retrying',
+          context: {
+            issue_id: issueId,
+            issue_identifier: runningEntry.identifier,
+            session_id: runningEntry.session_id,
+            elapsed_ms: elapsedMs,
+            ...workerTerminationResultContext(terminationResult)
+          }
+        });
+        this.recordRuntimeEvent({
+          event: CANONICAL_EVENT.orchestration.workerStalled,
+          severity: 'warn',
           issue_identifier: runningEntry.identifier,
-          session_id: runningEntry.session_id,
-          elapsed_ms: elapsedMs,
-          ...workerTerminationResultContext(terminationResult)
-        }
-      });
-      this.recordRuntimeEvent({
-        event: CANONICAL_EVENT.orchestration.workerStalled,
-        severity: 'warn',
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id ?? undefined,
-        detail: stalledDetail
-      });
+          session_id: runningEntry.session_id ?? undefined,
+          detail: stalledDetail
+        });
+        continue;
+      }
+
+      const handledAsOpaqueTimeout = await this.maybeTerminateOpaqueActivityHardTimeout(issueId, runningEntry, now);
+      if (handledAsOpaqueTimeout) {
+        continue;
+      }
     }
   }
 
@@ -7270,6 +7301,46 @@ export class OrchestratorCore {
     runningEntry.last_progress_transition_at_ms = progressAtMs;
   }
 
+  private classifyWorkerActivity(runningEntry: RunningEntry, observedAtMs: number): WorkerActivityClassification {
+    const latestMeaningfulProgressAtMs = Math.max(
+      0,
+      runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
+      ...Object.values(runningEntry.tool_call_ledger ?? {}).map((entry) => entry.last_seen_at_ms),
+      ...Object.values(runningEntry.outstanding_tool_calls ?? {}).map((entry) => entry.last_waiting_at_ms ?? entry.started_at_ms)
+    );
+    const latestThreadActivityAtMs = runningEntry.codex_thread_activity_at_ms ?? null;
+    const latestLivenessAtMs = Math.max(
+      0,
+      runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms,
+      runningEntry.last_heartbeat_at_ms ?? 0,
+      latestThreadActivityAtMs ?? 0
+    );
+    const normalizedMeaningful = latestMeaningfulProgressAtMs > 0 ? latestMeaningfulProgressAtMs : null;
+    const normalizedLiveness = latestLivenessAtMs > 0 ? latestLivenessAtMs : null;
+    const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
+    const meaningfulAgeMs = normalizedMeaningful === null ? Number.POSITIVE_INFINITY : observedAtMs - normalizedMeaningful;
+    const livenessAgeMs = normalizedLiveness === null ? Number.POSITIVE_INFINITY : observedAtMs - normalizedLiveness;
+    const hasFreshLiveness = waitThresholdMs <= 0 || livenessAgeMs <= waitThresholdMs;
+    const hasFreshThreadActivity =
+      latestThreadActivityAtMs !== null && (waitThresholdMs <= 0 || observedAtMs - latestThreadActivityAtMs <= waitThresholdMs);
+    const waitingLike = runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting || runningEntry.running_waiting_started_at_ms != null;
+    const activityState: WorkerActivityState =
+      meaningfulAgeMs <= waitThresholdMs
+        ? 'advancing'
+        : hasFreshThreadActivity
+          ? 'active_but_opaque'
+          : hasFreshLiveness || waitingLike
+            ? 'heartbeat_only'
+            : 'stale';
+
+    return {
+      latest_meaningful_progress_at_ms: normalizedMeaningful,
+      latest_liveness_at_ms: normalizedLiveness,
+      latest_thread_activity_at_ms: latestThreadActivityAtMs,
+      activity_state: activityState
+    };
+  }
+
   private isMeaningfulWorkerProgressEvent(workerEvent: WorkerObservabilityEvent): boolean {
     return (
       workerEvent.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch ||
@@ -7498,10 +7569,10 @@ export class OrchestratorCore {
     const waitingStartedAtMs =
       runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
     runningEntry.running_waiting_started_at_ms = waitingStartedAtMs;
+    const activity = this.classifyWorkerActivity(runningEntry, observedAtMs);
     const lastMeaningfulActivityAtMs =
-      typeof runningEntry.last_progress_transition_at_ms === 'number' &&
-      runningEntry.last_progress_transition_at_ms > waitingStartedAtMs
-        ? runningEntry.last_progress_transition_at_ms
+      typeof activity.latest_meaningful_progress_at_ms === 'number' && activity.latest_meaningful_progress_at_ms > waitingStartedAtMs
+        ? activity.latest_meaningful_progress_at_ms
         : waitingStartedAtMs;
     const thresholdCrossedAtMs = lastMeaningfulActivityAtMs + waitThresholdMs;
     runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
@@ -7511,16 +7582,27 @@ export class OrchestratorCore {
       return false;
     }
 
-    runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
     const elapsedMs = Math.max(0, observedAtMs - waitingStartedAtMs);
     if (!runningEntry.running_wait_stall_event_emitted) {
       runningEntry.running_wait_stall_event_emitted = true;
+      const progressEvent =
+        activity.activity_state === 'active_but_opaque'
+          ? CANONICAL_EVENT.progress.activeButOpaqueDetected
+          : CANONICAL_EVENT.progress.stalledWaitingDetected;
       this.recordRuntimeEvent({
-        event: CANONICAL_EVENT.progress.stalledWaitingDetected,
+        event: progressEvent,
         severity: 'warn',
         issue_identifier: runningEntry.identifier,
         session_id: runningEntry.session_id ?? undefined,
-        detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
+        detail: [
+          `issue_id=${issueId}`,
+          `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
+          `session_id=${runningEntry.session_id ?? 'unknown'}`,
+          `activity_state=${activity.activity_state}`,
+          `elapsed_ms=${elapsedMs}`,
+          `latest_liveness_at_ms=${activity.latest_liveness_at_ms ?? 'unknown'}`,
+          `latest_thread_activity_at_ms=${activity.latest_thread_activity_at_ms ?? 'unknown'}`
+        ].join(' ')
       });
       this.recordRuntimeEvent({
         event: CANONICAL_EVENT.orchestration.runningWaitStallThresholdExceeded,
@@ -7530,8 +7612,8 @@ export class OrchestratorCore {
         detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
       });
     }
-    await this.recoverRunningWaitStall(issueId, runningEntry, observedAtMs, elapsedMs);
-    return true;
+    runningEntry.stalled_waiting_reason = null;
+    return false;
   }
 
   private async recoverRunningWaitStall(
@@ -7633,6 +7715,132 @@ export class OrchestratorCore {
       session_id: runningEntry.session_id ?? undefined,
       detail: stalledDetail
     });
+  }
+
+  private async maybeTerminateOpaqueActivityHardTimeout(
+    issueId: string,
+    runningEntry: RunningEntry,
+    observedAtMs: number
+  ): Promise<boolean> {
+    if (this.state.running.get(issueId) !== runningEntry || runningEntry.awaiting_input_since_ms !== null) {
+      return false;
+    }
+
+    const hardTimeoutMs = this.config.worker_opaque_activity_hard_timeout_ms ?? 1_800_000;
+    if (hardTimeoutMs <= 0) {
+      return false;
+    }
+
+    this.scanCodexSessionTranscriptForToolCalls(runningEntry, observedAtMs);
+    if (this.findMissingToolOutputCandidate(runningEntry, observedAtMs, this.config.progress_stalled_waiting_ms ?? 300_000)) {
+      return false;
+    }
+
+    const activity = this.classifyWorkerActivity(runningEntry, observedAtMs);
+    if (activity.activity_state !== 'active_but_opaque' && activity.activity_state !== 'heartbeat_only') {
+      return false;
+    }
+    const lastMeaningfulProgressAtMs = activity.latest_meaningful_progress_at_ms ?? runningEntry.started_at_ms;
+    const opaqueElapsedMs = Math.max(0, observedAtMs - lastMeaningfulProgressAtMs);
+    if (opaqueElapsedMs <= hardTimeoutMs) {
+      return false;
+    }
+
+    const handoffProgress = await this.classifyTrackerHandoffProgress(issueId, runningEntry);
+    if (handoffProgress?.kind === 'unknown') {
+      await this.completeStalledTrackerRefreshUncertain(issueId, runningEntry, handoffProgress.error_detail, observedAtMs, opaqueElapsedMs);
+      return true;
+    }
+    if (handoffProgress?.kind === 'progress') {
+      await this.completeStalledReviewHandoff(issueId, runningEntry, handoffProgress, observedAtMs, opaqueElapsedMs);
+      return true;
+    }
+
+    const detail = [
+      'active but opaque hard timeout',
+      `reason_code=${REASON_CODES.workerOpaqueActivityHardTimeout}`,
+      `activity_state=${activity.activity_state}`,
+      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
+      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
+      `session_id=${runningEntry.session_id ?? 'unknown'}`,
+      `latest_meaningful_progress_at_ms=${activity.latest_meaningful_progress_at_ms ?? 'unknown'}`,
+      `latest_liveness_at_ms=${activity.latest_liveness_at_ms ?? 'unknown'}`,
+      `latest_thread_activity_at_ms=${activity.latest_thread_activity_at_ms ?? 'unknown'}`,
+      `opaque_elapsed_ms=${opaqueElapsedMs}`,
+      `observed_at_ms=${observedAtMs}`
+    ].join(' ');
+    const terminationResult = await this.ports.terminateWorker({
+      issue_id: issueId,
+      worker_handle: runningEntry.worker_handle,
+      cleanup_workspace: false,
+      reason: REASON_CODES.workerOpaqueActivityHardTimeout
+    });
+    const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
+
+    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.workerOpaqueActivityHardTimeout);
+    this.addRuntimeSecondsFromEntry(runningEntry);
+    await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.workerOpaqueActivityHardTimeout, null, stalledDetail);
+    await this.persistExecutionGraphStateTransition(
+      runningEntry,
+      'failed',
+      'failed',
+      REASON_CODES.workerOpaqueActivityHardTimeout,
+      stalledDetail
+    );
+    this.state.running.delete(issueId);
+
+    await this.scheduleRetry({
+      issue_id: issueId,
+      identifier: runningEntry.identifier,
+      attempt: runningEntry.retry_attempt + 1,
+      issue_run_id: runningEntry.issue_run_id ?? null,
+      previous_attempt_id: runningEntry.attempt_id ?? null,
+      delay_type: 'failure',
+      error: 'active but opaque hard timeout',
+      worker_host: runningEntry.worker_host ?? null,
+      workspace_path: runningEntry.workspace_path ?? null,
+      provisioner_type: runningEntry.provisioner_type ?? null,
+      branch_name: runningEntry.branch_name ?? null,
+      repo_root: runningEntry.repo_root ?? null,
+      workspace_exists: runningEntry.workspace_exists,
+      workspace_git_status: runningEntry.workspace_git_status,
+      workspace_provisioned: runningEntry.workspace_provisioned,
+      workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
+      copy_ignored_applied: runningEntry.copy_ignored_applied,
+      copy_ignored_status: runningEntry.copy_ignored_status,
+      copy_ignored_summary: runningEntry.copy_ignored_summary,
+      stop_reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
+      stop_reason_detail: stalledDetail,
+      previous_thread_id: runningEntry.thread_id,
+      previous_turn_id: runningEntry.turn_id,
+      previous_session_id: runningEntry.session_id,
+      last_progress_checkpoint_at: activity.latest_meaningful_progress_at_ms ?? runningEntry.started_at_ms,
+      issue_snapshot: runningEntry.issue,
+      progress_signals: runningEntry.progress_signals,
+      recover_workspace_attempt_residue: true
+    });
+    this.state.health.last_error = `active but opaque hard timeout for ${runningEntry.identifier}`;
+    this.logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.orchestration.workerStalled,
+      message: 'active but opaque hard timeout; retrying',
+      context: {
+        issue_id: issueId,
+        issue_identifier: runningEntry.identifier,
+        session_id: runningEntry.session_id,
+        elapsed_ms: opaqueElapsedMs,
+        stop_reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
+        ...workerTerminationResultContext(terminationResult)
+      }
+    });
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.workerStalled,
+      severity: 'warn',
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id ?? undefined,
+      detail: stalledDetail
+    });
+    return true;
   }
 
   private async completeStalledTrackerRefreshUncertain(

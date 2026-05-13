@@ -524,6 +524,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         return 'Advancing';
       case 'heartbeat_only':
         return 'Heartbeat Only';
+      case 'active_but_opaque':
+        return 'Active But Opaque';
       case 'stalled_waiting':
         return 'Stalled Waiting';
       default:

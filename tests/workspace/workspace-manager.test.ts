@@ -259,6 +259,70 @@ describe('WorkspaceManager', () => {
     });
   });
 
+  it('preflight blocks attempt residue for expanded git operation sentinels and unmerged index entries', async () => {
+    const sentinelNames = ['REBASE_HEAD', 'AUTO_MERGE', 'sequencer'];
+    for (const sentinelName of sentinelNames) {
+      const root = await makeTempRoot();
+      cleanupPaths.push(root);
+      const manager = new WorkspaceManager({
+        root,
+        hooks: { timeout_ms: 1000 }
+      });
+      const workspace = await manager.ensureWorkspace(`ABC-${sentinelName}`);
+      git(workspace.path, ['init']);
+      git(workspace.path, ['config', 'user.email', 'test@example.com']);
+      git(workspace.path, ['config', 'user.name', 'Workspace Test']);
+      await fs.writeFile(path.join(workspace.path, 'README.md'), 'base\n', 'utf8');
+      git(workspace.path, ['add', '.']);
+      git(workspace.path, ['commit', '-m', 'initial']);
+      await fs.writeFile(path.join(workspace.path, 'README.md'), 'dirty\n', 'utf8');
+
+      const sentinelPath = spawnSync('git', ['rev-parse', '--git-path', sentinelName], {
+        cwd: workspace.path,
+        encoding: 'utf8'
+      }).stdout.trim();
+      const absoluteSentinelPath = path.resolve(workspace.path, sentinelPath);
+      await fs.mkdir(path.dirname(absoluteSentinelPath), { recursive: true });
+      if (sentinelName === 'sequencer') {
+        await fs.mkdir(absoluteSentinelPath, { recursive: true });
+      } else {
+        await fs.writeFile(absoluteSentinelPath, '0000000000000000000000000000000000000000\n', 'utf8');
+      }
+
+      await expect(manager.prepareAttempt(workspace.path, { allow_attempt_residue: true })).rejects.toMatchObject({
+        code: 'workspace_unprovisioned_conflict',
+        message: expect.stringContaining('workspace contains non-ephemeral dirty files after preflight cleanup')
+      });
+    }
+
+    const root = await makeTempRoot();
+    cleanupPaths.push(root);
+    const manager = new WorkspaceManager({
+      root,
+      hooks: { timeout_ms: 1000 }
+    });
+    const workspace = await manager.ensureWorkspace('ABC-UNMERGED');
+    git(workspace.path, ['init']);
+    git(workspace.path, ['config', 'user.email', 'test@example.com']);
+    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
+    await fs.writeFile(path.join(workspace.path, 'README.md'), 'base\n', 'utf8');
+    git(workspace.path, ['add', '.']);
+    git(workspace.path, ['commit', '-m', 'initial']);
+    git(workspace.path, ['checkout', '-b', 'left']);
+    await fs.writeFile(path.join(workspace.path, 'README.md'), 'left\n', 'utf8');
+    git(workspace.path, ['commit', '-am', 'left']);
+    git(workspace.path, ['checkout', '-b', 'right', 'HEAD~1']);
+    await fs.writeFile(path.join(workspace.path, 'README.md'), 'right\n', 'utf8');
+    git(workspace.path, ['commit', '-am', 'right']);
+    const merge = spawnSync('git', ['merge', 'left'], { cwd: workspace.path, encoding: 'utf8' });
+    expect(merge.status).not.toBe(0);
+
+    await expect(manager.prepareAttempt(workspace.path, { allow_attempt_residue: true })).rejects.toMatchObject({
+      code: 'workspace_unprovisioned_conflict',
+      message: expect.stringContaining('workspace contains non-ephemeral dirty files after preflight cleanup')
+    });
+  });
+
   it('preflight no-ops on clean workspace', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);

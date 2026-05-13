@@ -530,6 +530,14 @@ describe('ConfigValidator', () => {
     if (!stalledResult.ok) {
       expect(stalledResult.error_code).toBe('invalid_codex_progress_stalled_waiting_ms');
     }
+
+    const opaqueHardTimeoutConfig = baseConfig();
+    opaqueHardTimeoutConfig.codex.worker_opaque_activity_hard_timeout_ms = 0;
+    const opaqueHardTimeoutResult = validator.validate(opaqueHardTimeoutConfig);
+    expect(opaqueHardTimeoutResult.ok).toBe(false);
+    if (!opaqueHardTimeoutResult.ok) {
+      expect(opaqueHardTimeoutResult.error_code).toBe('invalid_codex_worker_opaque_activity_hard_timeout_ms');
+    }
   });
 
   it('rejects non-positive logging.max_bytes', () => {

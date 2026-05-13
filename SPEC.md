@@ -442,6 +442,9 @@ fields locally if they want stricter startup checks.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
+- `worker_opaque_activity_hard_timeout_ms` (integer)
+  - Default: `1800000` (30 minutes)
+  - Hard cap for workers that remain alive but do not show meaningful progress.
 
 ### 5.4 Prompt Template Contract
 
@@ -589,6 +592,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
+- `codex.worker_opaque_activity_hard_timeout_ms`: integer, default `1800000`
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
   for ephemeral local bind, and CLI `--port` overrides it
 
@@ -819,7 +823,9 @@ Part A: Stall detection
 - For each running issue, compute `elapsed_ms` since:
   - `last_codex_timestamp` if any event has been seen, else
   - `started_at`
-- If `elapsed_ms > codex.stall_timeout_ms`, terminate the worker and queue a retry.
+- If `elapsed_ms > codex.stall_timeout_ms` with no fresh worker events, terminate the worker and queue a retry.
+- If the worker remains live but opaque beyond `codex.worker_opaque_activity_hard_timeout_ms`,
+  terminate the worker and queue a residue-aware retry.
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
 
 Part B: Tracker state refresh
@@ -1194,6 +1200,7 @@ Timeouts:
 - `codex.read_timeout_ms`: request/response timeout during startup and sync requests
 - `codex.turn_timeout_ms`: total turn stream timeout
 - `codex.stall_timeout_ms`: enforced by orchestrator based on event inactivity
+- `codex.worker_opaque_activity_hard_timeout_ms`: enforced by orchestrator when worker liveness continues without meaningful progress
 
 Error mapping (recommended normalized categories):
 

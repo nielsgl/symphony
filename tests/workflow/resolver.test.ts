@@ -638,6 +638,7 @@ describe('ConfigResolver', () => {
     expect(config.codex.stall_timeout_ms).toBe(300000);
     expect(config.codex.progress_heartbeat_only_warn_ms).toBe(120000);
     expect(config.codex.progress_stalled_waiting_ms).toBe(300000);
+    expect(config.codex.worker_opaque_activity_hard_timeout_ms).toBe(1800000);
   });
 
   it('resolves progress visibility threshold overrides', () => {
@@ -647,7 +648,8 @@ describe('ConfigResolver', () => {
       config: {
         codex: {
           progress_heartbeat_only_warn_ms: 1500,
-          progress_stalled_waiting_ms: 4500
+          progress_stalled_waiting_ms: 4500,
+          worker_opaque_activity_hard_timeout_ms: 9000
         }
       },
       prompt_template: 'prompt'
@@ -655,6 +657,7 @@ describe('ConfigResolver', () => {
 
     expect(config.codex.progress_heartbeat_only_warn_ms).toBe(1500);
     expect(config.codex.progress_stalled_waiting_ms).toBe(4500);
+    expect(config.codex.worker_opaque_activity_hard_timeout_ms).toBe(9000);
   });
 
   it('preserves invalid configured numeric values for fail-fast validation', () => {

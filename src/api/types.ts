@@ -17,7 +17,7 @@ import type { SecurityProfile } from '../security';
 import type { ControlPlaneHealthRecorder, ControlPlaneHealthSummary, ControlPlaneThresholds } from './control-plane-health';
 
 export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume' | 'automation_fault';
-export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'stalled_waiting';
+export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'active_but_opaque' | 'stalled_waiting';
 export type SnapshotFreshnessState = 'fresh' | 'aging' | 'stale';
 export type TokenTelemetryConfidence = 'observed_live' | 'backfilled' | 'missing';
 export type ApiDegradedReasonCode = 'route_not_found' | 'schema_mismatch' | 'upstream_unavailable' | null;

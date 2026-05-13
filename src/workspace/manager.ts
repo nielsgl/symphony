@@ -517,7 +517,17 @@ export class WorkspaceManager {
   }
 
   private async hasActiveGitOperation(workspacePath: string): Promise<boolean> {
-    const gitStatePaths = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-merge', 'rebase-apply'];
+    const gitStatePaths = [
+      'MERGE_HEAD',
+      'REBASE_HEAD',
+      'AUTO_MERGE',
+      'CHERRY_PICK_HEAD',
+      'REVERT_HEAD',
+      'BISECT_LOG',
+      'sequencer',
+      'rebase-merge',
+      'rebase-apply'
+    ];
     for (const gitStatePath of gitStatePaths) {
       const resolved = await this.runGit(workspacePath, ['rev-parse', '--git-path', gitStatePath]);
       const candidate = resolved?.trim();
@@ -528,6 +538,10 @@ export class WorkspaceManager {
       if (await fs.stat(absolute).then(() => true, () => false)) {
         return true;
       }
+    }
+    const unmergedEntries = await this.runGit(workspacePath, ['ls-files', '-u']);
+    if (unmergedEntries?.trim()) {
+      return true;
     }
     return false;
   }

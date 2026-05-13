@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 
 import {
   CANONICAL_EVENT,
@@ -349,6 +350,10 @@ describe('OrchestratorCore blocked input', () => {
   });
 
   it('recovers restart-restored workspace attempt residue into a continuation retry', async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-attempt-residue-'));
+    spawnSync('git', ['init'], { cwd: workspacePath });
+    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: workspacePath });
+    spawnSync('git', ['config', 'user.name', 'Blocked Input Test'], { cwd: workspacePath });
     const harness = createHarness();
     harness.orchestrator.restoreSuppressionState({
       blocked_entries: [
@@ -357,7 +362,7 @@ describe('OrchestratorCore blocked input', () => {
           issue_identifier: 'NIE-RESIDUE',
           attempt: 1,
           worker_host: null,
-          workspace_path: '/tmp/symphony/NIE-RESIDUE',
+          workspace_path: workspacePath,
           provisioner_type: 'worktree',
           branch_name: 'feature/NIE-RESIDUE',
           repo_root: '/tmp/symphony',
@@ -401,11 +406,14 @@ describe('OrchestratorCore blocked input', () => {
         recover_workspace_attempt_residue: true
       })
     ]);
+    fs.rmSync(workspacePath, { recursive: true, force: true });
   });
 
   it('recovers legacy persisted workspace residue with missing workspace metadata', async () => {
     const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-legacy-residue-'));
-    fs.mkdirSync(path.join(workspacePath, '.git'));
+    spawnSync('git', ['init'], { cwd: workspacePath });
+    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: workspacePath });
+    spawnSync('git', ['config', 'user.name', 'Blocked Input Test'], { cwd: workspacePath });
     try {
       const harness = createHarness();
       harness.orchestrator.restoreSuppressionState({

@@ -336,6 +336,7 @@ describe('OrchestratorCore handoff', () => {
         fresh_dispatch_states: ['Agent Review', 'In Progress'],
         progress_stalled_waiting_ms: 1_000,
         running_wait_stall_threshold_ms: 1_000,
+        worker_opaque_activity_hard_timeout_ms: 1_000,
         stall_timeout_ms: 0
       }
     });
@@ -406,6 +407,7 @@ describe('OrchestratorCore handoff', () => {
         fresh_dispatch_states: ['Agent Review', 'In Progress'],
         progress_stalled_waiting_ms: 1_000,
         running_wait_stall_threshold_ms: 1_000,
+        worker_opaque_activity_hard_timeout_ms: 1_000,
         stall_timeout_ms: 0
       }
     });
@@ -481,6 +483,7 @@ describe('OrchestratorCore handoff', () => {
         fresh_dispatch_states: ['Agent Review', 'In Progress'],
         progress_stalled_waiting_ms: 1_000,
         running_wait_stall_threshold_ms: 1_000,
+        worker_opaque_activity_hard_timeout_ms: 1_000,
         stall_timeout_ms: 0
       }
     });
@@ -516,7 +519,7 @@ describe('OrchestratorCore handoff', () => {
       { issue_id: 'i-status-only-handback', attempt: null, worker_host: null, resume_context: null }
     ]);
     expect(snapshot.retry_attempts.get('i-status-only-handback')?.stop_reason_code).toBe(
-      REASON_CODES.turnWaitingThresholdExceeded
+      REASON_CODES.workerOpaqueActivityHardTimeout
     );
     expect(snapshot.running.has('i-status-only-handback')).toBe(false);
     expect(logs.some((entry) => entry.event === 'orchestration.agent_review_handoff_progress_observed')).toBe(false);
@@ -537,6 +540,7 @@ describe('OrchestratorCore handoff', () => {
         fresh_dispatch_states: ['Agent Review', 'In Progress'],
         progress_stalled_waiting_ms: 1_000,
         running_wait_stall_threshold_ms: 1_000,
+        worker_opaque_activity_hard_timeout_ms: 1_000,
         stall_timeout_ms: 0
       }
     });

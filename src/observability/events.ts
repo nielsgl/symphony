@@ -91,6 +91,7 @@ export const CANONICAL_EVENT = {
   },
   progress: {
     heartbeatOnlyDetected: 'runtime.progress.heartbeat_only_detected',
+    activeButOpaqueDetected: 'runtime.progress.active_but_opaque_detected',
     stalledWaitingDetected: 'runtime.progress.stalled_waiting_detected'
   },
   agentRunner: {

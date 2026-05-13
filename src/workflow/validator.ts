@@ -512,6 +512,16 @@ export class ConfigValidator {
       };
     }
 
+    const opaqueActivityHardTimeoutMs = effectiveConfig.codex.worker_opaque_activity_hard_timeout_ms ?? 1800000;
+    if (!Number.isFinite(opaqueActivityHardTimeoutMs) || opaqueActivityHardTimeoutMs <= 0) {
+      return {
+        ok: false,
+        error_code: 'invalid_codex_worker_opaque_activity_hard_timeout_ms',
+        message: 'codex.worker_opaque_activity_hard_timeout_ms must be a positive integer',
+        at
+      };
+    }
+
     const provisionerType = effectiveConfig.workspace.provisioner.type;
     if (provisionerType !== 'none' && provisionerType !== 'worktree' && provisionerType !== 'clone') {
       return {
