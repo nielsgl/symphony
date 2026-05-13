@@ -339,6 +339,42 @@ describe('OrchestratorCore dispatch and backpressure', () => {
     expect(harness.orchestrator.getStateSnapshot().health.dispatch_backpressure?.active).toBe(false);
   });
 
+  it('allows dispatch when control-plane diagnostics are token-enrichment-only degraded', async () => {
+    let controlPlaneHealth = makeControlPlaneHealthSummary('ok', 1_000_000);
+    const harness = createHarness({
+      configOverrides: {
+        max_concurrent_agents: 3,
+        dispatch_backpressure: {
+          retry_delay_ms: 15_000,
+          min_running_agents: 1,
+          control_plane_health: 'degraded'
+        }
+      },
+      getControlPlaneHealth: () => controlPlaneHealth
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-running', identifier: 'ABC-RUN' })]);
+    await harness.orchestrator.tick('interval');
+
+    controlPlaneHealth = makeControlPlaneHealthSummary('degraded', harness.now.value, {
+      last_duration_ms: 40,
+      max_duration_ms: 40,
+      avg_duration_ms: 40,
+      last_payload_bytes: 20_000,
+      max_payload_bytes: 20_000,
+      avg_payload_bytes: 20_000,
+      last_enrichment_status: 'degraded',
+      last_enrichment_degraded: true,
+      last_enrichment_reason_code: REASON_CODES.liveTokenFallbackNotOnHotPath
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-token-only', identifier: 'ABC-TOKEN' })]);
+    await harness.orchestrator.tick('manual_refresh');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-running', 'i-token-only']);
+    expect(snapshot.retry_attempts.has('i-token-only')).toBe(false);
+    expect(snapshot.health.dispatch_backpressure?.active).toBe(false);
+  });
+
   it('delays new dispatch under degraded control-plane pressure without killing running agents', async () => {
     const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
     const logger: StructuredLogger = {

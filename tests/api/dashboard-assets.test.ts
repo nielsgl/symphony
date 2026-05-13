@@ -482,6 +482,8 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('Policy ');
     expect(clientJs).toContain('Budget stopped continuation: ');
     expect(clientJs).toContain('tokensCell.append(createBudgetBlock(entry));');
+    expect(clientJs).toContain('Split unavailable');
+    expect(clientJs).toContain("token_split_status === 'aggregate_only'");
     expect(clientJs.split('stopReasonCell.append(createBudgetBlock(entry));')).toHaveLength(3);
     expect(clientJs).toContain("'\\n\\nBudget\\n' +");
   });

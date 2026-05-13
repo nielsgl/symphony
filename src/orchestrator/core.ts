@@ -9092,6 +9092,8 @@ export class OrchestratorCore {
     try {
       await this.persistence.completeRun({
         run_id: runningEntry.run_id,
+        issue_run_id: runningEntry.issue_run_id,
+        attempt_id: runningEntry.attempt_id,
         terminal_status,
         error_code,
         terminal_reason_code: error_code,

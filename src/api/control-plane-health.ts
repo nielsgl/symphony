@@ -86,12 +86,11 @@ function roundMs(value: number | null | undefined): number | null {
 }
 
 function classifyObservation(
-  observation: Pick<ControlPlaneObservation, 'duration_ms' | 'payload_bytes' | 'snapshot_error_code' | 'enrichment_degraded'>,
+  observation: Pick<ControlPlaneObservation, 'duration_ms' | 'payload_bytes' | 'snapshot_error_code'>,
   thresholds: ControlPlaneThresholds
 ): ControlPlaneHealthState {
   if (
     observation.snapshot_error_code ||
-    observation.enrichment_degraded ||
     observation.duration_ms >= thresholds.degraded_ms ||
     observation.payload_bytes >= thresholds.degraded_payload_bytes
   ) {

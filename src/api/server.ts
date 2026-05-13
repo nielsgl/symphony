@@ -84,11 +84,18 @@ interface StreamDiagnosticsState {
 }
 
 const ISSUE_DETAIL_ROUTES = ['/api/v1/:issue_identifier', '/api/v1/issues/:issue_identifier'];
+const LIVE_TOKEN_FALLBACK_CACHE_TTL_MS = 1_000;
+const LIVE_TOKEN_FALLBACK_MAX_THREAD_IDS = 25;
 const TERMINAL_RUN_TIMELINE_EVENT = {
   started: 'run.started',
   rootCauseDiagnostic: 'run.root_cause_diagnostic',
   terminal: 'run.terminal'
 } as const;
+
+interface LiveTokenFallbackCacheEntry {
+  totalTokens: number | null;
+  observedAtMs: number;
+}
 
 function statusFromTerminalRun(run: DurableRunHistoryRecord): ThreadDiagnosticsResponse['status'] {
   switch (run.terminal_status) {
@@ -329,6 +336,7 @@ export class LocalApiServer {
   private heartbeatHandle: NodeJS.Timeout | null;
   private lastHealthSignature: string | null;
   private readonly streamDiagnostics: StreamDiagnosticsState;
+  private readonly liveTokenFallbackCache: Map<string, LiveTokenFallbackCacheEntry>;
 
   constructor(options: LocalApiServerOptions) {
     this.host = options.host ?? '127.0.0.1';
@@ -358,6 +366,7 @@ export class LocalApiServer {
     this.nextEventId = 1;
     this.heartbeatHandle = null;
     this.lastHealthSignature = null;
+    this.liveTokenFallbackCache = new Map();
     this.streamDiagnostics = {
       lastClientConnectedAtMs: null,
       lastClientDisconnectedAtMs: null,
@@ -572,7 +581,7 @@ export class LocalApiServer {
       const payload = this.snapshotService.projectState(state);
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
-      const enrichment = this.resolveStateProjectionEnrichment(payload);
+      const enrichment = this.enrichLiveTokenFallbackState(payload);
       const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
       return {
         payload,
@@ -627,7 +636,7 @@ export class LocalApiServer {
       const payload = this.snapshotService.projectState(state);
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
-      const enrichment = this.resolveStateProjectionEnrichment(payload);
+      const enrichment = this.enrichLiveTokenFallbackState(payload);
       const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
       return {
         payload,
@@ -751,6 +760,14 @@ export class LocalApiServer {
       return result;
     }
 
+    let db:
+      | {
+          prepare: (sql: string) => {
+            get: (...params: unknown[]) => { tokens_used?: number } | undefined;
+          };
+          close: () => void;
+        }
+      | null = null;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const sqlite = require('node:sqlite') as {
@@ -761,7 +778,7 @@ export class LocalApiServer {
           close: () => void;
         };
       };
-      const db = new sqlite.DatabaseSync(this.codexStateDbPath, { readonly: true });
+      db = new sqlite.DatabaseSync(this.codexStateDbPath, { readonly: true });
       const statement = db.prepare('SELECT tokens_used FROM threads WHERE id = ?');
       for (const threadId of threadIds) {
         const row = statement.get(threadId);
@@ -769,26 +786,78 @@ export class LocalApiServer {
           result.set(threadId, row.tokens_used);
         }
       }
-      db.close();
     } catch {
       return result;
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        // Ignore close failures; fallback enrichment must not affect state projection.
+      }
     }
 
     return result;
   }
 
-  private enrichLiveTokenFallbackState(payload: ApiStateResponse): void {
+  private resolveCachedLiveThreadTokenTotals(threadIds: string[]): Map<string, number> {
+    const uniqueThreadIds = Array.from(
+      new Set(threadIds.filter((threadId) => typeof threadId === 'string' && threadId.length > 0))
+    ).slice(0, LIVE_TOKEN_FALLBACK_MAX_THREAD_IDS);
+    const result = new Map<string, number>();
+    if (uniqueThreadIds.length === 0) {
+      return result;
+    }
+
+    const nowMs = this.nowMs();
+    const staleThreadIds = uniqueThreadIds.filter((threadId) => {
+      const cached = this.liveTokenFallbackCache.get(threadId);
+      return !cached || nowMs - cached.observedAtMs >= LIVE_TOKEN_FALLBACK_CACHE_TTL_MS;
+    });
+
+    if (staleThreadIds.length > 0) {
+      const refreshedTotals = this.resolveLiveThreadTokenTotals(staleThreadIds);
+      for (const threadId of staleThreadIds) {
+        this.liveTokenFallbackCache.set(threadId, {
+          totalTokens: refreshedTotals.get(threadId) ?? null,
+          observedAtMs: nowMs
+        });
+      }
+    }
+
+    for (const threadId of uniqueThreadIds) {
+      const cached = this.liveTokenFallbackCache.get(threadId);
+      if (cached && typeof cached.totalTokens === 'number' && cached.totalTokens > 0) {
+        result.set(threadId, cached.totalTokens);
+      }
+    }
+    return result;
+  }
+
+  private enrichLiveTokenFallbackState(payload: ApiStateResponse): ApiDiagnosticsResponse['token_enrichment'] {
     if (payload.running.length === 0) {
-      return;
+      return {
+        status: 'not_required',
+        degraded: false,
+        reason_code: null,
+        duration_ms: 0
+      };
     }
     const threadIds = payload.running
       .map((row) => row.thread_id)
       .filter((threadId): threadId is string => typeof threadId === 'string' && threadId.length > 0);
-    const liveTotals = this.resolveLiveThreadTokenTotals(threadIds);
-    if (liveTotals.size === 0) {
-      return;
+    const needsLiveTokenFallback = payload.running.some(
+      (row) => row.tokens.total_tokens === 0 && row.thread_id && row.token_telemetry_status !== 'available'
+    );
+    if (!needsLiveTokenFallback) {
+      return {
+        status: 'not_required',
+        degraded: false,
+        reason_code: null,
+        duration_ms: 0
+      };
     }
 
+    const liveTotals = this.resolveCachedLiveThreadTokenTotals(threadIds);
     let liveAggregate = 0;
     for (const row of payload.running) {
       if (row.tokens.total_tokens > 0 || !row.thread_id) {
@@ -799,26 +868,23 @@ export class LocalApiServer {
         row.tokens.total_tokens = liveTotal;
         row.token_telemetry_status = 'available';
         row.token_telemetry_last_source = 'codex_home_state_sqlite';
-        row.token_telemetry_last_at_ms = Date.now();
+        row.token_telemetry_last_at_ms = this.nowMs();
         row.token_telemetry_confidence = 'backfilled';
         row.token_telemetry_source = 'codex_home_state_sqlite';
         row.token_telemetry_last_observed_at_ms = row.token_telemetry_last_at_ms;
+        row.tokens.token_split_status = 'aggregate_only';
         liveAggregate += liveTotal;
       }
     }
 
-    if (payload.codex_totals.total_tokens === 0 && liveAggregate > 0) {
-      payload.codex_totals.total_tokens = liveAggregate;
+    if (liveAggregate > 0) {
+      payload.codex_totals.total_tokens += liveAggregate;
+      payload.codex_totals.token_split_status = 'aggregate_only';
     }
-  }
 
-  private resolveStateProjectionEnrichment(payload: ApiStateResponse): ApiDiagnosticsResponse['token_enrichment'] {
-    const needsLiveTokenFallback = payload.running.some(
-      (row) => row.tokens.total_tokens === 0 && row.thread_id && row.token_telemetry_status !== 'available'
-    );
-    if (!needsLiveTokenFallback) {
+    if (liveAggregate > 0) {
       return {
-        status: 'not_required',
+        status: 'available',
         degraded: false,
         reason_code: null,
         duration_ms: 0
@@ -846,10 +912,11 @@ export class LocalApiServer {
       payload.running.tokens.total_tokens = liveTotal;
       payload.running.token_telemetry_status = 'available';
       payload.running.token_telemetry_last_source = 'codex_home_state_sqlite';
-      payload.running.token_telemetry_last_at_ms = Date.now();
+      payload.running.token_telemetry_last_at_ms = this.nowMs();
       payload.running.token_telemetry_confidence = 'backfilled';
       payload.running.token_telemetry_source = 'codex_home_state_sqlite';
       payload.running.token_telemetry_last_observed_at_ms = payload.running.token_telemetry_last_at_ms;
+      payload.running.tokens.token_split_status = 'aggregate_only';
     }
   }
 
@@ -916,7 +983,7 @@ export class LocalApiServer {
       const projected = this.snapshotService.projectState(snapshot);
       projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
-      tokenEnrichment = this.resolveStateProjectionEnrichment(projected);
+      tokenEnrichment = this.enrichLiveTokenFallbackState(projected);
       enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
       tokenEnrichment = {
         ...tokenEnrichment,

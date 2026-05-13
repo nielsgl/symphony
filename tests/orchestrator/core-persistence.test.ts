@@ -40,6 +40,7 @@ describe('OrchestratorCore persistence', () => {
     const phaseSpans: Array<Record<string, unknown>> = [];
     const toolSpans: Array<Record<string, unknown>> = [];
     const transitions: Array<Record<string, unknown>> = [];
+    const completedRuns: Array<Parameters<OrchestratorPersistencePort['completeRun']>[0]> = [];
     const terminalOutcomes: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketTerminalOutcome']>>[0]> = [];
     const evidenceReferences: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTicketEvidenceReference']>>[0]> = [];
     const trackerSnapshots: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendTrackerTicketSnapshot']>>[0]> = [];
@@ -97,7 +98,9 @@ describe('OrchestratorCore persistence', () => {
       },
       recordSession: async () => undefined,
       recordEvent: async () => undefined,
-      completeRun: async () => undefined
+      completeRun: async (params) => {
+        completedRuns.push(params);
+      }
     };
     const harness = createHarness({ persistence });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([
@@ -360,6 +363,15 @@ describe('OrchestratorCore persistence', () => {
         turn_id: 'turn-1',
         outcome: 'succeeded',
         reason_code: null
+      })
+    ]);
+    expect(completedRuns).toEqual([
+      expect.objectContaining({
+        run_id: 'legacy-run-1',
+        issue_run_id: 'issue_run_1',
+        attempt_id: 'attempt_1',
+        terminal_status: 'succeeded',
+        terminal_reason_code: null
       })
     ]);
   });
