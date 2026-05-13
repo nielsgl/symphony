@@ -500,6 +500,8 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain("fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics')");
     expect(clientJs.split("fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics')")).toHaveLength(2);
     expect(clientJs).toContain('function formatDiagnosticSummary(summary)');
+    expect(clientJs).toContain('function formatCanonicalJsonBlock(label, payload)');
+    expect(clientJs).toContain("Issue JSON (canonical UTC ISO values preserved)");
     expect(clientJs).toContain('Summary diagnostics: ');
     expect(clientJs).toContain('Detailed diagnostics: loaded');
     expect(clientJs).toContain('Detailed diagnostics: unavailable');
@@ -762,6 +764,103 @@ describe('dashboard assets', () => {
     expect(text).toContain('Codex thread active 0m 15s ago');
     expect(text).toContain('codex turn waiting: heartbeat');
     expect(text).toContain('5:04:30');
+    expect(text).toContain('(UTC 2026-05-08T15:04:30.000Z)');
+  });
+
+  it('renders issue console timestamps as local labels with UTC companions', async () => {
+    vi.setSystemTime(new Date('2026-05-08T15:05:00.000Z'));
+    const runtime = installDashboardClient(async (url) => {
+      if (url === '/api/v1/state') {
+        return okJson(makeStatePayload());
+      }
+      if (url === '/api/v1/ui-state') {
+        return okJson({ state: null });
+      }
+      if (url === '/api/v1/diagnostics') {
+        return okJson({ runtime_resolution: { observed_at: '2026-05-08T15:00:00.000Z' } });
+      }
+      if (url === '/api/v1/history?limit=8') {
+        return okJson({ runs: [] });
+      }
+      if (url === '/api/v1/NIE-181') {
+        return okJson({
+          status: 'blocked',
+          snapshot_freshness_state: 'fresh',
+          snapshot_age_ms: 0,
+          phase_timeline: [
+            {
+              at: '2026-05-08T15:01:00.000Z',
+              phase: 'implementation',
+              attempt: 1,
+              detail: 'started',
+              thread_id: 'thread-1',
+              session_id: 'session-1'
+            }
+          ],
+          operator_actions: [
+            {
+              requested_at_ms: Date.parse('2026-05-08T15:02:00.000Z'),
+              actor: 'operator',
+              action: 'resume',
+              result: 'success',
+              result_code: 'accepted',
+              reason_note: 'continue',
+              message: 'accepted'
+            }
+          ],
+          blocked: {
+            stop_reason_code: 'missing_tool_output_recovery',
+            session_console: [
+              {
+                at: '2026-05-08T15:03:00.000Z',
+                event: 'codex.turn.waiting',
+                message: 'waiting'
+              }
+            ]
+          }
+        });
+      }
+      if (url === '/api/v1/issues/NIE-181/diagnostics') {
+        return okJson({
+          phase_spans: [],
+          tool_spans: [],
+          wait_spans: [],
+          capability_warnings: [],
+          timeline: [
+            {
+              at_ms: Date.parse('2026-05-08T15:04:00.000Z'),
+              event: 'codex.turn.waiting',
+              thread_id: 'thread-1',
+              turn_id: 'turn-1',
+              session_id: 'session-1',
+              reason_code: null,
+              reason_detail: 'waiting'
+            }
+          ]
+        });
+      }
+      throw new Error('Unexpected dashboard fetch: ' + url);
+    });
+
+    await flushPromises();
+    runtime.document.getElementById('issue-input').value = 'NIE-181';
+    runtime.document.getElementById('issue-load').click();
+    for (let index = 0; index < 5; index += 1) {
+      await flushPromises();
+    }
+
+    expect(runtime.fetchCalls).toContain('/api/v1/NIE-181');
+    const issueOutput = runtime.document.getElementById('issue-output').textContent;
+    const consoleText = issueOutput.split('\\n\\nIssue JSON')[0] || issueOutput;
+    expect(consoleText).toContain('(UTC 2026-05-08T15:01:00.000Z)');
+    expect(consoleText).toContain('(UTC 2026-05-08T15:02:00.000Z)');
+    expect(consoleText).toContain('(UTC 2026-05-08T15:03:00.000Z)');
+    expect(runtime.document.getElementById('thread-raw-events').textContent).toContain('(UTC 2026-05-08T15:04:00.000Z)');
+    expect(consoleText).not.toContain('\\n2026-05-08T15:01:00.000Z |');
+    expect(consoleText).not.toContain('\\n2026-05-08T15:03:00.000Z |');
+    expect(issueOutput).toContain('Issue JSON (canonical UTC ISO values preserved)');
+    expect(runtime.document.getElementById('diagnostics-output').textContent).toContain('Diagnostics JSON (canonical UTC ISO values preserved)');
+    expect(runtime.document.getElementById('runtime-resolution-output').textContent).toContain('Runtime Resolution JSON (canonical UTC ISO values preserved)');
   });
 
   it('resumes fallback polling when the stream errors after a healthy snapshot', async () => {
