@@ -157,7 +157,9 @@ its purpose obvious in logs and diagnostics.
 - `linear`: interact with Linear.
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
-- `pull`: keep branch updated with latest `origin/main` before handoff.
+- `pull`: sync with latest `origin/main` when starting work, when mergeability
+  requires it, or during landing; do not run late branch-sync merges merely as a
+  handoff ritual.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
 
 ## Status map
@@ -233,6 +235,54 @@ its purpose obvious in logs and diagnostics.
       - resulting `HEAD` short SHA.
 10. Compact context and proceed to execution.
 
+## Git Operation Safety Invariant
+
+Any operation that can leave an unmerged index (`git merge`, `git rebase`,
+`git cherry-pick`, `git apply`, patch application, or an equivalent tool path)
+must finish in the same turn before other workflow progress continues.
+
+At the start of every continuation/retry attempt, before normal workflow routing
+or new implementation work, run:
+
+```bash
+git status --porcelain=v1
+git ls-files -u
+```
+
+If `git ls-files -u` prints entries, treat the workspace as an interrupted git
+operation owned by this issue attempt:
+
+- Do not start new analysis, edits, validation, pull, push, PR updates, or issue
+  state transitions yet.
+- Inspect the in-progress operation metadata (`MERGE_HEAD`, `REBASE_HEAD`,
+  `CHERRY_PICK_HEAD`, `AUTO_MERGE`, and related git status output) to identify
+  the interrupted operation.
+- Resolve the unmerged paths when the correct resolution is inferable from the
+  branch intent, `origin/main`, tests, and nearby code; then continue/commit the
+  operation and rerun required validation.
+- Abort the interrupted operation when the correct resolution is not inferable
+  or when the operation was only a freshness sync that is not required for the
+  current ticket state.
+- Record the action and evidence in the workpad before resuming normal
+  workflow.
+
+After such an operation, run both checks:
+
+```bash
+git status --porcelain=v1
+git ls-files -u
+```
+
+- If `git ls-files -u` prints any entry, the operation is not complete.
+- Resolve the conflict fully and commit/continue the operation, or abort the
+  operation before stopping the run.
+- Do not push, retry, update the workpad as complete, move issue state, or treat
+  the workspace as recoverable attempt residue while unmerged index entries
+  remain.
+- If the correct conflict resolution cannot be inferred safely, abort the
+  operation when possible, record the blocker in the workpad, and leave the
+  issue in an operator-action blocked state.
+
 ## PR feedback sweep protocol (required)
 
 When a ticket has an attached PR, run this protocol before moving to `Agent Review`:
@@ -292,13 +342,26 @@ Use this only when completion is blocked by missing required tools or missing au
     - If a primary mode/path is claimed (for example, native path), ensure at least one automated test proves it is reachable in real execution.
     - Do not treat placeholder/stubbed production paths as complete.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
+    - Also run `git ls-files -u`; pushing is forbidden if any unmerged index
+      entry remains.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Prefer Linear MCP link support through `save_issue` links for ordinary PR
       attachments; use raw GraphQL only when richer Linear-specific attachment
       metadata is required and MCP cannot express it.
     - Ensure the GitHub PR has label `symphony` (add it if missing).
     - If there is no PR URL, treat the run as incomplete and do not move state forward.
-9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
+9.  Before review handoff, verify branch freshness without doing a mandatory
+    late merge:
+    - Fetch latest refs with `git fetch origin`.
+    - Inspect PR mergeability/check state when a PR exists, or compare branch
+      against `origin/main` when no PR exists yet.
+    - If the branch is already mergeable and required checks are green, do not
+      merge `origin/main` just to refresh the branch.
+    - If mergeability, CI, or review feedback requires an update from
+      `origin/main`, run the `pull` skill, resolve conflicts fully in the same
+      turn, rerun required validation, commit the merge/update, and push.
+    - If conflicts cannot be resolved safely, abort the merge when possible,
+      record the blocker in the workpad, and do not move to `Agent Review`.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.

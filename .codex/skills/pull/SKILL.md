@@ -4,7 +4,8 @@ description:
   Pull latest origin/main into the current local branch and resolve merge
   conflicts (aka update-branch). Use when Codex needs to sync a feature branch
   with origin, perform a merge-based update (not rebase), and guide conflict
-  resolution best practices.
+  resolution best practices. Do not use as a routine late handoff step when the
+  branch is already mergeable and checks are green.
 ---
 
 # Pull
@@ -12,6 +13,9 @@ description:
 ## Workflow
 
 1. Verify git status is clean or commit/stash changes before merging.
+   - First run `git ls-files -u`; if it prints entries, an earlier git
+     operation is still unresolved. Resolve or abort that operation before
+     starting a new pull.
 2. Ensure rerere is enabled locally:
    - `git config rerere.enabled true`
    - `git config rerere.autoupdate true`
@@ -37,8 +41,15 @@ description:
 7. If conflicts appear, resolve them (see conflict guidance below), then:
    - `git add <files>`
    - `git commit` (or `git merge --continue` if the merge is paused)
-8. Verify with project checks (follow repo policy in `AGENTS.md`).
-9. Summarize the merge:
+8. Verify the merge is finished:
+   - `git ls-files -u` must print no entries.
+   - `git status --porcelain=v1` must not contain unmerged status pairs such as
+     `AA`, `DD`, `DU`, `UD`, `UU`, `AU`, or `UA`.
+   - If unresolved entries remain and a safe resolution is not clear, abort the
+     merge with `git merge --abort` when possible and record the blocker instead
+     of leaving the worktree mid-merge.
+9. Verify with project checks (follow repo policy in `AGENTS.md`).
+10. Summarize the merge:
    - Call out the most challenging conflicts/files and how they were resolved.
    - Note any assumptions or follow-ups.
 
@@ -82,6 +93,8 @@ description:
     checks to remove unused or incorrect imports safely.
 - After resolving, ensure no conflict markers remain:
   - `git diff --check`
+- After resolving, ensure no unmerged index entries remain:
+  - `git ls-files -u`
 - When unsure, note assumptions and ask for confirmation before finalizing the
   merge.
 
