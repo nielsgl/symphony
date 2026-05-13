@@ -138,7 +138,13 @@ export interface Harness {
   now: { value: number };
   scheduled: Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>;
   terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }>;
-  spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null; resume_context?: string | null }>;
+  spawned: Array<{
+    issue_id: string;
+    attempt: number | null;
+    worker_host?: string | null;
+    resume_context?: string | null;
+    recover_workspace_attempt_residue?: boolean;
+  }>;
 }
 
 export function withTemporaryCodexHome<T>(callback: (codexHome: string) => Promise<T>): Promise<T> {
@@ -179,7 +185,13 @@ export function createHarness(options: {
   const now = { value: 1_000_000 };
   const scheduled = new Map<string, { callback: () => Promise<void>; due_at_ms: number; handle: object }>();
   const terminated: Array<{ issue_id: string; cleanup_workspace: boolean; reason: string }> = [];
-  const spawned: Array<{ issue_id: string; attempt: number | null; worker_host?: string | null; resume_context?: string | null }> = [];
+  const spawned: Array<{
+    issue_id: string;
+    attempt: number | null;
+    worker_host?: string | null;
+    resume_context?: string | null;
+    recover_workspace_attempt_residue?: boolean;
+  }> = [];
 
   const config: OrchestratorConfig = {
     poll_interval_ms: 30_000,
@@ -194,10 +206,16 @@ export function createHarness(options: {
 
   const spawnWorker: OrchestratorPorts['spawnWorker'] =
     options.spawnWorker ??
-    (async ({ issue, attempt, worker_host, resume_context }) => {
+    (async ({ issue, attempt, worker_host, resume_context, recover_workspace_attempt_residue }) => {
       const worker_instance_id = `${issue.id}-worker-${spawned.length + 1}`;
       const worker_handle = { issue_id: issue.id, worker_instance_id };
-      spawned.push({ issue_id: issue.id, attempt, worker_host, resume_context });
+      spawned.push({
+        issue_id: issue.id,
+        attempt,
+        worker_host,
+        resume_context,
+        ...(recover_workspace_attempt_residue ? { recover_workspace_attempt_residue } : {})
+      });
       return {
         ok: true,
         worker_handle,

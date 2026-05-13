@@ -201,6 +201,16 @@ Returns current runtime summary:
 - last known phase context for retrying/blocked issues (`last_phase`,
   `last_phase_at`, `last_phase_detail`)
 
+Control-plane responsiveness can be stress-tested while synthetic Codex
+transcripts are being written:
+
+```bash
+npm run stress:control-plane -- --api-url http://127.0.0.1:61026/api/v1/state --codex-home /path/to/codex-home
+```
+
+Use the same `SYMPHONY_CODEX_HOME` value as the running Symphony process when
+validating transcript-scanner changes.
+
 ### GET `/api/v1/:issue_identifier`
 
 Returns issue-specific runtime diagnostics:

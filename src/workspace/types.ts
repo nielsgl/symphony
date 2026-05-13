@@ -93,7 +93,7 @@ export interface WorkspaceManagerOptions {
   onPreflightResult?: (result: {
     identifier: string;
     workspace_path: string;
-    status: 'cleaned' | 'conflict';
+    status: 'cleaned' | 'conflict' | 'attempt_residue_recoverable';
     cleaned_files: Array<{ path: string; action: 'unstage' | 'untrack' | 'remove' | 'restore' }>;
     conflict_files: Array<{
       path: string;
@@ -107,6 +107,10 @@ export interface WorkspaceManagerOptions {
     };
     resolution_hints: string[];
   }) => void;
+}
+
+export interface WorkspacePrepareAttemptOptions {
+  allow_attempt_residue?: boolean;
 }
 
 export interface CleanupWorkspacesResult {

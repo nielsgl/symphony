@@ -10,7 +10,8 @@ import type {
   HookExecutionResult,
   WorkspaceHookName,
   WorkspaceInfo,
-  WorkspaceManagerOptions
+  WorkspaceManagerOptions,
+  WorkspacePrepareAttemptOptions
 } from './types';
 
 const SANITIZE_PATTERN = /[^A-Za-z0-9._-]/g;
@@ -355,19 +356,19 @@ export class WorkspaceManager {
     };
   }
 
-  async prepareAttempt(workspacePath: string): Promise<void> {
+  async prepareAttempt(workspacePath: string, options: WorkspacePrepareAttemptOptions = {}): Promise<void> {
     const resolved = path.resolve(workspacePath);
     this.assertLaunchSafety({ workspacePath: resolved, cwd: resolved });
 
     for (const artifact of TEMP_ARTIFACTS) {
       await fs.rm(path.join(resolved, artifact), { recursive: true, force: true });
     }
-    await this.normalizeKnownWorkspaceDrift(resolved);
+    await this.normalizeKnownWorkspaceDrift(resolved, options);
 
     await this.runHookOrThrow('before_run', resolved);
   }
 
-  private async normalizeKnownWorkspaceDrift(workspacePath: string): Promise<void> {
+  private async normalizeKnownWorkspaceDrift(workspacePath: string, options: WorkspacePrepareAttemptOptions): Promise<void> {
     const statusOutput = await this.runGit(workspacePath, ['status', '--porcelain']);
     if (!statusOutput) {
       return;
@@ -422,7 +423,7 @@ export class WorkspaceManager {
       }
       if (normalizedPath.startsWith('output/playwright/') && entry.staged !== '?') {
         const classification = 'tracked_ephemeral' as const;
-        conflictFiles.push({ path: normalizedPath, status: entry.staged !== ' ' ? 'staged' : 'unstaged', classification });
+        conflictFiles.push({ path: normalizedPath, status: this.statusForPorcelainEntry(entry), classification });
         classificationSummary[classification] += 1;
         continue;
       }
@@ -433,7 +434,7 @@ export class WorkspaceManager {
       }
       if (entry.staged !== ' ' || entry.unstaged !== ' ') {
         const classification = 'unknown_non_ephemeral' as const;
-        conflictFiles.push({ path: normalizedPath, status: entry.staged !== ' ' ? 'staged' : 'unstaged', classification });
+        conflictFiles.push({ path: normalizedPath, status: this.statusForPorcelainEntry(entry), classification });
         classificationSummary[classification] += 1;
       }
     }
@@ -451,6 +452,42 @@ export class WorkspaceManager {
     }
 
     if (conflictFiles.length > 0) {
+      const attemptResidueRecoverable =
+        options.allow_attempt_residue === true &&
+        classificationSummary.tracked_ephemeral === 0 &&
+        classificationSummary.unknown_non_ephemeral === conflictFiles.length &&
+        !(await this.hasActiveGitOperation(workspacePath));
+      if (attemptResidueRecoverable) {
+        this.onPreflightResult?.({
+          identifier: path.basename(workspacePath),
+          workspace_path: workspacePath,
+          status: 'attempt_residue_recoverable',
+          cleaned_files: cleanupActions,
+          conflict_files: conflictFiles,
+          classification_summary: classificationSummary,
+          resolution_hints: [
+            'Continue from the previous attempt residue in this managed issue workspace.',
+            'Inspect the dirty diff, run required validation, and commit only if the residue matches the ticket scope.'
+          ]
+        });
+        return;
+      }
+      const detail =
+        classificationSummary.tracked_ephemeral > 0
+          ? 'tracked output/playwright artifacts remain after preflight cleanup'
+          : 'workspace contains non-ephemeral dirty files after preflight cleanup';
+      const resolutionHints =
+        classificationSummary.tracked_ephemeral > 0
+          ? [
+              'Remove tracked entries under output/playwright/ from git index/history.',
+              'Run `git rm --cached output/playwright/<file>` for each tracked artifact.',
+              'Resume only after workspace git status is free of tracked output/playwright entries.'
+            ]
+          : [
+              'Inspect the dirty files in the issue worktree.',
+              'Commit, stash, or remove the non-ephemeral changes before resuming.',
+              'Resume only after the workspace state is known to be safe.'
+            ];
       this.onPreflightResult?.({
         identifier: path.basename(workspacePath),
         workspace_path: workspacePath,
@@ -458,26 +495,41 @@ export class WorkspaceManager {
         cleaned_files: cleanupActions,
         conflict_files: conflictFiles,
         classification_summary: classificationSummary,
-        resolution_hints: [
-          'Remove tracked entries under output/playwright/ from git index/history.',
-          'Run `git rm --cached output/playwright/<file>` for each tracked artifact.',
-          'Resume only after workspace git status is free of tracked output/playwright entries.'
-        ]
+        resolution_hints: resolutionHints
       });
       throw new WorkspaceError(
         'workspace_unprovisioned_conflict',
         `workspace_preflight_conflict:${JSON.stringify({
-          detail: 'tracked output/playwright artifacts remain after preflight cleanup',
+          detail,
           conflict_files: conflictFiles,
           classification_summary: classificationSummary,
-          resolution_hints: [
-            'Remove tracked entries under output/playwright/ from git index/history.',
-            'Run `git rm --cached output/playwright/<file>` for each tracked artifact.',
-            'Resume only after workspace git status is free of tracked output/playwright entries.'
-          ]
+          resolution_hints: resolutionHints
         })}`
       );
     }
+  }
+
+  private statusForPorcelainEntry(entry: { staged: string; unstaged: string }): 'staged' | 'unstaged' | 'unknown' {
+    if (entry.staged === '?' && entry.unstaged === '?') {
+      return 'unknown';
+    }
+    return entry.staged !== ' ' ? 'staged' : 'unstaged';
+  }
+
+  private async hasActiveGitOperation(workspacePath: string): Promise<boolean> {
+    const gitStatePaths = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-merge', 'rebase-apply'];
+    for (const gitStatePath of gitStatePaths) {
+      const resolved = await this.runGit(workspacePath, ['rev-parse', '--git-path', gitStatePath]);
+      const candidate = resolved?.trim();
+      if (!candidate) {
+        continue;
+      }
+      const absolute = path.isAbsolute(candidate) ? candidate : path.resolve(workspacePath, candidate);
+      if (await fs.stat(absolute).then(() => true, () => false)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async runGit(cwd: string, args: string[]): Promise<string | null> {

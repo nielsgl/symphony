@@ -64,6 +64,7 @@ export const REASON_CODES = {
   workerCancelUnknown: 'worker_cancel_unknown',
   workspaceCleanupFailed: 'workspace_cleanup_failed',
   operatorWorkspaceConflict: 'operator_action_required_workspace_conflict',
+  workspaceAttemptResidueRecovered: 'workspace_attempt_residue_recovered',
   operatorNoProgressRedispatchBlocked: 'operator_action_required_no_progress_redispatch_blocked',
   agentReviewHandoffProgressObserved: 'agent_review_handoff_progress_observed',
   noProgressBlockSuppressed: 'no_progress_block_suppressed',
@@ -507,6 +508,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Run is blocked on operator input',
     detail: 'The orchestrator paused this run until an operator resolves the workspace conflict.',
     expected_transition: null
+  },
+  [REASON_CODES.workspaceAttemptResidueRecovered]: {
+    reason_code: REASON_CODES.workspaceAttemptResidueRecovered,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Inspect dirty workspace diff', 'Run required validation', 'Commit only ticket-scoped residue'],
+    label: 'Workspace Attempt Residue Recovered',
+    headline: 'Run is continuing from previous attempt residue',
+    detail: 'A managed issue workspace contained recoverable non-ephemeral residue from a prior attempt, so redispatch continues with explicit validation instructions.',
+    expected_transition: 'Worker validates and finalizes the carried-forward workspace state'
   },
   [REASON_CODES.operatorNoProgressRedispatchBlocked]: {
     reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
