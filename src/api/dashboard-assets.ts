@@ -823,6 +823,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
   }
 
   function renderOverview(payload) {
+    const splitUnavailable = payload.codex_totals && payload.codex_totals.token_split_status === 'aggregate_only';
     elements.kpiGrid.replaceChildren(
       createMetricCard('Running', formatNumber(payload.counts.running)),
       createMetricCard('Retrying', formatNumber(payload.counts.retrying)),
@@ -831,8 +832,8 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       createMetricCard('Stalled Waiting', formatNumber(payload.counts.running_stalled_waiting_count || 0)),
       createMetricCard('Awaiting Input', formatNumber(payload.counts.running_awaiting_input_count || 0)),
       createMetricCard('Total Tokens', formatNumber(payload.codex_totals.total_tokens)),
-      createMetricCard('Input Tokens', formatNumber(payload.codex_totals.input_tokens)),
-      createMetricCard('Output Tokens', formatNumber(payload.codex_totals.output_tokens)),
+      createMetricCard('Input Tokens', splitUnavailable ? 'Split unavailable' : formatNumber(payload.codex_totals.input_tokens)),
+      createMetricCard('Output Tokens', splitUnavailable ? 'Split unavailable' : formatNumber(payload.codex_totals.output_tokens)),
       createMetricCard('Runtime Seconds', formatNumber(computeDisplayRuntimeSeconds(payload)))
     );
 
@@ -1681,12 +1682,17 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const tokenDetail = document.createElement('div');
       tokenDetail.className = 'muted';
       if (telemetryStatus === 'available') {
-        tokenDetail.textContent =
-          'In ' +
-          formatNumber(entry.tokens.input_tokens) +
-          ' / Out ' +
-          formatNumber(entry.tokens.output_tokens) +
-          (entry.token_telemetry_source ? ' • ' + entry.token_telemetry_source : '');
+        if (entry.tokens && entry.tokens.token_split_status === 'aggregate_only') {
+          tokenDetail.textContent =
+            'Split unavailable' + (entry.token_telemetry_source ? ' • ' + entry.token_telemetry_source : '');
+        } else {
+          tokenDetail.textContent =
+            'In ' +
+            formatNumber(entry.tokens.input_tokens) +
+            ' / Out ' +
+            formatNumber(entry.tokens.output_tokens) +
+            (entry.token_telemetry_source ? ' • ' + entry.token_telemetry_source : '');
+        }
       } else {
         tokenDetail.textContent = telemetryStatus === 'pending' ? 'Waiting for first usage payload' : 'No telemetry path detected';
       }

@@ -491,6 +491,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       input_tokens: number;
       output_tokens: number;
       total_tokens: number;
+      token_split_status?: 'available' | 'aggregate_only';
       cached_input_tokens?: number;
       reasoning_output_tokens?: number;
       model_context_window?: number;
@@ -721,6 +722,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    token_split_status?: 'available' | 'aggregate_only';
     cached_input_tokens?: number;
     reasoning_output_tokens?: number;
     model_context_window?: number;
@@ -856,6 +858,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
       input_tokens: number;
       output_tokens: number;
       total_tokens: number;
+      token_split_status?: 'available' | 'aggregate_only';
       cached_input_tokens?: number;
       reasoning_output_tokens?: number;
       model_context_window?: number;
