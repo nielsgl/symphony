@@ -15,6 +15,7 @@ import type {
 } from '../persistence';
 import type { SecurityProfile } from '../security';
 import type { ControlPlaneHealthRecorder, ControlPlaneHealthSummary, ControlPlaneThresholds } from './control-plane-health';
+import type { EventLoopHealthMonitor } from './event-loop-health';
 
 export type TurnControlState = 'agent_turn' | 'operator_turn' | 'blocked_manual_resume' | 'automation_fault';
 export type ProgressSignalState = 'advancing' | 'heartbeat_only' | 'active_but_opaque' | 'stalled_waiting';
@@ -732,6 +733,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
   health: {
     dispatch_validation: 'ok' | 'failed';
     last_error: string | null;
+    control_plane?: ControlPlaneHealthSummary;
   };
   throughput: {
     current_tps: number;
@@ -1267,6 +1269,7 @@ export interface LocalApiServerOptions {
     thresholds?: Partial<ControlPlaneThresholds>;
   };
   controlPlaneHealthRecorder?: ControlPlaneHealthRecorder;
+  eventLoopHealthMonitor?: EventLoopHealthMonitor;
 }
 
 export interface ApiDiagnosticsResponse {

@@ -1111,24 +1111,43 @@ describe('LocalApiServer', () => {
     const address = server.address();
 
     const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as {
+      health: {
+        control_plane?: {
+          event_loop: {
+            delay: { resolution_ms: number; max_ms: number | null };
+          } | null;
+        };
+      };
+    };
     expect(stateResponse.status).toBe(200);
+    expect(statePayload.health.control_plane?.event_loop).toMatchObject({
+      delay: { resolution_ms: 20 }
+    });
 
     const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
     const diagnosticsPayload = (await diagnosticsResponse.json()) as {
       control_plane: {
         sample_limit: number;
         worst_health: string;
+        event_loop: {
+          delay: { max_ms: number | null };
+          utilization: { utilization: number };
+        } | null;
         endpoints: Array<{
           endpoint: string;
           transport: string;
           sample_count: number;
           last_duration_ms: number | null;
           last_payload_bytes: number | null;
+          last_request_queue_delay_ms: number | null;
           last_projection_duration_ms: number | null;
           last_enrichment_duration_ms: number | null;
           last_serialization_duration_ms: number | null;
           last_snapshot_age_ms: number | null;
           last_snapshot_freshness_state: string | null;
+          last_event_loop_delay_ms: number | null;
+          last_event_loop_utilization: number | null;
         }>;
       };
     };
@@ -1144,10 +1163,17 @@ describe('LocalApiServer', () => {
     });
     expect(stateHealth?.last_duration_ms).toBeGreaterThan(0);
     expect(stateHealth?.last_payload_bytes).toBeGreaterThan(0);
+    expect(stateHealth?.last_request_queue_delay_ms).toBeGreaterThanOrEqual(0);
     expect(stateHealth?.last_projection_duration_ms).toBeGreaterThan(0);
     expect(stateHealth?.last_enrichment_duration_ms).toBeGreaterThanOrEqual(0);
     expect(stateHealth?.last_serialization_duration_ms).toBeGreaterThan(0);
     expect(stateHealth?.last_snapshot_age_ms).toBeGreaterThanOrEqual(0);
+    expect(stateHealth?.last_event_loop_delay_ms).toBeGreaterThanOrEqual(0);
+    expect(stateHealth?.last_event_loop_utilization).toBeGreaterThanOrEqual(0);
+    expect(diagnosticsPayload.control_plane.event_loop).toMatchObject({
+      delay: { resolution_ms: 20 },
+      utilization: { utilization: expect.any(Number) }
+    });
     expect(JSON.stringify(diagnosticsPayload.control_plane)).not.toContain('samples');
     expect(JSON.stringify(diagnosticsPayload.control_plane)).not.toContain('transcript_tool_call_diagnostics');
   });
@@ -1212,8 +1238,11 @@ describe('LocalApiServer', () => {
     });
     expect(pressureLog?.context.payload_bytes).toBeGreaterThan(2);
     expect(pressureLog?.context).toHaveProperty('duration_ms');
+    expect(pressureLog?.context).toHaveProperty('request_queue_delay_ms');
     expect(pressureLog?.context).toHaveProperty('projection_duration_ms');
     expect(pressureLog?.context).toHaveProperty('serialization_duration_ms');
+    expect(pressureLog?.context).toHaveProperty('event_loop_delay_ms');
+    expect(pressureLog?.context).toHaveProperty('event_loop_utilization');
   });
 
   it('serves bounded issue runtime diagnostics for running and blocked issues', async () => {
