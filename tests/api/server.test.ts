@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -1176,6 +1177,142 @@ describe('LocalApiServer', () => {
     });
     expect(JSON.stringify(diagnosticsPayload.control_plane)).not.toContain('samples');
     expect(JSON.stringify(diagnosticsPayload.control_plane)).not.toContain('transcript_tool_call_diagnostics');
+  });
+
+  it('classifies queued state service separately from fast handler work', async () => {
+    const logs: Array<{ event: string; context: Record<string, unknown> }> = [];
+    const logger: ConstructorParameters<typeof LocalApiServer>[0]['logger'] = {
+      log: ({ event, context }) => {
+        logs.push({ event, context: context ?? {} });
+      }
+    };
+    let now = Date.parse('2026-04-10T10:05:00.000Z');
+    const timingValues = [1_000, 6_250, 6_250, 6_250];
+    let timingCall = 0;
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource(),
+      logger,
+      nowMs: () => {
+        now += 1;
+        return now;
+      },
+      requestTimingNowMs: () => timingValues[Math.min(timingCall++, timingValues.length - 1)]!,
+      controlPlaneHealth: {
+        thresholds: {
+          slow_request_queue_delay_ms: 1_000,
+          degraded_request_queue_delay_ms: 5_000
+        }
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      control_plane: {
+        endpoints: Array<{
+          endpoint: string;
+          health: string;
+          last_duration_ms: number | null;
+          last_request_queue_delay_ms: number | null;
+          last_projection_duration_ms: number | null;
+        }>;
+      };
+    };
+
+    const stateRequestedLog = logs.find((entry) => entry.event === CANONICAL_EVENT.api.stateRequested);
+    const pressureLog = logs.find((entry) => entry.event === CANONICAL_EVENT.api.stateSnapshotDegraded);
+    const stateHealth = diagnosticsPayload.control_plane.endpoints.find((entry) => entry.endpoint === '/api/v1/state');
+    expect(stateResponse.status).toBe(200);
+    expect(stateRequestedLog?.context.request_queue_delay_ms).toBe(5250);
+    expect(stateRequestedLog?.context.control_plane_health).toBe('degraded');
+    expect(stateRequestedLog?.context.duration_ms).toEqual(expect.any(Number));
+    expect(stateRequestedLog?.context.projection_duration_ms).toEqual(expect.any(Number));
+    expect(pressureLog?.context).toMatchObject({
+      endpoint: '/api/v1/state',
+      health: 'degraded',
+      request_queue_delay_ms: 5250
+    });
+    expect(stateHealth).toMatchObject({
+      health: 'degraded',
+      last_request_queue_delay_ms: 5250
+    });
+    expect(stateHealth?.last_duration_ms).toBeLessThan(1_000);
+    expect(stateHealth?.last_projection_duration_ms).toBeLessThan(1_000);
+  });
+
+  it('does not count keep-alive socket idle time as request queue delay', async () => {
+    const timingValues = [1_000, 1_000, 10_000, 10_000, 10_000, 10_000];
+    let timingCall = 0;
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource(),
+      requestTimingNowMs: () => timingValues[Math.min(timingCall++, timingValues.length - 1)]!
+    });
+
+    await server.listen();
+    const address = server.address();
+    const requestState = () =>
+      new Promise<{ reusedSocket: boolean; statusCode: number | undefined }>((resolve, reject) => {
+        const request = http.request(
+          {
+            agent,
+            host: '127.0.0.1',
+            method: 'GET',
+            path: '/api/v1/state',
+            port: address.port
+          },
+          (response) => {
+            response.resume();
+            response.on('end', () => {
+              resolve({ reusedSocket: request.reusedSocket, statusCode: response.statusCode });
+            });
+          }
+        );
+        request.on('error', reject);
+        request.end();
+      });
+
+    const first = await requestState();
+    const second = await requestState();
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      control_plane: {
+        endpoints: Array<{
+          endpoint: string;
+          sample_count: number;
+          max_request_queue_delay_ms: number | null;
+          last_request_queue_delay_ms: number | null;
+        }>;
+      };
+    };
+    agent.destroy();
+
+    const stateHealth = diagnosticsPayload.control_plane.endpoints.find((entry) => entry.endpoint === '/api/v1/state');
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.reusedSocket).toBe(true);
+    expect(stateHealth).toMatchObject({
+      sample_count: 2,
+      max_request_queue_delay_ms: 0,
+      last_request_queue_delay_ms: 0
+    });
   });
 
   it('classifies degraded state payload pressure and emits typed snapshot pressure logs', async () => {

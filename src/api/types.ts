@@ -1262,6 +1262,7 @@ export interface LocalApiServerOptions {
     phase_stale_warn_ms?: number;
   };
   nowMs?: () => number;
+  requestTimingNowMs?: () => number;
   logger?: StructuredLogger;
   codexStateDbPath?: string;
   controlPlaneHealth?: {

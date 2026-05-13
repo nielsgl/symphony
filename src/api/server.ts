@@ -1,5 +1,4 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
-import type { Socket } from 'node:net';
 import { performance } from 'node:perf_hooks';
 
 import { REASON_CODES, type StructuredLogger } from '../observability';
@@ -78,7 +77,7 @@ interface TimedDiagnosticsPayload {
 }
 
 interface RequestTiming {
-  handler_started_at_ms: number;
+  request_received_at_ms: number;
   request_queue_delay_ms: number;
 }
 
@@ -335,11 +334,11 @@ export class LocalApiServer {
   private readonly logger?: StructuredLogger;
   private readonly codexStateDbPath: string;
   private readonly nowMs: () => number;
+  private readonly requestTimingNowMs: () => number;
   private readonly controlPlaneHealth: ControlPlaneHealthRecorder;
   private readonly eventLoopHealth: EventLoopHealthMonitor;
 
   private readonly server: http.Server;
-  private readonly socketAcceptedAtMs: WeakMap<Socket, number>;
   private readonly eventClients: Map<number, ServerResponse>;
   private nextClientId: number;
   private nextEventId: number;
@@ -364,6 +363,7 @@ export class LocalApiServer {
     };
     this.logger = options.logger;
     this.nowMs = options.nowMs ?? (() => Date.now());
+    this.requestTimingNowMs = options.requestTimingNowMs ?? (() => performance.now());
     this.controlPlaneHealth = options.controlPlaneHealthRecorder ?? new ControlPlaneHealthRecorder(options.controlPlaneHealth);
     this.eventLoopHealth = options.eventLoopHealthMonitor ?? new NodeEventLoopHealthMonitor();
     const codexHome = (process.env.SYMPHONY_CODEX_HOME || `${process.env.HOME || ''}/.codex`).trim();
@@ -373,7 +373,6 @@ export class LocalApiServer {
       nowMs: options.nowMs
     });
     this.eventClients = new Map();
-    this.socketAcceptedAtMs = new WeakMap();
     this.nextClientId = 1;
     this.nextEventId = 1;
     this.heartbeatHandle = null;
@@ -389,10 +388,10 @@ export class LocalApiServer {
     };
 
     this.server = http.createServer((req, res) => {
-      void this.handle(req, res);
-    });
-    this.server.on('connection', (socket: Socket) => {
-      this.socketAcceptedAtMs.set(socket, performance.now());
+      void this.handle(req, res, {
+        request_received_at_ms: this.requestTimingNowMs(),
+        request_queue_delay_ms: 0
+      });
     });
   }
 
@@ -531,6 +530,10 @@ export class LocalApiServer {
       event_loop_delay_ms: eventLoop.delay.max_ms,
       event_loop_utilization: eventLoop.utilization.utilization
     };
+  }
+
+  private markProjectionQueueDelay(timing: RequestTiming): void {
+    timing.request_queue_delay_ms = Math.max(0, Math.round(this.requestTimingNowMs() - timing.request_received_at_ms));
   }
 
   private recordControlPlaneObservation(observation: ControlPlaneObservation): ControlPlaneHealthState {
@@ -1179,14 +1182,7 @@ export class LocalApiServer {
     });
   }
 
-  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const handlerStartedAtMs = performance.now();
-    const acceptedAtMs = this.socketAcceptedAtMs.get(req.socket) ?? handlerStartedAtMs;
-    const timing: RequestTiming = {
-      handler_started_at_ms: handlerStartedAtMs,
-      request_queue_delay_ms: Math.max(0, Math.round(handlerStartedAtMs - acceptedAtMs))
-    };
-    this.socketAcceptedAtMs.set(req.socket, handlerStartedAtMs);
+  private async handle(req: IncomingMessage, res: ServerResponse, timing: RequestTiming): Promise<void> {
     const method = req.method ?? 'GET';
     const urlPath = new URL(req.url ?? '/', 'http://localhost').pathname;
 
@@ -1231,6 +1227,7 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (_request, response, _match, timing) => {
               const startedAtMs = this.nowMs();
+              this.markProjectionQueueDelay(timing);
               const snapshot = this.buildStateSnapshotResponse();
               const payload = snapshot.payload;
               if (!('error' in payload)) {
@@ -1445,6 +1442,7 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (_request, response, _match, timing) => {
               const startedAtMs = this.nowMs();
+              this.markProjectionQueueDelay(timing);
               const diagnostics = this.buildDiagnosticsPayload();
               const payload = diagnostics.payload;
               const serializationStartedAtMs = this.nowMs();
