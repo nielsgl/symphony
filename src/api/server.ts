@@ -877,8 +877,8 @@ export class LocalApiServer {
       }
     }
 
-    if (payload.codex_totals.total_tokens === 0 && liveAggregate > 0) {
-      payload.codex_totals.total_tokens = liveAggregate;
+    if (liveAggregate > 0) {
+      payload.codex_totals.total_tokens += liveAggregate;
       payload.codex_totals.token_split_status = 'aggregate_only';
     }
 

@@ -1869,6 +1869,109 @@ describe('LocalApiServer', () => {
     fs.rmSync(codexHomeDir, { recursive: true, force: true });
   });
 
+  it('adds aggregate sqlite fallback totals to existing protocol state totals', async () => {
+    const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-mixed-totals-'));
+    const dbPath = path.join(codexHomeDir, 'state_5.sqlite');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sqlite = require('node:sqlite') as {
+      DatabaseSync: new (path: string) => {
+        exec: (sql: string) => void;
+        close: () => void;
+      };
+    };
+    const db = new sqlite.DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        tokens_used INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO threads (id, tokens_used) VALUES ('thread-fallback-mixed', 50);
+    `);
+    db.close();
+
+    const previousCodexHome = process.env.SYMPHONY_CODEX_HOME;
+    process.env.SYMPHONY_CODEX_HOME = codexHomeDir;
+
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-protocol',
+          makeRunningEntry({
+            issue: makeIssue({ id: 'issue-protocol', identifier: 'ABC-PROTOCOL' }),
+            identifier: 'ABC-PROTOCOL',
+            thread_id: 'thread-protocol-mixed',
+            tokens: { input_tokens: 60, output_tokens: 40, total_tokens: 100 },
+            last_reported_tokens: { input_tokens: 60, output_tokens: 40, total_tokens: 100 },
+            token_telemetry_status: 'available',
+            token_telemetry_last_source: 'worker_event_usage',
+            token_telemetry_last_at_ms: Date.parse('2026-04-10T10:04:00.000Z')
+          })
+        ],
+        [
+          'issue-fallback',
+          makeRunningEntry({
+            issue: makeIssue({ id: 'issue-fallback', identifier: 'ABC-FALLBACK' }),
+            identifier: 'ABC-FALLBACK',
+            thread_id: 'thread-fallback-mixed',
+            tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            last_reported_tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            token_telemetry_status: 'pending',
+            token_telemetry_last_source: null,
+            token_telemetry_last_at_ms: null
+          })
+        ]
+      ]),
+      codex_totals: {
+        input_tokens: 60,
+        output_tokens: 40,
+        total_tokens: 100,
+        seconds_running: 0
+      }
+    });
+
+    server = new LocalApiServer({
+      host: '127.0.0.1',
+      port: 0,
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: { tick: async () => {} }
+    });
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const payload = (await response.json()) as {
+      codex_totals: { input_tokens: number; output_tokens: number; total_tokens: number; token_split_status?: string };
+      running: Array<{
+        issue_identifier: string;
+        token_telemetry_status: string;
+        token_telemetry_last_source: string | null;
+        tokens: { input_tokens: number; output_tokens: number; total_tokens: number; token_split_status?: string };
+      }>;
+    };
+
+    const protocolRow = payload.running.find((row) => row.issue_identifier === 'ABC-PROTOCOL');
+    const fallbackRow = payload.running.find((row) => row.issue_identifier === 'ABC-FALLBACK');
+    expect(response.status).toBe(200);
+    expect(payload.codex_totals.total_tokens).toBe(150);
+    expect(payload.codex_totals.input_tokens).toBe(60);
+    expect(payload.codex_totals.output_tokens).toBe(40);
+    expect(payload.codex_totals.token_split_status).toBe('aggregate_only');
+    expect(protocolRow?.tokens).toMatchObject({ input_tokens: 60, output_tokens: 40, total_tokens: 100 });
+    expect(protocolRow?.tokens.token_split_status).toBeUndefined();
+    expect(fallbackRow?.tokens.total_tokens).toBe(50);
+    expect(fallbackRow?.tokens.token_split_status).toBe('aggregate_only');
+    expect(fallbackRow?.token_telemetry_status).toBe('available');
+    expect(fallbackRow?.token_telemetry_last_source).toBe('codex_home_state_sqlite');
+
+    if (previousCodexHome === undefined) {
+      delete process.env.SYMPHONY_CODEX_HOME;
+    } else {
+      process.env.SYMPHONY_CODEX_HOME = previousCodexHome;
+    }
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
+  });
+
   it('keeps GET /api/v1/state off the live token fallback hot path', async () => {
     const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-hot-path-'));
     const dbPath = path.join(codexHomeDir, 'state_5.sqlite');
@@ -2137,7 +2240,8 @@ describe('LocalApiServer', () => {
       snapshotSource: {
         getStateSnapshot: () => state
       },
-      refreshSource: { tick: async () => {} }
+      refreshSource: { tick: async () => {} },
+      diagnosticsSource: makeDiagnosticsSource()
     });
     await server.listen();
     const address = server.address();
@@ -2152,6 +2256,18 @@ describe('LocalApiServer', () => {
       }>;
       recent_runtime_events: Array<{ event: string; severity: string; detail?: string }>;
     };
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      control_plane: {
+        endpoints: Array<{
+          endpoint: string;
+          health: string;
+          last_enrichment_status: string | null;
+          last_enrichment_degraded: boolean | null;
+          last_enrichment_reason_code: string | null;
+        }>;
+      };
+    };
     const issueResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/ABC-1`);
     const issuePayload = (await issueResponse.json()) as {
       running: {
@@ -2163,11 +2279,18 @@ describe('LocalApiServer', () => {
     };
 
     expect(stateResponse.status).toBe(200);
+    expect(diagnosticsResponse.status).toBe(200);
     expect(issueResponse.status).toBe(200);
     expect(statePayload.running[0]?.tokens.total_tokens).toBe(0);
     expect(statePayload.running[0]?.token_telemetry_status).toBe('pending');
     expect(statePayload.running[0]?.token_telemetry_last_source).toBeNull();
     expect(statePayload.running[0]?.token_telemetry_last_at_ms).toBeNull();
+    expect(diagnosticsPayload.control_plane.endpoints.find((entry) => entry.endpoint === '/api/v1/state')).toMatchObject({
+      health: 'ok',
+      last_enrichment_status: 'degraded',
+      last_enrichment_degraded: true,
+      last_enrichment_reason_code: REASON_CODES.liveTokenFallbackNotOnHotPath
+    });
     expect(issuePayload.running.tokens.total_tokens).toBe(0);
     expect(issuePayload.running.token_telemetry_status).toBe('pending');
     expect(
