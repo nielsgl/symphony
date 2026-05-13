@@ -471,18 +471,40 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return value.toLocaleString('en-US');
   }
 
+  function localTimeZoneLabel() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
+    } catch (_error) {
+      return 'local time';
+    }
+  }
+
+  function formatUtcIso(timestampMs) {
+    if (!Number.isFinite(timestampMs)) {
+      return 'n/a';
+    }
+    return new Date(timestampMs).toISOString();
+  }
+
   function formatDate(value) {
     if (!value) {
       return 'n/a';
     }
+    let parsed;
     if (typeof value === 'number' && Number.isFinite(value)) {
-      return new Date(value).toLocaleString();
+      parsed = value;
+    } else {
+      parsed = Date.parse(value);
     }
-    const parsed = Date.parse(value);
     if (!Number.isFinite(parsed)) {
       return String(value);
     }
-    return new Date(parsed).toLocaleString();
+    const local = new Date(parsed).toLocaleString(undefined, { timeZoneName: 'short' });
+    return local + ' [' + localTimeZoneLabel() + '] (UTC ' + formatUtcIso(parsed) + ')';
+  }
+
+  function formatCanonicalJsonBlock(label, payload) {
+    return label + ' (canonical UTC ISO values preserved)\\n' + JSON.stringify(payload, null, 2);
   }
 
   function formatDurationFromIso(iso) {
@@ -1098,7 +1120,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       return;
     }
 
-    elements.runtimeResolutionOutput.textContent = JSON.stringify(runtimeResolution, null, 2);
+    elements.runtimeResolutionOutput.textContent = formatCanonicalJsonBlock('Runtime Resolution JSON', runtimeResolution);
   }
 
   function renderRuntimeEvents(payload) {
@@ -1414,7 +1436,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       ? events
           .map(function (event) {
             return (
-              event.at_ms +
+              formatDate(event.at_ms) +
               ' | ' +
               event.event +
               ' | thread ' +
@@ -3040,21 +3062,21 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const sessionConsole = payload.blocked && Array.isArray(payload.blocked.session_console) ? payload.blocked.session_console : [];
       const timelineText = timeline.length
         ? timeline.map(function (marker) {
-            return marker.at + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + (marker.detail || 'n/a') + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
+            return formatDate(marker.at) + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + (marker.detail || 'n/a') + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
           }).join('\\n')
         : 'No phase markers yet.';
       const operatorTimelineRows = deriveOperatorTransitionRows(issueId, payload);
       const operatorActions = Array.isArray(payload.operator_actions) ? payload.operator_actions : [];
       const operatorActionText = operatorActions.length
         ? operatorActions.map(function (entry) {
-            return new Date(entry.requested_at_ms).toISOString() + ' | ' + (entry.actor || 'operator') + ' | ' + entry.action + ' | ' + entry.result + ' | ' + (entry.result_code || 'n/a') + ' | ' + (entry.reason_note || 'no reason note') + ' | ' + (entry.message || 'n/a');
+            return formatDate(entry.requested_at_ms) + ' | ' + (entry.actor || 'operator') + ' | ' + entry.action + ' | ' + entry.result + ' | ' + (entry.result_code || 'n/a') + ' | ' + (entry.reason_note || 'no reason note') + ' | ' + (entry.message || 'n/a');
           }).join('\\n')
         : 'No operator action outcomes.';
       const operatorTimelineText = operatorTimelineRows.length
         ? operatorTimelineRows
             .map(function (entry) {
               return (
-                entry.at +
+                formatDate(entry.at) +
                 ' | ' +
                 entry.label +
                 ' | issue ' +
@@ -3069,7 +3091,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         : 'No operator transition entries.';
       const sessionConsoleText = sessionConsole.length
         ? sessionConsole.map(function (event) {
-            return event.at + ' | ' + event.event + ' | ' + (event.message || 'n/a');
+            return formatDate(event.at) + ' | ' + event.event + ' | ' + (event.message || 'n/a');
           }).join('\\n')
         : 'No session console entries.';
       const budgetText = runningOrRetry ? formatBudgetSummary(runningOrRetry) : 'Budget: not configured';
@@ -3084,7 +3106,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
         sessionConsoleText +
         '\\n\\nBudget\\n' +
         budgetText +
-        '\\n\\nIssue JSON\\n' +
+        '\\n\\nIssue JSON (canonical UTC ISO values preserved)\\n' +
         JSON.stringify(payload, null, 2);
       if (state.payload) {
         renderRunning(state.payload);
@@ -3243,7 +3265,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     try {
       const diagnostics = await fetchJson('/api/v1/diagnostics');
       state.runtimeResolution = diagnostics.runtime_resolution || null;
-      elements.diagnosticsOutput.textContent = JSON.stringify(diagnostics, null, 2);
+      elements.diagnosticsOutput.textContent = formatCanonicalJsonBlock('Diagnostics JSON', diagnostics);
       renderRuntimeResolution(state.runtimeResolution);
     } catch {
       elements.diagnosticsOutput.textContent = 'Diagnostics unavailable.';
