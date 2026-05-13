@@ -172,6 +172,197 @@ describe('SqlitePersistenceStore', () => {
     expect(storeB.reconstructThreadLineage(threadId)?.issue_run.identity).toEqual(durableIdentity);
   });
 
+  it('closes normalized execution graph rows when a linked legacy run completes', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-complete-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    let nowMs = Date.parse('2026-04-11T10:00:00.000Z');
+    const durableIdentity = identity({ issue_id: 'i-linked', issue_identifier: 'ABC-LINKED' });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => nowMs });
+    stores.push(storeA);
+    const started = storeA.recordRunStarted({
+      issue_id: 'i-linked',
+      issue_identifier: 'ABC-LINKED',
+      identity: durableIdentity,
+      started_at: '2026-04-11T10:00:00.000Z',
+      attempt_number: 0,
+      status: 'running',
+      reason_code: 'dispatch_started',
+      reason_detail: 'dispatch token=abcd1234'
+    });
+
+    nowMs = Date.parse('2026-04-11T10:05:00.000Z');
+    storeA.completeRun({
+      run_id: started.run_id,
+      terminal_status: 'failed',
+      error_code: 'worker_failed',
+      terminal_reason_code: 'worker_failed',
+      terminal_reason_detail: 'failed with token=abcd1234'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const timeline = storeB.reconstructTicketTimeline(durableIdentity);
+
+    expect(timeline.issue_runs).toEqual([
+      expect.objectContaining({
+        issue_run_id: started.issue_run_id,
+        ended_at: '2026-04-11T10:05:00.000Z',
+        status: 'failed',
+        reason_code: 'worker_failed',
+        reason_detail: 'failed with token=***REDACTED***'
+      })
+    ]);
+    expect(timeline.attempts).toEqual([
+      expect.objectContaining({
+        attempt_id: started.attempt_id,
+        issue_run_id: started.issue_run_id,
+        ended_at: '2026-04-11T10:05:00.000Z',
+        status: 'failed',
+        reason_code: 'worker_failed',
+        reason_detail: 'failed with token=***REDACTED***'
+      })
+    ]);
+    expect(timeline.state_transitions).toEqual([
+      expect.objectContaining({
+        issue_run_id: started.issue_run_id,
+        attempt_id: started.attempt_id,
+        to_status: 'running',
+        reason_code: 'dispatch_started'
+      })
+    ]);
+  });
+
+  it('reopens a linked issue run when retry lineage appends a later running attempt', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-retry-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    let nowMs = Date.parse('2026-04-11T10:00:00.000Z');
+    const durableIdentity = identity({ issue_id: 'i-retry-linked', issue_identifier: 'ABC-RETRY' });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => nowMs });
+    stores.push(storeA);
+    const started = storeA.recordRunStarted({
+      issue_id: 'i-retry-linked',
+      issue_identifier: 'ABC-RETRY',
+      identity: durableIdentity,
+      started_at: '2026-04-11T10:00:00.000Z',
+      attempt_number: 0,
+      status: 'running',
+      reason_code: 'dispatch_started'
+    });
+    nowMs = Date.parse('2026-04-11T10:05:00.000Z');
+    storeA.completeRun({
+      run_id: started.run_id,
+      issue_run_id: started.issue_run_id,
+      attempt_id: started.attempt_id,
+      terminal_status: 'stalled',
+      error_code: 'worker_stalled',
+      terminal_reason_code: 'worker_stalled',
+      terminal_reason_detail: 'stalled before retry'
+    });
+
+    const retryAttemptId = storeA.appendAttempt({
+      issue_run_id: started.issue_run_id,
+      attempt_number: 1,
+      started_at: '2026-04-11T10:10:00.000Z',
+      status: 'running',
+      reason_code: 'attempt_started',
+      reason_detail: 'retry attempt'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const timeline = storeB.reconstructTicketTimeline(durableIdentity);
+
+    expect(timeline.issue_runs).toEqual([
+      expect.objectContaining({
+        issue_run_id: started.issue_run_id,
+        ended_at: null,
+        status: 'running',
+        reason_code: 'attempt_started'
+      })
+    ]);
+    expect(timeline.attempts).toEqual([
+      expect.objectContaining({
+        attempt_id: started.attempt_id,
+        attempt_number: 0,
+        ended_at: '2026-04-11T10:05:00.000Z',
+        status: 'stalled',
+        reason_code: 'worker_stalled'
+      }),
+      expect.objectContaining({
+        attempt_id: retryAttemptId,
+        attempt_number: 1,
+        ended_at: null,
+        status: 'running',
+        reason_code: 'attempt_started'
+      })
+    ]);
+  });
+
+  it('closes linked normalized rows for succeeded cancelled and timed-out terminals', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-terminals-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    let nowMs = Date.parse('2026-04-11T10:00:00.000Z');
+    const terminalStatuses = ['succeeded', 'cancelled', 'timed_out'] as const;
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => nowMs });
+    stores.push(storeA);
+    const identities = terminalStatuses.map((terminalStatus, index) =>
+      identity({ issue_id: `i-${terminalStatus}`, issue_identifier: `ABC-TERM-${index}` })
+    );
+    const startedRows = terminalStatuses.map((terminalStatus, index) =>
+      storeA.recordRunStarted({
+        issue_id: `i-${terminalStatus}`,
+        issue_identifier: `ABC-TERM-${index}`,
+        identity: identities[index],
+        started_at: `2026-04-11T10:0${index}:00.000Z`,
+        attempt_number: 0,
+        status: 'running',
+        reason_code: 'dispatch_started'
+      })
+    );
+
+    for (const [index, terminalStatus] of terminalStatuses.entries()) {
+      nowMs = Date.parse(`2026-04-11T10:1${index}:00.000Z`);
+      storeA.completeRun({
+        run_id: startedRows[index].run_id,
+        issue_run_id: startedRows[index].issue_run_id,
+        attempt_id: startedRows[index].attempt_id,
+        terminal_status: terminalStatus,
+        terminal_reason_code: terminalStatus === 'succeeded' ? null : `reason_${terminalStatus}`,
+        terminal_reason_detail: terminalStatus === 'succeeded' ? null : `detail ${terminalStatus}`
+      });
+    }
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    for (const [index, terminalStatus] of terminalStatuses.entries()) {
+      const timeline = storeB.reconstructTicketTimeline(identities[index]);
+      expect(timeline.issue_runs[0]).toMatchObject({
+        issue_run_id: startedRows[index].issue_run_id,
+        ended_at: `2026-04-11T10:1${index}:00.000Z`,
+        status: terminalStatus,
+        reason_code: terminalStatus === 'succeeded' ? null : `reason_${terminalStatus}`
+      });
+      expect(timeline.attempts[0]).toMatchObject({
+        attempt_id: startedRows[index].attempt_id,
+        ended_at: `2026-04-11T10:1${index}:00.000Z`,
+        status: terminalStatus,
+        reason_code: terminalStatus === 'succeeded' ? null : `reason_${terminalStatus}`
+      });
+    }
+  });
+
   it('creates a versioned Project Execution History schema on clean databases', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-history-schema-clean-'));
     dirs.push(dir);
@@ -2603,19 +2794,19 @@ describe('SqlitePersistenceStore', () => {
 
     const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
     stores.push(lateStore);
-    expect(lateStore.pruneExpiredRuns()).toBe(2);
+    expect(lateStore.pruneExpiredRuns()).toBe(3);
 
     expect(lateStore.listRunHistory(10).map((run) => run.run_id)).toContain(activeRunId);
     expect(lateStore.listRunHistory(10).map((run) => run.run_id)).not.toContain(expiredRunId);
     expect(lateStore.reconstructThreadLineage(activeThreadId)?.issue_run.issue_run_id).toBe(activeIssueRunId);
-    expect(lateStore.reconstructThreadLineage(expiredThreadId)?.issue_run.issue_run_id).toBe(expiredGraph.issue_run_id);
+    expect(lateStore.reconstructThreadLineage(expiredThreadId)).toBeNull();
     expect(lateStore.listAppServerEventLedger(activeIssueRunId)).toHaveLength(1);
-    expect(lateStore.listAppServerEventLedger(expiredGraph.issue_run_id)).toHaveLength(1);
+    expect(lateStore.listAppServerEventLedger(expiredGraph.issue_run_id)).toHaveLength(0);
 
     const db = openDatabase(dbPath);
     try {
       const records = db.prepare('SELECT source_table, source_id, reason_code FROM history_retention_prune_record ORDER BY source_table, source_id').all();
-      expect(records).toHaveLength(2);
+      expect(records).toHaveLength(3);
       expect(records).toEqual(
         expect.arrayContaining([
           {
@@ -2626,6 +2817,11 @@ describe('SqlitePersistenceStore', () => {
           {
             source_table: 'runs',
             source_id: expiredGraph.run_id,
+            reason_code: 'retention_policy_expired_completed_history'
+          },
+          {
+            source_table: 'issue_run',
+            source_id: expiredGraph.issue_run_id,
             reason_code: 'retention_policy_expired_completed_history'
           }
         ])

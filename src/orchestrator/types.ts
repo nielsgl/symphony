@@ -1011,6 +1011,8 @@ export interface OrchestratorPersistencePort {
   }) => Promise<void>;
   completeRun: (params: {
     run_id: string;
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
     terminal_status: RunTerminalStatus;
     error_code?: string | null;
     terminal_reason_code?: string | null;
