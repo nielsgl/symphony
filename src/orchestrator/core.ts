@@ -4772,11 +4772,15 @@ export class OrchestratorCore {
     if (summary && (summary.tracked_ephemeral > 0 || summary.ephemeral > 0)) {
       return false;
     }
-    return blocked.conflict_files.every((file) => {
+    const persistedClassificationsAreRecoverable = blocked.conflict_files.every((file) => {
       const normalized = file.path.replace(/\\/g, '/');
       const classification = file.classification ?? (summary?.unknown_non_ephemeral === blocked.conflict_files.length ? 'unknown_non_ephemeral' : null);
       return classification === 'unknown_non_ephemeral' && !normalized.startsWith('output/playwright/');
     });
+    if (persistedClassificationsAreRecoverable) {
+      return true;
+    }
+    return this.hasRecoverableLiveAttemptResidue(blocked);
   }
 
   private isRecoverableWorkspaceResiduePath(blocked: BlockedEntry): boolean {
@@ -4815,6 +4819,63 @@ export class OrchestratorCore {
     } catch {
       return false;
     }
+  }
+
+  private hasRecoverableLiveAttemptResidue(blocked: BlockedEntry): boolean {
+    if (!blocked.workspace_path || blocked.conflict_files.length === 0) {
+      return false;
+    }
+    const status = spawnSync('git', ['status', '--porcelain', '--untracked-files=no'], {
+      cwd: blocked.workspace_path,
+      encoding: 'utf8'
+    });
+    if (status.status !== 0) {
+      return false;
+    }
+
+    const livePaths = new Set<string>();
+    for (const entry of this.parseStatusPorcelain(status.stdout)) {
+      const normalized = this.normalizePorcelainPath(entry.path);
+      if (!normalized || this.isNonRecoverableResiduePath(normalized)) {
+        return false;
+      }
+      if (entry.staged !== ' ' || entry.unstaged !== ' ') {
+        livePaths.add(normalized);
+      }
+    }
+    if (livePaths.size === 0) {
+      return false;
+    }
+
+    const blockedPaths = new Set<string>();
+    for (const file of blocked.conflict_files) {
+      const normalized = this.normalizePorcelainPath(file.path);
+      if (!normalized || this.isNonRecoverableResiduePath(normalized)) {
+        return false;
+      }
+      blockedPaths.add(normalized);
+    }
+
+    return livePaths.size === blockedPaths.size && [...livePaths].every((livePath) => blockedPaths.has(livePath));
+  }
+
+  private parseStatusPorcelain(output: string): Array<{ staged: string; unstaged: string; path: string }> {
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length >= 4)
+      .map((line) => ({ staged: line[0] ?? ' ', unstaged: line[1] ?? ' ', path: line.slice(3).trim() }))
+      .filter((entry) => entry.path.length > 0);
+  }
+
+  private normalizePorcelainPath(rawPath: string): string {
+    const normalized = rawPath.replace(/\\/g, '/');
+    const renameTarget = normalized.includes(' -> ') ? normalized.slice(normalized.lastIndexOf(' -> ') + 4) : normalized;
+    return renameTarget.replace(/^"|"$/g, '');
+  }
+
+  private isNonRecoverableResiduePath(normalizedPath: string): boolean {
+    return normalizedPath === '.symphony-provision.json' || normalizedPath.startsWith('output/playwright/');
   }
 
   private resolveGitDirSync(workspacePath: string): string | null {

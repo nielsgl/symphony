@@ -473,6 +473,78 @@ describe('OrchestratorCore blocked input', () => {
     }
   });
 
+  it('recovers legacy workspace residue when persisted classification summary undercounts live dirty files', async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-legacy-residue-mismatch-'));
+    spawnSync('git', ['init'], { cwd: workspacePath });
+    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: workspacePath });
+    spawnSync('git', ['config', 'user.name', 'Blocked Input Test'], { cwd: workspacePath });
+    fs.mkdirSync(path.join(workspacePath, 'src/api'), { recursive: true });
+    fs.mkdirSync(path.join(workspacePath, 'tests/api'), { recursive: true });
+    fs.writeFileSync(path.join(workspacePath, 'src/api/dashboard-assets.ts'), 'export const value = 1;\n');
+    fs.writeFileSync(path.join(workspacePath, 'tests/api/dashboard-assets.test.ts'), 'import { value } from "../../src/api/dashboard-assets";\n');
+    spawnSync('git', ['add', 'src/api/dashboard-assets.ts', 'tests/api/dashboard-assets.test.ts'], { cwd: workspacePath });
+    spawnSync('git', ['commit', '-m', 'initial'], { cwd: workspacePath });
+    fs.writeFileSync(path.join(workspacePath, 'src/api/dashboard-assets.ts'), 'export const value = 2;\n');
+    fs.writeFileSync(path.join(workspacePath, 'tests/api/dashboard-assets.test.ts'), 'import { value } from "../../src/api/dashboard-assets";\nexpect(value).toBe(2);\n');
+    try {
+      const harness = createHarness();
+      harness.orchestrator.restoreSuppressionState({
+        blocked_entries: [
+          {
+            issue_id: 'i-legacy-mismatch-residue',
+            issue_identifier: 'NIE-181',
+            attempt: 2,
+            worker_host: null,
+            workspace_path: workspacePath,
+            provisioner_type: null,
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'unknown',
+            workspace_provisioned: false,
+            workspace_is_git_worktree: false,
+            copy_ignored_applied: false,
+            copy_ignored_status: null,
+            copy_ignored_summary: null,
+            stop_reason_code: REASON_CODES.operatorWorkspaceConflict,
+            stop_reason_detail: 'workspace contains non-ephemeral dirty files after preflight cleanup',
+            conflict_files: [
+              { path: 'tests/api/dashboard-assets.test.ts', status: 'unstaged' },
+              { path: 'src/api/dashboard-assets.ts', status: 'unstaged' }
+            ],
+            classification_summary: { ephemeral: 0, tracked_ephemeral: 0, unknown_non_ephemeral: 1 },
+            resolution_hints: ['Inspect the dirty files in the issue worktree.'],
+            previous_thread_id: null,
+            previous_turn_id: null,
+            previous_session_id: null,
+            blocked_at_ms: harness.now.value,
+            requires_manual_resume: true,
+            pending_input: null,
+            session_console: []
+          }
+        ],
+        breaker_entries: []
+      });
+      const issue = makeIssue({ id: 'i-legacy-mismatch-residue', identifier: 'NIE-181', state: 'In Progress' });
+      harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+
+      await harness.orchestrator.reconcileBlockedInputs();
+      await harness.scheduled.get('i-legacy-mismatch-residue')?.callback();
+
+      expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-legacy-mismatch-residue')).toBe(false);
+      expect(harness.spawned).toEqual([
+        expect.objectContaining({
+          issue_id: 'i-legacy-mismatch-residue',
+          attempt: 2,
+          recover_workspace_attempt_residue: true
+        })
+      ]);
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
   it('keeps tracked workspace artifacts blocked during restart reconciliation', async () => {
     const harness = createHarness();
     harness.orchestrator.restoreSuppressionState({
