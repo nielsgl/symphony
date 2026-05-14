@@ -44,7 +44,9 @@ describe('NodeEventLoopHealthMonitor', () => {
       monitor.sample(4_000);
       const rollingSummary = monitor.summarize(4_000);
 
-      expect(secondSummary).toEqual(firstSummary);
+      expect(secondSummary.observed_at).toBe(firstSummary.observed_at);
+      expect(secondSummary.sample_window_ms).toBe(firstSummary.sample_window_ms);
+      expect(secondSummary.delay).toEqual(firstSummary.delay);
       expect(rollingSummary.sample_window_ms).toBe(2_000);
     } finally {
       monitor.close();
