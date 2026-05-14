@@ -509,14 +509,14 @@ export class LocalApiServer {
     this.writeEventMessage(this.serializeEvent(type, payload).message);
   }
 
-  private summarizeEventLoopHealth(options: { reset?: boolean } = {}): EventLoopHealthSummary {
-    const summary = this.eventLoopHealth.summarize(this.nowMs(), options);
+  private summarizeEventLoopHealth(): EventLoopHealthSummary {
+    const summary = this.eventLoopHealth.summarize(this.nowMs());
     this.controlPlaneHealth.recordEventLoop(summary);
     return summary;
   }
 
-  private controlPlaneSummary(options: { resetEventLoop?: boolean } = {}) {
-    this.summarizeEventLoopHealth({ reset: options.resetEventLoop });
+  private controlPlaneSummary() {
+    this.summarizeEventLoopHealth();
     return this.controlPlaneHealth.summarize(this.nowMs());
   }
 
@@ -1128,7 +1128,7 @@ export class LocalApiServer {
         last_snapshot_broadcast_status: this.streamDiagnostics.lastSnapshotBroadcastStatus,
         last_snapshot_broadcast_error: this.streamDiagnostics.lastSnapshotBroadcastError
       },
-      control_plane: this.controlPlaneSummary({ resetEventLoop: true }),
+      control_plane: this.controlPlaneSummary(),
       runtime_resolution: {
         ...runtimeResolution,
         effective_codex_home: runtimeResolution.effective_codex_home ?? null,

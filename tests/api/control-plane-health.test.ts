@@ -129,4 +129,41 @@ describe('ControlPlaneHealthRecorder', () => {
       last_event_loop_utilization: 0.99
     });
   });
+
+  it('recovers event-loop health after the rolling summary clears', () => {
+    const recorder = new ControlPlaneHealthRecorder();
+
+    const degradedHealth = recorder.record({
+      endpoint: '/api/v1/state',
+      transport: 'http',
+      observed_at_ms: Date.parse('2026-05-13T15:04:01.000Z'),
+      duration_ms: 7,
+      status_code: 200,
+      payload_bytes: 20_000,
+      event_loop_delay_ms: 5_250,
+      projection_duration_ms: 5,
+      serialization_duration_ms: 1
+    });
+    const recoveredHealth = recorder.record({
+      endpoint: '/api/v1/state',
+      transport: 'http',
+      observed_at_ms: Date.parse('2026-05-13T15:04:31.000Z'),
+      duration_ms: 7,
+      status_code: 200,
+      payload_bytes: 20_000,
+      event_loop_delay_ms: null,
+      projection_duration_ms: 5,
+      serialization_duration_ms: 1
+    });
+    const summary = recorder.summarize(Date.parse('2026-05-13T15:04:32.000Z'));
+
+    expect(degradedHealth).toBe('degraded');
+    expect(recoveredHealth).toBe('ok');
+    expect(summary.worst_health).toBe('ok');
+    expect(summary.endpoints[0]).toMatchObject({
+      health: 'ok',
+      last_event_loop_delay_ms: null,
+      max_event_loop_delay_ms: 5250
+    });
+  });
 });

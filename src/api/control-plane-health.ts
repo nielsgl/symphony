@@ -141,6 +141,20 @@ function worstHealth(states: ControlPlaneHealthState[]): ControlPlaneHealthState
   );
 }
 
+function classifySummaryObservation(
+  observation: ControlPlaneObservation,
+  latestEventLoopDelayMs: number | null | undefined,
+  thresholds: ControlPlaneThresholds
+): ControlPlaneHealthState {
+  return classifyObservation(
+    {
+      ...observation,
+      event_loop_delay_ms: latestEventLoopDelayMs
+    },
+    thresholds
+  );
+}
+
 function average(values: number[]): number | null {
   if (values.length === 0) {
     return null;
@@ -219,7 +233,9 @@ export class ControlPlaneHealthRecorder {
       const eventLoopDelayValues = entries.flatMap((entry) =>
         typeof entry.event_loop_delay_ms === 'number' ? [entry.event_loop_delay_ms] : []
       );
-      const health = worstHealth(entries.map((entry) => classifyObservation(entry, this.thresholds)));
+      const health = worstHealth(
+        entries.map((entry) => classifySummaryObservation(entry, last.event_loop_delay_ms, this.thresholds))
+      );
       return {
         endpoint: last.endpoint,
         transport: last.transport,
