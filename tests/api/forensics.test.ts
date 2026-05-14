@@ -239,11 +239,16 @@ function makeApiDiagnostics(): ApiDiagnosticsResponse {
       thresholds: {
         slow_ms: 1000,
         degraded_ms: 5000,
+        slow_request_queue_delay_ms: 1000,
+        degraded_request_queue_delay_ms: 5000,
+        slow_event_loop_delay_ms: 1000,
+        degraded_event_loop_delay_ms: 5000,
         large_payload_bytes: 1_000_000,
         degraded_payload_bytes: 5_000_000
       },
       endpoint_count: 0,
       worst_health: 'ok',
+      event_loop: null,
       endpoints: []
     }
   };

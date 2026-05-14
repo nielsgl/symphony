@@ -1,10 +1,12 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
+import { performance } from 'node:perf_hooks';
 
 import { REASON_CODES, type StructuredLogger } from '../observability';
 import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../observability/events';
 import type { DurableRunHistoryRecord, ProjectHistoryTicketSummaryProjection } from '../persistence';
 import { redactUnknown } from '../security/redaction';
 import { ControlPlaneHealthRecorder, type ControlPlaneHealthState, type ControlPlaneObservation } from './control-plane-health';
+import { NodeEventLoopHealthMonitor, type EventLoopHealthMonitor, type EventLoopHealthSummary } from './event-loop-health';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
 import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
@@ -45,7 +47,7 @@ import type { OrchestratorState } from '../orchestrator';
 
 interface Route {
   method: 'GET' | 'POST';
-  handler: (req: IncomingMessage, res: ServerResponse, match: RegExpExecArray) => Promise<void>;
+  handler: (req: IncomingMessage, res: ServerResponse, match: RegExpExecArray, timing: RequestTiming) => Promise<void>;
 }
 
 interface Endpoint {
@@ -72,6 +74,11 @@ interface TimedDiagnosticsPayload {
   enrichmentStatus: string | null;
   enrichmentDegraded: boolean | null;
   enrichmentReasonCode: string | null;
+}
+
+interface RequestTiming {
+  request_received_at_ms: number;
+  request_queue_delay_ms: number;
 }
 
 interface StreamDiagnosticsState {
@@ -327,7 +334,9 @@ export class LocalApiServer {
   private readonly logger?: StructuredLogger;
   private readonly codexStateDbPath: string;
   private readonly nowMs: () => number;
+  private readonly requestTimingNowMs: () => number;
   private readonly controlPlaneHealth: ControlPlaneHealthRecorder;
+  private readonly eventLoopHealth: EventLoopHealthMonitor;
 
   private readonly server: http.Server;
   private readonly eventClients: Map<number, ServerResponse>;
@@ -354,7 +363,9 @@ export class LocalApiServer {
     };
     this.logger = options.logger;
     this.nowMs = options.nowMs ?? (() => Date.now());
+    this.requestTimingNowMs = options.requestTimingNowMs ?? (() => performance.now());
     this.controlPlaneHealth = options.controlPlaneHealthRecorder ?? new ControlPlaneHealthRecorder(options.controlPlaneHealth);
+    this.eventLoopHealth = options.eventLoopHealthMonitor ?? new NodeEventLoopHealthMonitor();
     const codexHome = (process.env.SYMPHONY_CODEX_HOME || `${process.env.HOME || ''}/.codex`).trim();
     this.codexStateDbPath = options.codexStateDbPath ?? `${codexHome.replace(/\/+$/, '')}/state_5.sqlite`;
     this.refreshCoalescer = new RefreshCoalescer({
@@ -377,7 +388,10 @@ export class LocalApiServer {
     };
 
     this.server = http.createServer((req, res) => {
-      void this.handle(req, res);
+      void this.handle(req, res, {
+        request_received_at_ms: this.requestTimingNowMs(),
+        request_queue_delay_ms: 0
+      });
     });
   }
 
@@ -407,6 +421,7 @@ export class LocalApiServer {
   }
 
   async close(): Promise<void> {
+    this.eventLoopHealth.close?.();
     if (this.heartbeatHandle) {
       clearInterval(this.heartbeatHandle);
       this.heartbeatHandle = null;
@@ -494,6 +509,33 @@ export class LocalApiServer {
     this.writeEventMessage(this.serializeEvent(type, payload).message);
   }
 
+  private summarizeEventLoopHealth(): EventLoopHealthSummary {
+    const summary = this.eventLoopHealth.summarize(this.nowMs());
+    this.controlPlaneHealth.recordEventLoop(summary);
+    return summary;
+  }
+
+  private controlPlaneSummary() {
+    this.summarizeEventLoopHealth();
+    return this.controlPlaneHealth.summarize(this.nowMs());
+  }
+
+  private controlPlaneObservationTiming(timing: RequestTiming): Pick<
+    ControlPlaneObservation,
+    'request_queue_delay_ms' | 'event_loop_delay_ms' | 'event_loop_utilization'
+  > {
+    const eventLoop = this.summarizeEventLoopHealth();
+    return {
+      request_queue_delay_ms: timing.request_queue_delay_ms,
+      event_loop_delay_ms: eventLoop.delay.max_ms,
+      event_loop_utilization: eventLoop.utilization.utilization
+    };
+  }
+
+  private markProjectionQueueDelay(timing: RequestTiming): void {
+    timing.request_queue_delay_ms = Math.max(0, Math.round(this.requestTimingNowMs() - timing.request_received_at_ms));
+  }
+
   private recordControlPlaneObservation(observation: ControlPlaneObservation): ControlPlaneHealthState {
     const health = this.controlPlaneHealth.record(observation);
     if (observation.endpoint === '/api/v1/state' && health !== 'ok') {
@@ -506,6 +548,7 @@ export class LocalApiServer {
           transport: observation.transport,
           duration_ms: Math.round(observation.duration_ms),
           payload_bytes: Math.round(observation.payload_bytes),
+          request_queue_delay_ms: observation.request_queue_delay_ms,
           projection_duration_ms: observation.projection_duration_ms,
           enrichment_duration_ms: observation.enrichment_duration_ms,
           enrichment_status: observation.enrichment_status ?? null,
@@ -516,6 +559,8 @@ export class LocalApiServer {
           snapshot_age_ms: observation.snapshot_age_ms ?? null,
           snapshot_freshness_state: observation.snapshot_freshness_state ?? null,
           snapshot_error_code: observation.snapshot_error_code ?? null,
+          event_loop_delay_ms: observation.event_loop_delay_ms ?? null,
+          event_loop_utilization: observation.event_loop_utilization ?? null,
           health
         }
       });
@@ -729,6 +774,7 @@ export class LocalApiServer {
       state: payload
     });
     const serializationDurationMs = this.nowMs() - serializationStartedAtMs;
+    const eventLoop = this.summarizeEventLoopHealth();
     this.recordControlPlaneObservation({
       endpoint: '/api/v1/events:state_snapshot',
       transport: 'sse',
@@ -736,6 +782,9 @@ export class LocalApiServer {
       duration_ms: this.nowMs() - startedAtMs,
       status_code: 200,
       payload_bytes: serialized.bytes,
+      request_queue_delay_ms: 0,
+      event_loop_delay_ms: eventLoop.delay.max_ms,
+      event_loop_utilization: eventLoop.utilization.utilization,
       projection_duration_ms: snapshot.projectionDurationMs,
       enrichment_duration_ms: snapshot.enrichmentDurationMs,
       enrichment_status: snapshot.enrichmentStatus,
@@ -1079,7 +1128,7 @@ export class LocalApiServer {
         last_snapshot_broadcast_status: this.streamDiagnostics.lastSnapshotBroadcastStatus,
         last_snapshot_broadcast_error: this.streamDiagnostics.lastSnapshotBroadcastError
       },
-      control_plane: this.controlPlaneHealth.summarize(this.nowMs()),
+      control_plane: this.controlPlaneSummary(),
       runtime_resolution: {
         ...runtimeResolution,
         effective_codex_home: runtimeResolution.effective_codex_home ?? null,
@@ -1133,7 +1182,7 @@ export class LocalApiServer {
     });
   }
 
-  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handle(req: IncomingMessage, res: ServerResponse, timing: RequestTiming): Promise<void> {
     const method = req.method ?? 'GET';
     const urlPath = new URL(req.url ?? '/', 'http://localhost').pathname;
 
@@ -1176,13 +1225,18 @@ export class LocalApiServer {
         routes: [
           {
             method: 'GET',
-            handler: async (_request, response) => {
+            handler: async (_request, response, _match, timing) => {
               const startedAtMs = this.nowMs();
+              this.markProjectionQueueDelay(timing);
               const snapshot = this.buildStateSnapshotResponse();
               const payload = snapshot.payload;
+              if (!('error' in payload)) {
+                payload.health.control_plane = this.controlPlaneSummary();
+              }
               const serializationStartedAtMs = this.nowMs();
               const serialized = serializeJsonPayload(payload);
               const serializationDurationMs = this.nowMs() - serializationStartedAtMs;
+              const observationTiming = this.controlPlaneObservationTiming(timing);
               const health = this.recordControlPlaneObservation({
                 endpoint: '/api/v1/state',
                 transport: 'http',
@@ -1190,6 +1244,7 @@ export class LocalApiServer {
                 duration_ms: this.nowMs() - startedAtMs,
                 status_code: 200,
                 payload_bytes: serialized.bytes,
+                ...observationTiming,
                 projection_duration_ms: snapshot.projectionDurationMs,
                 enrichment_duration_ms: snapshot.enrichmentDurationMs,
                 enrichment_status: snapshot.enrichmentStatus,
@@ -1212,6 +1267,7 @@ export class LocalApiServer {
                     dispatch_validation: payload.health.dispatch_validation,
                     duration_ms: this.nowMs() - startedAtMs,
                     payload_bytes: serialized.bytes,
+                    request_queue_delay_ms: timing.request_queue_delay_ms,
                     projection_duration_ms: snapshot.projectionDurationMs,
                     enrichment_duration_ms: snapshot.enrichmentDurationMs,
                     enrichment_status: snapshot.enrichmentStatus,
@@ -1220,6 +1276,8 @@ export class LocalApiServer {
                     serialization_duration_ms: serializationDurationMs,
                     snapshot_age_ms: snapshot.snapshotAgeMs,
                     snapshot_freshness_state: snapshot.snapshotFreshnessState,
+                    event_loop_delay_ms: observationTiming.event_loop_delay_ms ?? null,
+                    event_loop_utilization: observationTiming.event_loop_utilization ?? null,
                     control_plane_health: health
                   }
                 });
@@ -1382,8 +1440,9 @@ export class LocalApiServer {
         routes: [
           {
             method: 'GET',
-            handler: async (_request, response) => {
+            handler: async (_request, response, _match, timing) => {
               const startedAtMs = this.nowMs();
+              this.markProjectionQueueDelay(timing);
               const diagnostics = this.buildDiagnosticsPayload();
               const payload = diagnostics.payload;
               const serializationStartedAtMs = this.nowMs();
@@ -1396,6 +1455,7 @@ export class LocalApiServer {
                 duration_ms: this.nowMs() - startedAtMs,
                 status_code: 200,
                 payload_bytes: serialized.bytes,
+                ...this.controlPlaneObservationTiming(timing),
                 projection_duration_ms: diagnostics.projectionDurationMs,
                 enrichment_duration_ms: diagnostics.enrichmentDurationMs,
                 enrichment_status: diagnostics.enrichmentStatus,
@@ -2118,7 +2178,7 @@ export class LocalApiServer {
     }
 
     try {
-      await matchingMethodRoute.handler(req, res, endpointMatch.match);
+      await matchingMethodRoute.handler(req, res, endpointMatch.match, timing);
     } catch (error) {
       if (error instanceof TelemetryQueryError) {
         sendError(res, 400, error.code, error.message);

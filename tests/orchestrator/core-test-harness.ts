@@ -98,11 +98,16 @@ export function makeControlPlaneHealthSummary(
     thresholds: {
       slow_ms: 1_000,
       degraded_ms: 5_000,
+      slow_request_queue_delay_ms: 1_000,
+      degraded_request_queue_delay_ms: 5_000,
+      slow_event_loop_delay_ms: 1_000,
+      degraded_event_loop_delay_ms: 5_000,
       large_payload_bytes: 1_000_000,
       degraded_payload_bytes: 5_000_000
     },
     endpoint_count: 1,
     worst_health: health,
+    event_loop: null,
     endpoints: [
       {
         endpoint: '/api/v1/state',
@@ -116,6 +121,9 @@ export function makeControlPlaneHealthSummary(
         last_payload_bytes: payloadByHealth[health],
         max_payload_bytes: payloadByHealth[health],
         avg_payload_bytes: payloadByHealth[health],
+        last_request_queue_delay_ms: null,
+        max_request_queue_delay_ms: null,
+        avg_request_queue_delay_ms: null,
         last_projection_duration_ms: null,
         last_enrichment_duration_ms: null,
         last_enrichment_status: null,
@@ -126,6 +134,10 @@ export function makeControlPlaneHealthSummary(
         last_snapshot_age_ms: null,
         last_snapshot_freshness_state: null,
         last_snapshot_error_code: null,
+        last_event_loop_delay_ms: null,
+        max_event_loop_delay_ms: null,
+        avg_event_loop_delay_ms: null,
+        last_event_loop_utilization: null,
         ...overrides
       }
     ]
