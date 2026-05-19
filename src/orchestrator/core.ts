@@ -8403,7 +8403,10 @@ export class OrchestratorCore {
       }
       let entries: fs.Dirent[];
       try {
-        entries = this.sortCodexSessionDiscoveryEntries(fs.readdirSync(current.directory, { withFileTypes: true }));
+        entries = this.sortCodexSessionDiscoveryEntries(
+          fs.readdirSync(current.directory, { withFileTypes: true }),
+          runningEntry
+        );
       } catch {
         continue;
       }
@@ -8506,7 +8509,9 @@ export class OrchestratorCore {
     );
   }
 
-  private sortCodexSessionDiscoveryEntries(entries: fs.Dirent[]): fs.Dirent[] {
+  private sortCodexSessionDiscoveryEntries(entries: fs.Dirent[], runningEntry: RunningEntry): fs.Dirent[] {
+    const activeTranscriptTimeMs =
+      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
     return [...entries].sort((left, right) => {
       const leftTranscript = left.isFile() && left.name.endsWith('.jsonl');
       const rightTranscript = right.isFile() && right.name.endsWith('.jsonl');
@@ -8514,6 +8519,19 @@ export class OrchestratorCore {
         return leftTranscript ? -1 : 1;
       }
       if (leftTranscript && rightTranscript) {
+        const leftDistance = this.codexSessionTranscriptFilenameDistanceMs(left.name, activeTranscriptTimeMs);
+        const rightDistance = this.codexSessionTranscriptFilenameDistanceMs(right.name, activeTranscriptTimeMs);
+        if (leftDistance !== null || rightDistance !== null) {
+          if (leftDistance === null) {
+            return 1;
+          }
+          if (rightDistance === null) {
+            return -1;
+          }
+          if (leftDistance !== rightDistance) {
+            return leftDistance - rightDistance;
+          }
+        }
         return right.name.localeCompare(left.name);
       }
       const leftDirectory = left.isDirectory();
@@ -8526,6 +8544,25 @@ export class OrchestratorCore {
       }
       return left.name.localeCompare(right.name);
     });
+  }
+
+  private codexSessionTranscriptFilenameDistanceMs(filename: string, activeTranscriptTimeMs: number): number | null {
+    const match = /^rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3})Z)?-/u.exec(filename);
+    if (!match) {
+      return null;
+    }
+    const [, year, month, day, hour, minute, second, millisecond] = match;
+    const filenameTimeMs = Date.UTC(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      Number(millisecond ?? 0)
+    );
+    const distanceMs = Math.abs(filenameTimeMs - activeTranscriptTimeMs);
+    return distanceMs <= CODEX_SESSION_TRANSCRIPT_MAX_FILE_AGE_MS ? distanceMs : null;
   }
 
   private transcriptContentMayMatch(
