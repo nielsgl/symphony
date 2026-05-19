@@ -1,0 +1,206 @@
+import { afterEach, describe, expect, it } from 'vitest';
+
+import {
+  buildDurableIdentity,
+  createStoreTestHarness,
+  fs,
+  os,
+  path,
+  SqlitePersistenceStore
+} from './store-test-harness';
+
+describe('SqlitePersistenceStore retention and health', () => {
+  const { dirs, stores, identity, openDatabase, tableNames, withLegacyProjectKey, cleanup } = createStoreTestHarness();
+
+  afterEach(cleanup);
+  it('applies retention pruning and reports integrity', async () => {
+    const base = Date.parse('2026-04-11T12:00:00.000Z');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-prune-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base });
+    stores.push(store);
+
+    const runId = store.startRun({
+      issue_id: 'i-old',
+      issue_identifier: 'OLD-1',
+      identity: identity({ issue_id: 'i-old', issue_identifier: 'OLD-1' })
+    });
+    store.completeRun({ run_id: runId, terminal_status: 'failed', error_code: 'token=abcd1234' });
+
+    // Move clock forward by 2 days and prune.
+    const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
+    stores.push(lateStore);
+    const pruned = lateStore.pruneExpiredRuns();
+    expect(pruned).toBeGreaterThanOrEqual(1);
+
+    const health = lateStore.health();
+    expect(health.integrity_ok).toBe(true);
+    expect(health.last_pruned_at).not.toBeNull();
+  });
+
+  it('applies retention to completed operational history and preserves active evidence', async () => {
+    const base = Date.parse('2026-04-11T12:00:00.000Z');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-retention-operational-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base });
+    stores.push(store);
+
+    const expiredRunId = store.startRun({
+      issue_id: 'expired-run',
+      issue_identifier: 'EXP-1',
+      identity: identity({ issue_id: 'expired-run', issue_identifier: 'EXP-1' }),
+      started_at: '2026-04-10T10:00:00.000Z'
+    });
+    store.recordSession(expiredRunId, 'expired-session');
+    store.recordEvent({
+      run_id: expiredRunId,
+      event: 'completed',
+      message: 'expired run event',
+      timestamp_ms: Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    store.completeRun({ run_id: expiredRunId, terminal_status: 'succeeded' });
+
+    const activeRunId = store.startRun({
+      issue_id: 'active-run',
+      issue_identifier: 'ACTIVE-RETENTION-1',
+      identity: identity({ issue_id: 'active-run', issue_identifier: 'ACTIVE-RETENTION-1' }),
+      started_at: '2026-04-10T09:00:00.000Z'
+    });
+
+    const expiredGraph = store.recordRunStarted({
+      issue_id: 'expired-issue-run',
+      issue_identifier: 'EXP-ISSUE-1',
+      identity: identity({ issue_id: 'expired-issue-run', issue_identifier: 'EXP-ISSUE-1' }),
+      started_at: '2026-04-10T10:00:00.000Z',
+      attempt_number: 0,
+      status: 'running'
+    });
+    const expiredThreadId = store.appendThread({
+      attempt_id: expiredGraph.attempt_id,
+      thread_id: 'expired-thread-retention',
+      started_at: '2026-04-10T10:00:02.000Z',
+      status: 'running'
+    });
+    const expiredTurnId = store.appendTurn({
+      thread_id: expiredThreadId,
+      turn_id: 'expired-turn-retention',
+      turn_index: 0,
+      started_at: '2026-04-10T10:00:03.000Z',
+      status: 'running'
+    });
+    store.appendAppServerEvent({
+      issue_run_id: expiredGraph.issue_run_id,
+      attempt_id: expiredGraph.attempt_id,
+      thread_id: expiredThreadId,
+      turn_id: expiredTurnId,
+      observed_at: '2026-04-10T10:00:04.000Z',
+      source_event_id: 'expired-app-event',
+      source_event_name: 'rawResponseItem/completed',
+      payload_class: 'protocol_request_response',
+      raw_payload: { message: 'old protocol evidence' },
+      summary: 'old protocol evidence'
+    });
+    store.completeRun({ run_id: expiredGraph.run_id, terminal_status: 'succeeded' });
+
+    const activeIssueRunId = store.appendIssueRun({
+      issue_id: 'active-issue-run',
+      issue_identifier: 'ACTIVE-ISSUE-1',
+      identity: identity({ issue_id: 'active-issue-run', issue_identifier: 'ACTIVE-ISSUE-1' }),
+      started_at: '2026-04-10T09:00:00.000Z',
+      status: 'running'
+    });
+    const activeAttemptId = store.appendAttempt({
+      issue_run_id: activeIssueRunId,
+      attempt_number: 0,
+      started_at: '2026-04-10T09:00:01.000Z',
+      status: 'running'
+    });
+    const activeThreadId = store.appendThread({
+      attempt_id: activeAttemptId,
+      thread_id: 'active-thread-retention',
+      started_at: '2026-04-10T09:00:02.000Z',
+      status: 'running'
+    });
+    const activeTurnId = store.appendTurn({
+      thread_id: activeThreadId,
+      turn_id: 'active-turn-retention',
+      turn_index: 0,
+      started_at: '2026-04-10T09:00:03.000Z',
+      status: 'running'
+    });
+    store.appendAppServerEvent({
+      issue_run_id: activeIssueRunId,
+      attempt_id: activeAttemptId,
+      thread_id: activeThreadId,
+      turn_id: activeTurnId,
+      observed_at: '2026-04-10T09:00:04.000Z',
+      source_event_id: 'active-app-event',
+      source_event_name: 'rawResponseItem/completed',
+      payload_class: 'protocol_request_response',
+      raw_payload: { message: 'active protocol evidence' },
+      summary: 'active protocol evidence'
+    });
+
+    const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
+    stores.push(lateStore);
+    expect(lateStore.pruneExpiredRuns()).toBe(3);
+
+    expect(lateStore.listRunHistory(10).map((run) => run.run_id)).toContain(activeRunId);
+    expect(lateStore.listRunHistory(10).map((run) => run.run_id)).not.toContain(expiredRunId);
+    expect(lateStore.reconstructThreadLineage(activeThreadId)?.issue_run.issue_run_id).toBe(activeIssueRunId);
+    expect(lateStore.reconstructThreadLineage(expiredThreadId)).toBeNull();
+    expect(lateStore.listAppServerEventLedger(activeIssueRunId)).toHaveLength(1);
+    expect(lateStore.listAppServerEventLedger(expiredGraph.issue_run_id)).toHaveLength(0);
+
+    const db = openDatabase(dbPath);
+    try {
+      const records = db.prepare('SELECT source_table, source_id, reason_code FROM history_retention_prune_record ORDER BY source_table, source_id').all();
+      expect(records).toHaveLength(3);
+      expect(records).toEqual(
+        expect.arrayContaining([
+          {
+            source_table: 'runs',
+            source_id: expiredRunId,
+            reason_code: 'retention_policy_expired_completed_history'
+          },
+          {
+            source_table: 'runs',
+            source_id: expiredGraph.run_id,
+            reason_code: 'retention_policy_expired_completed_history'
+          },
+          {
+            source_table: 'issue_run',
+            source_id: expiredGraph.issue_run_id,
+            reason_code: 'retention_policy_expired_completed_history'
+          }
+        ])
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('records retention prune failures in persistence health evidence', async () => {
+    const base = Date.parse('2026-04-11T12:00:00.000Z');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-retention-failure-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base, pruneFailureForTest: 'token=abcd prune exploded' });
+    stores.push(store);
+
+    expect(() => store.pruneExpiredRuns()).toThrow(/prune exploded/);
+    expect(store.health()).toMatchObject({
+      last_pruned_at: null,
+      last_prune_failure_at: '2026-04-11T12:00:00.000Z',
+      last_prune_failure_reason: 'retention_prune_failed',
+      last_prune_failure_detail: 'token=***REDACTED*** prune exploded'
+    });
+  });
+
+
+});
