@@ -8403,7 +8403,7 @@ export class OrchestratorCore {
       }
       let entries: fs.Dirent[];
       try {
-        entries = fs.readdirSync(current.directory, { withFileTypes: true });
+        entries = this.sortCodexSessionDiscoveryEntries(fs.readdirSync(current.directory, { withFileTypes: true }));
       } catch {
         continue;
       }
@@ -8504,6 +8504,28 @@ export class OrchestratorCore {
     return [runningEntry.session_id, runningEntry.thread_id, runningEntry.turn_id].some((identifier) =>
       Boolean(identifier && normalized.includes(identifier.toLowerCase()))
     );
+  }
+
+  private sortCodexSessionDiscoveryEntries(entries: fs.Dirent[]): fs.Dirent[] {
+    return [...entries].sort((left, right) => {
+      const leftTranscript = left.isFile() && left.name.endsWith('.jsonl');
+      const rightTranscript = right.isFile() && right.name.endsWith('.jsonl');
+      if (leftTranscript !== rightTranscript) {
+        return leftTranscript ? -1 : 1;
+      }
+      if (leftTranscript && rightTranscript) {
+        return right.name.localeCompare(left.name);
+      }
+      const leftDirectory = left.isDirectory();
+      const rightDirectory = right.isDirectory();
+      if (leftDirectory !== rightDirectory) {
+        return leftDirectory ? -1 : 1;
+      }
+      if (leftDirectory && rightDirectory) {
+        return left.name.localeCompare(right.name);
+      }
+      return left.name.localeCompare(right.name);
+    });
   }
 
   private transcriptContentMayMatch(
