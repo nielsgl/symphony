@@ -1142,15 +1142,16 @@ describe('OrchestratorCore missing tool output', () => {
       const largePayload = 'x'.repeat(128 * 1024);
       for (let index = 0; index < 40; index += 1) {
         const minute = 46 + index;
+        const hour = 14 + Math.floor(minute / 60);
         fs.writeFileSync(
           path.join(
             activeSessionDir,
-            `rollout-2026-05-07T${String(13 + Math.floor(minute / 60)).padStart(2, '0')}-${String(
+            `rollout-2026-05-07T${String(hour).padStart(2, '0')}-${String(
               minute % 60
             ).padStart(2, '0')}-00-newer-${String(index).padStart(3, '0')}.jsonl`
           ),
           `${JSON.stringify({
-            timestamp: new Date(Date.parse('2026-05-07T13:46:00Z') + index * 60_000).toISOString(),
+            timestamp: new Date(Date.parse('2026-05-07T14:46:00Z') + index * 60_000).toISOString(),
             type: 'event_msg',
             payload: { type: 'noise', workspace: '/tmp/unrelated-newer-workspace', padding: largePayload }
           })}\n`,
@@ -1159,7 +1160,11 @@ describe('OrchestratorCore missing tool output', () => {
       }
 
       const harness = createHarness({
-        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 },
+        configOverrides: {
+          running_wait_stall_threshold_ms: 10_000,
+          stall_timeout_ms: 8 * 60 * 60 * 1_000,
+          worker_opaque_activity_hard_timeout_ms: 8 * 60 * 60 * 1_000
+        },
         spawnWorker: async ({ issue, worker_host }) => {
           return {
             ok: true,
@@ -1218,15 +1223,16 @@ describe('OrchestratorCore missing tool output', () => {
       ]);
 
       const readdirSpy = vi.spyOn(fs, 'readdirSync');
+      const waitingAtMs = Date.parse('2026-05-07T15:00:00Z');
       harness.orchestrator.onWorkerEvent('i-transcript-newer-active', {
-        timestamp_ms: harness.now.value + 30,
+        timestamp_ms: waitingAtMs,
         event: CANONICAL_EVENT.codex.turnWaiting,
-        detail: 'waiting with newer same-directory rollout transcripts present',
+        detail: 'waiting much later with newer same-directory rollout transcripts present',
         thread_id: 'thread-newer-active',
         turn_id: 'turn-newer-active',
         session_id: 'session-newer-active'
       });
-      harness.now.value += 2_000;
+      harness.now.value = waitingAtMs + 2_000;
       await harness.orchestrator.tick('interval');
       await new Promise((resolve) => setImmediate(resolve));
 

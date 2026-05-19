@@ -8510,8 +8510,7 @@ export class OrchestratorCore {
   }
 
   private sortCodexSessionDiscoveryEntries(entries: fs.Dirent[], runningEntry: RunningEntry): fs.Dirent[] {
-    const activeTranscriptTimeMs =
-      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
+    const activeTranscriptTimeMs = runningEntry.started_at_ms;
     return [...entries].sort((left, right) => {
       const leftTranscript = left.isFile() && left.name.endsWith('.jsonl');
       const rightTranscript = right.isFile() && right.name.endsWith('.jsonl');
