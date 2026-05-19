@@ -41,6 +41,22 @@ import {
   cloneRunningEntry,
   cloneWorkerTerminationResult
 } from './core/snapshot-cloning';
+import {
+  captureMissingToolOutputRecoveryReplacementLineage,
+  classifyWorkerActivity,
+  findReleasedWorkerRecord,
+  humanizeWorkerEvent,
+  isTerminalTurnEvent,
+  normalizeCodexAppServerPid,
+  normalizeWorkerInstanceId,
+  pruneInactiveWorkerPidsForIssue,
+  rememberInactiveWorkerPid,
+  rememberReleasedWorker,
+  severityForRuntimeEvent,
+  shouldResetRunningWaitEpisode,
+  staleWorkerEventReasonForRunningEntry,
+  workerEventLooksLikeTrackerComment
+} from './core/worker-events';
 import type {
   BlockedEntry,
   BudgetRuntimeProjection,
@@ -172,15 +188,6 @@ interface AppServerLiteSummary {
   summary: string;
   summary_fields: Record<string, unknown>;
   unavailable_reason_code?: string | null;
-}
-
-type WorkerActivityState = 'advancing' | 'active_but_opaque' | 'heartbeat_only' | 'stale';
-
-interface WorkerActivityClassification {
-  latest_meaningful_progress_at_ms: number | null;
-  latest_liveness_at_ms: number | null;
-  latest_thread_activity_at_ms: number | null;
-  activity_state: WorkerActivityState;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -410,34 +417,6 @@ function normalizeOperatorReasonNote(reason_note: string | null | undefined): st
 
 function reasonNoteRequiredFailure(): { ok: false; code: string; message: string } {
   return { ok: false, code: 'reason_note_required', message: 'reason_note is required' };
-}
-
-function humanizeWorkerEvent(event: WorkerObservabilityEvent): string {
-  const base = event.event.replace(/[._/]+/g, ' ').trim();
-  if (event.detail && event.detail.trim().length > 0) {
-    return `${base}: ${event.detail.trim()}`;
-  }
-
-  return base;
-}
-
-function normalizeCodexAppServerPid(pid: number | string | null | undefined): string | null {
-  return pid === undefined || pid === null ? null : String(pid);
-}
-
-function normalizeWorkerInstanceId(workerInstanceId: string | null | undefined): string | null {
-  const trimmed = workerInstanceId?.trim();
-  return trimmed ? trimmed : null;
-}
-
-function severityForRuntimeEvent(eventName: string): 'info' | 'warn' | 'error' {
-  if (eventName.includes('failed') || eventName.includes('error')) {
-    return 'error';
-  }
-  if (eventName.includes('retry') || eventName.includes('validation') || eventName.includes('unsupported')) {
-    return 'warn';
-  }
-  return 'info';
 }
 
 function asIso(timestampMs: number): string {
@@ -1101,7 +1080,16 @@ export class OrchestratorCore {
       return;
     }
 
-    const staleReason = this.staleWorkerEventReasonForRunningEntry(issue_id, runningEntry, workerEvent);
+    const staleReason = staleWorkerEventReasonForRunningEntry({
+      runningEntry,
+      workerEvent,
+      inactiveWorkerEntries: pruneInactiveWorkerPidsForIssue({
+        state: this.state,
+        issueId: issue_id,
+        nowMs: this.nowMs(),
+        ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+      })
+    });
     if (staleReason) {
       this.recordStaleRunningWorkerEvent(issue_id, runningEntry, workerEvent, staleReason);
       return;
@@ -1145,7 +1133,7 @@ export class OrchestratorCore {
       }
       runningEntry.stalled_waiting_reason = null;
       this.maybeEmitHeartbeatOnly(issue_id, runningEntry, workerEvent.timestamp_ms);
-    } else if (this.shouldResetRunningWaitEpisode(workerEvent.event)) {
+    } else if (shouldResetRunningWaitEpisode(workerEvent.event)) {
       this.resetRunningWaitEpisode(runningEntry, workerEvent.timestamp_ms);
     } else if (this.isMeaningfulWorkerProgressEvent(workerEvent)) {
       runningEntry.last_progress_transition_at_ms = workerEvent.timestamp_ms;
@@ -1191,7 +1179,7 @@ export class OrchestratorCore {
       }
     }
 
-    this.captureMissingToolOutputRecoveryReplacementLineage(runningEntry, workerEvent);
+    captureMissingToolOutputRecoveryReplacementLineage(runningEntry, workerEvent);
     this.updateOutstandingToolCalls(runningEntry, workerEvent);
 
     if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
@@ -1265,7 +1253,7 @@ export class OrchestratorCore {
         workerEvent.token_telemetry_last_at_ms ?? runningEntry.token_telemetry_last_at_ms;
     }
 
-    if (this.isTerminalTurnEvent(workerEvent.event) && !workerEvent.usage && runningEntry.token_telemetry_status === 'pending') {
+    if (isTerminalTurnEvent(workerEvent.event) && !workerEvent.usage && runningEntry.token_telemetry_status === 'pending') {
       runningEntry.token_telemetry_status = 'unavailable';
     }
 
@@ -1392,155 +1380,6 @@ export class OrchestratorCore {
     }
   }
 
-  private staleWorkerEventReasonForRunningEntry(
-    issueId: string,
-    runningEntry: RunningEntry,
-    workerEvent: WorkerObservabilityEvent
-  ): QuarantinedWorkerEventReason | null {
-    const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
-    const eventWorkerInstanceId = normalizeWorkerInstanceId(workerEvent.worker_instance_id);
-    if (
-      eventWorkerInstanceId &&
-      runningEntry.worker_instance_id &&
-      eventWorkerInstanceId !== runningEntry.worker_instance_id
-    ) {
-      return 'worker_identity_mismatch';
-    }
-
-    if (eventPid && this.isInactiveWorkerPidForIssue(issueId, eventPid)) {
-      return 'inactive_worker_pid';
-    }
-
-    if (!eventPid && this.isInactiveWorkerLineageForIssue(issueId, workerEvent)) {
-      return 'lineage_mismatch';
-    }
-
-    if (eventPid && runningEntry.codex_app_server_pid && eventPid !== runningEntry.codex_app_server_pid) {
-      return 'worker_identity_mismatch';
-    }
-
-    if (runningEntry.thread_id && workerEvent.thread_id && workerEvent.thread_id !== runningEntry.thread_id) {
-      return 'lineage_mismatch';
-    }
-
-    if (this.isSameThreadContinuationTurnStart(runningEntry, workerEvent)) {
-      return null;
-    }
-
-    if (this.isSameThreadRecoveryTurnStart(runningEntry, workerEvent)) {
-      return null;
-    }
-
-    if (this.isPreviousRecoveryTurnEvent(runningEntry, workerEvent)) {
-      return 'lineage_mismatch';
-    }
-
-    if (this.isTerminalTurnResidue(runningEntry, workerEvent)) {
-      return 'terminal_residue';
-    }
-
-    if (runningEntry.turn_id && workerEvent.turn_id && workerEvent.turn_id !== runningEntry.turn_id) {
-      return 'lineage_mismatch';
-    }
-
-    return runningEntry.session_id && workerEvent.session_id && workerEvent.session_id !== runningEntry.session_id
-      ? 'lineage_mismatch'
-      : null;
-  }
-
-  private isSameThreadContinuationTurnStart(
-    runningEntry: RunningEntry,
-    workerEvent: WorkerObservabilityEvent
-  ): boolean {
-    const turnId = workerEvent.turn_id;
-    return (
-      workerEvent.event === CANONICAL_EVENT.codex.turnStarted &&
-      runningEntry.last_event === CANONICAL_EVENT.codex.turnCompleted &&
-      Boolean(runningEntry.thread_id) &&
-      workerEvent.thread_id === runningEntry.thread_id &&
-      typeof turnId === 'string' &&
-      !(runningEntry.persisted_turn_ids ?? []).includes(turnId) &&
-      !(runningEntry.pending_persisted_turn_ids ?? []).includes(turnId)
-    );
-  }
-
-  private isTerminalTurnResidue(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
-    if (!runningEntry.last_event || !this.isTerminalTurnEvent(runningEntry.last_event)) {
-      return false;
-    }
-    if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
-      return false;
-    }
-
-    const sameTurn = Boolean(runningEntry.turn_id) && workerEvent.turn_id === runningEntry.turn_id;
-    const sameSession = Boolean(runningEntry.session_id) && workerEvent.session_id === runningEntry.session_id;
-    const sameThread =
-      !runningEntry.thread_id || !workerEvent.thread_id || workerEvent.thread_id === runningEntry.thread_id;
-    const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
-    const sameWorkerPid = Boolean(runningEntry.codex_app_server_pid) && eventPid === runningEntry.codex_app_server_pid;
-    const hasEventLineage = Boolean(workerEvent.thread_id || workerEvent.turn_id || workerEvent.session_id || eventPid);
-    return sameThread && (sameTurn || sameSession || sameWorkerPid || !hasEventLineage);
-  }
-
-  private isSameThreadRecoveryTurnStart(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
-    const turnId = workerEvent.turn_id;
-    return (
-      workerEvent.event === CANONICAL_EVENT.codex.turnStarted &&
-      runningEntry.recovery?.last_result === 'started' &&
-      Boolean(runningEntry.thread_id) &&
-      workerEvent.thread_id === runningEntry.thread_id &&
-      typeof turnId === 'string' &&
-      turnId !== runningEntry.turn_id
-    );
-  }
-
-  private captureMissingToolOutputRecoveryReplacementLineage(
-    runningEntry: RunningEntry,
-    workerEvent: WorkerObservabilityEvent
-  ): void {
-    const recovery = runningEntry.recovery ?? null;
-    if (!recovery || recovery.last_result !== 'started' || workerEvent.event !== CANONICAL_EVENT.codex.turnStarted) {
-      return;
-    }
-
-    const replacementTurnId = workerEvent.turn_id ?? runningEntry.turn_id ?? null;
-    if (!replacementTurnId || replacementTurnId === recovery.previous_turn_id) {
-      return;
-    }
-
-    const replacementThreadId = workerEvent.thread_id ?? runningEntry.thread_id ?? recovery.previous_thread_id ?? null;
-    if (recovery.previous_thread_id && replacementThreadId && replacementThreadId !== recovery.previous_thread_id) {
-      return;
-    }
-
-    runningEntry.recovery = {
-      ...recovery,
-      replacement_thread_id: replacementThreadId,
-      replacement_turn_id: replacementTurnId,
-      replacement_session_id: workerEvent.session_id ?? runningEntry.session_id ?? null
-    };
-  }
-
-  private isPreviousRecoveryTurnEvent(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): boolean {
-    const recovery = runningEntry.recovery;
-    if (!recovery || recovery.last_result !== 'started') {
-      return false;
-    }
-
-    const matchesPreviousTurn = Boolean(recovery.previous_turn_id) && workerEvent.turn_id === recovery.previous_turn_id;
-    const matchesPreviousSession =
-      Boolean(recovery.previous_session_id) && workerEvent.session_id === recovery.previous_session_id;
-    if (!matchesPreviousTurn && !matchesPreviousSession) {
-      return false;
-    }
-
-    if (recovery.previous_thread_id && workerEvent.thread_id && workerEvent.thread_id !== recovery.previous_thread_id) {
-      return false;
-    }
-
-    return true;
-  }
-
   private recordStaleRunningWorkerEvent(
     issueId: string,
     runningEntry: RunningEntry,
@@ -1649,131 +1488,6 @@ export class OrchestratorCore {
         event: workerEvent.event
       }
     });
-  }
-
-  private isInactiveWorkerPidForIssue(issueId: string, pid: string): boolean {
-    return this.pruneInactiveWorkerPidsForIssue(issueId).some((entry) => entry.pid === pid);
-  }
-
-  private isInactiveWorkerLineageForIssue(issueId: string, workerEvent: WorkerObservabilityEvent): boolean {
-    const inactiveEntries = this.pruneInactiveWorkerPidsForIssue(issueId);
-    if (inactiveEntries.length === 0) {
-      return false;
-    }
-
-    return inactiveEntries.some((entry) => {
-      const turnMatches = Boolean(entry.turn_id) && workerEvent.turn_id === entry.turn_id;
-      const sessionMatches = Boolean(entry.session_id) && workerEvent.session_id === entry.session_id;
-      if (!turnMatches && !sessionMatches) {
-        return false;
-      }
-      return !entry.thread_id || !workerEvent.thread_id || workerEvent.thread_id === entry.thread_id;
-    });
-  }
-
-  private rememberInactiveWorkerPid(runningEntry: RunningEntry, reason: string): void {
-    const pid = runningEntry.codex_app_server_pid;
-    if (!pid && !runningEntry.thread_id && !runningEntry.turn_id && !runningEntry.session_id) {
-      return;
-    }
-    const issueId = runningEntry.issue.id;
-    const existing = this.pruneInactiveWorkerPidsForIssue(issueId);
-    const next = [
-      ...existing.filter((entry) => !(entry.pid === (pid ?? '') && entry.turn_id === (runningEntry.turn_id ?? null))),
-      {
-        pid: pid ?? '',
-        recorded_at_ms: this.nowMs(),
-        reason,
-        thread_id: runningEntry.thread_id ?? null,
-        turn_id: runningEntry.turn_id ?? null,
-        session_id: runningEntry.session_id ?? null
-      }
-    ].slice(-20);
-    if (!this.state.inactive_worker_pids) {
-      this.state.inactive_worker_pids = new Map();
-    }
-    this.state.inactive_worker_pids.set(issueId, next);
-  }
-
-  private rememberReleasedWorker(runningEntry: RunningEntry, reason: string, cleanupWorkspace: boolean): void {
-    const issueId = runningEntry.issue.id;
-    const existing = this.state.released_workers?.get(issueId) ?? [];
-    const next = [
-      ...existing,
-      {
-        released_at_ms: this.nowMs(),
-        reason,
-        cleanup_workspace: cleanupWorkspace,
-        worker_instance_id: runningEntry.worker_instance_id ?? null,
-        codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
-        thread_id: runningEntry.thread_id ?? null,
-        turn_id: runningEntry.turn_id ?? null,
-        session_id: runningEntry.session_id ?? null
-      }
-    ].slice(-20);
-    if (!this.state.released_workers) {
-      this.state.released_workers = new Map();
-    }
-    this.state.released_workers.set(issueId, next);
-  }
-
-  private findReleasedWorkerRecord(issueId: string, details: WorkerExitDetails): ReleasedWorkerRecord | null {
-    const released = this.state.released_workers?.get(issueId) ?? [];
-    if (released.length === 0) {
-      return null;
-    }
-    const workerInstanceId = normalizeWorkerInstanceId(details.worker_instance_id);
-    const pid = normalizeCodexAppServerPid(details.codex_app_server_pid);
-    return (
-      released.find((entry) => {
-        if (workerInstanceId && entry.worker_instance_id === workerInstanceId) {
-          return true;
-        }
-        if (pid && entry.codex_app_server_pid === pid) {
-          return true;
-        }
-        if (details.turn_id && entry.turn_id === details.turn_id) {
-          return true;
-        }
-        if (details.session_id && entry.session_id === details.session_id) {
-          return true;
-        }
-        return false;
-      }) ?? null
-    );
-  }
-
-  private pruneInactiveWorkerPidsForIssue(issueId: string): Array<{
-    pid: string;
-    recorded_at_ms: number;
-    reason: string;
-    thread_id: string | null;
-    turn_id: string | null;
-    session_id: string | null;
-  }> {
-    const entries = this.state.inactive_worker_pids?.get(issueId) ?? [];
-    if (entries.length === 0) {
-      return [];
-    }
-
-    const nowMs = this.nowMs();
-    const ttlMs = Math.max(0, this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS);
-    const activeEntries = entries.filter(
-      (entry) => Number.isFinite(entry.recorded_at_ms) && nowMs - entry.recorded_at_ms < ttlMs
-    );
-    if (activeEntries.length === entries.length) {
-      return entries;
-    }
-
-    if (!this.state.inactive_worker_pids) {
-      this.state.inactive_worker_pids = new Map();
-    }
-    if (activeEntries.length > 0) {
-      this.state.inactive_worker_pids.set(issueId, activeEntries);
-    } else {
-      this.state.inactive_worker_pids.delete(issueId);
-    }
-    return activeEntries;
   }
 
   private async persistExecutionGraphWorkerEvent(
@@ -2622,7 +2336,7 @@ export class OrchestratorCore {
     if (!this.budgetConfigured()) {
       return;
     }
-    if (!this.isTerminalTurnEvent(workerEvent.event) || runningEntry.token_telemetry_status !== 'unavailable') {
+    if (!isTerminalTurnEvent(workerEvent.event) || runningEntry.token_telemetry_status !== 'unavailable') {
       return;
     }
     runningEntry.budget = this.computeBudgetProjection(
@@ -3048,7 +2762,7 @@ export class OrchestratorCore {
   ): Promise<void> {
     const running = this.state.running.get(issue_id);
     if (!running) {
-      const releasedWorker = this.findReleasedWorkerRecord(issue_id, details);
+      const releasedWorker = findReleasedWorkerRecord(this.state.released_workers, issue_id, details);
       if (this.state.completed.has(issue_id) || releasedWorker) {
         this.logger?.log({
           level: 'info',
@@ -3117,7 +2831,13 @@ export class OrchestratorCore {
       return;
     }
 
-    this.rememberInactiveWorkerPid(running, details.completion_reason ?? reason);
+    rememberInactiveWorkerPid({
+      state: this.state,
+      runningEntry: running,
+      reason: details.completion_reason ?? reason,
+      nowMs: this.nowMs(),
+      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+    });
     this.state.running.delete(issue_id);
     this.addRuntimeSecondsFromEntry(running);
     this.recordBudgetUsageSample(issue_id, running.tokens.total_tokens, this.nowMs());
@@ -4629,7 +4349,7 @@ export class OrchestratorCore {
           continue;
         }
       }
-      if (runningEntry.last_event && this.shouldResetRunningWaitEpisode(runningEntry.last_event)) {
+      if (runningEntry.last_event && shouldResetRunningWaitEpisode(runningEntry.last_event)) {
         runningEntry.running_waiting_started_at_ms = null;
         runningEntry.running_wait_stall_event_emitted = false;
         runningEntry.heartbeat_only_event_emitted = false;
@@ -5186,8 +4906,14 @@ export class OrchestratorCore {
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'cancelled', reason, null, finalizationDetail);
     await this.persistExecutionGraphStateTransition(runningEntry, 'cancelled', 'cancelled', reason, finalizationDetail);
-    this.rememberInactiveWorkerPid(runningEntry, reason);
-    this.rememberReleasedWorker(runningEntry, reason, cleanup_workspace);
+    rememberInactiveWorkerPid({
+      state: this.state,
+      runningEntry,
+      reason,
+      nowMs: this.nowMs(),
+      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+    });
+    rememberReleasedWorker({ state: this.state, runningEntry, reason, cleanupWorkspace: cleanup_workspace, nowMs: this.nowMs() });
     this.state.running.delete(issue_id);
     this.state.claimed.delete(issue_id);
     this.logger?.log({
@@ -7038,29 +6764,6 @@ export class OrchestratorCore {
     });
   }
 
-  private isTerminalTurnEvent(event: string): boolean {
-    return (
-      event === CANONICAL_EVENT.codex.turnCompleted ||
-      event === CANONICAL_EVENT.codex.turnFailed ||
-      event === CANONICAL_EVENT.codex.turnCancelled
-    );
-  }
-
-  private shouldResetRunningWaitEpisode(event: string): boolean {
-    return (
-      this.isTerminalTurnEvent(event) ||
-      event === CANONICAL_EVENT.codex.turnStarted ||
-      event === CANONICAL_EVENT.codex.promptSent ||
-      event === CANONICAL_EVENT.codex.turnInputRequired ||
-      event === CANONICAL_EVENT.codex.startupFailed ||
-      event === CANONICAL_EVENT.codex.phaseImplementation ||
-      event === CANONICAL_EVENT.codex.phaseValidation ||
-      event === CANONICAL_EVENT.codex.toolCallStarted ||
-      event === CANONICAL_EVENT.codex.toolCallCompleted ||
-      event === CANONICAL_EVENT.codex.toolCallFailed
-    );
-  }
-
   private resetRunningWaitEpisode(runningEntry: RunningEntry, progressAtMs: number): void {
     runningEntry.running_waiting_started_at_ms = null;
     runningEntry.running_wait_stall_event_emitted = false;
@@ -7068,46 +6771,6 @@ export class OrchestratorCore {
     runningEntry.stalled_waiting_since_ms = null;
     runningEntry.stalled_waiting_reason = null;
     runningEntry.last_progress_transition_at_ms = progressAtMs;
-  }
-
-  private classifyWorkerActivity(runningEntry: RunningEntry, observedAtMs: number): WorkerActivityClassification {
-    const latestMeaningfulProgressAtMs = Math.max(
-      0,
-      runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
-      ...Object.values(runningEntry.tool_call_ledger ?? {}).map((entry) => entry.last_seen_at_ms),
-      ...Object.values(runningEntry.outstanding_tool_calls ?? {}).map((entry) => entry.last_waiting_at_ms ?? entry.started_at_ms)
-    );
-    const latestThreadActivityAtMs = runningEntry.codex_thread_activity_at_ms ?? null;
-    const latestLivenessAtMs = Math.max(
-      0,
-      runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms,
-      runningEntry.last_heartbeat_at_ms ?? 0,
-      latestThreadActivityAtMs ?? 0
-    );
-    const normalizedMeaningful = latestMeaningfulProgressAtMs > 0 ? latestMeaningfulProgressAtMs : null;
-    const normalizedLiveness = latestLivenessAtMs > 0 ? latestLivenessAtMs : null;
-    const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
-    const meaningfulAgeMs = normalizedMeaningful === null ? Number.POSITIVE_INFINITY : observedAtMs - normalizedMeaningful;
-    const livenessAgeMs = normalizedLiveness === null ? Number.POSITIVE_INFINITY : observedAtMs - normalizedLiveness;
-    const hasFreshLiveness = waitThresholdMs <= 0 || livenessAgeMs <= waitThresholdMs;
-    const hasFreshThreadActivity =
-      latestThreadActivityAtMs !== null && (waitThresholdMs <= 0 || observedAtMs - latestThreadActivityAtMs <= waitThresholdMs);
-    const waitingLike = runningEntry.last_event === CANONICAL_EVENT.codex.turnWaiting || runningEntry.running_waiting_started_at_ms != null;
-    const activityState: WorkerActivityState =
-      meaningfulAgeMs <= waitThresholdMs
-        ? 'advancing'
-        : hasFreshThreadActivity
-          ? 'active_but_opaque'
-          : hasFreshLiveness || waitingLike
-            ? 'heartbeat_only'
-            : 'stale';
-
-    return {
-      latest_meaningful_progress_at_ms: normalizedMeaningful,
-      latest_liveness_at_ms: normalizedLiveness,
-      latest_thread_activity_at_ms: latestThreadActivityAtMs,
-      activity_state: activityState
-    };
   }
 
   private isMeaningfulWorkerProgressEvent(workerEvent: WorkerObservabilityEvent): boolean {
@@ -7338,7 +7001,11 @@ export class OrchestratorCore {
     const waitingStartedAtMs =
       runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
     runningEntry.running_waiting_started_at_ms = waitingStartedAtMs;
-    const activity = this.classifyWorkerActivity(runningEntry, observedAtMs);
+    const activity = classifyWorkerActivity({
+      runningEntry,
+      observedAtMs,
+      waitThresholdMs: this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000
+    });
     const lastMeaningfulActivityAtMs =
       typeof activity.latest_meaningful_progress_at_ms === 'number' && activity.latest_meaningful_progress_at_ms > waitingStartedAtMs
         ? activity.latest_meaningful_progress_at_ms
@@ -7422,7 +7089,13 @@ export class OrchestratorCore {
     });
     const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
 
-    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.turnWaitingThresholdExceeded);
+    rememberInactiveWorkerPid({
+      state: this.state,
+      runningEntry,
+      reason: REASON_CODES.turnWaitingThresholdExceeded,
+      nowMs: this.nowMs(),
+      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+    });
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.turnWaitingThresholdExceeded, null, stalledDetail);
     await this.persistExecutionGraphStateTransition(
@@ -7505,7 +7178,11 @@ export class OrchestratorCore {
       return false;
     }
 
-    const activity = this.classifyWorkerActivity(runningEntry, observedAtMs);
+    const activity = classifyWorkerActivity({
+      runningEntry,
+      observedAtMs,
+      waitThresholdMs: this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000
+    });
     if (activity.activity_state !== 'active_but_opaque' && activity.activity_state !== 'heartbeat_only') {
       return false;
     }
@@ -7546,7 +7223,13 @@ export class OrchestratorCore {
     });
     const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
 
-    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.workerOpaqueActivityHardTimeout);
+    rememberInactiveWorkerPid({
+      state: this.state,
+      runningEntry,
+      reason: REASON_CODES.workerOpaqueActivityHardTimeout,
+      nowMs: this.nowMs(),
+      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+    });
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.workerOpaqueActivityHardTimeout, null, stalledDetail);
     await this.persistExecutionGraphStateTransition(
@@ -7637,7 +7320,13 @@ export class OrchestratorCore {
     });
     const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
 
-    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.issueStateRefreshFailed);
+    rememberInactiveWorkerPid({
+      state: this.state,
+      runningEntry,
+      reason: REASON_CODES.issueStateRefreshFailed,
+      nowMs: this.nowMs(),
+      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+    });
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.issueStateRefreshFailed, null, stalledDetail);
     await this.persistExecutionGraphStateTransition(
@@ -7765,12 +7454,12 @@ export class OrchestratorCore {
       return true;
     }
     return runningEntry.recent_events.some((event) => {
-      return this.workerEventLooksLikeTrackerComment(event);
+      return workerEventLooksLikeTrackerComment(event);
     });
   }
 
   private captureWorkerProgressSignal(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
-    if (!this.workerEventLooksLikeTrackerComment(workerEvent)) {
+    if (!workerEventLooksLikeTrackerComment(workerEvent)) {
       return;
     }
 
@@ -7784,28 +7473,6 @@ export class OrchestratorCore {
       tracker_started_state:
         runningEntry.progress_signals?.tracker_started_state ?? runningEntry.started_issue_state ?? runningEntry.issue.state
     };
-  }
-
-  private workerEventLooksLikeTrackerComment(
-    workerEvent: Pick<WorkerObservabilityEvent, 'event' | 'tool_name' | 'request_method' | 'request_category'>
-  ): boolean {
-    const event = workerEvent.event?.toLowerCase() ?? '';
-    const toolName = workerEvent.tool_name?.toLowerCase() ?? '';
-    const requestMethod = workerEvent.request_method?.toLowerCase() ?? '';
-    const requestCategory = workerEvent.request_category?.toLowerCase() ?? '';
-
-    if (event === 'linear.comment.created' || event === 'linear.comment.updated') {
-      return true;
-    }
-
-    const looksLikeLinearRequest = requestCategory === 'linear' || event.startsWith('linear.');
-    return (
-      looksLikeLinearRequest &&
-      (toolName === 'save_comment' ||
-        toolName === 'create_comment' ||
-        requestMethod === 'save_comment' ||
-        requestMethod === 'create_comment')
-    );
   }
 
   private async completeStalledReviewHandoff(
@@ -7833,7 +7500,13 @@ export class OrchestratorCore {
     });
     const terminalDetail = workerTerminationResultDetail(detail, terminationResult);
 
-    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.turnWaitingThresholdExceeded);
+    rememberInactiveWorkerPid({
+      state: this.state,
+      runningEntry,
+      reason: REASON_CODES.turnWaitingThresholdExceeded,
+      nowMs: this.nowMs(),
+      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+    });
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(
       runningEntry,
@@ -7849,7 +7522,13 @@ export class OrchestratorCore {
       REASON_CODES.agentReviewHandoffProgressObserved,
       terminalDetail
     );
-    this.rememberReleasedWorker(runningEntry, REASON_CODES.agentReviewHandoffProgressObserved, false);
+    rememberReleasedWorker({
+      state: this.state,
+      runningEntry,
+      reason: REASON_CODES.agentReviewHandoffProgressObserved,
+      cleanupWorkspace: false,
+      nowMs: this.nowMs()
+    });
     this.state.running.delete(issueId);
     this.state.retry_attempts.delete(issueId);
     this.state.blocked_inputs.delete(issueId);
@@ -8708,7 +8387,13 @@ export class OrchestratorCore {
       );
       return;
     }
-    this.rememberInactiveWorkerPid(runningEntry, REASON_CODES.missingToolOutputRecoveryInterrupted);
+    rememberInactiveWorkerPid({
+      state: this.state,
+      runningEntry,
+      reason: REASON_CODES.missingToolOutputRecoveryInterrupted,
+      nowMs: this.nowMs(),
+      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+    });
     this.recordRuntimeEvent({
       event: CANONICAL_EVENT.orchestration.missingToolOutputRecoveryInterruptCompleted,
       severity: 'warn',
@@ -8989,7 +8674,13 @@ export class OrchestratorCore {
     }
     const blockDetail = terminationResult ? workerTerminationResultDetail(detail, terminationResult) : detail;
 
-    this.rememberInactiveWorkerPid(runningEntry, stopReasonCode);
+    rememberInactiveWorkerPid({
+      state: this.state,
+      runningEntry,
+      reason: stopReasonCode,
+      nowMs: this.nowMs(),
+      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
+    });
     this.addRuntimeSecondsFromEntry(runningEntry);
     await this.completeRunRecord(runningEntry, 'cancelled', stopReasonCode, recovery, blockDetail);
     this.state.running.delete(issueId);
