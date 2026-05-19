@@ -2496,6 +2496,109 @@ describe('CodexRunner', () => {
     readdirSpy.mockRestore();
   });
 
+  it('prioritizes newer fallback transcript directories before old siblings under discovery budget', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const sessionsDir = path.join(codexHome, 'sessions', '2026', '05');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const oldDir = path.join(sessionsDir, '06');
+    fs.mkdirSync(oldDir, { recursive: true });
+    for (let index = 0; index < 30; index += 1) {
+      fs.writeFileSync(
+        path.join(oldDir, `rollout-2026-05-06T00-00-${String(index).padStart(2, '0')}-old.jsonl`),
+        `${JSON.stringify({
+          timestamp: new Date().toISOString(),
+          type: 'event_msg',
+          payload: { type: 'noise', padding: 'x'.repeat(128) }
+        })}\n`,
+        'utf8'
+      );
+    }
+    fs.mkdirSync(path.join(sessionsDir, '07'), { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionsDir, '07', 'rollout-2026-05-07T23-59-59-active.jsonl'),
+      `${JSON.stringify({
+        timestamp: '2026-05-07T23:59:59.999Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          thread_id: 'thread-priority',
+          turn_id: 'turn-priority',
+          last_agent_message: 'newest fallback transcript won'
+        }
+      })}\n`,
+      'utf8'
+    );
+
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-priority"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-priority"}}}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-priority',
+      turn_id: 'turn-priority',
+      terminal_source: 'session_transcript',
+      last_agent_message: 'newest fallback transcript won',
+      transcript_lookup: expect.objectContaining({
+        source: 'fallback',
+        candidate_count: 1,
+        exhausted: false
+      })
+    });
+  });
+
+  it('emits transcript lookup diagnostics when fallback budget is exhausted', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    for (let index = 0; index < 60; index += 1) {
+      fs.writeFileSync(
+        path.join(sessionsDir, `rollout-2026-05-07T00-00-${String(index).padStart(2, '0')}-old.jsonl`),
+        `${JSON.stringify({
+          timestamp: new Date().toISOString(),
+          type: 'event_msg',
+          payload: { type: 'noise', padding: 'x'.repeat(1024) }
+        })}\n`,
+        'utf8'
+      );
+    }
+    const events: CodexRunnerEvent[] = [];
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        onEvent: (event) => events.push(event),
+        turnTimeoutMs: 300
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-diagnostics"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-diagnostics"}}}\n');
+
+    await expect(promise).rejects.toMatchObject({ code: REASON_CODES.turnTimeout });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.transcriptLookup,
+        transcript_lookup_source: 'budget_exhausted',
+        transcript_lookup_exhausted: true,
+        transcript_lookup_reason_codes: expect.arrayContaining(['transcript_discovery_file_count_budget_exhausted'])
+      })
+    );
+  });
+
   it('keeps wrong-lineage transcript task_complete diagnostic-only until protocol completion', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

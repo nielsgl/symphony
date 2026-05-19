@@ -23,6 +23,7 @@ import type {
   CodexRunnerRecoveryInput,
   CodexRunnerEvent,
   CodexRunnerStartInput,
+  CodexTranscriptLookupMetadata,
   CodexTurnResult,
   CodexModelRerouteEvidence,
   CodexProtocolWarningEvidence,
@@ -71,6 +72,7 @@ interface WaitForTerminalResult {
   time_to_first_token_ms?: number;
   input_required_detail?: string;
   input_required_payload?: CodexInputRequestPayload;
+  transcript_lookup?: CodexTranscriptLookupMetadata;
 }
 
 const PROCESS_CANCEL_GRACE_MS = 500;
@@ -93,6 +95,7 @@ interface TranscriptTerminalEvidence {
 interface TranscriptScanResult {
   terminal: TranscriptTerminalEvidence | null;
   observedProgress: boolean;
+  lookup: TranscriptCandidateLookupResult | null;
 }
 
 interface TranscriptCandidateCache {
@@ -104,6 +107,7 @@ interface TranscriptCandidateCache {
 
 interface TranscriptCandidateLookupStats {
   source: 'indexed' | 'fallback' | 'cache' | 'missing' | 'budget_exhausted';
+  cachedSource?: 'indexed' | 'fallback' | 'missing' | 'budget_exhausted';
   candidateCount: number;
   filesConsidered: number;
   filesParsed: number;
@@ -115,6 +119,8 @@ interface TranscriptCandidateLookupStats {
 interface TranscriptCandidateLookupResult {
   paths: string[];
   stats: TranscriptCandidateLookupStats;
+  refreshedAtMs: number;
+  expiresAtMs: number;
 }
 
 type UnsupportedServerRequestCategory =
@@ -177,7 +183,23 @@ function buildTerminalMetadata(waitResult: WaitForTerminalResult): Partial<Codex
     ...(waitResult.last_agent_message !== undefined ? { last_agent_message: waitResult.last_agent_message } : {}),
     ...(waitResult.completed_at_ms !== undefined ? { completed_at_ms: waitResult.completed_at_ms } : {}),
     ...(waitResult.duration_ms !== undefined ? { duration_ms: waitResult.duration_ms } : {}),
-    ...(waitResult.time_to_first_token_ms !== undefined ? { time_to_first_token_ms: waitResult.time_to_first_token_ms } : {})
+    ...(waitResult.time_to_first_token_ms !== undefined ? { time_to_first_token_ms: waitResult.time_to_first_token_ms } : {}),
+    ...(waitResult.transcript_lookup ? { transcript_lookup: waitResult.transcript_lookup } : {})
+  };
+}
+
+function serializeTranscriptLookupMetadata(lookup: TranscriptCandidateLookupResult): CodexTranscriptLookupMetadata {
+  return {
+    source: lookup.stats.source,
+    ...(lookup.stats.cachedSource ? { cached_source: lookup.stats.cachedSource } : {}),
+    candidate_count: lookup.stats.candidateCount,
+    files_considered: lookup.stats.filesConsidered,
+    files_parsed: lookup.stats.filesParsed,
+    bytes_read: lookup.stats.bytesRead,
+    exhausted: lookup.stats.exhausted,
+    reason_codes: [...lookup.stats.reasonCodes],
+    cache_refreshed_at_ms: lookup.refreshedAtMs,
+    cache_expires_at_ms: lookup.expiresAtMs
   };
 }
 
@@ -1665,6 +1687,7 @@ class ProtocolClient {
   private readonly transcriptOffsets = new Map<string, number>();
   private readonly transcriptTails = new Map<string, string>();
   private transcriptCandidateCache: TranscriptCandidateCache | null = null;
+  private lastTranscriptLookupDiagnosticKey: string | null = null;
 
   private latestRateLimits: Record<string, unknown> | null = null;
   private latestModelReroute: CodexModelRerouteEvidence | null = null;
@@ -2009,7 +2032,10 @@ class ProtocolClient {
           usage: this.usageTracker.snapshot(),
           telemetry: this.usageTracker.telemetrySnapshot(),
           rate_limits: this.latestRateLimits,
-          ...this.protocolEvidenceSnapshot()
+          ...this.protocolEvidenceSnapshot(),
+          ...(transcriptScanResult.lookup
+            ? { transcript_lookup: serializeTranscriptLookupMetadata(transcriptScanResult.lookup) }
+            : {})
         };
       }
 
@@ -2127,11 +2153,12 @@ class ProtocolClient {
   ): TranscriptScanResult {
     const context = this.activeTurnContext;
     if (!context) {
-      return { terminal: null, observedProgress: false };
+      return { terminal: null, observedProgress: false, lookup: null };
     }
     let observedProgress = false;
 
     const lookup = this.findCandidateTranscriptPaths(context);
+    this.emitTranscriptLookupDiagnostic(lookup, context, emit);
 
     for (const transcriptPath of lookup.paths) {
       let stat: fs.Stats;
@@ -2194,12 +2221,12 @@ class ProtocolClient {
         this.observeTranscriptUsage(payload);
         const terminalEvidence = this.readTranscriptTerminalEvidence(record, transcriptPath, context, emit);
         if (terminalEvidence) {
-          return { terminal: terminalEvidence, observedProgress };
+          return { terminal: terminalEvidence, observedProgress, lookup };
         }
       }
     }
 
-    return { terminal: null, observedProgress };
+    return { terminal: null, observedProgress, lookup };
   }
 
   private findCandidateTranscriptPaths(context: TurnEventContext): TranscriptCandidateLookupResult {
@@ -2208,15 +2235,20 @@ class ProtocolClient {
     if (
       this.transcriptCandidateCache &&
       this.transcriptCandidateCache.identityKey === identityKey &&
-      nowMs - this.transcriptCandidateCache.refreshedAtMs < ProtocolClient.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS
+      nowMs - this.transcriptCandidateCache.refreshedAtMs < ProtocolClient.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS &&
+      this.isTranscriptCandidateCacheFresh()
     ) {
+      const cachedStats = this.transcriptCandidateCache.stats;
       return {
         paths: [...this.transcriptCandidateCache.paths],
         stats: {
-          ...this.transcriptCandidateCache.stats,
+          ...cachedStats,
           source: 'cache',
-          reasonCodes: [...this.transcriptCandidateCache.stats.reasonCodes]
-        }
+          cachedSource: cachedStats.source === 'cache' ? cachedStats.cachedSource : cachedStats.source,
+          reasonCodes: [...cachedStats.reasonCodes]
+        },
+        refreshedAtMs: this.transcriptCandidateCache.refreshedAtMs,
+        expiresAtMs: this.transcriptCandidateCache.refreshedAtMs + ProtocolClient.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS
       };
     }
 
@@ -2234,8 +2266,7 @@ class ProtocolClient {
         exhausted: indexedPaths.length > limitedPaths.length,
         reasonCodes: indexedPaths.length > limitedPaths.length ? ['transcript_candidate_file_budget_exhausted'] : []
       };
-      this.transcriptCandidateCache = { identityKey, refreshedAtMs: nowMs, paths: limitedPaths, stats };
-      return { paths: [...limitedPaths], stats };
+      return this.cacheTranscriptLookup(identityKey, nowMs, limitedPaths, stats);
     }
 
     const sessionsRoot = path.join(this.codexHome, 'sessions');
@@ -2271,10 +2302,12 @@ class ProtocolClient {
     let filesConsidered = 0;
     let filesParsed = 0;
     let remainingProbeBytes = ProtocolClient.TRANSCRIPT_MAX_PROBE_BYTES;
+    let foundFallbackContentMatch = false;
     const stack: Array<{ directory: string; depth: number }> = [{ directory: sessionsRoot, depth: 0 }];
 
     while (
       stack.length > 0 &&
+      !foundFallbackContentMatch &&
       candidates.length < ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES &&
       filesConsidered < ProtocolClient.TRANSCRIPT_MAX_DISCOVERY_FILES
     ) {
@@ -2292,6 +2325,7 @@ class ProtocolClient {
       } catch {
         continue;
       }
+      const nextDirectories: Array<{ directory: string; depth: number }> = [];
       for (const entry of entries) {
         if (Date.now() > deadlineAtMs) {
           reasonCodes.add('transcript_discovery_wall_clock_budget_exhausted');
@@ -2300,7 +2334,7 @@ class ProtocolClient {
         const entryPath = path.join(current.directory, entry.name);
         if (entry.isDirectory()) {
           if (current.depth < ProtocolClient.TRANSCRIPT_MAX_DEPTH) {
-            stack.push({ directory: entryPath, depth: current.depth + 1 });
+            nextDirectories.push({ directory: entryPath, depth: current.depth + 1 });
           }
           continue;
         }
@@ -2348,18 +2382,22 @@ class ProtocolClient {
         }
         if (probe.matched) {
           candidates.push(entryPath);
+          foundFallbackContentMatch = true;
           if (candidates.length >= ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES) {
             reasonCodes.add('transcript_candidate_file_budget_exhausted');
-            break;
           }
+          break;
         }
+      }
+      for (const nextDirectory of nextDirectories.reverse()) {
+        stack.push(nextDirectory);
       }
     }
 
     if (candidates.length >= ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES) {
       reasonCodes.add('transcript_candidate_file_budget_exhausted');
     }
-    if (filesConsidered >= ProtocolClient.TRANSCRIPT_MAX_DISCOVERY_FILES && stack.length > 0) {
+    if (filesConsidered >= ProtocolClient.TRANSCRIPT_MAX_DISCOVERY_FILES) {
       reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
     }
 
@@ -2381,15 +2419,78 @@ class ProtocolClient {
     paths: string[],
     stats: TranscriptCandidateLookupStats
   ): TranscriptCandidateLookupResult {
-    if (paths.length > 0 || stats.source === 'indexed' || stats.source === 'fallback' || stats.source === 'budget_exhausted') {
-      this.transcriptCandidateCache = {
-        identityKey,
-        refreshedAtMs,
-        paths: [...paths],
-        stats: { ...stats, reasonCodes: [...stats.reasonCodes] }
-      };
+    this.transcriptCandidateCache = {
+      identityKey,
+      refreshedAtMs,
+      paths: [...paths],
+      stats: { ...stats, reasonCodes: [...stats.reasonCodes] }
+    };
+    return {
+      paths: [...paths],
+      stats,
+      refreshedAtMs,
+      expiresAtMs: refreshedAtMs + ProtocolClient.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS
+    };
+  }
+
+  private isTranscriptCandidateCacheFresh(): boolean {
+    if (!this.transcriptCandidateCache || this.transcriptCandidateCache.paths.length > 0) {
+      return true;
     }
-    return { paths: [...paths], stats };
+    const cachedSource =
+      this.transcriptCandidateCache.stats.source === 'cache'
+        ? this.transcriptCandidateCache.stats.cachedSource
+        : this.transcriptCandidateCache.stats.source;
+    if (cachedSource !== 'missing') {
+      return true;
+    }
+    const sessionsRoot = path.join(this.codexHome, 'sessions');
+    try {
+      const stat = fs.statSync(sessionsRoot);
+      return stat.mtimeMs <= this.transcriptCandidateCache.refreshedAtMs;
+    } catch {
+      return true;
+    }
+  }
+
+  private emitTranscriptLookupDiagnostic(
+    lookup: TranscriptCandidateLookupResult,
+    context: TurnEventContext,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void
+  ): void {
+    const metadata = serializeTranscriptLookupMetadata(lookup);
+    const diagnosticKey = [
+      context.session_id,
+      metadata.source,
+      metadata.cached_source ?? '',
+      metadata.candidate_count,
+      metadata.files_considered,
+      metadata.files_parsed,
+      metadata.bytes_read,
+      metadata.exhausted,
+      metadata.reason_codes.join(',')
+    ].join('|');
+    if (diagnosticKey === this.lastTranscriptLookupDiagnosticKey) {
+      return;
+    }
+    this.lastTranscriptLookupDiagnosticKey = diagnosticKey;
+    emit({
+      event: CANONICAL_EVENT.codex.transcriptLookup,
+      thread_id: context.thread_id,
+      turn_id: context.turn_id,
+      session_id: context.session_id,
+      detail: `transcript_lookup source=${metadata.source} candidates=${metadata.candidate_count} files_considered=${metadata.files_considered} exhausted=${metadata.exhausted} reasons=${metadata.reason_codes.join(',') || 'none'}`,
+      transcript_lookup_source: metadata.source,
+      ...(metadata.cached_source ? { transcript_lookup_cached_source: metadata.cached_source } : {}),
+      transcript_lookup_candidate_count: metadata.candidate_count,
+      transcript_lookup_files_considered: metadata.files_considered,
+      transcript_lookup_files_parsed: metadata.files_parsed,
+      transcript_lookup_bytes_read: metadata.bytes_read,
+      transcript_lookup_exhausted: metadata.exhausted,
+      transcript_lookup_reason_codes: metadata.reason_codes,
+      transcript_lookup_cache_refreshed_at_ms: metadata.cache_refreshed_at_ms,
+      transcript_lookup_cache_expires_at_ms: metadata.cache_expires_at_ms
+    });
   }
 
   private transcriptCandidateIdentityKey(context: TurnEventContext): string {

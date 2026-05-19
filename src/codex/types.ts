@@ -129,6 +129,20 @@ export interface CodexTurnResult {
   model_reroute?: CodexModelRerouteEvidence | null;
   requested_model?: string | null;
   effective_model?: string | null;
+  transcript_lookup?: CodexTranscriptLookupMetadata;
+}
+
+export interface CodexTranscriptLookupMetadata {
+  source: 'indexed' | 'fallback' | 'cache' | 'missing' | 'budget_exhausted';
+  cached_source?: 'indexed' | 'fallback' | 'missing' | 'budget_exhausted';
+  candidate_count: number;
+  files_considered: number;
+  files_parsed: number;
+  bytes_read: number;
+  exhausted: boolean;
+  reason_codes: string[];
+  cache_refreshed_at_ms: number;
+  cache_expires_at_ms: number;
 }
 
 export interface CodexRunnerEvent {
@@ -160,4 +174,14 @@ export interface CodexRunnerEvent {
   reason_code?: string;
   request_method?: string;
   request_category?: string;
+  transcript_lookup_source?: CodexTranscriptLookupMetadata['source'];
+  transcript_lookup_cached_source?: CodexTranscriptLookupMetadata['cached_source'];
+  transcript_lookup_candidate_count?: number;
+  transcript_lookup_files_considered?: number;
+  transcript_lookup_files_parsed?: number;
+  transcript_lookup_bytes_read?: number;
+  transcript_lookup_exhausted?: boolean;
+  transcript_lookup_reason_codes?: string[];
+  transcript_lookup_cache_refreshed_at_ms?: number;
+  transcript_lookup_cache_expires_at_ms?: number;
 }

@@ -35,6 +35,7 @@ export const CANONICAL_EVENT = {
     rateLimitsUpdated: 'codex.rate_limits.updated',
     modelRerouted: 'codex.model.rerouted',
     threadActivityUpdated: 'codex.thread.activity_updated',
+    transcriptLookup: 'codex.transcript.lookup',
     sideOutput: 'codex.side_output',
     turnWaiting: 'codex.turn.waiting',
     commandLegacyPathUsed: 'codex.command.legacy_path_used',
