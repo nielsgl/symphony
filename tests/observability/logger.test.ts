@@ -8,8 +8,11 @@ import {
   LevelFilterSink,
   MultiSinkLogger,
   RotatingFileSink,
+  TestLogCaptureSink,
+  clearCapturedTestLogs,
   type LogEntry,
   type LogSink,
+  readCapturedTestLogs,
   resolveTestLoggingPolicy
 } from '../../src/observability';
 
@@ -127,6 +130,55 @@ describe('MultiSinkLogger', () => {
       visibleStderr: true,
       visibleLevel: 'info'
     });
+  });
+
+  it('captures rendered test logs with a bounded ring buffer', () => {
+    process.env.SYMPHONY_TEST_LOG_CAPTURE_LINES = '2';
+    clearCapturedTestLogs();
+    const captureSink = new TestLogCaptureSink();
+
+    try {
+      captureSink.write(
+        {
+          level: 'info',
+          event: 'first',
+          message: 'first',
+          timestamp: '2026-04-11T12:00:00.000Z',
+          context: {}
+        },
+        'event=first'
+      );
+      captureSink.write(
+        {
+          level: 'warn',
+          event: 'second',
+          message: 'second',
+          timestamp: '2026-04-11T12:00:00.000Z',
+          context: {}
+        },
+        'event=second'
+      );
+      captureSink.write(
+        {
+          level: 'error',
+          event: 'third',
+          message: 'third',
+          timestamp: '2026-04-11T12:00:00.000Z',
+          context: {}
+        },
+        'event=third'
+      );
+
+      expect(captureSink.name).toBe('test-capture');
+      expect(readCapturedTestLogs()).toEqual({
+        lines: ['event=second', 'event=third'],
+        dropped: 1,
+        lineLimit: 2
+      });
+    } finally {
+      delete process.env.SYMPHONY_TEST_LOG_CAPTURE_LINES;
+      clearCapturedTestLogs();
+    }
   });
 
   it('redacts secrets in message and context', () => {

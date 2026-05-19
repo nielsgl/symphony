@@ -14,6 +14,8 @@ import {
   type LogSink,
   MultiSinkLogger,
   RotatingFileSink,
+  TestLogCaptureSink,
+  isTestLogCaptureEnabled,
   resolveTestLoggingPolicy,
   StderrSink,
   type StructuredLogger
@@ -254,6 +256,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   ];
   if (testLoggingPolicy.visibleStderr) {
     activeSinks.unshift(new LevelFilterSink(new StderrSink(), testLoggingPolicy.visibleLevel));
+  }
+  if (testLoggingPolicy.isTest && isTestLogCaptureEnabled()) {
+    activeSinks.push(new TestLogCaptureSink());
   }
   if (observer) {
     activeSinks.push(new StructuredLoggerObserverSink(observer));

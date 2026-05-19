@@ -28,6 +28,21 @@ function requireApiAddress(runtime: { apiServer: { address: () => { host: string
   return runtime.apiServer.address();
 }
 
+function expectedRuntimeSinks(options: { observer?: boolean; capture?: boolean } = {}): string[] {
+  const visibleStderr =
+    process.env.SYMPHONY_TEST_LOGS === '1' ||
+    process.env.SYMPHONY_TEST_LOGS === 'true' ||
+    process.env.SYMPHONY_TEST_LOGS === 'stderr';
+  const sinks = visibleStderr ? ['stderr', 'file'] : ['file'];
+  if (options.capture ?? true) {
+    sinks.push('test-capture');
+  }
+  if (options.observer) {
+    sinks.push('observer');
+  }
+  return sinks;
+}
+
 async function makeWorkflowFile(options?: {
   includeTrackerCredentials?: boolean;
   includeServerPort?: boolean;
@@ -102,10 +117,21 @@ Issue {{ issue.identifier }} attempt {{ attempt }}
 describe('createRuntimeEnvironment', () => {
   const runtimes: Array<{ stop: () => Promise<void> }> = [];
   const dirs: string[] = [];
+  const originalTestLogEnv = {
+    SYMPHONY_TEST_LOGS: process.env.SYMPHONY_TEST_LOGS,
+    SYMPHONY_TEST_LOG_LEVEL: process.env.SYMPHONY_TEST_LOG_LEVEL,
+    SYMPHONY_TEST_LOG_CAPTURE: process.env.SYMPHONY_TEST_LOG_CAPTURE,
+    SYMPHONY_TEST_LOG_CAPTURE_LINES: process.env.SYMPHONY_TEST_LOG_CAPTURE_LINES
+  };
 
   afterEach(async () => {
-    delete process.env.SYMPHONY_TEST_LOGS;
-    delete process.env.SYMPHONY_TEST_LOG_LEVEL;
+    for (const [key, value] of Object.entries(originalTestLogEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
 
     while (runtimes.length > 0) {
       const runtime = runtimes.pop();
@@ -516,7 +542,7 @@ describe('createRuntimeEnvironment', () => {
     expect(payload.persistence.integrity_ok).toBe(true);
     expect(payload.logging.root).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log'));
     expect(payload.logging.active_file).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log', 'symphony.log'));
-    expect(payload.logging.sinks).toEqual(['file']);
+    expect(payload.logging.sinks).toEqual(expectedRuntimeSinks());
     expect(payload.logging.rotation.max_files).toBe(5);
     expect((payload as Record<string, unknown>).workspace_copy_ignored).toMatchObject({
       enabled: false,
@@ -943,7 +969,7 @@ describe('createRuntimeEnvironment', () => {
       logging: { sinks: string[] };
     };
     expect(diagnosticsResponse.status).toBe(200);
-    expect(diagnosticsPayload.logging.sinks).toEqual(['file', 'observer']);
+    expect(diagnosticsPayload.logging.sinks).toEqual(expectedRuntimeSinks({ observer: true }));
   });
 
   it('enables stderr runtime logs in tests when explicitly requested', async () => {
@@ -979,7 +1005,39 @@ describe('createRuntimeEnvironment', () => {
     };
 
     expect(diagnosticsResponse.status).toBe(200);
-    expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file', 'observer']);
+    expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file', 'test-capture', 'observer']);
+  });
+
+  it('allows test log capture to be disabled explicitly', async () => {
+    process.env.SYMPHONY_TEST_LOG_CAPTURE = '0';
+
+    const workflowPath = await makeWorkflowFile({ includeServerPort: true, serverPort: 41001 });
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      logging: { sinks: string[] };
+    };
+
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.logging.sinks).toEqual(expectedRuntimeSinks({ capture: false }));
   });
 
   it('uses explicit logsRoot option precedence over workflow logging.root', async () => {
@@ -1068,7 +1126,7 @@ describe('createRuntimeEnvironment', () => {
       expect(diagnosticsResponse.status).toBe(200);
       expect(diagnosticsPayload.logging.root).toBe(workflowLogsRoot);
       expect(diagnosticsPayload.logging.active_file).toBe(path.join(workflowLogsRoot, 'symphony.log'));
-      expect(diagnosticsPayload.logging.sinks).toEqual(['file', 'observer']);
+      expect(diagnosticsPayload.logging.sinks).toEqual(expectedRuntimeSinks({ observer: true }));
       const loggingConfiguredEvent = entries.find((entry) => entry.event === CANONICAL_EVENT.runtime.loggingConfigured);
       expect(loggingConfiguredEvent?.context.logs_root_source).toBe('workflow');
     } finally {
