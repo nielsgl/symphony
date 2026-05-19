@@ -179,6 +179,17 @@ function normalizeTimestampMs(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function usageSnapshotSignature(usage: CodexUsageTotals): string {
+  return JSON.stringify({
+    input_tokens: usage.input_tokens,
+    output_tokens: usage.output_tokens,
+    total_tokens: usage.total_tokens,
+    ...(typeof usage.cached_input_tokens === 'number' ? { cached_input_tokens: usage.cached_input_tokens } : {}),
+    ...(typeof usage.reasoning_output_tokens === 'number' ? { reasoning_output_tokens: usage.reasoning_output_tokens } : {}),
+    ...(typeof usage.model_context_window === 'number' ? { model_context_window: usage.model_context_window } : {})
+  });
+}
+
 function buildTerminalMetadata(waitResult: WaitForTerminalResult): Partial<CodexTurnResult> {
   return {
     terminal_source: waitResult.terminal_source,
@@ -1753,6 +1764,7 @@ class ProtocolClient {
   private readonly transcriptTails = new Map<string, string>();
   private transcriptCandidateCache: TranscriptCandidateCache | null = null;
   private lastTranscriptLookupDiagnosticKey: string | null = null;
+  private lastEmittedTranscriptUsageSignature: string | null = null;
 
   private latestRateLimits: Record<string, unknown> | null = null;
   private latestModelReroute: CodexModelRerouteEvidence | null = null;
@@ -2283,7 +2295,7 @@ class ProtocolClient {
         }
 
         const payload = asRecord(record.payload) ?? record;
-        this.observeTranscriptUsage(payload);
+        this.observeTranscriptUsage(payload, context, emit, normalizeTimestampMs(record.timestamp) ?? Date.now());
         const terminalEvidence = this.readTranscriptTerminalEvidence(record, transcriptPath, context, emit);
         if (terminalEvidence) {
           return { terminal: terminalEvidence, observedProgress, lookup };
@@ -2756,7 +2768,12 @@ class ProtocolClient {
     return undefined;
   }
 
-  private observeTranscriptUsage(payload: Record<string, unknown>): void {
+  private observeTranscriptUsage(
+    payload: Record<string, unknown>,
+    context: TurnEventContext,
+    emit: (event: Omit<CodexRunnerEvent, 'timestamp' | 'codex_app_server_pid'>) => void,
+    observedAtMs: number
+  ): void {
     const payloadType = readString(payload.type);
     if (payloadType !== 'token_count') {
       return;
@@ -2765,11 +2782,31 @@ class ProtocolClient {
       method: 'token/count',
       params: payload
     };
-    this.usageTracker.observe(message);
+    this.usageTracker.observe(message, observedAtMs);
     const rateLimits = this.extractRateLimits(message);
     if (rateLimits) {
       this.latestRateLimits = rateLimits;
     }
+    const usage = this.usageTracker.snapshot();
+    if (usage.total_tokens <= 0) {
+      return;
+    }
+    const signature = usageSnapshotSignature(usage);
+    if (signature === this.lastEmittedTranscriptUsageSignature) {
+      return;
+    }
+    this.lastEmittedTranscriptUsageSignature = signature;
+    emit({
+      event: CANONICAL_EVENT.codex.tokenUsageUpdated,
+      thread_id: context.thread_id,
+      turn_id: context.turn_id,
+      session_id: context.session_id,
+      usage,
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'transcript_token_count',
+      token_telemetry_last_at_ms: observedAtMs,
+      ...(this.latestRateLimits ? { rate_limits: this.latestRateLimits } : {})
+    });
   }
 
   private readTranscriptTerminalEvidence(

@@ -2127,7 +2127,7 @@ describe('LocalApiServer', () => {
     fs.rmSync(codexHomeDir, { recursive: true, force: true });
   });
 
-  it('keeps protocol token usage primary over CODEX_HOME state sqlite fallback', async () => {
+  it('keeps split transcript token usage primary over CODEX_HOME state sqlite fallback', async () => {
     const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-protocol-primary-'));
     const dbPath = path.join(codexHomeDir, 'state_5.sqlite');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -2159,7 +2159,7 @@ describe('LocalApiServer', () => {
             tokens: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
             last_reported_tokens: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
             token_telemetry_status: 'available',
-            token_telemetry_last_source: 'worker_event_usage',
+            token_telemetry_last_source: 'transcript_token_count',
             token_telemetry_last_at_ms: Date.parse('2026-04-10T10:04:00.000Z')
           })
         ]
@@ -2198,7 +2198,7 @@ describe('LocalApiServer', () => {
     expect(payload.running[0]?.tokens).toMatchObject({ input_tokens: 10, output_tokens: 5, total_tokens: 15 });
     expect(payload.running[0]?.tokens.token_split_status).toBeUndefined();
     expect(payload.running[0]?.token_telemetry_status).toBe('available');
-    expect(payload.running[0]?.token_telemetry_last_source).toBe('worker_event_usage');
+    expect(payload.running[0]?.token_telemetry_last_source).toBe('transcript_token_count');
 
     if (previousCodexHome === undefined) {
       delete process.env.SYMPHONY_CODEX_HOME;

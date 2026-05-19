@@ -85,6 +85,110 @@ describe('OrchestratorCore budget', () => {
     expect(snapshot.codex_totals.model_context_window).toBe(8192);
   });
 
+  it('projects live transcript token usage updates without inflating replayed snapshots', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        budget: {
+          per_run_total_tokens: 100,
+          rolling_window_minutes: 1440,
+          warning_threshold_ratio: 0.8,
+          hard_limit_policy: 'block_requires_resume'
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-transcript-usage' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-transcript-usage', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-transcript-usage',
+      turn_id: 'turn-transcript-usage',
+      session_id: 'thread-transcript-usage-turn-transcript-usage'
+    });
+    harness.orchestrator.onWorkerEvent('i-transcript-usage', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.tokenUsageUpdated,
+      session_id: 'thread-transcript-usage-turn-transcript-usage',
+      thread_id: 'thread-transcript-usage',
+      turn_id: 'turn-transcript-usage',
+      usage: {
+        input_tokens: 12,
+        output_tokens: 5,
+        total_tokens: 17,
+        cached_input_tokens: 4,
+        reasoning_output_tokens: 2
+      },
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'transcript_token_count',
+      token_telemetry_last_at_ms: harness.now.value + 100
+    });
+    harness.orchestrator.onWorkerEvent('i-transcript-usage', {
+      timestamp_ms: harness.now.value + 200,
+      event: CANONICAL_EVENT.codex.tokenUsageUpdated,
+      session_id: 'thread-transcript-usage-turn-transcript-usage',
+      thread_id: 'thread-transcript-usage',
+      turn_id: 'turn-transcript-usage',
+      usage: {
+        input_tokens: 12,
+        output_tokens: 5,
+        total_tokens: 17,
+        cached_input_tokens: 4,
+        reasoning_output_tokens: 2
+      },
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'transcript_token_count',
+      token_telemetry_last_at_ms: harness.now.value + 200
+    });
+    harness.orchestrator.onWorkerEvent('i-transcript-usage', {
+      timestamp_ms: harness.now.value + 300,
+      event: CANONICAL_EVENT.codex.tokenUsageUpdated,
+      session_id: 'thread-transcript-usage-turn-transcript-usage',
+      thread_id: 'thread-transcript-usage',
+      turn_id: 'turn-transcript-usage',
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+        cached_input_tokens: 7,
+        reasoning_output_tokens: 4
+      },
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'transcript_token_count',
+      token_telemetry_last_at_ms: harness.now.value + 300
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    const running = snapshot.running.get('i-transcript-usage');
+    expect(running?.tokens).toMatchObject({
+      input_tokens: 20,
+      output_tokens: 10,
+      total_tokens: 30,
+      cached_input_tokens: 7,
+      reasoning_output_tokens: 4
+    });
+    expect(running?.last_reported_tokens).toMatchObject({
+      input_tokens: 20,
+      output_tokens: 10,
+      total_tokens: 30
+    });
+    expect(running?.token_telemetry_status).toBe('available');
+    expect(running?.token_telemetry_last_source).toBe('transcript_token_count');
+    expect(running?.token_telemetry_last_at_ms).toBe(harness.now.value + 300);
+    expect(running?.budget).toMatchObject({
+      budget_status: 'ok',
+      budget_usage_tokens: 30,
+      budget_limit_tokens: 100
+    });
+    expect(snapshot.codex_totals).toMatchObject({
+      input_tokens: 20,
+      output_tokens: 10,
+      total_tokens: 30,
+      cached_input_tokens: 7,
+      reasoning_output_tokens: 4
+    });
+  });
+
   it('persists worker token snapshots and requested/effective models into history', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-worker-token-model-'));
     const store = new SqlitePersistenceStore({

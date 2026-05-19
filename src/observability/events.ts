@@ -33,6 +33,7 @@ export const CANONICAL_EVENT = {
     protocolMalformedLine: 'codex.protocol.malformed_line',
     protocolWarning: 'codex.protocol.warning',
     rateLimitsUpdated: 'codex.rate_limits.updated',
+    tokenUsageUpdated: 'codex.token_usage.updated',
     modelRerouted: 'codex.model.rerouted',
     threadActivityUpdated: 'codex.thread.activity_updated',
     transcriptLookup: 'codex.transcript.lookup',

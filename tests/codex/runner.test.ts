@@ -2315,7 +2315,7 @@ describe('CodexRunner', () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
-    const events: Array<{ event: string; terminal_source?: string; detail?: string }> = [];
+    const events: CodexRunnerEvent[] = [];
     const runner = new CodexRunner({ spawnProcess: () => fake });
 
     const promise = runner.startSessionAndRunTurn(
@@ -2383,6 +2383,129 @@ describe('CodexRunner', () => {
         terminal_source: 'session_transcript'
       })
     );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.tokenUsageUpdated,
+        thread_id: 'thread-transcript',
+        turn_id: 'turn-transcript',
+        session_id: 'thread-transcript-turn-transcript',
+        usage: {
+          input_tokens: 30,
+          output_tokens: 12,
+          total_tokens: 42
+        },
+        token_telemetry_status: 'available',
+        token_telemetry_last_source: 'transcript_token_count',
+        token_telemetry_last_at_ms: Date.parse('2026-05-07T19:45:20.168Z'),
+        rate_limits: {
+          limit_id: 'codex'
+        }
+      })
+    );
+  });
+
+  it('deduplicates transcript token usage events and emits increasing snapshots', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const events: CodexRunnerEvent[] = [];
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        onEvent: (event) => events.push(event),
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-token-progress"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-token-progress"}}}\n');
+    writeTranscriptRecord(codexHome, 'rollout-thread-token-progress.jsonl', {
+      timestamp: '2026-05-07T19:45:20.100Z',
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 7,
+            output_tokens: 3,
+            total_tokens: 10
+          }
+        }
+      }
+    });
+    writeTranscriptRecord(codexHome, 'rollout-thread-token-progress.jsonl', {
+      timestamp: '2026-05-07T19:45:20.110Z',
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 7,
+            output_tokens: 3,
+            total_tokens: 10
+          }
+        }
+      }
+    });
+    writeTranscriptRecord(codexHome, 'rollout-thread-token-progress.jsonl', {
+      timestamp: '2026-05-07T19:45:20.120Z',
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 11,
+            output_tokens: 4,
+            total_tokens: 15
+          }
+        }
+      }
+    });
+    writeTranscriptRecord(codexHome, 'rollout-thread-token-progress.jsonl', {
+      timestamp: '2026-05-07T19:45:20.130Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'turn-token-progress',
+        last_agent_message: 'done from token progress transcript'
+      }
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-token-progress',
+      turn_id: 'turn-token-progress',
+      usage: {
+        input_tokens: 11,
+        output_tokens: 4,
+        total_tokens: 15
+      }
+    });
+    const tokenEvents = events.filter((event) => event.event === CANONICAL_EVENT.codex.tokenUsageUpdated);
+    expect(tokenEvents).toHaveLength(2);
+    expect(tokenEvents[0]).toMatchObject({
+      thread_id: 'thread-token-progress',
+      turn_id: 'turn-token-progress',
+      session_id: 'thread-token-progress-turn-token-progress',
+      usage: {
+        input_tokens: 7,
+        output_tokens: 3,
+        total_tokens: 10
+      },
+      token_telemetry_last_source: 'transcript_token_count',
+      token_telemetry_last_at_ms: Date.parse('2026-05-07T19:45:20.100Z')
+    });
+    expect(tokenEvents[1]).toMatchObject({
+      usage: {
+        input_tokens: 11,
+        output_tokens: 4,
+        total_tokens: 15
+      },
+      token_telemetry_last_at_ms: Date.parse('2026-05-07T19:45:20.120Z')
+    });
   });
 
   it('completes after a transcript task_complete JSONL record is split across scans', async () => {
