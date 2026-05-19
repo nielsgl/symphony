@@ -16,6 +16,7 @@ import type {
 
 type ExecutionGraphStatus = 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';
 type ExecutionGraphTransitionStatus = ExecutionGraphStatus | 'retrying';
+type TicketReferenceKind = 'branch' | 'pull_request' | 'review' | 'merge' | 'evidence';
 
 export interface DispatchGraphContext {
   issue_run_id?: string | null;
@@ -79,6 +80,15 @@ function classifyPersistenceFailure(error: unknown): string {
     return 'timestamp_ordering';
   }
   return 'write_failed';
+}
+
+function firstNonEmpty(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
 }
 
 export async function recordHistoryWriteFailure(
@@ -221,7 +231,7 @@ function appServerLiteSummaryForWorkerEvent(workerEvent: WorkerObservabilityEven
   return null;
 }
 
-export function executionGraphStatusForWorkerEvent(eventName: string): ExecutionGraphStatus {
+function executionGraphStatusForWorkerEvent(eventName: string): ExecutionGraphStatus {
   switch (eventName) {
     case CANONICAL_EVENT.codex.turnCompleted:
     case CANONICAL_EVENT.codex.toolCallCompleted:
@@ -240,14 +250,14 @@ export function executionGraphStatusForWorkerEvent(eventName: string): Execution
   }
 }
 
-export function reasonCodeForWorkerEvent(eventName: string): string {
+function reasonCodeForWorkerEvent(eventName: string): string {
   if (eventName === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch) {
     return REASON_CODES.unsupportedDynamicToolConsoleResume;
   }
   return eventName.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
 }
 
-export function phaseSpanNameForWorkerEvent(eventName: string): string | null {
+function phaseSpanNameForWorkerEvent(eventName: string): string | null {
   switch (eventName) {
     case CANONICAL_EVENT.codex.promptSent:
       return 'prompt_sent';
@@ -268,7 +278,7 @@ export function phaseSpanNameForWorkerEvent(eventName: string): string | null {
   }
 }
 
-export function toolNameForWorkerEvent(workerEvent: WorkerObservabilityEvent): string | null {
+function toolNameForWorkerEvent(workerEvent: WorkerObservabilityEvent): string | null {
   if (
     workerEvent.event !== CANONICAL_EVENT.codex.toolCallCompleted &&
     workerEvent.event !== CANONICAL_EVENT.codex.toolCallStarted &&
@@ -290,7 +300,7 @@ export function toolNameForWorkerEvent(workerEvent: WorkerObservabilityEvent): s
   return detail && detail.length > 0 ? detail : 'unknown_tool';
 }
 
-export function transitionStatusForWorkerEvent(eventName: string): string | null {
+function transitionStatusForWorkerEvent(eventName: string): string | null {
   switch (eventName) {
     case CANONICAL_EVENT.codex.turnStarted:
       return 'running';
@@ -307,7 +317,7 @@ export function transitionStatusForWorkerEvent(eventName: string): string | null
   }
 }
 
-export function shouldPersistTokenModelFact(workerEvent: WorkerObservabilityEvent): boolean {
+function shouldPersistTokenModelFact(workerEvent: WorkerObservabilityEvent): boolean {
   return Boolean(
     workerEvent.usage ||
       workerEvent.model_reroute !== undefined ||
@@ -316,7 +326,7 @@ export function shouldPersistTokenModelFact(workerEvent: WorkerObservabilityEven
   );
 }
 
-export function tokenModelFactSource(workerEvent: WorkerObservabilityEvent): string {
+function tokenModelFactSource(workerEvent: WorkerObservabilityEvent): string {
   return (
     workerEvent.token_telemetry_last_source ??
     workerEvent.model_reroute?.source ??
@@ -324,7 +334,7 @@ export function tokenModelFactSource(workerEvent: WorkerObservabilityEvent): str
   );
 }
 
-export function tokenModelFactConfidence(workerEvent: WorkerObservabilityEvent): 'observed_live' | 'backfilled' | 'missing' {
+function tokenModelFactConfidence(workerEvent: WorkerObservabilityEvent): 'observed_live' | 'backfilled' | 'missing' {
   if (workerEvent.token_telemetry_status === 'unavailable') {
     return 'missing';
   }
@@ -333,7 +343,7 @@ export function tokenModelFactConfidence(workerEvent: WorkerObservabilityEvent):
     : 'missing';
 }
 
-export function phaseSpanKeysForRunningEntry(
+function phaseSpanKeysForRunningEntry(
   persistedPhaseSpanKeys: WeakMap<RunningEntry, Set<string>>,
   runningEntry: RunningEntry
 ): Set<string> {
@@ -361,7 +371,7 @@ export function beginExecutionGraphWorkerTurnObservation(
   return turnAlreadyObserved;
 }
 
-export function markExecutionGraphWorkerTurnPersisted(runningEntry: RunningEntry, turnId: string): void {
+function markExecutionGraphWorkerTurnPersisted(runningEntry: RunningEntry, turnId: string): void {
   const persistedTurnIds = (runningEntry.persisted_turn_ids ??= []);
   if (!persistedTurnIds.includes(turnId)) {
     persistedTurnIds.push(turnId);
@@ -369,7 +379,7 @@ export function markExecutionGraphWorkerTurnPersisted(runningEntry: RunningEntry
   clearPendingExecutionGraphWorkerTurn(runningEntry, turnId);
 }
 
-export function clearPendingExecutionGraphWorkerTurn(runningEntry: RunningEntry, turnId: string): void {
+function clearPendingExecutionGraphWorkerTurn(runningEntry: RunningEntry, turnId: string): void {
   const pending = runningEntry.pending_persisted_turn_ids;
   if (!pending) {
     return;
@@ -377,7 +387,7 @@ export function clearPendingExecutionGraphWorkerTurn(runningEntry: RunningEntry,
   runningEntry.pending_persisted_turn_ids = pending.filter((entry) => entry !== turnId);
 }
 
-export function executionGraphPersistenceFailureContext(
+function executionGraphPersistenceFailureContext(
   issueId: string,
   runningEntry: RunningEntry,
   workerEvent: WorkerObservabilityEvent,
@@ -400,6 +410,181 @@ export function executionGraphPersistenceFailureContext(
     error_code: persistenceErrorCode(error),
     error_message: persistenceErrorMessage(error)
   };
+}
+
+async function persistTicketReference(params: {
+  runningEntry: RunningEntry;
+  reference_kind: TicketReferenceKind;
+  availability: 'available' | 'unavailable' | 'unknown';
+  uri: string | null;
+  label: string | null;
+  external_id: string | null;
+  state: string | null;
+  metadata: Record<string, unknown> | null;
+  observed_at: string;
+  persistence?: OrchestratorPersistencePort;
+}): Promise<void> {
+  await params.persistence?.appendTicketReference?.({
+    issue_run_id: params.runningEntry.issue_run_id ?? null,
+    attempt_id: params.runningEntry.attempt_id ?? null,
+    thread_id: params.runningEntry.thread_id ?? null,
+    turn_id: params.runningEntry.turn_id ?? null,
+    reference_kind: params.reference_kind,
+    availability: params.availability,
+    uri: params.uri,
+    label: params.label,
+    external_id: params.external_id,
+    state: params.state,
+    metadata: params.metadata,
+    observed_at: params.observed_at
+  });
+}
+
+export async function persistOperationalFactsForIssue(params: {
+  issue: Issue;
+  runningEntry: RunningEntry;
+  observedAt: string;
+} & PersistenceFailureContext): Promise<void> {
+  const { issue, runningEntry, observedAt, persistence, logger } = params;
+  if (!persistence || !runningEntry.issue_run_id) {
+    return;
+  }
+
+  const trackerKind = issue.tracker_meta?.tracker_kind ?? 'unknown';
+  const assigneeIdentifier = firstNonEmpty(issue.tracker_meta?.assignee?.id, issue.tracker_meta?.assignee?.name);
+  const projectIdentifier = firstNonEmpty(
+    issue.tracker_meta?.project?.slug,
+    issue.tracker_meta?.project?.id,
+    issue.tracker_meta?.project?.name
+  );
+  const teamIdentifier = firstNonEmpty(issue.tracker_meta?.team?.key, issue.tracker_meta?.team?.id, issue.tracker_meta?.team?.name);
+
+  try {
+    await persistence.appendTrackerTicketSnapshot?.({
+      issue_run_id: runningEntry.issue_run_id,
+      attempt_id: runningEntry.attempt_id ?? null,
+      thread_id: runningEntry.thread_id ?? null,
+      turn_id: runningEntry.turn_id ?? null,
+      tracker_kind: trackerKind,
+      remote_issue_id: issue.id,
+      human_issue_identifier: issue.identifier,
+      title: issue.title,
+      tracker_status: issue.state,
+      labels: issue.labels,
+      assignee_status: assigneeIdentifier ? 'available' : issue.tracker_meta?.assignee === null ? 'unavailable' : 'unknown',
+      assignee_identifier: assigneeIdentifier,
+      assignee_reason: assigneeIdentifier ? null : issue.tracker_meta?.assignee === null ? 'tracker_assignee_unavailable' : 'tracker_assignee_unobserved',
+      project_status: projectIdentifier ? 'available' : issue.tracker_meta?.project === null ? 'unavailable' : 'unknown',
+      project_identifier: projectIdentifier,
+      project_reason: projectIdentifier ? null : issue.tracker_meta?.project === null ? 'tracker_project_unavailable' : 'tracker_project_unobserved',
+      team_status: teamIdentifier ? 'available' : issue.tracker_meta?.team === null ? 'unavailable' : 'unknown',
+      team_identifier: teamIdentifier,
+      team_reason: teamIdentifier ? null : issue.tracker_meta?.team === null ? 'tracker_team_unavailable' : 'tracker_team_unobserved',
+      observed_at: observedAt
+    });
+    await persistTicketReference({
+      runningEntry,
+      reference_kind: 'branch',
+      availability: issue.branch_name ? 'available' : 'unavailable',
+      uri: issue.branch_name ? `git-branch:${issue.branch_name}` : null,
+      label: issue.branch_name,
+      external_id: issue.branch_name,
+      state: issue.branch_name ? 'observed' : 'unavailable',
+      metadata: issue.branch_name ? { branch_name: issue.branch_name } : { reason: 'tracker_branch_unavailable' },
+      observed_at: observedAt,
+      persistence
+    });
+    const prLinks = issue.tracker_meta?.pr_links ?? [];
+    if (prLinks.length === 0) {
+      await persistTicketReference({
+        runningEntry,
+        reference_kind: 'pull_request',
+        availability: 'unknown',
+        uri: null,
+        label: null,
+        external_id: null,
+        state: null,
+        metadata: { reason: 'tracker_pr_unobserved' },
+        observed_at: observedAt,
+        persistence
+      });
+      await persistTicketReference({
+        runningEntry,
+        reference_kind: 'review',
+        availability: 'unknown',
+        uri: null,
+        label: null,
+        external_id: null,
+        state: null,
+        metadata: { reason: 'review_state_unobserved' },
+        observed_at: observedAt,
+        persistence
+      });
+      await persistTicketReference({
+        runningEntry,
+        reference_kind: 'merge',
+        availability: 'unknown',
+        uri: null,
+        label: null,
+        external_id: null,
+        state: null,
+        metadata: { reason: 'merge_state_unobserved' },
+        observed_at: observedAt,
+        persistence
+      });
+    }
+    for (const pr of prLinks) {
+      await persistTicketReference({
+        runningEntry,
+        reference_kind: 'pull_request',
+        availability: 'available',
+        uri: pr.url,
+        label: `PR #${pr.number}`,
+        external_id: String(pr.number),
+        state: pr.state,
+        metadata: { merged: pr.merged, repository: issue.tracker_meta?.repository ?? null },
+        observed_at: observedAt,
+        persistence
+      });
+      await persistTicketReference({
+        runningEntry,
+        reference_kind: 'review',
+        availability: 'unknown',
+        uri: pr.url,
+        label: `PR #${pr.number}`,
+        external_id: String(pr.number),
+        state: null,
+        metadata: { reason: 'review_state_unobserved' },
+        observed_at: observedAt,
+        persistence
+      });
+      await persistTicketReference({
+        runningEntry,
+        reference_kind: 'merge',
+        availability: pr.merged ? 'available' : 'unknown',
+        uri: pr.url,
+        label: `PR #${pr.number}`,
+        external_id: String(pr.number),
+        state: pr.merged ? 'merged' : pr.state,
+        metadata: { merged: pr.merged },
+        observed_at: observedAt,
+        persistence
+      });
+    }
+  } catch (error) {
+    await params.recordHistoryWriteFailure('appendOperationalHistoryFacts', REASON_CODES.dispatchStarted, error);
+    logger?.log({
+      level: 'warn',
+      event: CANONICAL_EVENT.persistence.recordEventFailed,
+      message: `failed to persist operational history facts for ${issue.identifier}`,
+      context: {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        issue_run_id: runningEntry.issue_run_id,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    });
+  }
 }
 
 export async function persistExecutionGraphWorkerEvent(params: {

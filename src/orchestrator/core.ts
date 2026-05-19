@@ -44,6 +44,7 @@ import {
   beginExecutionGraphWorkerTurnObservation,
   persistExecutionGraphRetryTransition as persistExecutionGraphRetryTransitionHelper,
   persistExecutionGraphStateTransition as persistExecutionGraphStateTransitionHelper,
+  persistOperationalFactsForIssue as persistOperationalFactsForIssueHelper,
   persistTicketEvidenceReferenceForThread as persistTicketEvidenceReferenceForThreadHelper,
   persistPreSpawnExecutionGraphAttempt as persistPreSpawnExecutionGraphAttemptHelper,
   queuePersistExecutionGraphWorkerEvent as queuePersistExecutionGraphWorkerEventHelper,
@@ -1435,159 +1436,14 @@ export class OrchestratorCore {
   }
 
   private async persistOperationalFactsForIssue(issue: Issue, runningEntry: RunningEntry, observedAt: string): Promise<void> {
-    if (!this.persistence || !runningEntry.issue_run_id) {
-      return;
-    }
-
-    const trackerKind = issue.tracker_meta?.tracker_kind ?? 'unknown';
-    const assigneeIdentifier = this.firstNonEmpty(issue.tracker_meta?.assignee?.id, issue.tracker_meta?.assignee?.name);
-    const projectIdentifier = this.firstNonEmpty(issue.tracker_meta?.project?.slug, issue.tracker_meta?.project?.id, issue.tracker_meta?.project?.name);
-    const teamIdentifier = this.firstNonEmpty(issue.tracker_meta?.team?.key, issue.tracker_meta?.team?.id, issue.tracker_meta?.team?.name);
-    try {
-      await this.persistence.appendTrackerTicketSnapshot?.({
-        issue_run_id: runningEntry.issue_run_id,
-        attempt_id: runningEntry.attempt_id ?? null,
-        thread_id: runningEntry.thread_id ?? null,
-        turn_id: runningEntry.turn_id ?? null,
-        tracker_kind: trackerKind,
-        remote_issue_id: issue.id,
-        human_issue_identifier: issue.identifier,
-        title: issue.title,
-        tracker_status: issue.state,
-        labels: issue.labels,
-        assignee_status: assigneeIdentifier ? 'available' : issue.tracker_meta?.assignee === null ? 'unavailable' : 'unknown',
-        assignee_identifier: assigneeIdentifier,
-        assignee_reason: assigneeIdentifier ? null : issue.tracker_meta?.assignee === null ? 'tracker_assignee_unavailable' : 'tracker_assignee_unobserved',
-        project_status: projectIdentifier ? 'available' : issue.tracker_meta?.project === null ? 'unavailable' : 'unknown',
-        project_identifier: projectIdentifier,
-        project_reason: projectIdentifier ? null : issue.tracker_meta?.project === null ? 'tracker_project_unavailable' : 'tracker_project_unobserved',
-        team_status: teamIdentifier ? 'available' : issue.tracker_meta?.team === null ? 'unavailable' : 'unknown',
-        team_identifier: teamIdentifier,
-        team_reason: teamIdentifier ? null : issue.tracker_meta?.team === null ? 'tracker_team_unavailable' : 'tracker_team_unobserved',
-        observed_at: observedAt
-      });
-      await this.persistTicketReference({
-        runningEntry,
-        reference_kind: 'branch',
-        availability: issue.branch_name ? 'available' : 'unavailable',
-        uri: issue.branch_name ? `git-branch:${issue.branch_name}` : null,
-        label: issue.branch_name,
-        external_id: issue.branch_name,
-        state: issue.branch_name ? 'observed' : 'unavailable',
-        metadata: issue.branch_name ? { branch_name: issue.branch_name } : { reason: 'tracker_branch_unavailable' },
-        observed_at: observedAt
-      });
-      const prLinks = issue.tracker_meta?.pr_links ?? [];
-      if (prLinks.length === 0) {
-        await this.persistTicketReference({
-          runningEntry,
-          reference_kind: 'pull_request',
-          availability: 'unknown',
-          uri: null,
-          label: null,
-          external_id: null,
-          state: null,
-          metadata: { reason: 'tracker_pr_unobserved' },
-          observed_at: observedAt
-        });
-        await this.persistTicketReference({
-          runningEntry,
-          reference_kind: 'review',
-          availability: 'unknown',
-          uri: null,
-          label: null,
-          external_id: null,
-          state: null,
-          metadata: { reason: 'review_state_unobserved' },
-          observed_at: observedAt
-        });
-        await this.persistTicketReference({
-          runningEntry,
-          reference_kind: 'merge',
-          availability: 'unknown',
-          uri: null,
-          label: null,
-          external_id: null,
-          state: null,
-          metadata: { reason: 'merge_state_unobserved' },
-          observed_at: observedAt
-        });
-      }
-      for (const pr of prLinks) {
-        await this.persistTicketReference({
-          runningEntry,
-          reference_kind: 'pull_request',
-          availability: 'available',
-          uri: pr.url,
-          label: `PR #${pr.number}`,
-          external_id: String(pr.number),
-          state: pr.state,
-          metadata: { merged: pr.merged, repository: issue.tracker_meta?.repository ?? null },
-          observed_at: observedAt
-        });
-        await this.persistTicketReference({
-          runningEntry,
-          reference_kind: 'review',
-          availability: 'unknown',
-          uri: pr.url,
-          label: `PR #${pr.number}`,
-          external_id: String(pr.number),
-          state: null,
-          metadata: { reason: 'review_state_unobserved' },
-          observed_at: observedAt
-        });
-        await this.persistTicketReference({
-          runningEntry,
-          reference_kind: 'merge',
-          availability: pr.merged ? 'available' : 'unknown',
-          uri: pr.url,
-          label: `PR #${pr.number}`,
-          external_id: String(pr.number),
-          state: pr.merged ? 'merged' : pr.state,
-          metadata: { merged: pr.merged },
-          observed_at: observedAt
-        });
-      }
-    } catch (error) {
-      await this.recordHistoryWriteFailure('appendOperationalHistoryFacts', REASON_CODES.dispatchStarted, error);
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.persistence.recordEventFailed,
-        message: `failed to persist operational history facts for ${issue.identifier}`,
-        context: {
-          issue_id: issue.id,
-          issue_identifier: issue.identifier,
-          issue_run_id: runningEntry.issue_run_id,
-          error: error instanceof Error ? error.message : String(error)
-        }
-      });
-    }
-  }
-
-  private async persistTicketReference(params: {
-    runningEntry: RunningEntry;
-    reference_kind: 'branch' | 'pull_request' | 'review' | 'merge' | 'evidence';
-    availability: 'available' | 'unavailable' | 'unknown';
-    uri: string | null;
-    label: string | null;
-    external_id: string | null;
-    state: string | null;
-    metadata: Record<string, unknown> | null;
-    observed_at: string;
-  }): Promise<void> {
-    await this.persistence?.appendTicketReference?.({
-      issue_run_id: params.runningEntry.issue_run_id ?? null,
-      attempt_id: params.runningEntry.attempt_id ?? null,
-      thread_id: params.runningEntry.thread_id ?? null,
-      turn_id: params.runningEntry.turn_id ?? null,
-      reference_kind: params.reference_kind,
-      availability: params.availability,
-      uri: params.uri,
-      label: params.label,
-      external_id: params.external_id,
-      state: params.state,
-      metadata: params.metadata,
-      observed_at: params.observed_at
+    await persistOperationalFactsForIssueHelper({
+      issue,
+      runningEntry,
+      observedAt,
+      persistence: this.persistence,
+      logger: this.logger,
+      recordHistoryWriteFailure: (operation, failureReasonCode, error) =>
+        this.recordHistoryWriteFailure(operation, failureReasonCode, error)
     });
   }
 
@@ -6051,15 +5907,6 @@ export class OrchestratorCore {
 
   private stringOrNull(value: unknown): string | null {
     return typeof value === 'string' && value.trim() ? value : null;
-  }
-
-  private firstNonEmpty(...values: Array<string | null | undefined>): string | null {
-    for (const value of values) {
-      if (typeof value === 'string' && value.trim()) {
-        return value.trim();
-      }
-    }
-    return null;
   }
 
   private targetIdentifiersFromRuntimeState(
