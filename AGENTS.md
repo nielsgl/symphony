@@ -48,6 +48,15 @@ Baseline hygiene checks:
 - Document manual verification steps and outputs in PRs.
 - Add or update automated tests alongside runtime code changes.
 
+Test logging controls:
+- Default `npm test` suppresses routine Symphony structured runtime logs from stderr.
+- Use `SYMPHONY_TEST_LOGS=1 npm test` to show live runtime logs while testing.
+- Use `SYMPHONY_TEST_LOG_LEVEL=info|warn|error` with `SYMPHONY_TEST_LOGS=1`
+  to choose the minimum visible live log level.
+- Passing tests keep captured runtime logs quiet; failing tests print the captured log buffer.
+- Use `SYMPHONY_TEST_LOG_CAPTURE_LINES=<number>` to change the captured-log buffer size.
+- Use `SYMPHONY_TEST_LOG_CAPTURE=0` to disable captured runtime logs during tests.
+
 ## Skill Authoring
 - When adding or editing `.codex/skills/*/SKILL.md`, validate the skill with the
   system quick validator through `uv` so transient Python dependencies are
