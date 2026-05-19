@@ -95,6 +95,28 @@ interface TranscriptScanResult {
   observedProgress: boolean;
 }
 
+interface TranscriptCandidateCache {
+  identityKey: string;
+  refreshedAtMs: number;
+  paths: string[];
+  stats: TranscriptCandidateLookupStats;
+}
+
+interface TranscriptCandidateLookupStats {
+  source: 'indexed' | 'fallback' | 'cache' | 'missing' | 'budget_exhausted';
+  candidateCount: number;
+  filesConsidered: number;
+  filesParsed: number;
+  bytesRead: number;
+  exhausted: boolean;
+  reasonCodes: string[];
+}
+
+interface TranscriptCandidateLookupResult {
+  paths: string[];
+  stats: TranscriptCandidateLookupStats;
+}
+
 type UnsupportedServerRequestCategory =
   | 'approval'
   | 'permission'
@@ -1642,6 +1664,7 @@ class ProtocolClient {
   private readonly usageTracker = new UsageTracker();
   private readonly transcriptOffsets = new Map<string, number>();
   private readonly transcriptTails = new Map<string, string>();
+  private transcriptCandidateCache: TranscriptCandidateCache | null = null;
 
   private latestRateLimits: Record<string, unknown> | null = null;
   private latestModelReroute: CodexModelRerouteEvidence | null = null;
@@ -1655,6 +1678,13 @@ class ProtocolClient {
   private activeTurnContext: TurnEventContext | null = null;
   private static readonly TURN_WAITING_HEARTBEAT_MS = 5000;
   private static readonly TRANSCRIPT_SCAN_INTERVAL_MS = 100;
+  private static readonly TRANSCRIPT_CANDIDATE_CACHE_TTL_MS = 15_000;
+  private static readonly TRANSCRIPT_MAX_CANDIDATE_FILES = 40;
+  private static readonly TRANSCRIPT_MAX_DISCOVERY_FILES = 20;
+  private static readonly TRANSCRIPT_MAX_PROBE_BYTES = 256 * 1024;
+  private static readonly TRANSCRIPT_MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  private static readonly TRANSCRIPT_MAX_WALL_CLOCK_MS = 20;
+  private static readonly TRANSCRIPT_MAX_DEPTH = 5;
 
   constructor(
     processHandle: RunnerProcess,
@@ -2101,7 +2131,9 @@ class ProtocolClient {
     }
     let observedProgress = false;
 
-    for (const transcriptPath of this.findCandidateTranscriptPaths(context)) {
+    const lookup = this.findCandidateTranscriptPaths(context);
+
+    for (const transcriptPath of lookup.paths) {
       let stat: fs.Stats;
       try {
         stat = fs.statSync(transcriptPath);
@@ -2170,35 +2202,307 @@ class ProtocolClient {
     return { terminal: null, observedProgress };
   }
 
-  private findCandidateTranscriptPaths(context: TurnEventContext): string[] {
+  private findCandidateTranscriptPaths(context: TurnEventContext): TranscriptCandidateLookupResult {
+    const identityKey = this.transcriptCandidateIdentityKey(context);
+    const nowMs = Date.now();
+    if (
+      this.transcriptCandidateCache &&
+      this.transcriptCandidateCache.identityKey === identityKey &&
+      nowMs - this.transcriptCandidateCache.refreshedAtMs < ProtocolClient.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS
+    ) {
+      return {
+        paths: [...this.transcriptCandidateCache.paths],
+        stats: {
+          ...this.transcriptCandidateCache.stats,
+          source: 'cache',
+          reasonCodes: [...this.transcriptCandidateCache.stats.reasonCodes]
+        }
+      };
+    }
+
+    const indexedPaths = [...this.transcriptOffsets.keys()].filter((transcriptPath) =>
+      this.transcriptPathMayMatch(transcriptPath, context)
+    );
+    if (indexedPaths.length > 0) {
+      const limitedPaths = indexedPaths.slice(0, ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES);
+      const stats: TranscriptCandidateLookupStats = {
+        source: 'indexed',
+        candidateCount: limitedPaths.length,
+        filesConsidered: indexedPaths.length,
+        filesParsed: 0,
+        bytesRead: 0,
+        exhausted: indexedPaths.length > limitedPaths.length,
+        reasonCodes: indexedPaths.length > limitedPaths.length ? ['transcript_candidate_file_budget_exhausted'] : []
+      };
+      this.transcriptCandidateCache = { identityKey, refreshedAtMs: nowMs, paths: limitedPaths, stats };
+      return { paths: [...limitedPaths], stats };
+    }
+
     const sessionsRoot = path.join(this.codexHome, 'sessions');
-    const paths: string[] = [];
-    const visit = (directory: string, depth: number): void => {
-      if (depth > 5 || paths.length >= 200) {
-        return;
+    let rootStat: fs.Stats;
+    try {
+      rootStat = fs.statSync(sessionsRoot);
+    } catch {
+      return this.cacheTranscriptLookup(identityKey, nowMs, [], {
+        source: 'missing',
+        candidateCount: 0,
+        filesConsidered: 0,
+        filesParsed: 0,
+        bytesRead: 0,
+        exhausted: false,
+        reasonCodes: ['transcript_sessions_root_missing']
+      });
+    }
+    if (!rootStat.isDirectory()) {
+      return this.cacheTranscriptLookup(identityKey, nowMs, [], {
+        source: 'missing',
+        candidateCount: 0,
+        filesConsidered: 0,
+        filesParsed: 0,
+        bytesRead: 0,
+        exhausted: false,
+        reasonCodes: ['transcript_sessions_root_missing']
+      });
+    }
+
+    const candidates: string[] = [];
+    const deadlineAtMs = Date.now() + ProtocolClient.TRANSCRIPT_MAX_WALL_CLOCK_MS;
+    const reasonCodes = new Set<string>();
+    let filesConsidered = 0;
+    let filesParsed = 0;
+    let remainingProbeBytes = ProtocolClient.TRANSCRIPT_MAX_PROBE_BYTES;
+    const stack: Array<{ directory: string; depth: number }> = [{ directory: sessionsRoot, depth: 0 }];
+
+    while (
+      stack.length > 0 &&
+      candidates.length < ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES &&
+      filesConsidered < ProtocolClient.TRANSCRIPT_MAX_DISCOVERY_FILES
+    ) {
+      if (Date.now() > deadlineAtMs) {
+        reasonCodes.add('transcript_discovery_wall_clock_budget_exhausted');
+        break;
+      }
+      const current = stack.pop();
+      if (!current) {
+        continue;
       }
       let entries: fs.Dirent[];
       try {
-        entries = fs.readdirSync(directory, { withFileTypes: true });
+        entries = this.sortTranscriptDiscoveryEntries(fs.readdirSync(current.directory, { withFileTypes: true }));
       } catch {
-        return;
+        continue;
       }
       for (const entry of entries) {
-        const entryPath = path.join(directory, entry.name);
+        if (Date.now() > deadlineAtMs) {
+          reasonCodes.add('transcript_discovery_wall_clock_budget_exhausted');
+          break;
+        }
+        const entryPath = path.join(current.directory, entry.name);
         if (entry.isDirectory()) {
-          visit(entryPath, depth + 1);
+          if (current.depth < ProtocolClient.TRANSCRIPT_MAX_DEPTH) {
+            stack.push({ directory: entryPath, depth: current.depth + 1 });
+          }
           continue;
         }
         if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
           continue;
         }
-        if (entry.name.includes(context.thread_id) || this.transcriptOffsets.has(entryPath)) {
-          paths.push(entryPath);
+        if (filesConsidered >= ProtocolClient.TRANSCRIPT_MAX_DISCOVERY_FILES) {
+          reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
+          break;
+        }
+        filesConsidered += 1;
+        if (this.transcriptPathMayMatch(entryPath, context)) {
+          candidates.push(entryPath);
+          if (candidates.length >= ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES) {
+            reasonCodes.add('transcript_candidate_file_budget_exhausted');
+            break;
+          }
+          continue;
+        }
+
+        let fileStat: fs.Stats;
+        try {
+          fileStat = fs.statSync(entryPath);
+        } catch {
+          continue;
+        }
+        if (nowMs - fileStat.mtimeMs > ProtocolClient.TRANSCRIPT_MAX_FILE_AGE_MS) {
+          reasonCodes.add('transcript_discovery_age_budget_skipped');
+          continue;
+        }
+        if (remainingProbeBytes <= 0) {
+          reasonCodes.add('transcript_probe_byte_budget_exhausted');
+          continue;
+        }
+        const probe = this.transcriptContentMayMatchContext(entryPath, context, {
+          remainingBytes: remainingProbeBytes,
+          deadlineAtMs
+        });
+        remainingProbeBytes = probe.remainingBytes;
+        if (probe.bytesRead > 0) {
+          filesParsed += 1;
+        }
+        for (const reason of probe.reasonCodes) {
+          reasonCodes.add(reason);
+        }
+        if (probe.matched) {
+          candidates.push(entryPath);
+          if (candidates.length >= ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES) {
+            reasonCodes.add('transcript_candidate_file_budget_exhausted');
+            break;
+          }
         }
       }
-    };
-    visit(sessionsRoot, 0);
-    return paths;
+    }
+
+    if (candidates.length >= ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES) {
+      reasonCodes.add('transcript_candidate_file_budget_exhausted');
+    }
+    if (filesConsidered >= ProtocolClient.TRANSCRIPT_MAX_DISCOVERY_FILES && stack.length > 0) {
+      reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
+    }
+
+    const exhausted = reasonCodes.size > 0;
+    return this.cacheTranscriptLookup(identityKey, nowMs, candidates, {
+      source: exhausted ? 'budget_exhausted' : candidates.length > 0 ? 'fallback' : 'missing',
+      candidateCount: candidates.length,
+      filesConsidered,
+      filesParsed,
+      bytesRead: ProtocolClient.TRANSCRIPT_MAX_PROBE_BYTES - remainingProbeBytes,
+      exhausted,
+      reasonCodes: [...reasonCodes].sort()
+    });
+  }
+
+  private cacheTranscriptLookup(
+    identityKey: string,
+    refreshedAtMs: number,
+    paths: string[],
+    stats: TranscriptCandidateLookupStats
+  ): TranscriptCandidateLookupResult {
+    if (paths.length > 0 || stats.source === 'indexed' || stats.source === 'fallback' || stats.source === 'budget_exhausted') {
+      this.transcriptCandidateCache = {
+        identityKey,
+        refreshedAtMs,
+        paths: [...paths],
+        stats: { ...stats, reasonCodes: [...stats.reasonCodes] }
+      };
+    }
+    return { paths: [...paths], stats };
+  }
+
+  private transcriptCandidateIdentityKey(context: TurnEventContext): string {
+    return [context.session_id, context.thread_id, context.turn_id].join('|');
+  }
+
+  private transcriptPathMayMatch(transcriptPath: string, context: TurnEventContext): boolean {
+    const normalized = transcriptPath.toLowerCase();
+    return [context.session_id, context.thread_id, context.turn_id].some((identifier) =>
+      normalized.includes(identifier.toLowerCase())
+    );
+  }
+
+  private sortTranscriptDiscoveryEntries(entries: fs.Dirent[]): fs.Dirent[] {
+    return [...entries].sort((left, right) => {
+      const leftTranscript = left.isFile() && left.name.endsWith('.jsonl');
+      const rightTranscript = right.isFile() && right.name.endsWith('.jsonl');
+      if (leftTranscript !== rightTranscript) {
+        return leftTranscript ? -1 : 1;
+      }
+      if (leftTranscript && rightTranscript) {
+        return right.name.localeCompare(left.name);
+      }
+      const leftDirectory = left.isDirectory();
+      const rightDirectory = right.isDirectory();
+      if (leftDirectory !== rightDirectory) {
+        return leftDirectory ? -1 : 1;
+      }
+      return right.name.localeCompare(left.name);
+    });
+  }
+
+  private transcriptContentMayMatchContext(
+    transcriptPath: string,
+    context: TurnEventContext,
+    budget: { remainingBytes: number; deadlineAtMs: number }
+  ): { matched: boolean; bytesRead: number; remainingBytes: number; reasonCodes: string[] } {
+    const reasonCodes: string[] = [];
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(transcriptPath);
+    } catch {
+      return { matched: false, bytesRead: 0, remainingBytes: budget.remainingBytes, reasonCodes };
+    }
+    const bytesToRead = Math.min(stat.size, budget.remainingBytes);
+    let content = '';
+    try {
+      const fd = fs.openSync(transcriptPath, 'r');
+      try {
+        const buffer = Buffer.alloc(bytesToRead);
+        fs.readSync(fd, buffer, 0, buffer.length, 0);
+        content = buffer.toString('utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return { matched: false, bytesRead: 0, remainingBytes: budget.remainingBytes, reasonCodes };
+    }
+    if (bytesToRead < stat.size) {
+      reasonCodes.push('transcript_probe_file_byte_budget_exhausted');
+    }
+    for (const line of content.split(/\r?\n/)) {
+      if (Date.now() > budget.deadlineAtMs) {
+        reasonCodes.push('transcript_discovery_wall_clock_budget_exhausted');
+        return { matched: false, bytesRead: bytesToRead, remainingBytes: budget.remainingBytes - bytesToRead, reasonCodes };
+      }
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const parsed = parseJsonRecord(trimmed);
+      if (!parsed) {
+        continue;
+      }
+      const payload = asRecord(parsed.payload);
+      const item = this.readTranscriptProbeResponseItem(parsed);
+      const threadId = this.readTranscriptProbeString(['thread_id', 'threadId'], parsed, payload, item);
+      const turnId = this.readTranscriptProbeString(['turn_id', 'turnId'], parsed, payload, item);
+      const sessionId = this.readTranscriptProbeString(['session_id', 'sessionId'], parsed, payload, item);
+      if (threadId === context.thread_id || turnId === context.turn_id || sessionId === context.session_id) {
+        return { matched: true, bytesRead: bytesToRead, remainingBytes: budget.remainingBytes - bytesToRead, reasonCodes };
+      }
+    }
+    return { matched: false, bytesRead: bytesToRead, remainingBytes: budget.remainingBytes - bytesToRead, reasonCodes };
+  }
+
+  private readTranscriptProbeResponseItem(record: Record<string, unknown>): Record<string, unknown> | null {
+    const payload = asRecord(record.payload);
+    if (payload?.type === 'response_item') {
+      return asRecord(payload.item);
+    }
+    if (record.type === 'response_item') {
+      return payload;
+    }
+    return null;
+  }
+
+  private readTranscriptProbeString(
+    keys: string[],
+    ...records: Array<Record<string, unknown> | null | undefined>
+  ): string | undefined {
+    for (const record of records) {
+      if (!record) {
+        continue;
+      }
+      for (const key of keys) {
+        const value = readString(record[key]);
+        if (value) {
+          return value;
+        }
+      }
+    }
+    return undefined;
   }
 
   private observeTranscriptUsage(payload: Record<string, unknown>): void {

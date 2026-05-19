@@ -2457,6 +2457,45 @@ describe('CodexRunner', () => {
     });
   });
 
+  it('bounds and caches runner transcript fallback discovery when no transcript matches', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const sessionsDir = path.join(codexHome, 'sessions', '2026', '05');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    for (let index = 0; index < 60; index += 1) {
+      const historicalDir = path.join(sessionsDir, String(index).padStart(2, '0'));
+      fs.mkdirSync(historicalDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(historicalDir, `rollout-2026-05-01T00-00-${String(index).padStart(2, '0')}-historical.jsonl`),
+        `${JSON.stringify({
+          timestamp: new Date().toISOString(),
+          type: 'event_msg',
+          payload: { type: 'noise', padding: 'x'.repeat(1024) }
+        })}\n`,
+        'utf8'
+      );
+    }
+
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const readdirSpy = vi.spyOn(fs, 'readdirSync');
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 300
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-missing-bounded"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-missing-bounded"}}}\n');
+
+    await expect(promise).rejects.toMatchObject({ code: REASON_CODES.turnTimeout });
+
+    expect(readdirSpy.mock.calls.length).toBeLessThanOrEqual(25);
+    readdirSpy.mockRestore();
+  });
+
   it('keeps wrong-lineage transcript task_complete diagnostic-only until protocol completion', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
