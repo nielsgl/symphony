@@ -978,6 +978,144 @@ describe('OrchestratorCore missing tool output', () => {
     });
   });
 
+  it('preserves an incomplete active transcript line for a later scan', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-partial-line', identifier: 'ABC-TRANSCRIPT-PARTIAL' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-partial-line', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-partial-line',
+        turn_id: 'turn-partial-line',
+        session_id: 'session-partial-line'
+      });
+
+      const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const transcriptPath = path.join(sessionsDir, 'session-partial-line.jsonl');
+      const recordLine = JSON.stringify({
+        timestamp: new Date(harness.now.value + 10).toISOString(),
+        session_id: 'session-partial-line',
+        thread_id: 'thread-partial-line',
+        turn_id: 'turn-partial-line',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'linear_graphql',
+          call_id: 'call_partial_line'
+        }
+      });
+      const splitIndex = Math.floor(recordLine.length / 2);
+      fs.writeFileSync(transcriptPath, recordLine.slice(0, splitIndex), 'utf8');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-partial-line', {
+        timestamp_ms: harness.now.value + 20,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting while transcript line is still being appended',
+        thread_id: 'thread-partial-line',
+        turn_id: 'turn-partial-line',
+        session_id: 'session-partial-line'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-partial-line')?.tool_call_ledger ?? {}).toEqual({});
+
+      fs.appendFileSync(transcriptPath, `${recordLine.slice(splitIndex)}\n`, 'utf8');
+      harness.now.value += 100;
+      await harness.orchestrator.tick('interval');
+
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-partial-line')?.tool_call_ledger?.call_partial_line).toMatchObject({
+        call_id: 'call_partial_line',
+        completion_status: 'pending',
+        evidence_sources: ['session_transcript']
+      });
+    });
+  });
+
+  it('processes complete transcript lines while preserving a trailing partial line', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-trailing-partial', identifier: 'ABC-TRANSCRIPT-TRAILING' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-trailing-partial', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-trailing-partial',
+        turn_id: 'turn-trailing-partial',
+        session_id: 'session-trailing-partial'
+      });
+
+      const callLine = JSON.stringify({
+        timestamp: new Date(harness.now.value + 10).toISOString(),
+        session_id: 'session-trailing-partial',
+        thread_id: 'thread-trailing-partial',
+        turn_id: 'turn-trailing-partial',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'linear_graphql',
+          call_id: 'call_trailing_partial'
+        }
+      });
+      const outputLine = JSON.stringify({
+        timestamp: new Date(harness.now.value + 20).toISOString(),
+        session_id: 'session-trailing-partial',
+        thread_id: 'thread-trailing-partial',
+        turn_id: 'turn-trailing-partial',
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          call_id: 'call_trailing_partial',
+          output: '{}'
+        }
+      });
+      const outputSplitIndex = Math.floor(outputLine.length / 2);
+      const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const transcriptPath = path.join(sessionsDir, 'session-trailing-partial.jsonl');
+      fs.writeFileSync(transcriptPath, `${callLine}\n${outputLine.slice(0, outputSplitIndex)}`, 'utf8');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-trailing-partial', {
+        timestamp_ms: harness.now.value + 30,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with a complete call and partial output line',
+        thread_id: 'thread-trailing-partial',
+        turn_id: 'turn-trailing-partial',
+        session_id: 'session-trailing-partial'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-trailing-partial')?.tool_call_ledger?.call_trailing_partial).toMatchObject({
+        call_id: 'call_trailing_partial',
+        completion_status: 'pending',
+        evidence_sources: ['session_transcript']
+      });
+
+      fs.appendFileSync(transcriptPath, `${outputLine.slice(outputSplitIndex)}\n`, 'utf8');
+      harness.now.value += 100;
+      await harness.orchestrator.tick('interval');
+
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-trailing-partial')?.tool_call_ledger?.call_trailing_partial).toMatchObject({
+        call_id: 'call_trailing_partial',
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+    });
+  });
+
   it('stops historical transcript discovery at the files-considered budget', async () => {
     await withTemporaryCodexHome(async (codexHome) => {
       const historicalDir = path.join(codexHome, 'sessions', '2026', '05', '02');

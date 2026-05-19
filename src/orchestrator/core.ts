@@ -8274,7 +8274,8 @@ export class OrchestratorCore {
       }
 
       const previousOffset = Math.min(offsets[transcriptPath] ?? 0, stat.size);
-      let content = '';
+      let completeContent = '';
+      let consumedBytes = 0;
       try {
         const fd = fs.openSync(transcriptPath, 'r');
         try {
@@ -8285,7 +8286,13 @@ export class OrchestratorCore {
           }
           const buffer = Buffer.alloc(bytesToRead);
           fs.readSync(fd, buffer, 0, buffer.length, previousOffset);
-          content = buffer.toString('utf8');
+          const lastCompleteLineIndex = buffer.lastIndexOf(0x0a);
+          if (lastCompleteLineIndex >= 0) {
+            consumedBytes = lastCompleteLineIndex + 1;
+            completeContent = buffer.subarray(0, consumedBytes).toString('utf8');
+          } else if (bytesToRead > 0 && bytesToRead >= remainingBytes) {
+            reasons.add('transcript_scan_byte_budget_exhausted');
+          }
           remainingBytes -= bytesToRead;
           bytesRead += bytesToRead;
         } finally {
@@ -8295,9 +8302,9 @@ export class OrchestratorCore {
         continue;
       }
 
-      offsets[transcriptPath] = previousOffset + Buffer.byteLength(content, 'utf8');
+      offsets[transcriptPath] = previousOffset + consumedBytes;
       filesParsed += 1;
-      for (const line of content.split(/\r?\n/)) {
+      for (const line of completeContent.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed) {
           continue;
