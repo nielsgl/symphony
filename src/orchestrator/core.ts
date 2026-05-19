@@ -20,14 +20,14 @@ import {
   sortCandidatesForDispatch
 } from './decisions';
 import {
-  budgetConfigured,
-  budgetScopeLabel,
-  computeBudgetProjection,
+  applyBudgetBlockedTerminationEvidence,
+  applyBudgetTelemetryUnavailable,
+  computeIssueBudgetProjection,
   defaultBudgetProjection,
-  pruneBudgetSamples,
-  recordBudgetUsageSample,
-  selectBudgetCandidate,
-  type BudgetCandidate,
+  evaluateBudgetEnforcement,
+  recordIssueBudgetUsageSample,
+  updateRunningBudgetProjection,
+  type BudgetHardLimitDecision,
   type BudgetUsageSample
 } from './core/budget';
 import {
@@ -37,8 +37,7 @@ import {
   cloneOperatorAction,
   cloneReleasedWorkerRecord,
   cloneRetryEntry,
-  cloneRunningEntry,
-  cloneWorkerTerminationResult
+  cloneRunningEntry
 } from './core/snapshot-cloning';
 import {
   beginExecutionGraphWorkerTurnObservation,
@@ -52,19 +51,18 @@ import {
   type DispatchGraphContext
 } from './core/execution-graph-persistence';
 import {
-  captureMissingToolOutputRecoveryReplacementLineage,
+  applyWorkerEvent,
+  applyWorkerExitLineage,
   classifyWorkerActivity,
   findReleasedWorkerRecord,
-  humanizeWorkerEvent,
   isTerminalTurnEvent,
   normalizeCodexAppServerPid,
   normalizeWorkerInstanceId,
-  pruneInactiveWorkerPidsForIssue,
+  recordTerminationExitObserved,
   rememberInactiveWorkerPid,
   rememberReleasedWorker,
-  severityForRuntimeEvent,
+  staleWorkerExitReasonForRunningEntry,
   shouldResetRunningWaitEpisode,
-  staleWorkerEventReasonForRunningEntry,
   workerEventLooksLikeTrackerComment
 } from './core/worker-events';
 import type {
@@ -894,422 +892,47 @@ export class OrchestratorCore {
   }
 
   onWorkerEvent(issue_id: string, workerEvent: WorkerObservabilityEvent): void {
-    const runningEntry = this.state.running.get(issue_id);
-    if (!runningEntry) {
-      const blockedEntry = this.state.blocked_inputs.get(issue_id);
-      if (blockedEntry?.awaiting_operator) {
-        this.quarantineBlockedWorkerEvent(blockedEntry, workerEvent, 'awaiting_operator_latch');
-      }
-      return;
-    }
-
-    const staleReason = staleWorkerEventReasonForRunningEntry({
-      runningEntry,
+    applyWorkerEvent({
+      state: this.state,
+      issueId: issue_id,
       workerEvent,
-      inactiveWorkerEntries: pruneInactiveWorkerPidsForIssue({
-        state: this.state,
-        issueId: issue_id,
-        nowMs: this.nowMs(),
-        ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
-      })
-    });
-    if (staleReason) {
-      this.recordStaleRunningWorkerEvent(issue_id, runningEntry, workerEvent, staleReason);
-      return;
-    }
-
-    runningEntry.last_codex_timestamp_ms = workerEvent.timestamp_ms;
-    runningEntry.last_event = workerEvent.event;
-    runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
-    runningEntry.last_message = workerEvent.detail ?? null;
-    this.captureWorkerProgressSignal(runningEntry, workerEvent);
-    if (
-      workerEvent.codex_thread_activity_at_ms !== undefined &&
-      workerEvent.codex_thread_activity_at_ms !== null &&
-      (!workerEvent.thread_id || !runningEntry.thread_id || workerEvent.thread_id === runningEntry.thread_id)
-    ) {
-      runningEntry.codex_thread_activity_at_ms = workerEvent.codex_thread_activity_at_ms;
-      runningEntry.codex_thread_activity_source = workerEvent.codex_thread_activity_source ?? 'app_server_protocol_thread_updated_at';
-      runningEntry.codex_thread_activity_status = workerEvent.codex_thread_activity_status ?? null;
-    }
-    if (workerEvent.event === CANONICAL_EVENT.codex.turnInputRequired) {
-      runningEntry.awaiting_input_since_ms = workerEvent.timestamp_ms;
-      runningEntry.pending_input_preview = {
-        type: REASON_CODES.turnInputRequired,
-        prompt_preview: workerEvent.detail ?? null,
-        option_count: null
-      };
-    }
-    if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
-      const thresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
-      runningEntry.last_heartbeat_at_ms = workerEvent.timestamp_ms;
-      if (runningEntry.running_waiting_started_at_ms === undefined || runningEntry.running_waiting_started_at_ms === null) {
-        runningEntry.running_waiting_started_at_ms = workerEvent.timestamp_ms;
-        runningEntry.running_wait_stall_event_emitted = false;
-        runningEntry.heartbeat_only_event_emitted = false;
-      }
-      if (
-        (runningEntry.stalled_waiting_since_ms === undefined || runningEntry.stalled_waiting_since_ms === null) &&
-        thresholdMs > 0
-      ) {
-        runningEntry.stalled_waiting_since_ms = runningEntry.running_waiting_started_at_ms + thresholdMs;
-      }
-      runningEntry.stalled_waiting_reason = null;
-      this.maybeEmitHeartbeatOnly(issue_id, runningEntry, workerEvent.timestamp_ms);
-    } else if (shouldResetRunningWaitEpisode(workerEvent.event)) {
-      this.resetRunningWaitEpisode(runningEntry, workerEvent.timestamp_ms);
-    } else if (this.isMeaningfulWorkerProgressEvent(workerEvent)) {
-      runningEntry.last_progress_transition_at_ms = workerEvent.timestamp_ms;
-    }
-
-    if (workerEvent.thread_id && !runningEntry.thread_id) {
-      runningEntry.thread_id = workerEvent.thread_id;
-    }
-
-    if (workerEvent.turn_id) {
-      runningEntry.turn_id = workerEvent.turn_id;
-    }
-
-    if (workerEvent.codex_app_server_pid !== undefined && workerEvent.codex_app_server_pid !== null) {
-      runningEntry.codex_app_server_pid = String(workerEvent.codex_app_server_pid);
-    }
-
-    if (!workerEvent.session_id && runningEntry.thread_id && runningEntry.turn_id) {
-      workerEvent.session_id = `${runningEntry.thread_id}-${runningEntry.turn_id}`;
-    }
-
-    if (workerEvent.session_id) {
-      const hadSessionId = runningEntry.session_id;
-      runningEntry.session_id = workerEvent.session_id;
-      if (runningEntry.run_id && hadSessionId !== workerEvent.session_id) {
-        void this.persistence
-          ?.recordSession({
-            run_id: runningEntry.run_id,
-            session_id: workerEvent.session_id
-          })
-          .catch(() => {
-            this.logger?.log({
-              level: 'warn',
-              event: CANONICAL_EVENT.persistence.recordSessionFailed,
-              message: `failed to persist session for ${runningEntry.identifier}`,
-              context: {
-                issue_id,
-                issue_identifier: runningEntry.identifier,
-                session_id: workerEvent.session_id
-              }
-            });
-          });
-      }
-    }
-
-    captureMissingToolOutputRecoveryReplacementLineage(runningEntry, workerEvent);
-    this.updateOutstandingToolCalls(runningEntry, workerEvent);
-
-    if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
-      runningEntry.turn_count += 1;
-      runningEntry.token_telemetry_status = 'pending';
-      runningEntry.token_telemetry_turn_started_at_ms = workerEvent.timestamp_ms;
-      runningEntry.token_telemetry_warning_emitted = false;
-    }
-
-    const usageThreadMatches =
-      !workerEvent.thread_id || !runningEntry.thread_id || workerEvent.thread_id === runningEntry.thread_id;
-    if (workerEvent.usage && usageThreadMatches) {
-      const usage = workerEvent.usage;
-      const inputDelta = Math.max(0, usage.input_tokens - runningEntry.last_reported_tokens.input_tokens);
-      const outputDelta = Math.max(0, usage.output_tokens - runningEntry.last_reported_tokens.output_tokens);
-      const totalDelta = Math.max(0, usage.total_tokens - runningEntry.last_reported_tokens.total_tokens);
-      this.state.codex_totals.input_tokens += inputDelta;
-      this.state.codex_totals.output_tokens += outputDelta;
-      this.state.codex_totals.total_tokens += totalDelta;
-      if (
-        typeof usage.cached_input_tokens === 'number' &&
-        typeof runningEntry.last_reported_tokens.cached_input_tokens === 'number'
-      ) {
-        this.state.codex_totals.cached_input_tokens =
-          (this.state.codex_totals.cached_input_tokens ?? 0) +
-          Math.max(0, usage.cached_input_tokens - runningEntry.last_reported_tokens.cached_input_tokens);
-      } else if (typeof usage.cached_input_tokens === 'number' && this.state.codex_totals.cached_input_tokens === undefined) {
-        this.state.codex_totals.cached_input_tokens = usage.cached_input_tokens;
-      }
-      if (
-        typeof usage.reasoning_output_tokens === 'number' &&
-        typeof runningEntry.last_reported_tokens.reasoning_output_tokens === 'number'
-      ) {
-        this.state.codex_totals.reasoning_output_tokens =
-          (this.state.codex_totals.reasoning_output_tokens ?? 0) +
-          Math.max(0, usage.reasoning_output_tokens - runningEntry.last_reported_tokens.reasoning_output_tokens);
-      } else if (
-        typeof usage.reasoning_output_tokens === 'number' &&
-        this.state.codex_totals.reasoning_output_tokens === undefined
-      ) {
-        this.state.codex_totals.reasoning_output_tokens = usage.reasoning_output_tokens;
-      }
-      if (typeof usage.model_context_window === 'number') {
-        this.state.codex_totals.model_context_window =
-          typeof this.state.codex_totals.model_context_window === 'number'
-            ? Math.max(this.state.codex_totals.model_context_window, usage.model_context_window)
-            : usage.model_context_window;
-      }
-      runningEntry.tokens = { ...usage };
-      runningEntry.last_reported_tokens = { ...usage };
-      runningEntry.token_telemetry_status = workerEvent.token_telemetry_status ?? 'available';
-      runningEntry.token_telemetry_last_source = workerEvent.token_telemetry_last_source ?? 'worker_event_usage';
-      runningEntry.token_telemetry_last_at_ms = workerEvent.token_telemetry_last_at_ms ?? workerEvent.timestamp_ms;
-      if (totalDelta > 0) {
-        this.resetRunningWaitEpisode(runningEntry, runningEntry.token_telemetry_last_at_ms);
-      }
-      if (totalDelta > 0) {
-        this.throughputTracker.observe({
-          at_ms: workerEvent.timestamp_ms,
-          tokens: totalDelta
-        });
-      }
-      runningEntry.budget = this.computeBudgetProjection(issue_id, usage.total_tokens, 'available');
-    }
-
-    if (workerEvent.token_telemetry_status && !workerEvent.usage) {
-      runningEntry.token_telemetry_status = workerEvent.token_telemetry_status;
-      runningEntry.token_telemetry_last_source =
-        workerEvent.token_telemetry_last_source ?? runningEntry.token_telemetry_last_source;
-      runningEntry.token_telemetry_last_at_ms =
-        workerEvent.token_telemetry_last_at_ms ?? runningEntry.token_telemetry_last_at_ms;
-    }
-
-    if (isTerminalTurnEvent(workerEvent.event) && !workerEvent.usage && runningEntry.token_telemetry_status === 'pending') {
-      runningEntry.token_telemetry_status = 'unavailable';
-    }
-
-    this.maybeEmitTokenTelemetryWarning(runningEntry, workerEvent.timestamp_ms);
-    this.maybeEmitBudgetTelemetryUnavailable(runningEntry, workerEvent);
-    this.maybeEnforceBudget(issue_id, runningEntry, workerEvent.timestamp_ms);
-
-    if (workerEvent.rate_limits) {
-      this.state.codex_rate_limits = { ...workerEvent.rate_limits };
-      runningEntry.rate_limits = { ...workerEvent.rate_limits };
-    }
-
-    if (workerEvent.protocol_warnings) {
-      runningEntry.protocol_warnings = workerEvent.protocol_warnings.map((warning) => ({ ...warning }));
-    } else if (workerEvent.protocol_warning) {
-      runningEntry.protocol_warnings = [...(runningEntry.protocol_warnings ?? []), { ...workerEvent.protocol_warning }];
-    }
-
-    if (workerEvent.model_reroute !== undefined) {
-      runningEntry.model_reroute = workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null;
-    }
-    if (workerEvent.requested_model !== undefined) {
-      runningEntry.requested_model = workerEvent.requested_model ?? null;
-    }
-    if (workerEvent.effective_model !== undefined) {
-      runningEntry.effective_model = workerEvent.effective_model ?? null;
-    }
-
-    runningEntry.recent_events.push({
-      at_ms: workerEvent.timestamp_ms,
-      event: workerEvent.event,
-      message: workerEvent.detail ?? null,
-      ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
-      ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {}),
-      ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {}),
-      ...(workerEvent.tool_call_id !== undefined ? { tool_call_id: workerEvent.tool_call_id } : {}),
-      ...(workerEvent.tool_name !== undefined ? { tool_name: workerEvent.tool_name } : {}),
-      ...(workerEvent.protocol_warning !== undefined ? { protocol_warning: { ...workerEvent.protocol_warning } } : {}),
-      ...(workerEvent.model_reroute !== undefined
-        ? { model_reroute: workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null }
-        : {}),
-      ...(workerEvent.requested_model !== undefined ? { requested_model: workerEvent.requested_model } : {}),
-      ...(workerEvent.effective_model !== undefined ? { effective_model: workerEvent.effective_model } : {})
-    });
-    if (runningEntry.recent_events.length > 20) {
-      runningEntry.recent_events.splice(0, runningEntry.recent_events.length - 20);
-    }
-
-    if (runningEntry.run_id) {
-      void this.persistence
-        ?.recordEvent({
-          run_id: runningEntry.run_id,
-          timestamp_ms: workerEvent.timestamp_ms,
-          event: workerEvent.event,
-          message: workerEvent.detail ?? null,
-          reason_code: workerEvent.reason_code ?? null,
-          request_method: workerEvent.request_method ?? null,
-          request_category: workerEvent.request_category ?? null
-        })
-          .catch(() => {
-            this.logger?.log({
-              level: 'warn',
-              event: CANONICAL_EVENT.persistence.recordEventFailed,
-              message: `failed to persist worker event for ${runningEntry.identifier}`,
-              context: {
-                issue_id,
-                issue_identifier: runningEntry.identifier,
-                session_id: runningEntry.session_id
-              }
-            });
-          });
-    }
-
-    const turnAlreadyObserved = beginExecutionGraphWorkerTurnObservation(runningEntry, workerEvent);
-    this.queuePersistExecutionGraphWorkerEvent(issue_id, runningEntry, workerEvent, turnAlreadyObserved);
-
-    this.logger?.log({
-      level: 'info',
-      event: CANONICAL_EVENT.orchestration.workerEvent,
-      message: workerEvent.event,
-      context: {
-        issue_id,
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id,
-        thread_id: runningEntry.thread_id,
-        turn_id: runningEntry.turn_id,
-        worker_host: runningEntry.worker_host,
-        codex_app_server_pid: runningEntry.codex_app_server_pid,
-        event: workerEvent.event,
-        event_summary: runningEntry.last_event_summary,
-        reason_code: workerEvent.reason_code ?? null,
-        request_method: workerEvent.request_method ?? null,
-        request_category: workerEvent.request_category ?? null
-      }
-    });
-    this.recordRuntimeEvent({
-      event: workerEvent.event,
-      severity: severityForRuntimeEvent(workerEvent.event),
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: workerEvent.detail,
-      ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
-      ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {}),
-      ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {}),
-      ...(workerEvent.tool_call_id !== undefined ? { tool_call_id: workerEvent.tool_call_id } : {}),
-      ...(workerEvent.tool_name !== undefined ? { tool_name: workerEvent.tool_name } : {}),
-      ...(workerEvent.protocol_warning !== undefined ? { protocol_warning: { ...workerEvent.protocol_warning } } : {}),
-      ...(workerEvent.model_reroute !== undefined
-        ? { model_reroute: workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null }
-        : {}),
-      ...(workerEvent.requested_model !== undefined ? { requested_model: workerEvent.requested_model } : {}),
-      ...(workerEvent.effective_model !== undefined ? { effective_model: workerEvent.effective_model } : {})
-    });
-    if (!this.emitExplicitPhaseMarker(issue_id, workerEvent)) {
-      this.emitMappedPhaseMarker(issue_id, workerEvent);
-    }
-
-    if (
-      workerEvent.event === CANONICAL_EVENT.codex.turnWaiting ||
-      runningEntry.running_waiting_started_at_ms != null ||
-      this.hasOutstandingToolCallEvidence(runningEntry)
-    ) {
-      void this.maybeClassifyRunningWaitStall(issue_id, runningEntry, workerEvent.timestamp_ms);
-    }
-  }
-
-  private recordStaleRunningWorkerEvent(
-    issueId: string,
-    runningEntry: RunningEntry,
-    workerEvent: WorkerObservabilityEvent,
-    reason: QuarantinedWorkerEventReason
-  ): void {
-    const quarantinedEvent = {
-      at_ms: workerEvent.timestamp_ms,
-      event: workerEvent.event,
-      message: workerEvent.detail ?? null,
-      codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
-      worker_instance_id: normalizeWorkerInstanceId(workerEvent.worker_instance_id),
-      session_id: workerEvent.session_id ?? null,
-      thread_id: workerEvent.thread_id ?? null,
-      turn_id: workerEvent.turn_id ?? null,
-      active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
-      active_worker_instance_id: runningEntry.worker_instance_id ?? null,
-      run_id: null,
-      issue_run_id: null,
-      attempt_id: null,
-      active_run_id: runningEntry.run_id ?? null,
-      active_issue_run_id: runningEntry.issue_run_id ?? null,
-      active_attempt_id: runningEntry.attempt_id ?? null,
-      active_session_id: runningEntry.session_id ?? null,
-      active_thread_id: runningEntry.thread_id ?? null,
-      active_turn_id: runningEntry.turn_id ?? null,
-      reason
-    };
-    runningEntry.quarantined_events = [...(runningEntry.quarantined_events ?? []), quarantinedEvent].slice(-40);
-    runningEntry.quarantined_event_count = (runningEntry.quarantined_event_count ?? 0) + 1;
-    runningEntry.last_quarantined_event_at_ms = workerEvent.timestamp_ms;
-
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.orchestration.staleWorkerEventIgnored,
-      message: 'stale worker event ignored for active run',
-      context: {
-        issue_id: issueId,
-        issue_identifier: runningEntry.identifier,
-        active_thread_id: runningEntry.thread_id,
-        event_thread_id: workerEvent.thread_id ?? null,
-        active_turn_id: runningEntry.turn_id,
-        event_turn_id: workerEvent.turn_id ?? null,
-        active_session_id: runningEntry.session_id,
-        event_session_id: workerEvent.session_id ?? null,
-        active_codex_app_server_pid: runningEntry.codex_app_server_pid,
-        event_codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
-        active_worker_instance_id: runningEntry.worker_instance_id ?? null,
-        event_worker_instance_id: normalizeWorkerInstanceId(workerEvent.worker_instance_id),
-        active_run_id: runningEntry.run_id ?? null,
-        active_issue_run_id: runningEntry.issue_run_id ?? null,
-        active_attempt_id: runningEntry.attempt_id ?? null,
-        event: workerEvent.event,
-        reason: quarantinedEvent.reason
-      }
-    });
-    this.maybeRecordOwnershipConflict(runningEntry, workerEvent, reason);
-    this.ports.notifyObservers?.();
-  }
-
-  private maybeRecordOwnershipConflict(
-    runningEntry: RunningEntry,
-    workerEvent: WorkerObservabilityEvent,
-    reason: QuarantinedWorkerEventReason
-  ): void {
-    if (reason !== 'worker_identity_mismatch' && reason !== 'inactive_worker_pid') {
-      return;
-    }
-    if (runningEntry.session_id || runningEntry.thread_id || runningEntry.turn_id) {
-      return;
-    }
-
-    const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
-    const eventWorkerInstanceId = normalizeWorkerInstanceId(workerEvent.worker_instance_id);
-    if (!eventPid && !eventWorkerInstanceId) {
-      return;
-    }
-
-    runningEntry.ownership_conflict = {
-      reason: 'pre_session_identity_conflict',
-      detected_at_ms: workerEvent.timestamp_ms,
-      event: workerEvent.event,
-      event_codex_app_server_pid: eventPid,
-      active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
-      event_worker_instance_id: eventWorkerInstanceId,
-      active_worker_instance_id: runningEntry.worker_instance_id ?? null,
-      event_thread_id: workerEvent.thread_id ?? null,
-      event_turn_id: workerEvent.turn_id ?? null,
-      event_session_id: workerEvent.session_id ?? null
-    };
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.orchestration.ownershipConflictDetected,
-      message: 'active worker ownership conflict detected',
-      context: {
-        issue_id: runningEntry.issue.id,
-        issue_identifier: runningEntry.identifier,
-        conflict_reason: runningEntry.ownership_conflict.reason,
-        active_run_id: runningEntry.run_id ?? null,
-        active_issue_run_id: runningEntry.issue_run_id ?? null,
-        active_attempt_id: runningEntry.attempt_id ?? null,
-        active_worker_instance_id: runningEntry.worker_instance_id ?? null,
-        active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
-        event_worker_instance_id: eventWorkerInstanceId,
-        event_codex_app_server_pid: eventPid,
-        event: workerEvent.event
-      }
+      inactiveWorkerPidTtlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS,
+      runningWaitThresholdMs: this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000,
+      nowMs: () => this.nowMs(),
+      logger: this.logger,
+      notifyObservers: () => this.ports.notifyObservers?.(),
+      quarantineBlockedWorkerEvent: (blockedEntry, event, reason) => this.quarantineBlockedWorkerEvent(blockedEntry, event, reason),
+      captureWorkerProgressSignal: (runningEntry, event) => this.captureWorkerProgressSignal(runningEntry, event),
+      maybeEmitHeartbeatOnly: (issueId, runningEntry, observedAtMs) => this.maybeEmitHeartbeatOnly(issueId, runningEntry, observedAtMs),
+      resetRunningWaitEpisode: (runningEntry, progressAtMs) => this.resetRunningWaitEpisode(runningEntry, progressAtMs),
+      isMeaningfulWorkerProgressEvent: (event) => this.isMeaningfulWorkerProgressEvent(event),
+      observeThroughput: (sample) => this.throughputTracker.observe(sample),
+      updateOutstandingToolCalls: (runningEntry, event) => this.updateOutstandingToolCalls(runningEntry, event),
+      updateBudgetProjection: (issueId, runningEntry, totalTokens) =>
+        updateRunningBudgetProjection({
+          budget: this.config.budget,
+          budgetSamples: this.budgetUsageSamples(),
+          nowMs: this.nowMs(),
+          issueId,
+          runningEntry,
+          currentAttemptTokens: totalTokens,
+          telemetryStatus: 'available'
+        }),
+      maybeEmitTokenTelemetryWarning: (runningEntry, eventAtMs) => this.maybeEmitTokenTelemetryWarning(runningEntry, eventAtMs),
+      maybeEmitBudgetTelemetryUnavailable: (runningEntry, event) => this.maybeEmitBudgetTelemetryUnavailable(runningEntry, event),
+      maybeEnforceBudget: (issueId, runningEntry, timestampMs) => this.maybeEnforceBudget(issueId, runningEntry, timestampMs),
+      persistSession: (params) => this.persistence?.recordSession(params) ?? Promise.resolve(),
+      persistRunEvent: (params) => this.persistence?.recordEvent(params) ?? Promise.resolve(),
+      beginExecutionGraphWorkerTurnObservation: (runningEntry, event) =>
+        beginExecutionGraphWorkerTurnObservation(runningEntry, event),
+      queuePersistExecutionGraphWorkerEvent: (issueId, runningEntry, event, turnAlreadyObserved) =>
+        this.queuePersistExecutionGraphWorkerEvent(issueId, runningEntry, event, turnAlreadyObserved),
+      recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+      emitExplicitPhaseMarker: (issueId, event) => this.emitExplicitPhaseMarker(issueId, event),
+      emitMappedPhaseMarker: (issueId, event) => this.emitMappedPhaseMarker(issueId, event),
+      hasOutstandingToolCallEvidence: (runningEntry) => this.hasOutstandingToolCallEvidence(runningEntry),
+      maybeClassifyRunningWaitStall: (issueId, runningEntry, observedAtMs) =>
+        this.maybeClassifyRunningWaitStall(issueId, runningEntry, observedAtMs)
     });
   }
 
@@ -1486,23 +1109,10 @@ export class OrchestratorCore {
     });
   }
 
-  private budgetConfigured(): boolean {
-    return budgetConfigured(this.config.budget);
-  }
-
-  private pruneBudgetSamples(issueId: string, nowMs: number): BudgetUsageSample[] {
+  private budgetUsageSamples(): Map<string, BudgetUsageSample[]> {
     const budgetSamples = this.state.budget_usage_samples ?? new Map<string, BudgetUsageSample[]>();
     this.state.budget_usage_samples = budgetSamples;
-    return pruneBudgetSamples(this.config.budget, budgetSamples, issueId, nowMs);
-  }
-
-  private selectBudgetCandidate(issueId: string, currentAttemptTokens: number): BudgetCandidate | null {
-    const samples = this.pruneBudgetSamples(issueId, this.nowMs());
-    return selectBudgetCandidate({
-      budget: this.config.budget,
-      samples,
-      currentAttemptTokens
-    });
+    return budgetSamples;
   }
 
   private computeBudgetProjection(
@@ -1512,15 +1122,12 @@ export class OrchestratorCore {
     forcedStatus?: BudgetRuntimeProjection['budget_status'],
     forcedMessage?: string | null
   ): BudgetRuntimeProjection {
-    const budget = this.config.budget;
-    if (!budget) {
-      return defaultBudgetProjection();
-    }
-
-    const selected = this.selectBudgetCandidate(issueId, currentAttemptTokens);
-    return computeBudgetProjection({
-      budget,
-      selected,
+    return computeIssueBudgetProjection({
+      budget: this.config.budget,
+      budgetSamples: this.budgetUsageSamples(),
+      nowMs: this.nowMs(),
+      issueId,
+      currentAttemptTokens,
       telemetryStatus,
       forcedStatus,
       forcedMessage
@@ -1528,109 +1135,31 @@ export class OrchestratorCore {
   }
 
   private maybeEmitBudgetTelemetryUnavailable(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
-    if (!this.budgetConfigured()) {
-      return;
-    }
-    if (!isTerminalTurnEvent(workerEvent.event) || runningEntry.token_telemetry_status !== 'unavailable') {
-      return;
-    }
-    runningEntry.budget = this.computeBudgetProjection(
-      runningEntry.issue.id,
-      runningEntry.tokens.total_tokens,
-      'unavailable',
-      'telemetry_unavailable',
-      'Budget accounting unavailable because runtime token telemetry was not reported.'
-    );
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.budget.telemetryUnavailable,
-      message: 'budget telemetry unavailable',
-      context: {
-        issue_id: runningEntry.issue.id,
-        issue_identifier: runningEntry.identifier
-      }
-    });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.budget.telemetryUnavailable,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: 'runtime token telemetry unavailable for budget accounting'
+    applyBudgetTelemetryUnavailable({
+      budget: this.config.budget,
+      budgetSamples: this.budgetUsageSamples(),
+      nowMs: this.nowMs(),
+      logger: this.logger,
+      recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+      runningEntry,
+      workerEvent
     });
   }
 
   private maybeEnforceBudget(issueId: string, runningEntry: RunningEntry, timestampMs: number): void {
-    if (!this.budgetConfigured()) {
-      return;
-    }
-    if (runningEntry.token_telemetry_status !== 'available') {
-      return;
-    }
-    const budget = this.config.budget;
-    if (!budget || runningEntry.budget_hard_limit_enforced) {
-      return;
-    }
-
-    const projection = this.computeBudgetProjection(issueId, runningEntry.tokens.total_tokens, 'available');
-    runningEntry.budget = projection;
-    if (projection.budget_status === 'warning' && !runningEntry.budget_warning_emitted) {
-      runningEntry.budget_warning_emitted = true;
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.budget.warningThresholdCrossed,
-        message: 'budget warning threshold crossed',
-        context: {
-          issue_id: issueId,
-          issue_identifier: runningEntry.identifier,
-          budget_usage_tokens: projection.budget_usage_tokens,
-          budget_limit_tokens: projection.budget_limit_tokens,
-          budget_policy: projection.budget_policy
-        }
-      });
-      this.recordRuntimeEvent({
-        event: CANONICAL_EVENT.budget.warningThresholdCrossed,
-        severity: 'warn',
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id ?? undefined,
-        detail: `usage=${projection.budget_usage_tokens} limit=${projection.budget_limit_tokens}`
-      });
-    }
-
-    if (projection.budget_status !== 'hard_limited') {
-      return;
-    }
-
-    const triggeringCandidate = this.selectBudgetCandidate(issueId, runningEntry.tokens.total_tokens);
-    runningEntry.budget_hard_limit_enforced = true;
-    const scopeDetail = triggeringCandidate ? `${budgetScopeLabel(triggeringCandidate.scope)} ` : '';
-    const detail = `Budget hard limit exceeded: ${scopeDetail}usage ${projection.budget_usage_tokens} tokens, limit ${projection.budget_limit_tokens} tokens.`;
-    runningEntry.budget = {
-      ...projection,
-      budget_message:
-        budget.hard_limit_policy === 'block_requires_resume'
-          ? `${detail} Continuation blocked until manual resume.`
-          : `${detail} Attempt terminated by budget policy.`
-    };
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.budget.hardLimitExceeded,
-      message: 'budget hard limit exceeded',
-      context: {
-        issue_id: issueId,
-        issue_identifier: runningEntry.identifier,
-        budget_usage_tokens: projection.budget_usage_tokens,
-        budget_limit_tokens: projection.budget_limit_tokens,
-        budget_policy: projection.budget_policy
-      }
+    const decision = evaluateBudgetEnforcement({
+      budget: this.config.budget,
+      budgetSamples: this.budgetUsageSamples(),
+      nowMs: this.nowMs(),
+      logger: this.logger,
+      recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+      issueId,
+      runningEntry
     });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.budget.hardLimitExceeded,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: runningEntry.budget?.budget_message ?? detail
-    });
-    this.enforceBudgetHardLimit(issueId, runningEntry, timestampMs).catch((error) => {
+    if (!decision) {
+      return;
+    }
+    this.enforceBudgetHardLimit(issueId, runningEntry, timestampMs, decision).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       const failureDetail = `Budget hard limit cleanup failed: ${message}`;
       this.state.health.last_error = failureDetail;
@@ -1655,23 +1184,20 @@ export class OrchestratorCore {
     });
   }
 
-  private async enforceBudgetHardLimit(issueId: string, running: RunningEntry, timestampMs: number): Promise<void> {
+  private async enforceBudgetHardLimit(
+    issueId: string,
+    running: RunningEntry,
+    timestampMs: number,
+    decision: BudgetHardLimitDecision
+  ): Promise<void> {
     const budget = this.config.budget;
     if (!budget) {
       return;
     }
 
-    const stopReasonCode =
-      budget.hard_limit_policy === 'terminate_attempt'
-        ? REASON_CODES.attemptTerminatedBudgetLimitExceeded
-        : REASON_CODES.operatorBudgetLimitExceeded;
-    const stopReasonDetail =
-      running.budget?.budget_message ??
-      `Budget hard limit exceeded: usage ${running.budget?.budget_usage_tokens} tokens, limit ${running.budget?.budget_limit_tokens} tokens.`;
-
     this.emitPhaseMarker(issueId, {
-      phase: budget.hard_limit_policy === 'terminate_attempt' ? 'failed' : 'blocked_input',
-      detail: stopReasonDetail,
+      phase: decision.phase,
+      detail: decision.stopReasonDetail,
       attempt: running.retry_attempt,
       thread_id: running.thread_id,
       session_id: running.session_id
@@ -1680,7 +1206,7 @@ export class OrchestratorCore {
     this.addRuntimeSecondsFromEntry(running);
     this.recordBudgetUsageSample(issueId, running.tokens.total_tokens, timestampMs);
     this.state.running.delete(issueId);
-    this.state.health.last_error = stopReasonDetail;
+    this.state.health.last_error = decision.stopReasonDetail;
 
     if (budget.hard_limit_policy === 'block_requires_resume') {
       void this.scheduleBlockedInput({
@@ -1701,8 +1227,8 @@ export class OrchestratorCore {
         copy_ignored_applied: running.copy_ignored_applied,
         copy_ignored_status: running.copy_ignored_status,
         copy_ignored_summary: running.copy_ignored_summary,
-        stop_reason_code: stopReasonCode,
-        stop_reason_detail: stopReasonDetail,
+        stop_reason_code: decision.stopReasonCode,
+        stop_reason_detail: decision.stopReasonDetail,
         session_console: running.recent_events,
         previous_thread_id: running.thread_id,
         previous_turn_id: running.turn_id,
@@ -1735,25 +1261,25 @@ export class OrchestratorCore {
         issue_id: issueId,
         worker_handle: running.worker_handle,
         cleanup_workspace: false,
-        reason: stopReasonCode
+        reason: decision.stopReasonCode
       });
     } catch (error) {
       if (budget.hard_limit_policy === 'block_requires_resume') {
         const unknownResult = workerTerminationExceptionResult(error);
         this.updateBudgetBlockedTerminationEvidence(
           issueId,
-          workerTerminationResultDetail(stopReasonDetail, unknownResult),
+          workerTerminationResultDetail(decision.stopReasonDetail, unknownResult),
           unknownResult
         );
       }
       throw error;
     }
 
-    const terminalReasonDetail = workerTerminationResultDetail(stopReasonDetail, terminationResult);
+    const terminalReasonDetail = workerTerminationResultDetail(decision.stopReasonDetail, terminationResult);
     if (budget.hard_limit_policy === 'block_requires_resume') {
       this.updateBudgetBlockedTerminationEvidence(issueId, terminalReasonDetail, terminationResult);
     }
-    await this.completeRunRecord(running, 'failed', stopReasonCode, null, terminalReasonDetail);
+    await this.completeRunRecord(running, 'failed', decision.stopReasonCode, null, terminalReasonDetail);
   }
 
   private updateBudgetBlockedTerminationEvidence(
@@ -1762,36 +1288,28 @@ export class OrchestratorCore {
     terminationResult: WorkerTerminationResult
   ): void {
     const blockedEntry = this.state.blocked_inputs.get(issueId);
-    if (!blockedEntry || blockedEntry.stop_reason_code !== REASON_CODES.operatorBudgetLimitExceeded) {
+    if (
+      !applyBudgetBlockedTerminationEvidence({
+        blockedEntry,
+        stopReasonDetail,
+        terminationResult
+      })
+    ) {
       return;
-    }
-
-    blockedEntry.stop_reason_detail = stopReasonDetail;
-    blockedEntry.worker_termination_result = cloneWorkerTerminationResult(terminationResult);
-    if (blockedEntry.budget) {
-      blockedEntry.budget = {
-        ...blockedEntry.budget,
-        budget_message: stopReasonDetail
-      };
     }
     void this.persistence?.upsertBlockedInput?.(issueId, JSON.stringify(blockedEntry));
     this.ports.notifyObservers?.();
   }
 
   private recordBudgetUsageSample(issueId: string, totalTokens: number, timestampMs: number): void {
-    if (!this.budgetConfigured() || totalTokens <= 0) {
-      return;
-    }
-    const samples = this.pruneBudgetSamples(issueId, timestampMs);
-    this.state.budget_usage_samples?.set(
+    recordIssueBudgetUsageSample({
+      budget: this.config.budget,
+      budgetSamples: this.budgetUsageSamples(),
+      nowMs: timestampMs,
       issueId,
-      recordBudgetUsageSample({
-        budget: this.config.budget,
-        samples,
-        totalTokens,
-        timestampMs
-      })
-    );
+      totalTokens,
+      timestampMs
+    });
   }
 
   private quarantineBlockedWorkerEvent(
@@ -1837,118 +1355,6 @@ export class OrchestratorCore {
     this.ports.notifyObservers?.();
   }
 
-  private staleWorkerExitReasonForRunningEntry(
-    running: RunningEntry,
-    details: WorkerExitDetails
-  ): 'worker_instance_mismatch' | 'worker_handle_mismatch' | 'worker_pid_mismatch' | 'thread_mismatch' | 'turn_mismatch' | 'session_mismatch' | null {
-    const exitWorkerInstanceId = normalizeWorkerInstanceId(details.worker_instance_id);
-    if (exitWorkerInstanceId && running.worker_instance_id && exitWorkerInstanceId !== running.worker_instance_id) {
-      return 'worker_instance_mismatch';
-    }
-
-    if (details.worker_handle !== undefined && details.worker_handle !== running.worker_handle) {
-      return 'worker_handle_mismatch';
-    }
-
-    const exitPid = normalizeCodexAppServerPid(details.codex_app_server_pid);
-    if (exitPid && running.codex_app_server_pid && exitPid !== running.codex_app_server_pid) {
-      return 'worker_pid_mismatch';
-    }
-
-    if (details.thread_id && running.thread_id && details.thread_id !== running.thread_id) {
-      return 'thread_mismatch';
-    }
-
-    if (details.turn_id && running.turn_id && details.turn_id !== running.turn_id) {
-      return 'turn_mismatch';
-    }
-
-    if (details.session_id && running.session_id && details.session_id !== running.session_id) {
-      return 'session_mismatch';
-    }
-
-    return null;
-  }
-
-  private async applyWorkerExitLineage(running: RunningEntry, details: WorkerExitDetails): Promise<void> {
-    const sessionId = details.session_id ?? null;
-    if (sessionId && !running.session_id) {
-      running.session_id = sessionId;
-      if (running.run_id) {
-        await this.persistence?.recordSession({
-          run_id: running.run_id,
-          session_id: sessionId
-        });
-      }
-    }
-    if (details.thread_id && !running.thread_id) {
-      running.thread_id = details.thread_id;
-    }
-    if (details.turn_id && !running.turn_id) {
-      running.turn_id = details.turn_id;
-    }
-    const codexAppServerPid = normalizeCodexAppServerPid(details.codex_app_server_pid);
-    if (codexAppServerPid && !running.codex_app_server_pid) {
-      running.codex_app_server_pid = codexAppServerPid;
-    }
-  }
-
-  private recordTerminationExitObserved(
-    issue_id: string,
-    running: RunningEntry,
-    reason: WorkerExitReason,
-    error: string | undefined,
-    details: WorkerExitDetails
-  ): void {
-    const termination = running.termination;
-    if (!termination) {
-      return;
-    }
-    const observedAtMs = this.nowMs();
-    running.termination = {
-      ...termination,
-      state: 'exit_observed',
-      exit_observed_at_ms: termination.exit_observed_at_ms ?? observedAtMs,
-      worker_instance_id:
-        normalizeWorkerInstanceId(details.worker_instance_id) ?? termination.worker_instance_id ?? running.worker_instance_id ?? null,
-      codex_app_server_pid:
-        normalizeCodexAppServerPid(details.codex_app_server_pid) ?? termination.codex_app_server_pid ?? running.codex_app_server_pid ?? null,
-      thread_id: details.thread_id ?? termination.thread_id ?? running.thread_id ?? null,
-      turn_id: details.turn_id ?? termination.turn_id ?? running.turn_id ?? null,
-      session_id: details.session_id ?? termination.session_id ?? running.session_id ?? null
-    };
-    this.logger?.log({
-      level: 'info',
-      event: CANONICAL_EVENT.orchestration.workerExitHandled,
-      message: 'worker exit observed during termination release',
-      context: {
-        issue_id,
-        issue_identifier: running.identifier,
-        reason,
-        error: error ?? null,
-        outcome: 'termination_exit_observed',
-        termination_reason: termination.reason,
-        termination_state: running.termination.state,
-        cleanup_workspace: termination.cleanup_workspace,
-        active_run_id: running.run_id ?? null,
-        active_issue_run_id: running.issue_run_id ?? null,
-        active_attempt_id: running.attempt_id ?? null,
-        active_worker_instance_id: running.worker_instance_id ?? null,
-        event_worker_instance_id: normalizeWorkerInstanceId(details.worker_instance_id),
-        active_codex_app_server_pid: running.codex_app_server_pid ?? null,
-        event_codex_app_server_pid: normalizeCodexAppServerPid(details.codex_app_server_pid),
-        active_thread_id: running.thread_id ?? null,
-        event_thread_id: details.thread_id ?? null,
-        active_turn_id: running.turn_id ?? null,
-        event_turn_id: details.turn_id ?? null,
-        active_session_id: running.session_id ?? null,
-        event_session_id: details.session_id ?? null,
-        completion_reason: details.completion_reason ?? null,
-        refreshed_state: details.refreshed_state ?? null
-      }
-    });
-  }
-
   async onWorkerExit(
     issue_id: string,
     reason: WorkerExitReason,
@@ -1983,7 +1389,7 @@ export class OrchestratorCore {
       return;
     }
 
-    const staleExitReason = this.staleWorkerExitReasonForRunningEntry(running, details);
+    const staleExitReason = staleWorkerExitReasonForRunningEntry(running, details);
     if (staleExitReason) {
       this.logger?.log({
         level: 'warn',
@@ -2018,10 +1424,22 @@ export class OrchestratorCore {
       return;
     }
 
-    await this.applyWorkerExitLineage(running, details);
+    await applyWorkerExitLineage({
+      running,
+      details,
+      persistSession: (params) => this.persistence?.recordSession(params) ?? Promise.resolve()
+    });
 
     if (running.termination) {
-      this.recordTerminationExitObserved(issue_id, running, reason, error, details);
+      recordTerminationExitObserved({
+        issueId: issue_id,
+        running,
+        reason,
+        error,
+        details,
+        observedAtMs: this.nowMs(),
+        logger: this.logger
+      });
       this.ports.notifyObservers?.();
       return;
     }
