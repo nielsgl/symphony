@@ -209,6 +209,8 @@ export interface RunningEntry {
   transcript_tool_call_diagnostics?: TranscriptToolCallDiagnostic[];
   transcript_tool_call_diagnostic_stats?: TranscriptToolCallDiagnosticStats;
   codex_session_transcript_scan_offsets?: Record<string, number>;
+  codex_session_transcript_scan_budget?: CodexSessionTranscriptScanBudget;
+  codex_session_transcript_candidate_cache?: CodexSessionTranscriptCandidateCache;
   recovery?: MissingToolOutputRecoveryState | null;
   termination?: RunningEntryTermination | null;
 }
@@ -349,6 +351,29 @@ export interface TranscriptToolCallDiagnosticStats {
   newest_observed_at_ms: number | null;
   counts_by_lineage: Record<TranscriptToolCallLineage, number>;
   counts_by_kind: Record<'function_call' | 'function_call_output', number>;
+}
+
+export interface CodexSessionTranscriptScanBudget {
+  observed_at_ms: number;
+  candidate_count: number;
+  files_considered: number;
+  files_parsed: number;
+  bytes_read: number;
+  exhausted: boolean;
+  reason_codes: string[];
+  limits: {
+    max_candidate_files: number;
+    max_probe_bytes: number;
+    max_scan_bytes: number;
+    max_file_age_ms: number;
+    max_wall_clock_ms: number;
+  };
+}
+
+export interface CodexSessionTranscriptCandidateCache extends CodexSessionTranscriptScanBudget {
+  identity_key: string;
+  paths: string[];
+  refreshed_at_ms: number;
 }
 
 export interface StateSnapshotOptions {

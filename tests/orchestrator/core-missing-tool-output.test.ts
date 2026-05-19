@@ -871,6 +871,113 @@ describe('OrchestratorCore missing tool output', () => {
     });
   });
 
+  it('bounds and caches historical transcript discovery while preserving known active transcript evidence', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const workspacePath = path.join(codexHome, 'workspaces', 'NIE-177');
+      const historicalDir = path.join(codexHome, 'sessions', '2026', '05', '01');
+      fs.mkdirSync(historicalDir, { recursive: true });
+      const largePayload = 'x'.repeat(128 * 1024);
+      for (let index = 0; index < 20; index += 1) {
+        fs.writeFileSync(
+          path.join(historicalDir, `rollout-2026-05-01T00-00-${String(index).padStart(2, '0')}-historical.jsonl`),
+          `${JSON.stringify({
+            timestamp: new Date(Date.now()).toISOString(),
+            type: 'event_msg',
+            payload: { type: 'noise', padding: largePayload }
+          })}\n`,
+          'utf8'
+        );
+      }
+
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 },
+        spawnWorker: async ({ issue, worker_host }) => {
+          return {
+            ok: true,
+            worker_handle: { issue_id: issue.id },
+            monitor_handle: { issue_id: issue.id },
+            worker_host,
+            workspace_path: workspacePath
+          };
+        }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-bounded', identifier: 'ABC-TRANSCRIPT-BOUNDED' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-bounded', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-bounded',
+        turn_id: 'turn-bounded',
+        session_id: 'session-bounded'
+      });
+      writeSessionTranscript(codexHome, 'rollout-thread-bounded.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 10).toISOString(),
+          session_id: 'session-bounded',
+          thread_id: 'thread-bounded',
+          turn_id: 'turn-bounded',
+          type: 'response_item',
+          payload: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_bounded_linear'
+          }
+        },
+        {
+          timestamp: new Date(harness.now.value + 20).toISOString(),
+          session_id: 'session-bounded',
+          thread_id: 'thread-bounded',
+          turn_id: 'turn-bounded',
+          type: 'response_item',
+          payload: {
+            type: 'function_call_output',
+            call_id: 'call_bounded_linear',
+            output: '{}'
+          }
+        }
+      ]);
+
+      const readdirSpy = vi.spyOn(fs, 'readdirSync');
+      harness.orchestrator.onWorkerEvent('i-transcript-bounded', {
+        timestamp_ms: harness.now.value + 30,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with many historical transcripts present',
+        thread_id: 'thread-bounded',
+        turn_id: 'turn-bounded',
+        session_id: 'session-bounded'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const afterFirstScanReads = readdirSpy.mock.calls.length;
+      const runningAfterFirstScan = harness.orchestrator.getStateSnapshot().running.get('i-transcript-bounded');
+      expect(runningAfterFirstScan?.tool_call_ledger?.call_bounded_linear).toMatchObject({
+        call_id: 'call_bounded_linear',
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget).toMatchObject({
+        exhausted: true
+      });
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.reason_codes).toContain('transcript_probe_byte_budget_exhausted');
+
+      harness.now.value += 1_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(readdirSpy.mock.calls.length).toBe(afterFirstScanReads);
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-bounded')?.tool_call_ledger?.call_bounded_linear).toMatchObject({
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+      readdirSpy.mockRestore();
+    });
+  });
+
   it('ignores stale same-workspace rollout function_call records from a prior run', async () => {
     await withTemporaryCodexHome(async (codexHome) => {
       const workspacePath = path.join(codexHome, 'workspaces', 'NIE-79-reused');
