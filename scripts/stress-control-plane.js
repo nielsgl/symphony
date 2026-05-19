@@ -34,6 +34,7 @@ Required for realistic transcript churn:
 Common options:
   --api-url <url>                 State endpoint to probe. Default: ${DEFAULTS.apiUrl}
   --diagnostics-url <url>         Diagnostics endpoint to probe. Default: derived from --api-url.
+  --issue-identifier <id>         Issue diagnostics to probe for active transcript evidence.
   --duration-ms <number>          Total run duration. Default: ${DEFAULTS.durationMs}
   --probe-interval-ms <number>    Delay between /state probes. Default: ${DEFAULTS.probeIntervalMs}
   --probe-timeout-ms <number>     Per-probe timeout. Default: ${DEFAULTS.probeTimeoutMs}
@@ -48,6 +49,9 @@ Common options:
   --turn-id <id>                  Active turn id for the hot transcript. Default: stress-turn
   --session-id <id>               Active session id for the hot transcript. Default: <thread-id>-<turn-id>
   --append-terminal               Append a task_complete sentinel near the end.
+  --allow-codex-home-mismatch     Observation-only: do not fail historical mode when runtime Codex home differs.
+  --allow-missing-active-transcript-evidence
+                                  Observation-only: do not fail historical mode when active transcript evidence is missing.
   --max-p95-ms <number>           Fail if p95 exceeds this. Default: ${DEFAULTS.maxP95Ms}
   --max-p99-ms <number>           Fail if p99 exceeds this. Default: ${DEFAULTS.maxP99Ms}
   --max-queue-delay-ms <number>   Fail if observed request queue delay exceeds this. Default: ${DEFAULTS.maxQueueDelayMs}
@@ -71,9 +75,12 @@ function parseArgs(argv) {
     threadId: 'stress-thread',
     turnId: 'stress-turn',
     sessionId: '',
+    issueIdentifier: '',
     appendTerminal: false,
     historicalCorpus: false,
     requireScannerEngagement: false,
+    allowCodexHomeMismatch: false,
+    allowMissingActiveTranscriptEvidence: false,
     artifactName: '',
     serverPid: null,
     keepCorpus: false,
@@ -110,6 +117,9 @@ function parseArgs(argv) {
         break;
       case '--diagnostics-url':
         options.diagnosticsUrl = readValue();
+        break;
+      case '--issue-identifier':
+        options.issueIdentifier = readValue();
         break;
       case '--codex-home':
         options.codexHome = path.resolve(readValue());
@@ -160,6 +170,12 @@ function parseArgs(argv) {
       case '--append-terminal':
         options.appendTerminal = true;
         break;
+      case '--allow-codex-home-mismatch':
+        options.allowCodexHomeMismatch = true;
+        break;
+      case '--allow-missing-active-transcript-evidence':
+        options.allowMissingActiveTranscriptEvidence = true;
+        break;
       case '--max-p95-ms':
         options.maxP95Ms = readNumber();
         break;
@@ -198,6 +214,9 @@ function parseArgs(argv) {
   if (!options.diagnosticsUrl) {
     options.diagnosticsUrl = deriveDiagnosticsUrl(options.apiUrl);
   }
+  if (options.historicalCorpus && !options.issueIdentifier && !options.allowMissingActiveTranscriptEvidence) {
+    throw new Error('--historical-corpus requires --issue-identifier unless --allow-missing-active-transcript-evidence is set');
+  }
   if (!options.codexHome) {
     options.codexHome = path.join(os.tmpdir(), `symphony-stress-codex-${process.pid}`);
   }
@@ -231,6 +250,13 @@ function makeRecord(payload) {
     timestamp: new Date().toISOString(),
     type: 'event_msg',
     payload
+  })}\n`;
+}
+
+function makeTranscriptRecord(record) {
+  return `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    ...record
   })}\n`;
 }
 
@@ -300,10 +326,42 @@ function startTranscriptWriter(options, activePath) {
   const filler = 'y'.repeat(Math.max(0, options.appendPayloadBytes));
   let sequence = 0;
   let terminalWritten = false;
+  let toolCallWritten = false;
+  let toolCallOutputWritten = false;
   const startedAt = performance.now();
-  const timer = setInterval(() => {
+  const activeCallId = `call_stress_${options.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+  const writeBatch = () => {
     const elapsed = performance.now() - startedAt;
     let content = '';
+    if (options.historicalCorpus && !toolCallWritten) {
+      toolCallWritten = true;
+      content += makeTranscriptRecord({
+        session_id: options.sessionId,
+        thread_id: options.threadId,
+        turn_id: options.turnId,
+        issue_identifier: options.issueIdentifier || undefined,
+        response_item: {
+          type: 'function_call',
+          name: 'linear_graphql',
+          call_id: activeCallId
+        }
+      });
+    }
+    if (options.historicalCorpus && !toolCallOutputWritten) {
+      toolCallOutputWritten = true;
+      content += makeTranscriptRecord({
+        session_id: options.sessionId,
+        thread_id: options.threadId,
+        turn_id: options.turnId,
+        issue_identifier: options.issueIdentifier || undefined,
+        response_item: {
+          type: 'function_call_output',
+          call_id: activeCallId,
+          output: '{}'
+        }
+      });
+    }
     for (let index = 0; index < options.appendBatchLines; index += 1) {
       sequence += 1;
       content += makeRecord({
@@ -333,14 +391,23 @@ function startTranscriptWriter(options, activePath) {
       });
     }
     fs.appendFileSync(activePath, content, 'utf8');
-  }, Math.max(1, options.appendIntervalMs));
+  };
+
+  writeBatch();
+  const timer = setInterval(writeBatch, Math.max(1, options.appendIntervalMs));
 
   return {
     stop() {
       clearInterval(timer);
     },
     stats() {
-      return { appended_records: sequence, terminal_written: terminalWritten };
+      return {
+        appended_records: sequence,
+        terminal_written: terminalWritten,
+        tool_call_written: toolCallWritten,
+        tool_call_output_written: toolCallOutputWritten,
+        active_call_id: activeCallId
+      };
     }
   };
 }
@@ -389,11 +456,16 @@ async function probeEndpoint(endpoint, url, timeoutMs) {
 async function runProbes(options) {
   const deadline = performance.now() + options.durationMs;
   const results = [];
+  const issueDiagnosticsUrl = options.issueIdentifier ? deriveIssueDiagnosticsUrl(options.apiUrl, options.issueIdentifier) : null;
   while (performance.now() < deadline) {
-    const batch = await Promise.all([
+    const probes = [
       probeEndpoint('/api/v1/state', options.apiUrl, options.probeTimeoutMs),
       probeEndpoint('/api/v1/diagnostics', options.diagnosticsUrl, options.probeTimeoutMs)
-    ]);
+    ];
+    if (issueDiagnosticsUrl) {
+      probes.push(probeEndpoint('/api/v1/issues/:id/diagnostics', issueDiagnosticsUrl, options.probeTimeoutMs));
+    }
+    const batch = await Promise.all(probes);
     results.push(...batch);
     const remaining = deadline - performance.now();
     if (remaining <= 0) {
@@ -402,6 +474,13 @@ async function runProbes(options) {
     await new Promise((resolve) => setTimeout(resolve, Math.min(options.probeIntervalMs, remaining)));
   }
   return results;
+}
+
+function deriveIssueDiagnosticsUrl(apiUrl, issueIdentifier) {
+  const parsed = new URL(apiUrl);
+  parsed.pathname = `/api/v1/issues/${encodeURIComponent(issueIdentifier)}/diagnostics`;
+  parsed.search = '';
+  return parsed.toString();
 }
 
 function summarizeEndpoint(endpoint, probeResults) {
@@ -472,6 +551,7 @@ function extractScannerEvidence(probeResults) {
   const budgetsBySignature = new Map();
   let diagnosticSummaryCount = 0;
   let diagnosticRecordCount = 0;
+  const runtimeCodexHomes = new Set();
 
   function visit(value) {
     if (!value || typeof value !== 'object') {
@@ -486,6 +566,9 @@ function extractScannerEvidence(probeResults) {
     if (value.codex_session_transcript_scan_budget && typeof value.codex_session_transcript_scan_budget === 'object') {
       const budget = value.codex_session_transcript_scan_budget;
       budgetsBySignature.set(JSON.stringify(budget), budget);
+    }
+    if (value.runtime_resolution && typeof value.runtime_resolution === 'object' && typeof value.runtime_resolution.effective_codex_home === 'string') {
+      runtimeCodexHomes.add(path.normalize(value.runtime_resolution.effective_codex_home));
     }
     if (value.transcript_tool_call_diagnostic_summary && typeof value.transcript_tool_call_diagnostic_summary === 'object') {
       diagnosticSummaryCount += 1;
@@ -507,8 +590,17 @@ function extractScannerEvidence(probeResults) {
   }
 
   const scanBudgets = Array.from(budgetsBySignature.values());
+  const meaningfulScanBudgets = scanBudgets.filter(
+    (budget) =>
+      typeof budget.candidate_count === 'number' &&
+      budget.candidate_count > 0 &&
+      typeof budget.files_considered === 'number' &&
+      budget.files_considered > 0
+  );
   return {
-    engaged: scanBudgets.length > 0 || diagnosticSummaryCount > 0 || diagnosticRecordCount > 0,
+    engaged: meaningfulScanBudgets.length > 0,
+    runtime_codex_homes: Array.from(runtimeCodexHomes),
+    meaningful_scan_budget_count: meaningfulScanBudgets.length,
     scan_budget_count: scanBudgets.length,
     scan_budgets: scanBudgets.slice(0, 10),
     transcript_tool_call_diagnostic_summary_count: diagnosticSummaryCount,
@@ -516,10 +608,101 @@ function extractScannerEvidence(probeResults) {
   };
 }
 
+function extractActiveTranscriptEvidence(probeResults, writerStats) {
+  const expectedCallId = writerStats.active_call_id;
+  let toolCallSeen = false;
+  let toolCallCompleted = false;
+  let terminalSeen = false;
+  let evidenceSource = null;
+  const issueDiagnostics = [];
+
+  function inspectRuntimeDiagnostics(value) {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+    const diagnostics = value.runtime_diagnostics && typeof value.runtime_diagnostics === 'object' ? value.runtime_diagnostics : value;
+    const ledgerRecords =
+      diagnostics.tool_call_ledger &&
+      typeof diagnostics.tool_call_ledger === 'object' &&
+      Array.isArray(diagnostics.tool_call_ledger.records)
+        ? diagnostics.tool_call_ledger.records
+        : [];
+    for (const record of ledgerRecords) {
+      if (!record || typeof record !== 'object' || record.call_id !== expectedCallId) {
+        continue;
+      }
+      const sources = Array.isArray(record.evidence_sources) ? record.evidence_sources : [];
+      if (sources.includes('session_transcript') || record.start_evidence_source === 'session_transcript') {
+        toolCallSeen = true;
+        evidenceSource = 'session_transcript';
+      }
+      if (record.completion_status === 'completed' && record.completion_evidence_source === 'session_transcript') {
+        toolCallCompleted = true;
+        evidenceSource = 'session_transcript';
+      }
+    }
+    const transcriptRecords =
+      diagnostics.transcript_tool_call_diagnostics &&
+      typeof diagnostics.transcript_tool_call_diagnostics === 'object' &&
+      Array.isArray(diagnostics.transcript_tool_call_diagnostics.records)
+        ? diagnostics.transcript_tool_call_diagnostics.records
+        : [];
+    for (const record of transcriptRecords) {
+      if (record && typeof record === 'object' && record.call_id === expectedCallId && record.lineage === 'active_owned') {
+        toolCallSeen = true;
+        evidenceSource = 'session_transcript';
+      }
+    }
+    const missingToolOutput = diagnostics.missing_tool_output;
+    if (
+      missingToolOutput &&
+      typeof missingToolOutput === 'object' &&
+      missingToolOutput.call_id === expectedCallId &&
+      missingToolOutput.evidence_source === 'session_transcript'
+    ) {
+      toolCallSeen = true;
+      evidenceSource = 'session_transcript';
+    }
+    if (diagnostics.terminal_source === 'session_transcript' || value.terminal_source === 'session_transcript') {
+      terminalSeen = true;
+      evidenceSource = 'session_transcript';
+    }
+  }
+
+  for (const result of probeResults) {
+    if (result.endpoint === '/api/v1/issues/:id/diagnostics' && result.ok) {
+      issueDiagnostics.push({
+        observed_probe_duration_ms: Math.round(result.durationMs),
+        bytes: result.bytes,
+        status: result.json?.runtime_diagnostics?.status ?? result.json?.status ?? null
+      });
+      inspectRuntimeDiagnostics(result.json);
+    }
+  }
+
+  return {
+    required: Boolean(expectedCallId),
+    issue_diagnostics_probe_count: probeResults.filter((result) => result.endpoint === '/api/v1/issues/:id/diagnostics').length,
+    issue_diagnostics_successes: issueDiagnostics.length,
+    issue_diagnostics_samples: issueDiagnostics.slice(-3),
+    expected_call_id: expectedCallId,
+    tool_call_seen: toolCallSeen,
+    tool_call_completed: toolCallCompleted,
+    terminal_seen: terminalSeen,
+    evidence_source: evidenceSource
+  };
+}
+
+function codexHomeMatches(options, scannerEvidence) {
+  const expected = path.normalize(options.codexHome);
+  return scannerEvidence.runtime_codex_homes.includes(expected);
+}
+
 function summarize(options, probeResults, writerStats, seedInfo) {
   const endpoints = {
     '/api/v1/state': summarizeEndpoint('/api/v1/state', probeResults),
-    '/api/v1/diagnostics': summarizeEndpoint('/api/v1/diagnostics', probeResults)
+    '/api/v1/diagnostics': summarizeEndpoint('/api/v1/diagnostics', probeResults),
+    '/api/v1/issues/:id/diagnostics': summarizeEndpoint('/api/v1/issues/:id/diagnostics', probeResults)
   };
   const successes = probeResults.filter((result) => result.ok);
   const failures = probeResults.filter((result) => !result.ok);
@@ -531,6 +714,8 @@ function summarize(options, probeResults, writerStats, seedInfo) {
   const controlPlaneSummaries = extractControlPlaneSummaries(probeResults);
   const queueLatency = extractQueueDelayMetrics(controlPlaneSummaries);
   const scannerEvidence = extractScannerEvidence(probeResults);
+  const activeTranscriptEvidence = extractActiveTranscriptEvidence(probeResults, writerStats);
+  const homeMatches = codexHomeMatches(options, scannerEvidence);
   const thresholdFailures = [];
   if (successes.length === 0) {
     thresholdFailures.push('no_successful_probes');
@@ -550,6 +735,18 @@ function summarize(options, probeResults, writerStats, seedInfo) {
   if (options.requireScannerEngagement && !scannerEvidence.engaged) {
     thresholdFailures.push('scanner_engagement_missing');
   }
+  if (options.requireScannerEngagement && !homeMatches && !options.allowCodexHomeMismatch) {
+    thresholdFailures.push('codex_home_mismatch');
+  }
+  if (
+    options.historicalCorpus &&
+    !options.allowMissingActiveTranscriptEvidence &&
+    (!activeTranscriptEvidence.tool_call_seen ||
+      !activeTranscriptEvidence.tool_call_completed ||
+      (options.appendTerminal && !activeTranscriptEvidence.terminal_seen))
+  ) {
+    thresholdFailures.push('active_transcript_evidence_missing');
+  }
   const passed =
     thresholdFailures.length === 0 &&
     endpoints['/api/v1/state'].successes > 0 &&
@@ -561,6 +758,7 @@ function summarize(options, probeResults, writerStats, seedInfo) {
     api_url: options.apiUrl,
     diagnostics_url: options.diagnosticsUrl,
     codex_home: options.codexHome,
+    issue_identifier: options.issueIdentifier || null,
     active_transcript: seedInfo.activePath,
     server: {
       pid: options.serverPid,
@@ -589,6 +787,8 @@ function summarize(options, probeResults, writerStats, seedInfo) {
     endpoints,
     queue_latency: queueLatency,
     scanner_evidence: scannerEvidence,
+    codex_home_match: homeMatches,
+    active_transcript_evidence: activeTranscriptEvidence,
     transcript_writer: writerStats
   };
 }

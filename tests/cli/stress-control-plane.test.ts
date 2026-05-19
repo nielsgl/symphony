@@ -153,10 +153,10 @@ function statePayload(queueDelayMs: number) {
   };
 }
 
-function diagnosticsPayload(queueDelayMs: number) {
+function diagnosticsPayload(queueDelayMs: number, codexHome = '/tmp/codex') {
   return {
     control_plane: controlPlane(queueDelayMs),
-    runtime_resolution: { effective_codex_home: '/tmp/codex' },
+    runtime_resolution: { effective_codex_home: codexHome },
     running: [
       {
         codex_session_transcript_scan_budget: {
@@ -168,6 +168,44 @@ function diagnosticsPayload(queueDelayMs: number) {
         }
       }
     ]
+  };
+}
+
+function issueDiagnosticsPayload(callId = 'call_stress_stress-thread-stress-turn') {
+  return {
+    issue_identifier: 'NIE-179',
+    status: 'running',
+    runtime_diagnostics: {
+      issue_identifier: 'NIE-179',
+      status: 'running',
+      terminal_source: 'session_transcript',
+      codex_session_transcript_scan_budget: {
+        exhausted: true,
+        reason_codes: ['transcript_probe_byte_budget_exhausted'],
+        candidate_count: 4,
+        files_considered: 4,
+        limits: { max_discovery_files: 20, max_scan_bytes: 262_144 }
+      },
+      transcript_tool_call_diagnostics: {
+        metadata: { total_available_count: 2, included_count: 2, limit: 50, offset: 0, has_more: false },
+        records: [
+          { call_id: callId, kind: 'function_call', lineage: 'active_owned' },
+          { call_id: callId, kind: 'function_call_output', lineage: 'active_owned' }
+        ]
+      },
+      tool_call_ledger: {
+        metadata: { total_available_count: 1, included_count: 1, limit: 50, offset: 0, has_more: false },
+        records: [
+          {
+            call_id: callId,
+            completion_status: 'completed',
+            evidence_sources: ['session_transcript'],
+            start_evidence_source: 'session_transcript',
+            completion_evidence_source: 'session_transcript'
+          }
+        ]
+      }
+    }
   };
 }
 
@@ -228,7 +266,11 @@ describe('stress-control-plane historical corpus mode', () => {
         return;
       }
       if (request.url === '/api/v1/diagnostics') {
-        writeJson(response, diagnosticsPayload(3));
+        writeJson(response, diagnosticsPayload(3, codexHome));
+        return;
+      }
+      if (request.url?.startsWith('/api/v1/issues/NIE-179/diagnostics')) {
+        writeJson(response, issueDiagnosticsPayload());
         return;
       }
       response.statusCode = 404;
@@ -241,6 +283,8 @@ describe('stress-control-plane historical corpus mode', () => {
       codexHome,
       '--api-url',
       `${url}/api/v1/state`,
+      '--issue-identifier',
+      'NIE-179',
       '--duration-ms',
       '40',
       '--probe-interval-ms',
@@ -265,7 +309,16 @@ describe('stress-control-plane historical corpus mode', () => {
     expect(summary.mode).toBe('historical-corpus');
     expect(summary.endpoints['/api/v1/state'].successes).toBeGreaterThan(0);
     expect(summary.endpoints['/api/v1/diagnostics'].successes).toBeGreaterThan(0);
+    expect(summary.endpoints['/api/v1/issues/:id/diagnostics'].successes).toBeGreaterThan(0);
     expect(summary.scanner_evidence.engaged).toBe(true);
+    expect(summary.codex_home_match).toBe(true);
+    expect(summary.active_transcript_evidence).toMatchObject({
+      expected_call_id: 'call_stress_stress-thread-stress-turn',
+      tool_call_seen: true,
+      tool_call_completed: true,
+      terminal_seen: true,
+      evidence_source: 'session_transcript'
+    });
     expect(summary.corpus.dates).toEqual(['2026/05/07', '2026/05/13']);
     expect(summary.corpus.generated_historical_files).toBe(4);
     expect(fs.existsSync(path.join(codexHome, 'sessions', '2026', '05', '07'))).toBe(true);
@@ -285,7 +338,11 @@ describe('stress-control-plane historical corpus mode', () => {
         return;
       }
       if (request.url === '/api/v1/diagnostics') {
-        writeJson(response, diagnosticsPayload(50));
+        writeJson(response, diagnosticsPayload(50, codexHome));
+        return;
+      }
+      if (request.url?.startsWith('/api/v1/issues/NIE-179/diagnostics')) {
+        writeJson(response, issueDiagnosticsPayload());
         return;
       }
       response.statusCode = 404;
@@ -298,6 +355,8 @@ describe('stress-control-plane historical corpus mode', () => {
       codexHome,
       '--api-url',
       `${url}/api/v1/state`,
+      '--issue-identifier',
+      'NIE-179',
       '--duration-ms',
       '30',
       '--probe-interval-ms',
@@ -318,5 +377,108 @@ describe('stress-control-plane historical corpus mode', () => {
     const summary = JSON.parse(result.stdout);
     expect(summary.queue_latency.max_ms).toBe(50);
     expect(summary.threshold_failures).toContain('queue_latency_exceeded');
+  });
+
+  it('fails historical mode when scanner diagnostics come from a different Codex home', async () => {
+    const codexHome = makeTempDir('symphony-stress-codex-test-');
+    const artifactDir = makeTempDir('symphony-stress-artifacts-');
+    const { url } = await listen((request, response) => {
+      if (request.url === '/api/v1/state') {
+        writeJson(response, statePayload(3));
+        return;
+      }
+      if (request.url === '/api/v1/diagnostics') {
+        writeJson(response, diagnosticsPayload(3, '/tmp/unrelated-codex'));
+        return;
+      }
+      if (request.url?.startsWith('/api/v1/issues/NIE-179/diagnostics')) {
+        writeJson(response, issueDiagnosticsPayload());
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+
+    const result = await runStress([
+      '--historical-corpus',
+      '--codex-home',
+      codexHome,
+      '--api-url',
+      `${url}/api/v1/state`,
+      '--issue-identifier',
+      'NIE-179',
+      '--duration-ms',
+      '30',
+      '--probe-interval-ms',
+      '10',
+      '--corpus-files',
+      '1',
+      '--seed-records-per-file',
+      '1',
+      '--artifact-dir',
+      artifactDir,
+      '--json'
+    ]);
+
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(1);
+    const summary = JSON.parse(result.stdout);
+    expect(summary.scanner_evidence.engaged).toBe(true);
+    expect(summary.codex_home_match).toBe(false);
+    expect(summary.threshold_failures).toContain('codex_home_mismatch');
+  });
+
+  it('fails historical mode when active transcript evidence is missing', async () => {
+    const codexHome = makeTempDir('symphony-stress-codex-test-');
+    const artifactDir = makeTempDir('symphony-stress-artifacts-');
+    const { url } = await listen((request, response) => {
+      if (request.url === '/api/v1/state') {
+        writeJson(response, statePayload(3));
+        return;
+      }
+      if (request.url === '/api/v1/diagnostics') {
+        writeJson(response, diagnosticsPayload(3, codexHome));
+        return;
+      }
+      if (request.url?.startsWith('/api/v1/issues/NIE-179/diagnostics')) {
+        writeJson(response, {
+          runtime_diagnostics: {
+            status: 'running',
+            transcript_tool_call_diagnostics: { metadata: {}, records: [] },
+            tool_call_ledger: { metadata: {}, records: [] }
+          }
+        });
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+
+    const result = await runStress([
+      '--historical-corpus',
+      '--codex-home',
+      codexHome,
+      '--api-url',
+      `${url}/api/v1/state`,
+      '--issue-identifier',
+      'NIE-179',
+      '--duration-ms',
+      '30',
+      '--probe-interval-ms',
+      '10',
+      '--corpus-files',
+      '1',
+      '--seed-records-per-file',
+      '1',
+      '--artifact-dir',
+      artifactDir,
+      '--json'
+    ]);
+
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(1);
+    const summary = JSON.parse(result.stdout);
+    expect(summary.active_transcript_evidence.tool_call_seen).toBe(false);
+    expect(summary.threshold_failures).toContain('active_transcript_evidence_missing');
   });
 });
