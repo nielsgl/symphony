@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_at": "2026-05-12T19:26:42.412Z",
+    "generated_at": "2026-05-19T13:02:59.166Z",
     "source_audit": "docs/prd/SPEC-LINE-PARITY-AUDIT.md",
     "source_policy": "docs/prd/SPEC-TEST-MANIFEST-POLICY.json",
     "owner_role": "orchestration planning",
@@ -58,7 +58,7 @@
       "title_contains": "[SPEC-13.5-1] extracts usage/rate-limit telemetry from compatible payload variants"
     },
     "SPEC-13.7-1": {
-      "file": "tests/api/server.test.ts",
+      "file": "tests/api/server-state.test.ts",
       "title_contains": "[SPEC-13.7-1][SPEC-17.6-1] serves GET /api/v1/state with required baseline fields"
     },
     "SPEC-14.1-1": {
@@ -94,7 +94,7 @@
       "title_contains": "[SPEC-10.1-1][SPEC-17.5-1] launches with bash command/cwd and performs ordered startup handshake"
     },
     "SPEC-17.6-1": {
-      "file": "tests/api/server.test.ts",
+      "file": "tests/api/server-state.test.ts",
       "title_contains": "[SPEC-13.7-1][SPEC-17.6-1] serves GET /api/v1/state with required baseline fields"
     },
     "SPEC-17.7-1": {
