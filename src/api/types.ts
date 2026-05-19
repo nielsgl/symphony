@@ -347,6 +347,7 @@ export interface ApiIssueRuntimeDiagnosticsResponse extends SnapshotFreshnessFie
   status: 'running' | 'retrying' | 'blocked';
   generated_at: string;
   diagnostics_endpoint: string;
+  codex_session_transcript_scan_budget: ApiCodexSessionTranscriptScanBudget | null;
   transcript_tool_call_diagnostics: {
     metadata: ApiDiagnosticPageMetadata;
     records: ApiTranscriptToolCallDiagnostic[];
@@ -368,6 +369,24 @@ export interface ApiIssueRuntimeDiagnosticsResponse extends SnapshotFreshnessFie
   } | null;
   recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
   missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
+}
+
+export interface ApiCodexSessionTranscriptScanBudget {
+  observed_at: string;
+  observed_at_ms: number;
+  candidate_count: number;
+  files_considered: number;
+  files_parsed: number;
+  bytes_read: number;
+  exhausted: boolean;
+  reason_codes: string[];
+  limits: {
+    max_candidate_files: number;
+    max_probe_bytes: number;
+    max_scan_bytes: number;
+    max_file_age_ms: number;
+    max_wall_clock_ms: number;
+  };
 }
 
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
@@ -499,6 +518,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     };
     recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
     missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
+    codex_session_transcript_scan_budget: ApiCodexSessionTranscriptScanBudget | null;
     operator_explainer_hint: OperatorExplainerHint | null;
   }>;
   retrying: Array<ApiBudgetProjection & {
@@ -867,6 +887,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     };
     recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
     missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
+    codex_session_transcript_scan_budget: ApiCodexSessionTranscriptScanBudget | null;
   }) | null;
   retry: (ApiBudgetProjection & {
     attempt: number;

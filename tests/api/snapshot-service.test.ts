@@ -150,6 +150,25 @@ function makeTranscriptDiagnostic(
   };
 }
 
+function makeTranscriptScanBudget() {
+  return {
+    observed_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+    candidate_count: 10,
+    files_considered: 3,
+    files_parsed: 2,
+    bytes_read: 4096,
+    exhausted: true,
+    reason_codes: ['transcript_probe_byte_budget_exhausted', 'transcript_scan_wall_clock_budget_exhausted'],
+    limits: {
+      max_candidate_files: 12,
+      max_probe_bytes: 8192,
+      max_scan_bytes: 16384,
+      max_file_age_ms: 86_400_000,
+      max_wall_clock_ms: 25
+    }
+  };
+}
+
 describe('SnapshotService', () => {
   it('projects orchestrator state into API state contract and includes active runtime seconds', () => {
     const service = new SnapshotService({
@@ -834,6 +853,56 @@ describe('SnapshotService', () => {
       requires_manual_resume: true,
       conflict_files: [{ path: 'src/orchestrator/core.ts', status: 'unstaged' }]
     });
+  });
+
+  it('projects redacted transcript scan budget diagnostics without candidate paths', () => {
+    const service = new SnapshotService({
+      nowMs: () => Date.parse('2026-04-10T10:05:00.000Z')
+    });
+    const state = makeState({
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            codex_session_transcript_scan_budget: makeTranscriptScanBudget(),
+            codex_session_transcript_candidate_cache: {
+              ...makeTranscriptScanBudget(),
+              identity_key: 'thread-1:turn-3',
+              paths: ['/Users/example/.codex/sessions/2026/05/07/historical.jsonl'],
+              refreshed_at_ms: Date.parse('2026-04-10T10:04:00.000Z')
+            }
+          })
+        ]
+      ])
+    });
+
+    const projected = service.projectState(state);
+    const issueProjection = service.projectIssue(state, 'ABC-1');
+    const runtimeDiagnostics = service.projectIssueRuntimeDiagnostics(state, 'ABC-1');
+
+    const expectedBudget = {
+      observed_at: '2026-04-10T10:04:00.000Z',
+      observed_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+      candidate_count: 10,
+      files_considered: 3,
+      files_parsed: 2,
+      bytes_read: 4096,
+      exhausted: true,
+      reason_codes: ['transcript_probe_byte_budget_exhausted', 'transcript_scan_wall_clock_budget_exhausted'],
+      limits: {
+        max_candidate_files: 12,
+        max_probe_bytes: 8192,
+        max_scan_bytes: 16384,
+        max_file_age_ms: 86_400_000,
+        max_wall_clock_ms: 25
+      }
+    };
+    expect(projected.running[0]?.codex_session_transcript_scan_budget).toEqual(expectedBudget);
+    expect(issueProjection.running?.codex_session_transcript_scan_budget).toEqual(expectedBudget);
+    expect(runtimeDiagnostics.codex_session_transcript_scan_budget).toEqual(expectedBudget);
+    expect(JSON.stringify(projected.running)).not.toContain('/Users/example/.codex/sessions');
+    expect(JSON.stringify(issueProjection)).not.toContain('/Users/example/.codex/sessions');
+    expect(JSON.stringify(runtimeDiagnostics)).not.toContain('/Users/example/.codex/sessions');
   });
 
   it('projects missing-tool-output blocked diagnostics as actionable API data', () => {

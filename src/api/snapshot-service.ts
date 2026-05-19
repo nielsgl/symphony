@@ -22,6 +22,7 @@ import { projectMissingToolOutputRecovery } from './missing-tool-output-recovery
 import type {
   ApiBlockedRootCauseProjection,
   ApiBudgetProjection,
+  ApiCodexSessionTranscriptScanBudget,
   ApiCurrentOperatorBlockProjection,
   ApiIssueResponse,
   ApiIssueRuntimeDiagnosticsResponse,
@@ -61,6 +62,26 @@ function projectCodexThreadActivity(
     source: entry.codex_thread_activity_source ?? null,
     status: updatedAtMs ? ('available' as const) : ('unavailable' as const),
     thread_status: entry.codex_thread_activity_status ?? null
+  };
+}
+
+function projectCodexSessionTranscriptScanBudget(
+  entry: Pick<RunningEntry, 'codex_session_transcript_scan_budget'>
+): ApiCodexSessionTranscriptScanBudget | null {
+  const budget = entry.codex_session_transcript_scan_budget;
+  if (!budget) {
+    return null;
+  }
+  return {
+    observed_at: asIsoDate(budget.observed_at_ms),
+    observed_at_ms: budget.observed_at_ms,
+    candidate_count: budget.candidate_count,
+    files_considered: budget.files_considered,
+    files_parsed: budget.files_parsed,
+    bytes_read: budget.bytes_read,
+    exhausted: budget.exhausted,
+    reason_codes: [...budget.reason_codes],
+    limits: { ...budget.limits }
   };
 }
 
@@ -705,6 +726,7 @@ function toStateRunningRow(
     },
     recovery: entry.recovery ? { ...entry.recovery } : null,
     missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
+    codex_session_transcript_scan_budget: projectCodexSessionTranscriptScanBudget(entry),
     operator_explainer_hint: toOperatorExplainerHint(operatorExplainer)
   };
 }
@@ -1028,6 +1050,10 @@ export class SnapshotService {
       ...freshness,
       ...createApiDegradedDiagnostics(null, []),
       diagnostics_endpoint: `/api/v1/issues/${encodeURIComponent(issueIdentifier)}/diagnostics`,
+      codex_session_transcript_scan_budget:
+        'codex_session_transcript_scan_budget' in activeEntry
+          ? projectCodexSessionTranscriptScanBudget(activeEntry)
+          : null,
       transcript_tool_call_diagnostics: {
         metadata: buildPageMetadata(transcriptRecords, includedTranscriptRecords, pageOptions, (record) => record.observed_at_ms),
         records: includedTranscriptRecords
@@ -1173,7 +1199,8 @@ export class SnapshotService {
               : {})
           },
           recovery: entry.recovery ? { ...entry.recovery } : null,
-          missing_tool_output_recovery: projectMissingToolOutputRecovery(entry)
+          missing_tool_output_recovery: projectMissingToolOutputRecovery(entry),
+          codex_session_transcript_scan_budget: projectCodexSessionTranscriptScanBudget(entry)
         },
         retry: retryEntry
           ? {
