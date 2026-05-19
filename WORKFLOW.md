@@ -38,7 +38,7 @@ workspace:
 
 hooks:
   after_create: |
-    python3 scripts/worktree_bootstrap.py --allow-sensitive
+    uv run --python 3.14 python scripts/worktree_bootstrap.py --allow-sensitive
   before_remove: |
     node scripts/workspace-before-remove.js
   timeout_ms: 60000
