@@ -712,14 +712,15 @@ function recordStaleRunningWorkerEvent(
       reason: quarantinedEvent.reason
     }
   });
-  maybeRecordOwnershipConflict(runningEntry, workerEvent, reason);
+  maybeRecordOwnershipConflict(runningEntry, workerEvent, reason, context.logger);
   context.notifyObservers();
 }
 
 function maybeRecordOwnershipConflict(
   runningEntry: RunningEntry,
   workerEvent: WorkerObservabilityEvent,
-  reason: QuarantinedWorkerEventReason
+  reason: QuarantinedWorkerEventReason,
+  logger: StructuredLogger | undefined
 ): void {
   if (reason !== 'worker_identity_mismatch' && reason !== 'inactive_worker_pid') {
     return;
@@ -746,6 +747,24 @@ function maybeRecordOwnershipConflict(
     event_turn_id: workerEvent.turn_id ?? null,
     event_session_id: workerEvent.session_id ?? null
   };
+  logger?.log({
+    level: 'warn',
+    event: CANONICAL_EVENT.orchestration.ownershipConflictDetected,
+    message: 'active worker ownership conflict detected',
+    context: {
+      issue_id: runningEntry.issue.id,
+      issue_identifier: runningEntry.identifier,
+      conflict_reason: runningEntry.ownership_conflict.reason,
+      active_run_id: runningEntry.run_id ?? null,
+      active_issue_run_id: runningEntry.issue_run_id ?? null,
+      active_attempt_id: runningEntry.attempt_id ?? null,
+      active_worker_instance_id: runningEntry.worker_instance_id ?? null,
+      active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+      event_worker_instance_id: eventWorkerInstanceId,
+      event_codex_app_server_pid: eventPid,
+      event: workerEvent.event
+    }
+  });
 }
 
 export function staleWorkerExitReasonForRunningEntry(
@@ -836,19 +855,31 @@ export function recordTerminationExitObserved(params: {
   params.logger?.log({
     level: 'info',
     event: CANONICAL_EVENT.orchestration.workerExitHandled,
-    message: 'termination-in-progress worker exit observed',
+    message: 'worker exit observed during termination release',
     context: {
       issue_id: issueId,
       issue_identifier: running.identifier,
-      session_id: running.session_id,
       reason,
+      error: error ?? null,
       outcome: 'termination_exit_observed',
       termination_reason: termination.reason,
-      error: error ?? null,
-      worker_instance_id: running.termination.worker_instance_id,
-      codex_app_server_pid: running.termination.codex_app_server_pid,
-      thread_id: running.termination.thread_id,
-      turn_id: running.termination.turn_id
+      termination_state: running.termination.state,
+      cleanup_workspace: termination.cleanup_workspace,
+      active_run_id: running.run_id ?? null,
+      active_issue_run_id: running.issue_run_id ?? null,
+      active_attempt_id: running.attempt_id ?? null,
+      active_worker_instance_id: running.worker_instance_id ?? null,
+      event_worker_instance_id: normalizeWorkerInstanceId(details.worker_instance_id),
+      active_codex_app_server_pid: running.codex_app_server_pid ?? null,
+      event_codex_app_server_pid: normalizeCodexAppServerPid(details.codex_app_server_pid),
+      active_thread_id: running.thread_id ?? null,
+      event_thread_id: details.thread_id ?? null,
+      active_turn_id: running.turn_id ?? null,
+      event_turn_id: details.turn_id ?? null,
+      active_session_id: running.session_id ?? null,
+      event_session_id: details.session_id ?? null,
+      completion_reason: details.completion_reason ?? null,
+      refreshed_state: details.refreshed_state ?? null
     }
   });
 }
