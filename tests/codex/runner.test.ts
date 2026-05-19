@@ -2620,6 +2620,55 @@ describe('CodexRunner', () => {
     });
   });
 
+  it('rescans after an initial empty fallback lookup when the active transcript appears later', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-late-transcript"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-late-transcript"}}}\n');
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    fs.writeFileSync(
+      path.join(sessionsDir, 'rollout-2026-05-07T16-23-49-late.jsonl'),
+      `${JSON.stringify({
+        timestamp: '2026-05-07T16:23:49.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          thread_id: 'thread-late-transcript',
+          turn_id: 'turn-late-transcript',
+          last_agent_message: 'late transcript discovered'
+        }
+      })}\n`,
+      'utf8'
+    );
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-late-transcript',
+      turn_id: 'turn-late-transcript',
+      terminal_source: 'session_transcript',
+      last_agent_message: 'late transcript discovered',
+      transcript_lookup: expect.objectContaining({
+        source: 'fallback',
+        candidate_count: 1,
+        exhausted: false
+      })
+    });
+  });
+
   it('emits transcript lookup diagnostics when fallback budget is exhausted', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();

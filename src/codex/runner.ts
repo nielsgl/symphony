@@ -2459,6 +2459,9 @@ class ProtocolClient {
     if (cachedSource !== 'missing') {
       return true;
     }
+    if (!this.transcriptCandidateCache.stats.reasonCodes.includes('transcript_sessions_root_missing')) {
+      return false;
+    }
     const sessionsRoot = path.join(this.codexHome, 'sessions');
     try {
       const stat = fs.statSync(sessionsRoot);
