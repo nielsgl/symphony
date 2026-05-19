@@ -104,6 +104,7 @@ interface TranscriptCandidateCache {
   refreshedAtMs: number;
   paths: string[];
   stats: TranscriptCandidateLookupStats;
+  scannedDirectoryMtimes?: Array<{ directory: string; mtimeMs: number }>;
 }
 
 interface TranscriptCandidateLookupStats {
@@ -2316,6 +2317,7 @@ class ProtocolClient {
     let remainingProbeBytes = ProtocolClient.TRANSCRIPT_MAX_PROBE_BYTES;
     let foundFallbackContentMatch = false;
     const stack: Array<{ directory: string; depth: number }> = [{ directory: sessionsRoot, depth: 0 }];
+    const scannedDirectoryMtimes = new Map<string, number>();
 
     while (
       stack.length > 0 &&
@@ -2329,6 +2331,14 @@ class ProtocolClient {
       }
       const current = stack.pop();
       if (!current) {
+        continue;
+      }
+      try {
+        const directoryStat = fs.statSync(current.directory);
+        if (directoryStat.isDirectory()) {
+          scannedDirectoryMtimes.set(current.directory, directoryStat.mtimeMs);
+        }
+      } catch {
         continue;
       }
       let entries: fs.Dirent[];
@@ -2417,28 +2427,36 @@ class ProtocolClient {
     }
 
     const exhausted = reasonCodes.size > 0;
-    return this.cacheTranscriptLookup(identityKey, nowMs, candidates, {
-      source: exhausted ? 'budget_exhausted' : candidates.length > 0 ? 'fallback' : 'missing',
-      candidateCount: candidates.length,
-      filesConsidered,
-      filesParsed,
-      bytesRead: ProtocolClient.TRANSCRIPT_MAX_PROBE_BYTES - remainingProbeBytes,
-      exhausted,
-      reasonCodes: [...reasonCodes].sort()
-    });
+    return this.cacheTranscriptLookup(
+      identityKey,
+      nowMs,
+      candidates,
+      {
+        source: exhausted ? 'budget_exhausted' : candidates.length > 0 ? 'fallback' : 'missing',
+        candidateCount: candidates.length,
+        filesConsidered,
+        filesParsed,
+        bytesRead: ProtocolClient.TRANSCRIPT_MAX_PROBE_BYTES - remainingProbeBytes,
+        exhausted,
+        reasonCodes: [...reasonCodes].sort()
+      },
+      [...scannedDirectoryMtimes.entries()].map(([directory, mtimeMs]) => ({ directory, mtimeMs }))
+    );
   }
 
   private cacheTranscriptLookup(
     identityKey: string,
     refreshedAtMs: number,
     paths: string[],
-    stats: TranscriptCandidateLookupStats
+    stats: TranscriptCandidateLookupStats,
+    scannedDirectoryMtimes?: Array<{ directory: string; mtimeMs: number }>
   ): TranscriptCandidateLookupResult {
     this.transcriptCandidateCache = {
       identityKey,
       refreshedAtMs,
       paths: [...paths],
-      stats: { ...stats, reasonCodes: [...stats.reasonCodes] }
+      stats: { ...stats, reasonCodes: [...stats.reasonCodes] },
+      scannedDirectoryMtimes
     };
     return {
       paths: [...paths],
@@ -2456,8 +2474,14 @@ class ProtocolClient {
       this.transcriptCandidateCache.stats.source === 'cache'
         ? this.transcriptCandidateCache.stats.cachedSource
         : this.transcriptCandidateCache.stats.source;
+    if (cachedSource === 'budget_exhausted') {
+      return this.areTranscriptScannedDirectoriesFresh();
+    }
     if (cachedSource !== 'missing') {
       return true;
+    }
+    if (this.transcriptCandidateCache.scannedDirectoryMtimes?.length) {
+      return this.areTranscriptScannedDirectoriesFresh();
     }
     if (!this.transcriptCandidateCache.stats.reasonCodes.includes('transcript_sessions_root_missing')) {
       return false;
@@ -2469,6 +2493,23 @@ class ProtocolClient {
     } catch {
       return true;
     }
+  }
+
+  private areTranscriptScannedDirectoriesFresh(): boolean {
+    if (!this.transcriptCandidateCache?.scannedDirectoryMtimes?.length) {
+      return false;
+    }
+    for (const scannedDirectory of this.transcriptCandidateCache.scannedDirectoryMtimes) {
+      try {
+        const stat = fs.statSync(scannedDirectory.directory);
+        if (!stat.isDirectory() || stat.mtimeMs !== scannedDirectory.mtimeMs) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+    return true;
   }
 
   private emitTranscriptLookupDiagnostic(
