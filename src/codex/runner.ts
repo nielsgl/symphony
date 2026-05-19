@@ -215,6 +215,58 @@ function parseCodexRolloutTimestampMs(filename: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseCodexSessionsDirectoryRangeMs(
+  directoryPath: string,
+  sessionsRoot: string
+): { startMs: number; endMs: number } | null {
+  const relativePath = path.relative(sessionsRoot, directoryPath);
+  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return null;
+  }
+  const [yearText, monthText, dayText] = relativePath.split(path.sep);
+  if (!/^\d{4}$/.test(yearText ?? '')) {
+    return null;
+  }
+  const year = Number(yearText);
+  if (monthText === undefined) {
+    return { startMs: Date.UTC(year, 0, 1), endMs: Date.UTC(year + 1, 0, 1) };
+  }
+  if (!/^\d{2}$/.test(monthText)) {
+    return null;
+  }
+  const monthIndex = Number(monthText) - 1;
+  if (monthIndex < 0 || monthIndex > 11) {
+    return null;
+  }
+  if (dayText === undefined) {
+    return { startMs: Date.UTC(year, monthIndex, 1), endMs: Date.UTC(year, monthIndex + 1, 1) };
+  }
+  if (!/^\d{2}$/.test(dayText)) {
+    return null;
+  }
+  const day = Number(dayText);
+  const startMs = Date.UTC(year, monthIndex, day);
+  const startDate = new Date(startMs);
+  if (
+    startDate.getUTCFullYear() !== year ||
+    startDate.getUTCMonth() !== monthIndex ||
+    startDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return { startMs, endMs: Date.UTC(year, monthIndex, day + 1) };
+}
+
+function distanceToTimeRangeMs(activeStartedAtMs: number, range: { startMs: number; endMs: number }): number {
+  if (activeStartedAtMs < range.startMs) {
+    return range.startMs - activeStartedAtMs;
+  }
+  if (activeStartedAtMs >= range.endMs) {
+    return activeStartedAtMs - range.endMs;
+  }
+  return 0;
+}
+
 function normalizeCodexHome(input: CodexRunnerStartInput): string {
   const envHome =
     input.commandEnv?.CODEX_HOME?.trim() ||
@@ -2345,7 +2397,9 @@ class ProtocolClient {
       try {
         entries = this.sortTranscriptDiscoveryEntries(
           fs.readdirSync(current.directory, { withFileTypes: true }),
-          context.turn_started_at_ms
+          context.turn_started_at_ms,
+          current.directory,
+          sessionsRoot
         );
       } catch {
         continue;
@@ -2563,7 +2617,12 @@ class ProtocolClient {
     );
   }
 
-  private sortTranscriptDiscoveryEntries(entries: fs.Dirent[], activeStartedAtMs?: number): fs.Dirent[] {
+  private sortTranscriptDiscoveryEntries(
+    entries: fs.Dirent[],
+    activeStartedAtMs?: number,
+    currentDirectory?: string,
+    sessionsRoot?: string
+  ): fs.Dirent[] {
     return [...entries].sort((left, right) => {
       const leftTranscript = left.isFile() && left.name.endsWith('.jsonl');
       const rightTranscript = right.isFile() && right.name.endsWith('.jsonl');
@@ -2592,6 +2651,23 @@ class ProtocolClient {
       const rightDirectory = right.isDirectory();
       if (leftDirectory !== rightDirectory) {
         return leftDirectory ? -1 : 1;
+      }
+      if (leftDirectory && rightDirectory && activeStartedAtMs !== undefined && currentDirectory && sessionsRoot) {
+        const leftRange = parseCodexSessionsDirectoryRangeMs(path.join(currentDirectory, left.name), sessionsRoot);
+        const rightRange = parseCodexSessionsDirectoryRangeMs(path.join(currentDirectory, right.name), sessionsRoot);
+        if (leftRange || rightRange) {
+          if (!leftRange) {
+            return 1;
+          }
+          if (!rightRange) {
+            return -1;
+          }
+          const proximity =
+            distanceToTimeRangeMs(activeStartedAtMs, leftRange) - distanceToTimeRangeMs(activeStartedAtMs, rightRange);
+          if (proximity !== 0) {
+            return proximity;
+          }
+        }
       }
       return right.name.localeCompare(left.name);
     });

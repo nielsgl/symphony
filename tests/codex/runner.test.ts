@@ -2620,6 +2620,78 @@ describe('CodexRunner', () => {
     });
   });
 
+  it('prioritizes the active fallback transcript directory before newer sibling noise under discovery budget', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const filenameTimestamp = (date: Date) => date.toISOString().slice(0, 19).replace(/:/g, '-');
+    const activeStartedAtMs = Date.now();
+    const activeDate = new Date(activeStartedAtMs - 10_000);
+    const newerDate = new Date(activeStartedAtMs + 24 * 60 * 60 * 1000);
+    const datePathParts = (date: Date): [string, string, string] => [
+      String(date.getUTCFullYear()),
+      String(date.getUTCMonth() + 1).padStart(2, '0'),
+      String(date.getUTCDate()).padStart(2, '0')
+    ];
+    const activeDir = path.join(codexHome, 'sessions', ...datePathParts(activeDate));
+    const newerDir = path.join(codexHome, 'sessions', ...datePathParts(newerDate));
+    fs.mkdirSync(activeDir, { recursive: true });
+    fs.mkdirSync(newerDir, { recursive: true });
+
+    for (let index = 0; index < 40; index += 1) {
+      const noiseTimestamp = filenameTimestamp(new Date(newerDate.getTime() + index * 60_000));
+      fs.writeFileSync(
+        path.join(newerDir, `rollout-${noiseTimestamp}-noise.jsonl`),
+        `${JSON.stringify({
+          timestamp: new Date(newerDate.getTime() + index * 60_000).toISOString(),
+          type: 'event_msg',
+          payload: { type: 'noise', padding: 'x'.repeat(128) }
+        })}\n`,
+        'utf8'
+      );
+    }
+    const activeTranscriptTimestamp = filenameTimestamp(activeDate);
+    fs.writeFileSync(
+      path.join(activeDir, `rollout-${activeTranscriptTimestamp}-active.jsonl`),
+      `${JSON.stringify({
+        timestamp: activeDate.toISOString(),
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          thread_id: 'thread-sibling-priority',
+          turn_id: 'turn-sibling-priority',
+          last_agent_message: 'active sibling directory won'
+        }
+      })}\n`,
+      'utf8'
+    );
+
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-sibling-priority"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-sibling-priority"}}}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-sibling-priority',
+      turn_id: 'turn-sibling-priority',
+      terminal_source: 'session_transcript',
+      last_agent_message: 'active sibling directory won',
+      transcript_lookup: expect.objectContaining({
+        source: 'fallback',
+        candidate_count: 1,
+        exhausted: false
+      })
+    });
+  });
+
   it('rescans after an initial empty fallback lookup when the active transcript appears later', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
