@@ -1,10 +1,9 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { performance } from 'node:perf_hooks';
 
-import { REASON_CODES, type StructuredLogger } from '../observability';
-import { CANONICAL_EVENT, EVENT_VOCABULARY_VERSION } from '../observability/events';
+import type { StructuredLogger } from '../observability';
+import { CANONICAL_EVENT } from '../observability/events';
 import type { DurableRunHistoryRecord, ProjectHistoryTicketSummaryProjection } from '../persistence';
-import { redactUnknown } from '../security/redaction';
 import { ControlPlaneHealthRecorder, type ControlPlaneHealthState, type ControlPlaneObservation } from './control-plane-health';
 import { NodeEventLoopHealthMonitor, type EventLoopHealthMonitor, type EventLoopHealthSummary } from './event-loop-health';
 import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
@@ -12,7 +11,6 @@ import { LocalApiError } from './errors';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { createApiDegradedDiagnostics } from './runtime-visibility';
 import { SnapshotService } from './snapshot-service';
-import { buildStoppedRunRecoveryEntries } from './dashboard-view-model';
 import { createForensicsBundle, type ForensicsTokenSnapshot } from './forensics';
 import {
   buildTelemetryQueryResponse,
@@ -28,32 +26,62 @@ import {
 } from './project-history';
 import {
   buildThreadDiagnosticsByIssueIdentifier,
-  buildThreadDiagnosticsByThreadId,
-  buildThreadDiagnosticsFromLineage
+  buildThreadDiagnosticsByThreadId
 } from './thread-diagnostics';
 import type {
   ApiDiagnosticsResponse,
   ApiIssueResponse,
-  ApiIssueRuntimeDiagnosticsResponse,
   ApiEventEnvelope,
+  ApiIssueRuntimeDiagnosticsResponse,
   ApiStateResponse,
   ApiStateErrorResponse,
   ApiStateSnapshotResponse,
-  ThreadDiagnosticsResponse,
-  LocalApiErrorEnvelope,
   LocalApiServerOptions
 } from './types';
 import type { OrchestratorState } from '../orchestrator';
-
-interface Route {
-  method: 'GET' | 'POST';
-  handler: (req: IncomingMessage, res: ServerResponse, match: RegExpExecArray, timing: RequestTiming) => Promise<void>;
-}
-
-interface Endpoint {
-  path: RegExp;
-  routes: Route[];
-}
+import {
+  sendCss,
+  sendError,
+  sendHtml,
+  sendJson,
+  sendJsonBody,
+  sendScript,
+  parseBoundedPositiveInteger,
+  parseNonNegativeInteger,
+  serializeJsonPayload
+} from './server/responses';
+import {
+  ISSUE_DETAIL_ROUTES,
+  type Endpoint,
+  type RequestTiming,
+  parseRuntimeDiagnosticsPage
+} from './server/routing';
+import {
+  createStreamDiagnosticsState,
+  serializeEventEnvelope,
+  type StreamDiagnosticsState,
+  writeEventMessage
+} from './server/event-stream';
+import {
+  parseOperatorActionBody,
+  readOptionalJsonObject,
+  requireOperatorReasonNote,
+  statusForOperatorActionFailure
+} from './server/operator-actions';
+import {
+  enrichLiveTokenFallbackIssue,
+  enrichLiveTokenFallbackState,
+  type LiveTokenFallbackCacheEntry
+} from './server/token-enrichment';
+import {
+  buildStoppedRunRecoveryResponse,
+  diagnosticsFromTerminalRun,
+  isCompletedTerminalRun
+} from './server/stopped-run-recovery';
+import {
+  buildDiagnosticsPayload,
+  type TimedDiagnosticsPayload
+} from './server/diagnostics';
 
 interface TimedStateSnapshot {
   payload: ApiStateSnapshotResponse;
@@ -65,260 +93,6 @@ interface TimedStateSnapshot {
   snapshotAgeMs: number | null;
   snapshotFreshnessState: ApiStateResponse['snapshot_freshness_state'] | null;
   snapshotErrorCode: ApiStateErrorResponse['error']['code'] | null;
-}
-
-interface TimedDiagnosticsPayload {
-  payload: ApiDiagnosticsResponse;
-  projectionDurationMs: number | null;
-  enrichmentDurationMs: number | null;
-  enrichmentStatus: string | null;
-  enrichmentDegraded: boolean | null;
-  enrichmentReasonCode: string | null;
-}
-
-interface RequestTiming {
-  request_received_at_ms: number;
-  request_queue_delay_ms: number;
-}
-
-interface StreamDiagnosticsState {
-  lastClientConnectedAtMs: number | null;
-  lastClientDisconnectedAtMs: number | null;
-  lastSnapshotBroadcastAtMs: number | null;
-  lastSnapshotBroadcastLatencyMs: number | null;
-  lastSnapshotBroadcastStatus: 'ok' | 'failed' | 'no_clients' | null;
-  lastSnapshotBroadcastError: string | null;
-}
-
-const ISSUE_DETAIL_ROUTES = ['/api/v1/:issue_identifier', '/api/v1/issues/:issue_identifier'];
-const LIVE_TOKEN_FALLBACK_CACHE_TTL_MS = 1_000;
-const LIVE_TOKEN_FALLBACK_MAX_THREAD_IDS = 25;
-const TERMINAL_RUN_TIMELINE_EVENT = {
-  started: 'run.started',
-  rootCauseDiagnostic: 'run.root_cause_diagnostic',
-  terminal: 'run.terminal'
-} as const;
-
-interface LiveTokenFallbackCacheEntry {
-  totalTokens: number | null;
-  observedAtMs: number;
-}
-
-function statusFromTerminalRun(run: DurableRunHistoryRecord): ThreadDiagnosticsResponse['status'] {
-  switch (run.terminal_status) {
-    case 'succeeded':
-      return 'completed';
-    case 'failed':
-      return 'failed';
-    case 'cancelled':
-      return 'cancelled';
-    case 'stalled':
-    case 'timed_out':
-      return 'stalled';
-    default:
-      return 'completed';
-  }
-}
-
-function diagnosticsFromTerminalRun(run: DurableRunHistoryRecord): ThreadDiagnosticsResponse {
-  const startedAtMs = Date.parse(run.started_at);
-  const endedAtMs = run.ended_at ? Date.parse(run.ended_at) : Date.now();
-  const rootCauseAtMs = run.root_cause_at ? Date.parse(run.root_cause_at) : NaN;
-  const threadId = run.thread_id ?? run.session_id ?? run.session_ids[0] ?? run.run_id;
-  return {
-    thread_id: threadId,
-    issue_identifier: run.issue_identifier,
-    attempt: 0,
-    status: statusFromTerminalRun(run),
-    timeline: [
-      {
-        at_ms: Number.isFinite(startedAtMs) ? startedAtMs : 0,
-        event: TERMINAL_RUN_TIMELINE_EVENT.started,
-        reason_code: null,
-        reason_detail: null,
-        thread_id: threadId,
-        turn_id: run.turn_id,
-        session_id: run.session_id
-      },
-      ...(Number.isFinite(rootCauseAtMs)
-        ? [
-            {
-              at_ms: rootCauseAtMs,
-              event: TERMINAL_RUN_TIMELINE_EVENT.rootCauseDiagnostic,
-              reason_code: run.root_cause_reason_code,
-              reason_detail: run.root_cause_reason_detail,
-              thread_id: threadId,
-              turn_id: run.turn_id,
-              session_id: run.session_id
-            }
-          ]
-        : []),
-      {
-        at_ms: Number.isFinite(endedAtMs) ? endedAtMs : 0,
-        event: TERMINAL_RUN_TIMELINE_EVENT.terminal,
-        reason_code: run.terminal_reason_code ?? run.error_code,
-        reason_detail: run.terminal_reason_detail,
-        thread_id: threadId,
-        turn_id: run.turn_id,
-        session_id: run.session_id
-      }
-    ],
-    phase_spans: [],
-    tool_spans: [],
-    wait_spans: [],
-    capability_warnings: [],
-    current_blocker: null,
-    last_meaningful_progress_at_ms: Number.isFinite(rootCauseAtMs)
-      ? rootCauseAtMs
-      : Number.isFinite(startedAtMs)
-        ? startedAtMs
-        : null
-  };
-}
-
-function isCompletedTerminalRun(run: DurableRunHistoryRecord): boolean {
-  return run.ended_at !== null && run.terminal_status !== null;
-}
-
-function serializeJsonPayload(payload: unknown): { body: string; bytes: number } {
-  const body = JSON.stringify(redactUnknown(payload));
-  return {
-    body,
-    bytes: Buffer.byteLength(body, 'utf8')
-  };
-}
-
-function sendJsonBody(res: ServerResponse, statusCode: number, body: string): void {
-  res.statusCode = statusCode;
-  res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.end(body);
-}
-
-function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
-  sendJsonBody(res, statusCode, serializeJsonPayload(payload).body);
-}
-
-function sendHtml(res: ServerResponse, statusCode: number, html: string): void {
-  res.statusCode = statusCode;
-  res.setHeader('content-type', 'text/html; charset=utf-8');
-  res.end(html);
-}
-
-function sendScript(res: ServerResponse, statusCode: number, script: string): void {
-  res.statusCode = statusCode;
-  res.setHeader('content-type', 'application/javascript; charset=utf-8');
-  res.end(script);
-}
-
-function sendCss(res: ServerResponse, statusCode: number, css: string): void {
-  res.statusCode = statusCode;
-  res.setHeader('content-type', 'text/css; charset=utf-8');
-  res.end(css);
-}
-
-function sendError(res: ServerResponse, statusCode: number, code: string, message: string): void {
-  const payload: LocalApiErrorEnvelope = {
-    error: {
-      code,
-      message
-    }
-  };
-  sendJson(res, statusCode, payload);
-}
-
-function parseBoundedPositiveInteger(value: string | null, fallback: number, max: number): number {
-  if (!value) {
-    return fallback;
-  }
-  if (!/^\d+$/.test(value)) {
-    throw new LocalApiError('invalid_pagination', 'Pagination parameters must be positive integers', 400);
-  }
-  const parsed = Number.parseInt(value, 10);
-  return parsed > 0 ? Math.min(parsed, max) : fallback;
-}
-
-function parseNonNegativeInteger(value: string | null): number {
-  if (!value) {
-    return 0;
-  }
-  if (!/^\d+$/.test(value)) {
-    throw new LocalApiError('invalid_pagination', 'Pagination parameters must be non-negative integers', 400);
-  }
-  return Number.parseInt(value, 10);
-}
-
-interface OperatorActionBody {
-  actor?: string;
-  reason_note?: string;
-  confirmed?: boolean;
-  resume_override_reason?: string;
-  cancel_reason?: string;
-}
-
-async function readOptionalJsonObject(request: IncomingMessage, errorCode: string): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const payloadText = Buffer.concat(chunks).toString('utf8').trim();
-  if (!payloadText) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(payloadText) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new LocalApiError(errorCode, 'Request body must be a JSON object', 400);
-    }
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof LocalApiError) {
-      throw error;
-    }
-    throw new LocalApiError(errorCode, 'Request body must be valid JSON', 400);
-  }
-}
-
-function parseOperatorActionBody(payload: Record<string, unknown>): OperatorActionBody {
-  return {
-    actor: typeof payload.actor === 'string' ? payload.actor.trim() : undefined,
-    reason_note: typeof payload.reason_note === 'string' ? payload.reason_note.trim() : undefined,
-    confirmed: typeof payload.confirmed === 'boolean' ? payload.confirmed : undefined,
-    resume_override_reason: typeof payload.resume_override_reason === 'string' ? payload.resume_override_reason.trim() : undefined,
-    cancel_reason: typeof payload.cancel_reason === 'string' ? payload.cancel_reason.trim() : undefined
-  };
-}
-
-function requireOperatorReasonNote(parsed: OperatorActionBody): string {
-  if (!parsed.reason_note) {
-    throw new LocalApiError('reason_note_required', 'reason_note is required', 400);
-  }
-  return parsed.reason_note;
-}
-
-function statusForOperatorActionFailure(code: string): number {
-  if (code === 'reason_note_required') {
-    return 400;
-  }
-  if (code === 'issue_not_found' || code === 'issue_not_blocked') {
-    return 404;
-  }
-  if (code === 'confirmation_required' || code === 'issue_not_active' || code === 'unsupported_transition') {
-    return 409;
-  }
-  if (code.endsWith('_unavailable')) {
-    return 503;
-  }
-  return 422;
-}
-
-function parseRuntimeDiagnosticsPage(request: IncomingMessage): { limit?: number; offset?: number } {
-  const requestUrl = new URL(request.url ?? '/', 'http://localhost');
-  const limitRaw = requestUrl.searchParams.get('limit');
-  const offsetRaw = requestUrl.searchParams.get('offset');
-  return {
-    limit: limitRaw ? Number.parseInt(limitRaw, 10) : undefined,
-    offset: offsetRaw ? Number.parseInt(offsetRaw, 10) : undefined
-  };
 }
 
 export class LocalApiServer {
@@ -378,14 +152,7 @@ export class LocalApiServer {
     this.heartbeatHandle = null;
     this.lastHealthSignature = null;
     this.liveTokenFallbackCache = new Map();
-    this.streamDiagnostics = {
-      lastClientConnectedAtMs: null,
-      lastClientDisconnectedAtMs: null,
-      lastSnapshotBroadcastAtMs: null,
-      lastSnapshotBroadcastLatencyMs: null,
-      lastSnapshotBroadcastStatus: null,
-      lastSnapshotBroadcastError: null
-    };
+    this.streamDiagnostics = createStreamDiagnosticsState();
 
     this.server = http.createServer((req, res) => {
       void this.handle(req, res, {
@@ -473,32 +240,11 @@ export class LocalApiServer {
   }
 
   private serializeEvent(type: ApiEventEnvelope['type'], payload: unknown): { message: string; bytes: number } {
-    const envelope: ApiEventEnvelope = {
-      event_id: this.nextEventId++,
-      generated_at: new Date(this.nowMs()).toISOString(),
-      type,
-      payload: redactUnknown(payload)
-    };
-    const message = `id: ${envelope.event_id}\nevent: symphony\ndata: ${JSON.stringify(envelope)}\n\n`;
-    return {
-      message,
-      bytes: Buffer.byteLength(message, 'utf8')
-    };
+    return serializeEventEnvelope(type, payload, () => this.nextEventId++, this.nowMs);
   }
 
   private writeEventMessage(message: string): { failedClientCount: number; error: string | null } {
-    let failedClientCount = 0;
-    let errorMessage: string | null = null;
-    for (const [clientId, response] of this.eventClients.entries()) {
-      try {
-        response.write(message);
-      } catch (error) {
-        failedClientCount += 1;
-        errorMessage = error instanceof Error ? error.message : String(error);
-        this.eventClients.delete(clientId);
-      }
-    }
-    return { failedClientCount, error: errorMessage };
+    return writeEventMessage(this.eventClients, message);
   }
 
   private emitEvent(type: ApiEventEnvelope['type'], payload: unknown): void {
@@ -568,55 +314,16 @@ export class LocalApiServer {
     return health;
   }
 
-  private buildCapabilityWarningsByThreadId(runs: ReturnType<NonNullable<LocalApiServerOptions['diagnosticsSource']>['listRunHistory']>) {
-    const warningsByThreadId = new Map<string, ReturnType<typeof buildThreadDiagnosticsFromLineage>['capability_warnings']>();
-    if (!this.diagnosticsSource?.reconstructThreadLineage) {
-      return warningsByThreadId;
-    }
-    for (const run of runs) {
-      if (!run.thread_id || warningsByThreadId.has(run.thread_id)) {
-        continue;
-      }
-      const lineage = this.diagnosticsSource.reconstructThreadLineage(run.thread_id);
-      if (!lineage) {
-        continue;
-      }
-      const diagnostics = buildThreadDiagnosticsFromLineage({ lineage });
-      if (diagnostics.capability_warnings.length > 0) {
-        warningsByThreadId.set(run.thread_id, diagnostics.capability_warnings);
-      }
-    }
-    return warningsByThreadId;
-  }
-
   private buildStoppedRunRecoveryResponse(limit = 25): {
     stopped_runs: ApiStateResponse['stopped_runs'];
     counts: { stopped: number };
   } {
-    if (!this.diagnosticsSource) {
-      throw new LocalApiError('stopped_run_recovery_unavailable', 'Stopped-run recovery source is not configured', 503);
-    }
-    const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
-    const payload = this.snapshotService.projectState(state);
-    const runs = this.diagnosticsSource.listRunHistory(limit);
-    const activeIssueIdentifiers = new Set<string>([
-      ...payload.running.map((entry) => entry.issue_identifier),
-      ...payload.retrying.map((entry) => entry.issue_identifier),
-      ...payload.blocked.map((entry) => entry.issue_identifier)
-    ]);
-    const blockedIssueIdentifiers = new Set<string>(payload.blocked.map((entry) => entry.issue_identifier));
-    const stoppedRuns = buildStoppedRunRecoveryEntries({
-      runs,
-      activeIssueIdentifiers,
-      blockedIssueIdentifiers,
-      capabilityWarningsByThreadId: this.buildCapabilityWarningsByThreadId(runs)
+    return buildStoppedRunRecoveryResponse({
+      limit,
+      diagnosticsSource: this.diagnosticsSource,
+      snapshotSource: this.snapshotSource,
+      snapshotService: this.snapshotService
     });
-    return {
-      stopped_runs: stoppedRuns,
-      counts: {
-        stopped: stoppedRuns.filter((entry) => !entry.active_issue_present).length
-      }
-    };
   }
 
   private buildStateSnapshotResponse(): TimedStateSnapshot {
@@ -803,351 +510,34 @@ export class LocalApiServer {
     this.streamDiagnostics.lastSnapshotBroadcastError = writeResult.error;
   }
 
-  private resolveLiveThreadTokenTotals(threadIds: string[]): Map<string, number> {
-    const result = new Map<string, number>();
-    if (threadIds.length === 0) {
-      return result;
-    }
-
-    let db:
-      | {
-          prepare: (sql: string) => {
-            get: (...params: unknown[]) => { tokens_used?: number } | undefined;
-          };
-          close: () => void;
-        }
-      | null = null;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const sqlite = require('node:sqlite') as {
-        DatabaseSync: new (path: string, options?: { readonly?: boolean }) => {
-          prepare: (sql: string) => {
-            get: (...params: unknown[]) => { tokens_used?: number } | undefined;
-          };
-          close: () => void;
-        };
-      };
-      db = new sqlite.DatabaseSync(this.codexStateDbPath, { readonly: true });
-      const statement = db.prepare('SELECT tokens_used FROM threads WHERE id = ?');
-      for (const threadId of threadIds) {
-        const row = statement.get(threadId);
-        if (row && typeof row.tokens_used === 'number' && row.tokens_used > 0) {
-          result.set(threadId, row.tokens_used);
-        }
-      }
-    } catch {
-      return result;
-    } finally {
-      try {
-        db?.close();
-      } catch {
-        // Ignore close failures; fallback enrichment must not affect state projection.
-      }
-    }
-
-    return result;
-  }
-
-  private resolveCachedLiveThreadTokenTotals(threadIds: string[]): Map<string, number> {
-    const uniqueThreadIds = Array.from(
-      new Set(threadIds.filter((threadId) => typeof threadId === 'string' && threadId.length > 0))
-    ).slice(0, LIVE_TOKEN_FALLBACK_MAX_THREAD_IDS);
-    const result = new Map<string, number>();
-    if (uniqueThreadIds.length === 0) {
-      return result;
-    }
-
-    const nowMs = this.nowMs();
-    const staleThreadIds = uniqueThreadIds.filter((threadId) => {
-      const cached = this.liveTokenFallbackCache.get(threadId);
-      return !cached || nowMs - cached.observedAtMs >= LIVE_TOKEN_FALLBACK_CACHE_TTL_MS;
-    });
-
-    if (staleThreadIds.length > 0) {
-      const refreshedTotals = this.resolveLiveThreadTokenTotals(staleThreadIds);
-      for (const threadId of staleThreadIds) {
-        this.liveTokenFallbackCache.set(threadId, {
-          totalTokens: refreshedTotals.get(threadId) ?? null,
-          observedAtMs: nowMs
-        });
-      }
-    }
-
-    for (const threadId of uniqueThreadIds) {
-      const cached = this.liveTokenFallbackCache.get(threadId);
-      if (cached && typeof cached.totalTokens === 'number' && cached.totalTokens > 0) {
-        result.set(threadId, cached.totalTokens);
-      }
-    }
-    return result;
-  }
-
   private enrichLiveTokenFallbackState(payload: ApiStateResponse): ApiDiagnosticsResponse['token_enrichment'] {
-    if (payload.running.length === 0) {
-      return {
-        status: 'not_required',
-        degraded: false,
-        reason_code: null,
-        duration_ms: 0
-      };
-    }
-    const threadIds = payload.running
-      .map((row) => row.thread_id)
-      .filter((threadId): threadId is string => typeof threadId === 'string' && threadId.length > 0);
-    const needsLiveTokenFallback = payload.running.some(
-      (row) => row.tokens.total_tokens === 0 && row.thread_id && row.token_telemetry_status !== 'available'
-    );
-    if (!needsLiveTokenFallback) {
-      return {
-        status: 'not_required',
-        degraded: false,
-        reason_code: null,
-        duration_ms: 0
-      };
-    }
-
-    const liveTotals = this.resolveCachedLiveThreadTokenTotals(threadIds);
-    let liveAggregate = 0;
-    for (const row of payload.running) {
-      if (row.tokens.total_tokens > 0 || !row.thread_id) {
-        continue;
-      }
-      const liveTotal = liveTotals.get(row.thread_id);
-      if (typeof liveTotal === 'number' && liveTotal > 0) {
-        row.tokens.total_tokens = liveTotal;
-        row.token_telemetry_status = 'available';
-        row.token_telemetry_last_source = 'codex_home_state_sqlite';
-        row.token_telemetry_last_at_ms = this.nowMs();
-        row.token_telemetry_confidence = 'backfilled';
-        row.token_telemetry_source = 'codex_home_state_sqlite';
-        row.token_telemetry_last_observed_at_ms = row.token_telemetry_last_at_ms;
-        row.tokens.token_split_status = 'aggregate_only';
-        liveAggregate += liveTotal;
-      }
-    }
-
-    if (liveAggregate > 0) {
-      payload.codex_totals.total_tokens += liveAggregate;
-      payload.codex_totals.token_split_status = 'aggregate_only';
-    }
-
-    if (liveAggregate > 0) {
-      return {
-        status: 'available',
-        degraded: false,
-        reason_code: null,
-        duration_ms: 0
-      };
-    }
-
-    return {
-      status: 'degraded',
-      degraded: true,
-      reason_code: REASON_CODES.liveTokenFallbackNotOnHotPath,
-      duration_ms: 0
-    };
+    return enrichLiveTokenFallbackState({
+      payload,
+      cache: this.liveTokenFallbackCache,
+      nowMs: this.nowMs,
+      codexStateDbPath: this.codexStateDbPath
+    });
   }
 
   private enrichLiveTokenFallbackIssue(payload: ApiIssueResponse): void {
-    if (payload.status !== 'running' || !payload.running?.thread_id) {
-      return;
-    }
-    if (payload.running.tokens.total_tokens > 0) {
-      return;
-    }
-    const threadId = payload.running.thread_id;
-    const liveTotal = this.resolveLiveThreadTokenTotals([threadId]).get(threadId);
-    if (typeof liveTotal === 'number' && liveTotal > 0) {
-      payload.running.tokens.total_tokens = liveTotal;
-      payload.running.token_telemetry_status = 'available';
-      payload.running.token_telemetry_last_source = 'codex_home_state_sqlite';
-      payload.running.token_telemetry_last_at_ms = this.nowMs();
-      payload.running.token_telemetry_confidence = 'backfilled';
-      payload.running.token_telemetry_source = 'codex_home_state_sqlite';
-      payload.running.token_telemetry_last_observed_at_ms = payload.running.token_telemetry_last_at_ms;
-      payload.running.tokens.token_split_status = 'aggregate_only';
-    }
-  }
-
-  private summarizeTokenTelemetry(payload: ApiStateResponse): Pick<
-    ApiDiagnosticsResponse,
-    'token_telemetry_status' | 'token_telemetry_last_source' | 'token_telemetry_last_at_ms'
-  > {
-    const rank = {
-      unavailable: 0,
-      pending: 1,
-      available: 2
-    } as const;
-    let selected: ApiStateResponse['running'][number] | null = null;
-    for (const row of payload.running) {
-      if (!selected) {
-        selected = row;
-        continue;
-      }
-      const rowRank = rank[row.token_telemetry_status];
-      const selectedRank = rank[selected.token_telemetry_status];
-      const rowAt = row.token_telemetry_last_at_ms ?? Number.NEGATIVE_INFINITY;
-      const selectedAt = selected.token_telemetry_last_at_ms ?? Number.NEGATIVE_INFINITY;
-      if (rowRank > selectedRank || (rowRank === selectedRank && rowAt > selectedAt)) {
-        selected = row;
-      }
-    }
-
-    return {
-      token_telemetry_status: selected?.token_telemetry_status ?? 'unavailable',
-      token_telemetry_last_source: selected?.token_telemetry_last_source ?? null,
-      token_telemetry_last_at_ms: selected?.token_telemetry_last_at_ms ?? null
-    };
+    enrichLiveTokenFallbackIssue({
+      payload,
+      nowMs: this.nowMs,
+      codexStateDbPath: this.codexStateDbPath
+    });
   }
 
   private buildDiagnosticsPayload(): TimedDiagnosticsPayload {
-    if (!this.diagnosticsSource) {
-      throw new LocalApiError('diagnostics_unavailable', 'Diagnostics source is not configured', 503);
-    }
-
-    const projectionStartedAtMs = this.nowMs();
-    let observedDimensions = {
-      cached_input_tokens: false,
-      reasoning_output_tokens: false,
-      model_context_window: false
-    };
-    let tokenTelemetry: Pick<
-      ApiDiagnosticsResponse,
-      'token_telemetry_status' | 'token_telemetry_last_source' | 'token_telemetry_last_at_ms'
-    > = {
-      token_telemetry_status: 'unavailable',
-      token_telemetry_last_source: null,
-      token_telemetry_last_at_ms: null
-    };
-    let tokenEnrichment: ApiDiagnosticsResponse['token_enrichment'] = {
-      status: 'not_required',
-      degraded: false,
-      reason_code: null,
-      duration_ms: 0
-    };
-    let projectionDurationMs: number | null = null;
-    let enrichmentDurationMs: number | null = null;
-    try {
-      const snapshot = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
-      const projected = this.snapshotService.projectState(snapshot);
-      projectionDurationMs = this.nowMs() - projectionStartedAtMs;
-      const enrichmentStartedAtMs = this.nowMs();
-      tokenEnrichment = this.enrichLiveTokenFallbackState(projected);
-      enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
-      tokenEnrichment = {
-        ...tokenEnrichment,
-        duration_ms: Math.max(0, Math.round(enrichmentDurationMs))
-      };
-      observedDimensions = {
-        cached_input_tokens: typeof projected.codex_totals.cached_input_tokens === 'number',
-        reasoning_output_tokens: typeof projected.codex_totals.reasoning_output_tokens === 'number',
-        model_context_window: typeof projected.codex_totals.model_context_window === 'number'
-      };
-      tokenTelemetry = this.summarizeTokenTelemetry(projected);
-    } catch {
-      // Diagnostics should remain available even when state snapshotting is degraded.
-      projectionDurationMs = this.nowMs() - projectionStartedAtMs;
-      tokenEnrichment = {
-        status: 'degraded',
-        degraded: true,
-        reason_code: REASON_CODES.stateProjectionUnavailable,
-        duration_ms: 0
-      };
-    }
-
-    const runtimeResolution = this.diagnosticsSource.getRuntimeResolution();
-
-    const payload: ApiDiagnosticsResponse = {
-      active_profile: this.diagnosticsSource.getActiveProfile(),
-      persistence: this.diagnosticsSource.getPersistenceHealth(),
-      logging: this.diagnosticsSource.getLoggingHealth(),
-      event_vocabulary_version: EVENT_VOCABULARY_VERSION,
-      token_accounting: {
-        mode: 'strict_canonical',
-        canonical_precedence: [
-          'terminal_turn_summary',
-          'thread/tokenUsage/updated.params.tokenUsage.total',
-          'params.info.total_token_usage',
-          'params.info.totalTokenUsage',
-          'params.total_token_usage',
-          'params.totalTokenUsage',
-          'params.usage.total_token_usage',
-          'params.usage.totalTokenUsage',
-          'last_token_usage',
-          'persisted_fallback_usage'
-        ],
-        excludes_generic_usage_for_totals: true,
-        excludes_last_usage_for_totals: false,
-        no_telemetry_warning_threshold_ms: 120_000,
-        optional_dimensions: [
-          'cached_input_tokens',
-          'reasoning_output_tokens',
-          'model_context_window'
-        ],
-        observed_dimensions: observedDimensions
-      },
-      ...tokenTelemetry,
-      token_enrichment: tokenEnrichment,
-      workflow: {
-        prompt_fallback_active: this.diagnosticsSource.getPromptFallbackActive()
-      },
-      phase_markers: this.diagnosticsSource.getPhaseMarkers
-        ? this.diagnosticsSource.getPhaseMarkers()
-        : {
-            enabled: true,
-            timeline_limit: 30,
-            last_emit_error_code: null
-          },
-      breaker_statuses: this.diagnosticsSource.getBreakerStatuses
-        ? this.diagnosticsSource.getBreakerStatuses()
-        : [],
-      blocked_latch: this.diagnosticsSource.getBlockedLatchStats
-        ? this.diagnosticsSource.getBlockedLatchStats()
-        : {
-            blocked_latch_active_count: 0,
-            blocked_event_quarantine_total: 0,
-            blocked_event_allowlist_total: 0,
-            blocked_event_reject_total: 0,
-            blocked_latch_violation_total: 0
-          },
-      stream: {
-        live_client_count: this.eventClients.size,
-        last_client_connected_at:
-          this.streamDiagnostics.lastClientConnectedAtMs === null
-            ? null
-            : new Date(this.streamDiagnostics.lastClientConnectedAtMs).toISOString(),
-        last_client_disconnected_at:
-          this.streamDiagnostics.lastClientDisconnectedAtMs === null
-            ? null
-            : new Date(this.streamDiagnostics.lastClientDisconnectedAtMs).toISOString(),
-        last_snapshot_broadcast_at:
-          this.streamDiagnostics.lastSnapshotBroadcastAtMs === null
-            ? null
-            : new Date(this.streamDiagnostics.lastSnapshotBroadcastAtMs).toISOString(),
-        last_snapshot_broadcast_latency_ms: this.streamDiagnostics.lastSnapshotBroadcastLatencyMs,
-        last_snapshot_broadcast_status: this.streamDiagnostics.lastSnapshotBroadcastStatus,
-        last_snapshot_broadcast_error: this.streamDiagnostics.lastSnapshotBroadcastError
-      },
-      control_plane: this.controlPlaneSummary(),
-      runtime_resolution: {
-        ...runtimeResolution,
-        effective_codex_home: runtimeResolution.effective_codex_home ?? null,
-        effective_codex_model: runtimeResolution.effective_codex_model ?? null,
-        effective_reasoning_effort: runtimeResolution.effective_reasoning_effort ?? null,
-        effective_extra_flags_count: runtimeResolution.effective_extra_flags_count ?? 0,
-        codex_resolution_mode: runtimeResolution.codex_resolution_mode ?? 'typed'
-      },
-      workspace_provisioner: this.diagnosticsSource.getWorkspaceProvisioner(),
-      workspace_copy_ignored: this.diagnosticsSource.getWorkspaceCopyIgnored()
-    };
-    return {
-      payload,
-      projectionDurationMs,
-      enrichmentDurationMs,
-      enrichmentStatus: tokenEnrichment.status,
-      enrichmentDegraded: tokenEnrichment.degraded,
-      enrichmentReasonCode: tokenEnrichment.reason_code
-    };
+    return buildDiagnosticsPayload({
+      diagnosticsSource: this.diagnosticsSource,
+      snapshotSource: this.snapshotSource,
+      snapshotService: this.snapshotService,
+      nowMs: this.nowMs,
+      streamDiagnostics: this.streamDiagnostics,
+      liveClientCount: this.eventClients.size,
+      controlPlaneSummary: () => this.controlPlaneSummary(),
+      enrichLiveTokenFallbackState: (payload) => this.enrichLiveTokenFallbackState(payload)
+    });
   }
 
   private resolveIssueTokenSnapshot(issueIdentifier: string): Partial<ForensicsTokenSnapshot> | null {
