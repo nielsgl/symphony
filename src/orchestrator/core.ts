@@ -43,6 +43,7 @@ import type {
   ToolCallLedgerObservation,
   QuarantinedWorkerEventReason,
   TranscriptToolCallDiagnostic,
+  CodexSessionTranscriptScanBudget,
   TranscriptToolCallDiagnosticStats,
   TranscriptToolCallLineage,
   WorkerCompletionReason,
@@ -58,6 +59,14 @@ const DEFAULT_BACKPRESSURE_RETRY_DELAY_MS = 30_000;
 const DEFAULT_BACKPRESSURE_MIN_RUNNING_AGENTS = 1;
 const DEFAULT_BACKPRESSURE_CONTROL_PLANE_HEALTH: ControlPlaneHealthState = 'degraded';
 const DEFAULT_BACKPRESSURE_CONTROL_PLANE_STALE_AFTER_MS = 60_000;
+const CODEX_SESSION_TRANSCRIPT_CANDIDATE_CACHE_TTL_MS = 15_000;
+const CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES = 40;
+const CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES = 20;
+const CODEX_SESSION_TRANSCRIPT_MAX_PROBE_BYTES = 256 * 1024;
+const CODEX_SESSION_TRANSCRIPT_MAX_SCAN_BYTES = 256 * 1024;
+const CODEX_SESSION_TRANSCRIPT_MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const CODEX_SESSION_TRANSCRIPT_MAX_WALL_CLOCK_MS = 20;
+const CODEX_SESSION_TRANSCRIPT_MAX_DEPTH = 5;
 
 const CONTROL_PLANE_HEALTH_RANK: Record<ControlPlaneHealthState, number> = {
   ok: 0,
@@ -449,6 +458,19 @@ function cloneTranscriptToolCallDiagnostics(
   };
 }
 
+function cloneCodexSessionTranscriptScanBudget(
+  budget: CodexSessionTranscriptScanBudget | undefined
+): CodexSessionTranscriptScanBudget | undefined {
+  if (!budget) {
+    return undefined;
+  }
+  return {
+    ...budget,
+    reason_codes: [...budget.reason_codes],
+    limits: { ...budget.limits }
+  };
+}
+
 function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotOptions>): RunningEntry {
   return {
     ...entry,
@@ -492,6 +514,10 @@ function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotO
     ),
     ...cloneTranscriptToolCallDiagnostics(entry.transcript_tool_call_diagnostics, options),
     codex_session_transcript_scan_offsets: { ...(entry.codex_session_transcript_scan_offsets ?? {}) },
+    codex_session_transcript_scan_budget: cloneCodexSessionTranscriptScanBudget(
+      entry.codex_session_transcript_scan_budget
+    ),
+    codex_session_transcript_candidate_cache: undefined,
     recovery: entry.recovery ? { ...entry.recovery } : null,
     termination: entry.termination ? { ...entry.termination } : null,
     ownership_conflict: entry.ownership_conflict ? { ...entry.ownership_conflict } : null,
@@ -8240,13 +8266,21 @@ export class OrchestratorCore {
       return;
     }
 
-    const transcriptPaths = this.findCodexSessionTranscriptPaths(runningEntry);
+    const transcriptPaths = this.findCodexSessionTranscriptPaths(runningEntry, observedAtMs);
     if (transcriptPaths.length === 0) {
       return;
     }
 
     const offsets = (runningEntry.codex_session_transcript_scan_offsets ??= {});
+    const reasons = new Set(runningEntry.codex_session_transcript_scan_budget?.reason_codes ?? []);
+    let remainingBytes = CODEX_SESSION_TRANSCRIPT_MAX_SCAN_BYTES;
+    let bytesRead = 0;
+    let filesParsed = 0;
     for (const transcriptPath of transcriptPaths) {
+      if (remainingBytes <= 0) {
+        reasons.add('transcript_scan_byte_budget_exhausted');
+        break;
+      }
       let stat: fs.Stats;
       try {
         stat = fs.statSync(transcriptPath);
@@ -8258,13 +8292,27 @@ export class OrchestratorCore {
       }
 
       const previousOffset = Math.min(offsets[transcriptPath] ?? 0, stat.size);
-      let content = '';
+      let completeContent = '';
+      let consumedBytes = 0;
       try {
         const fd = fs.openSync(transcriptPath, 'r');
         try {
-          const buffer = Buffer.alloc(Math.max(0, stat.size - previousOffset));
+          const unreadBytes = Math.max(0, stat.size - previousOffset);
+          const bytesToRead = Math.min(unreadBytes, remainingBytes);
+          if (bytesToRead < unreadBytes) {
+            reasons.add('transcript_scan_byte_budget_exhausted');
+          }
+          const buffer = Buffer.alloc(bytesToRead);
           fs.readSync(fd, buffer, 0, buffer.length, previousOffset);
-          content = buffer.toString('utf8');
+          const lastCompleteLineIndex = buffer.lastIndexOf(0x0a);
+          if (lastCompleteLineIndex >= 0) {
+            consumedBytes = lastCompleteLineIndex + 1;
+            completeContent = buffer.subarray(0, consumedBytes).toString('utf8');
+          } else if (bytesToRead > 0 && bytesToRead >= remainingBytes) {
+            reasons.add('transcript_scan_byte_budget_exhausted');
+          }
+          remainingBytes -= bytesToRead;
+          bytesRead += bytesToRead;
         } finally {
           fs.closeSync(fd);
         }
@@ -8272,8 +8320,9 @@ export class OrchestratorCore {
         continue;
       }
 
-      offsets[transcriptPath] = stat.size;
-      for (const line of content.split(/\r?\n/)) {
+      offsets[transcriptPath] = previousOffset + consumedBytes;
+      filesParsed += 1;
+      for (const line of completeContent.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed) {
           continue;
@@ -8290,13 +8339,37 @@ export class OrchestratorCore {
         }
       }
     }
+    this.updateTranscriptScanBudget(runningEntry, observedAtMs, {
+      candidate_count: transcriptPaths.length,
+      files_considered: runningEntry.codex_session_transcript_scan_budget?.files_considered ?? transcriptPaths.length,
+      files_parsed: filesParsed,
+      bytes_read: bytesRead,
+      exhausted: reasons.size > 0,
+      reason_codes: [...reasons].sort()
+    });
   }
 
-  private findCodexSessionTranscriptPaths(runningEntry: RunningEntry): string[] {
+  private findCodexSessionTranscriptPaths(runningEntry: RunningEntry, observedAtMs: number): string[] {
     const codexHome = (process.env.SYMPHONY_CODEX_HOME || path.join(process.env.HOME || '', '.codex')).trim();
     if (!codexHome) {
       return [];
     }
+    const identityKey = this.transcriptCandidateIdentityKey(runningEntry);
+    const cached = runningEntry.codex_session_transcript_candidate_cache;
+    if (
+      cached &&
+      cached.identity_key === identityKey &&
+      observedAtMs - cached.refreshed_at_ms < CODEX_SESSION_TRANSCRIPT_CANDIDATE_CACHE_TTL_MS
+    ) {
+      runningEntry.codex_session_transcript_scan_budget = {
+        ...cached,
+        observed_at_ms: observedAtMs,
+        reason_codes: [...cached.reason_codes],
+        limits: { ...cached.limits }
+      };
+      return [...cached.paths];
+    }
+
     const sessionsRoot = path.join(codexHome, 'sessions');
     let stat: fs.Stats;
     try {
@@ -8309,38 +8382,124 @@ export class OrchestratorCore {
     }
 
     const candidates: string[] = [];
-    const stack = [sessionsRoot];
-    while (stack.length > 0 && candidates.length < 200) {
+    const deadlineAtMs = Date.now() + CODEX_SESSION_TRANSCRIPT_MAX_WALL_CLOCK_MS;
+    const reasonCodes = new Set<string>();
+    let filesConsidered = 0;
+    let filesParsed = 0;
+    let remainingProbeBytes = CODEX_SESSION_TRANSCRIPT_MAX_PROBE_BYTES;
+    const stack: Array<{ directory: string; depth: number }> = [{ directory: sessionsRoot, depth: 0 }];
+    while (
+      stack.length > 0 &&
+      candidates.length < CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES &&
+      filesConsidered < CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES
+    ) {
+      if (Date.now() > deadlineAtMs) {
+        reasonCodes.add('transcript_discovery_wall_clock_budget_exhausted');
+        break;
+      }
       const current = stack.pop();
       if (!current) {
         continue;
       }
       let entries: fs.Dirent[];
       try {
-        entries = fs.readdirSync(current, { withFileTypes: true });
+        entries = this.sortCodexSessionDiscoveryEntries(
+          fs.readdirSync(current.directory, { withFileTypes: true }),
+          runningEntry
+        );
       } catch {
         continue;
       }
       for (const entry of entries) {
-        const entryPath = path.join(current, entry.name);
+        if (Date.now() > deadlineAtMs) {
+          reasonCodes.add('transcript_discovery_wall_clock_budget_exhausted');
+          break;
+        }
+        const entryPath = path.join(current.directory, entry.name);
         if (entry.isDirectory()) {
-          stack.push(entryPath);
-        } else if (entry.isFile() && entry.name.endsWith('.jsonl') && this.transcriptMayMatchRunningEntry(entryPath, runningEntry)) {
+          if (current.depth < CODEX_SESSION_TRANSCRIPT_MAX_DEPTH) {
+            stack.push({ directory: entryPath, depth: current.depth + 1 });
+          }
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
+          continue;
+        }
+        if (filesConsidered >= CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES) {
+          reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
+          break;
+        }
+        filesConsidered += 1;
+        if (this.transcriptPathMayMatch(entryPath, runningEntry)) {
           candidates.push(entryPath);
+          if (candidates.length >= CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES) {
+            reasonCodes.add('transcript_candidate_file_budget_exhausted');
+            break;
+          }
+          continue;
+        }
+        let fileStat: fs.Stats;
+        try {
+          fileStat = fs.statSync(entryPath);
+        } catch {
+          continue;
+        }
+        if (observedAtMs - fileStat.mtimeMs > CODEX_SESSION_TRANSCRIPT_MAX_FILE_AGE_MS) {
+          reasonCodes.add('transcript_discovery_age_budget_skipped');
+          continue;
+        }
+        if (!runningEntry.workspace_path && !runningEntry.repo_root) {
+          continue;
+        }
+        if (remainingProbeBytes <= 0) {
+          reasonCodes.add('transcript_probe_byte_budget_exhausted');
+          continue;
+        }
+        const probe = this.transcriptContentMayMatch(entryPath, runningEntry, {
+          remainingBytes: remainingProbeBytes,
+          deadlineAtMs
+        });
+        remainingProbeBytes = probe.remainingBytes;
+        if (probe.bytesRead > 0) {
+          filesParsed += 1;
+        }
+        for (const reason of probe.reasonCodes) {
+          reasonCodes.add(reason);
+        }
+        if (probe.matched) {
+          candidates.push(entryPath);
+          if (candidates.length >= CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES) {
+            reasonCodes.add('transcript_candidate_file_budget_exhausted');
+            break;
+          }
         }
       }
     }
+    if (candidates.length >= CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES) {
+      reasonCodes.add('transcript_candidate_file_budget_exhausted');
+    }
+    if (filesConsidered >= CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES && stack.length > 0) {
+      reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
+    }
+    this.updateTranscriptScanBudget(runningEntry, observedAtMs, {
+      candidate_count: candidates.length,
+      files_considered: filesConsidered,
+      files_parsed: filesParsed,
+      bytes_read: CODEX_SESSION_TRANSCRIPT_MAX_PROBE_BYTES - remainingProbeBytes,
+      exhausted: reasonCodes.size > 0,
+      reason_codes: [...reasonCodes].sort()
+    });
+    const scanBudget = runningEntry.codex_session_transcript_scan_budget;
+    if (!scanBudget) {
+      return candidates;
+    }
+    runningEntry.codex_session_transcript_candidate_cache = {
+      ...scanBudget,
+      identity_key: identityKey,
+      paths: [...candidates],
+      refreshed_at_ms: observedAtMs
+    };
     return candidates;
-  }
-
-  private transcriptMayMatchRunningEntry(transcriptPath: string, runningEntry: RunningEntry): boolean {
-    if (this.transcriptPathMayMatch(transcriptPath, runningEntry)) {
-      return true;
-    }
-    if (!runningEntry.workspace_path && !runningEntry.repo_root) {
-      return false;
-    }
-    return this.transcriptContentMayMatch(transcriptPath, runningEntry);
   }
 
   private transcriptPathMayMatch(transcriptPath: string, runningEntry: RunningEntry): boolean {
@@ -8350,14 +8509,98 @@ export class OrchestratorCore {
     );
   }
 
-  private transcriptContentMayMatch(transcriptPath: string, runningEntry: RunningEntry): boolean {
-    let content: string;
+  private sortCodexSessionDiscoveryEntries(entries: fs.Dirent[], runningEntry: RunningEntry): fs.Dirent[] {
+    const activeTranscriptTimeMs = runningEntry.started_at_ms;
+    return [...entries].sort((left, right) => {
+      const leftTranscript = left.isFile() && left.name.endsWith('.jsonl');
+      const rightTranscript = right.isFile() && right.name.endsWith('.jsonl');
+      if (leftTranscript !== rightTranscript) {
+        return leftTranscript ? -1 : 1;
+      }
+      if (leftTranscript && rightTranscript) {
+        const leftDistance = this.codexSessionTranscriptFilenameDistanceMs(left.name, activeTranscriptTimeMs);
+        const rightDistance = this.codexSessionTranscriptFilenameDistanceMs(right.name, activeTranscriptTimeMs);
+        if (leftDistance !== null || rightDistance !== null) {
+          if (leftDistance === null) {
+            return 1;
+          }
+          if (rightDistance === null) {
+            return -1;
+          }
+          if (leftDistance !== rightDistance) {
+            return leftDistance - rightDistance;
+          }
+        }
+        return right.name.localeCompare(left.name);
+      }
+      const leftDirectory = left.isDirectory();
+      const rightDirectory = right.isDirectory();
+      if (leftDirectory !== rightDirectory) {
+        return leftDirectory ? -1 : 1;
+      }
+      if (leftDirectory && rightDirectory) {
+        return left.name.localeCompare(right.name);
+      }
+      return left.name.localeCompare(right.name);
+    });
+  }
+
+  private codexSessionTranscriptFilenameDistanceMs(filename: string, activeTranscriptTimeMs: number): number | null {
+    const match = /^rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3})Z)?-/u.exec(filename);
+    if (!match) {
+      return null;
+    }
+    const [, year, month, day, hour, minute, second, millisecond] = match;
+    const filenameTimeMs = Date.UTC(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      Number(millisecond ?? 0)
+    );
+    const distanceMs = Math.abs(filenameTimeMs - activeTranscriptTimeMs);
+    return distanceMs <= CODEX_SESSION_TRANSCRIPT_MAX_FILE_AGE_MS ? distanceMs : null;
+  }
+
+  private transcriptContentMayMatch(
+    transcriptPath: string,
+    runningEntry: RunningEntry,
+    budget: { remainingBytes: number; deadlineAtMs: number }
+  ): { matched: boolean; bytesRead: number; remainingBytes: number; reasonCodes: string[] } {
+    const reasonCodes: string[] = [];
+    if (budget.remainingBytes <= 0) {
+      return { matched: false, bytesRead: 0, remainingBytes: 0, reasonCodes: ['transcript_probe_byte_budget_exhausted'] };
+    }
+    let stat: fs.Stats;
     try {
-      content = fs.readFileSync(transcriptPath, 'utf8');
+      stat = fs.statSync(transcriptPath);
     } catch {
-      return false;
+      return { matched: false, bytesRead: 0, remainingBytes: budget.remainingBytes, reasonCodes };
+    }
+    const bytesToRead = Math.min(stat.size, budget.remainingBytes);
+    let content = '';
+    try {
+      const fd = fs.openSync(transcriptPath, 'r');
+      try {
+        const buffer = Buffer.alloc(bytesToRead);
+        fs.readSync(fd, buffer, 0, buffer.length, 0);
+        content = buffer.toString('utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return { matched: false, bytesRead: 0, remainingBytes: budget.remainingBytes, reasonCodes };
+    }
+    if (bytesToRead < stat.size) {
+      reasonCodes.push('transcript_probe_file_byte_budget_exhausted');
     }
     for (const line of content.split(/\r?\n/)) {
+      if (Date.now() > budget.deadlineAtMs) {
+        reasonCodes.push('transcript_discovery_wall_clock_budget_exhausted');
+        return { matched: false, bytesRead: bytesToRead, remainingBytes: budget.remainingBytes - bytesToRead, reasonCodes };
+      }
       const trimmed = line.trim();
       if (!trimmed) {
         continue;
@@ -8370,10 +8613,51 @@ export class OrchestratorCore {
       }
       const record = asRecord(parsed);
       if (record && this.transcriptRecordMayMatchRunningEntry(record, runningEntry)) {
-        return true;
+        return { matched: true, bytesRead: bytesToRead, remainingBytes: budget.remainingBytes - bytesToRead, reasonCodes };
       }
     }
-    return false;
+    return { matched: false, bytesRead: bytesToRead, remainingBytes: budget.remainingBytes - bytesToRead, reasonCodes };
+  }
+
+  private transcriptCandidateIdentityKey(runningEntry: RunningEntry): string {
+    return [
+      runningEntry.session_id ?? '',
+      runningEntry.thread_id ?? '',
+      runningEntry.turn_id ?? '',
+      runningEntry.workspace_path ?? '',
+      runningEntry.repo_root ?? ''
+    ].join('|');
+  }
+
+  private updateTranscriptScanBudget(
+    runningEntry: RunningEntry,
+    observedAtMs: number,
+    stats: {
+      candidate_count: number;
+      files_considered: number;
+      files_parsed: number;
+      bytes_read: number;
+      exhausted: boolean;
+      reason_codes: string[];
+    }
+  ): void {
+    runningEntry.codex_session_transcript_scan_budget = {
+      observed_at_ms: observedAtMs,
+      candidate_count: stats.candidate_count,
+      files_considered: stats.files_considered,
+      files_parsed: stats.files_parsed,
+      bytes_read: stats.bytes_read,
+      exhausted: stats.exhausted,
+      reason_codes: [...new Set(stats.reason_codes)].sort(),
+      limits: {
+        max_candidate_files: CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES,
+        max_discovery_files: CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES,
+        max_probe_bytes: CODEX_SESSION_TRANSCRIPT_MAX_PROBE_BYTES,
+        max_scan_bytes: CODEX_SESSION_TRANSCRIPT_MAX_SCAN_BYTES,
+        max_file_age_ms: CODEX_SESSION_TRANSCRIPT_MAX_FILE_AGE_MS,
+        max_wall_clock_ms: CODEX_SESSION_TRANSCRIPT_MAX_WALL_CLOCK_MS
+      }
+    };
   }
 
   private transcriptRecordMayMatchRunningEntry(record: Record<string, unknown>, runningEntry: RunningEntry): boolean {

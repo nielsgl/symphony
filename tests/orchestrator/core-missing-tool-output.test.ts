@@ -871,6 +871,600 @@ describe('OrchestratorCore missing tool output', () => {
     });
   });
 
+  it('bounds and caches historical transcript discovery while preserving known active transcript evidence', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const workspacePath = path.join(codexHome, 'workspaces', 'NIE-177');
+      const historicalDir = path.join(codexHome, 'sessions', '2026', '05', '01');
+      fs.mkdirSync(historicalDir, { recursive: true });
+      const largePayload = 'x'.repeat(128 * 1024);
+      for (let index = 0; index < 20; index += 1) {
+        fs.writeFileSync(
+          path.join(historicalDir, `rollout-2026-05-01T00-00-${String(index).padStart(2, '0')}-historical.jsonl`),
+          `${JSON.stringify({
+            timestamp: new Date(Date.now()).toISOString(),
+            type: 'event_msg',
+            payload: { type: 'noise', padding: largePayload }
+          })}\n`,
+          'utf8'
+        );
+      }
+
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 },
+        spawnWorker: async ({ issue, worker_host }) => {
+          return {
+            ok: true,
+            worker_handle: { issue_id: issue.id },
+            monitor_handle: { issue_id: issue.id },
+            worker_host,
+            workspace_path: workspacePath
+          };
+        }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-bounded', identifier: 'ABC-TRANSCRIPT-BOUNDED' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-bounded', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-bounded',
+        turn_id: 'turn-bounded',
+        session_id: 'session-bounded'
+      });
+      writeSessionTranscript(codexHome, 'rollout-thread-bounded.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 10).toISOString(),
+          session_id: 'session-bounded',
+          thread_id: 'thread-bounded',
+          turn_id: 'turn-bounded',
+          type: 'response_item',
+          payload: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_bounded_linear'
+          }
+        },
+        {
+          timestamp: new Date(harness.now.value + 20).toISOString(),
+          session_id: 'session-bounded',
+          thread_id: 'thread-bounded',
+          turn_id: 'turn-bounded',
+          type: 'response_item',
+          payload: {
+            type: 'function_call_output',
+            call_id: 'call_bounded_linear',
+            output: '{}'
+          }
+        }
+      ]);
+
+      const readdirSpy = vi.spyOn(fs, 'readdirSync');
+      harness.orchestrator.onWorkerEvent('i-transcript-bounded', {
+        timestamp_ms: harness.now.value + 30,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with many historical transcripts present',
+        thread_id: 'thread-bounded',
+        turn_id: 'turn-bounded',
+        session_id: 'session-bounded'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const afterFirstScanReads = readdirSpy.mock.calls.length;
+      const runningAfterFirstScan = harness.orchestrator.getStateSnapshot().running.get('i-transcript-bounded');
+      expect(runningAfterFirstScan?.tool_call_ledger?.call_bounded_linear).toMatchObject({
+        call_id: 'call_bounded_linear',
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget).toMatchObject({
+        exhausted: true
+      });
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.reason_codes).toContain('transcript_probe_byte_budget_exhausted');
+      expect(
+        (runningAfterFirstScan as { codex_session_transcript_candidate_cache?: unknown } | undefined)
+          ?.codex_session_transcript_candidate_cache
+      ).toBeUndefined();
+
+      const snapshotAfterFirstScan = harness.orchestrator.getStateSnapshot();
+      const snapshotBudget = snapshotAfterFirstScan.running.get('i-transcript-bounded')
+        ?.codex_session_transcript_scan_budget;
+      const service = new SnapshotService({ nowMs: () => harness.now.value });
+      const projectedState = service.projectState(snapshotAfterFirstScan);
+      const projectedIssue = service.projectIssue(snapshotAfterFirstScan, 'ABC-TRANSCRIPT-BOUNDED');
+      const projectedDiagnostics = service.projectIssueRuntimeDiagnostics(
+        snapshotAfterFirstScan,
+        'ABC-TRANSCRIPT-BOUNDED'
+      );
+
+      expect(projectedState.running[0]?.codex_session_transcript_scan_budget).toMatchObject({
+        exhausted: true,
+        reason_codes: expect.arrayContaining(['transcript_probe_byte_budget_exhausted']),
+        limits: expect.objectContaining({ max_discovery_files: 20 })
+      });
+      expect(projectedIssue.running?.codex_session_transcript_scan_budget).toEqual(
+        projectedState.running[0]?.codex_session_transcript_scan_budget
+      );
+      expect(projectedDiagnostics.codex_session_transcript_scan_budget).toEqual(
+        projectedState.running[0]?.codex_session_transcript_scan_budget
+      );
+      expect(JSON.stringify(snapshotAfterFirstScan)).not.toContain(`${path.sep}sessions${path.sep}`);
+      expect(JSON.stringify(projectedState)).not.toContain(`${path.sep}sessions${path.sep}`);
+
+      snapshotBudget?.reason_codes.push('mutated_snapshot_reason');
+      if (snapshotBudget) {
+        snapshotBudget.limits.max_scan_bytes = 1;
+      }
+      const resnapshotBudget = harness.orchestrator
+        .getStateSnapshot()
+        .running.get('i-transcript-bounded')?.codex_session_transcript_scan_budget;
+      expect(resnapshotBudget?.reason_codes).not.toContain('mutated_snapshot_reason');
+      expect(resnapshotBudget?.limits.max_scan_bytes).toBe(262_144);
+
+      harness.now.value += 1_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(readdirSpy.mock.calls.length).toBe(afterFirstScanReads);
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-bounded')?.tool_call_ledger?.call_bounded_linear).toMatchObject({
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+      readdirSpy.mockRestore();
+    });
+  });
+
+  it('prioritizes the likely active rollout transcript before historical file-count exhaustion', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const workspacePath = path.join(codexHome, 'workspaces', 'NIE-177-active');
+      const activeSessionDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+      fs.mkdirSync(activeSessionDir, { recursive: true });
+      const largePayload = 'x'.repeat(128 * 1024);
+      for (let index = 0; index < 80; index += 1) {
+        fs.writeFileSync(
+          path.join(activeSessionDir, `rollout-2026-05-07T00-00-${String(index).padStart(3, '0')}-historical.jsonl`),
+          `${JSON.stringify({
+            timestamp: new Date(Date.now()).toISOString(),
+            type: 'event_msg',
+            payload: { type: 'noise', workspace: '/tmp/unrelated-workspace', padding: largePayload }
+          })}\n`,
+          'utf8'
+        );
+      }
+
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 },
+        spawnWorker: async ({ issue, worker_host }) => {
+          return {
+            ok: true,
+            worker_handle: { issue_id: issue.id },
+            monitor_handle: { issue_id: issue.id },
+            worker_host,
+            workspace_path: workspacePath
+          };
+        }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-active-priority', identifier: 'ABC-TRANSCRIPT-ACTIVE-PRIORITY' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-active-priority', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-active-priority',
+        turn_id: 'turn-active-priority',
+        session_id: 'session-active-priority'
+      });
+      writeSessionTranscript(codexHome, 'rollout-2026-05-07T13-45-00-000Z-def456.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 5).toISOString(),
+          type: 'turn_context',
+          payload: {
+            cwd: workspacePath
+          }
+        },
+        {
+          timestamp: new Date(harness.now.value + 10).toISOString(),
+          type: 'response_item',
+          thread_id: 'thread-active-priority',
+          turn_id: 'turn-active-priority',
+          session_id: 'session-active-priority',
+          payload: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_active_priority'
+          }
+        },
+        {
+          timestamp: new Date(harness.now.value + 20).toISOString(),
+          type: 'response_item',
+          thread_id: 'thread-active-priority',
+          turn_id: 'turn-active-priority',
+          session_id: 'session-active-priority',
+          payload: {
+            type: 'function_call_output',
+            call_id: 'call_active_priority',
+            output: '{}'
+          }
+        }
+      ]);
+
+      const readdirSpy = vi.spyOn(fs, 'readdirSync');
+      harness.orchestrator.onWorkerEvent('i-transcript-active-priority', {
+        timestamp_ms: harness.now.value + 30,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with same-directory historical transcripts present',
+        thread_id: 'thread-active-priority',
+        turn_id: 'turn-active-priority',
+        session_id: 'session-active-priority'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const afterFirstScanReads = readdirSpy.mock.calls.length;
+      const runningAfterFirstScan = harness.orchestrator.getStateSnapshot().running.get('i-transcript-active-priority');
+      expect(runningAfterFirstScan?.tool_call_ledger?.call_active_priority).toMatchObject({
+        call_id: 'call_active_priority',
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.candidate_count).toBeGreaterThan(0);
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.files_considered).toBe(
+        runningAfterFirstScan?.codex_session_transcript_scan_budget?.limits.max_discovery_files
+      );
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.reason_codes).toContain(
+        'transcript_discovery_file_count_budget_exhausted'
+      );
+
+      harness.now.value += 1_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(readdirSpy.mock.calls.length).toBe(afterFirstScanReads);
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-active-priority')?.tool_call_ledger?.call_active_priority).toMatchObject({
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+      readdirSpy.mockRestore();
+    });
+  });
+
+  it('prioritizes active rollout transcripts by run time before newer unrelated files can exhaust discovery', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const workspacePath = path.join(codexHome, 'workspaces', 'NIE-177-newer-active');
+      const activeSessionDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+      fs.mkdirSync(activeSessionDir, { recursive: true });
+      const largePayload = 'x'.repeat(128 * 1024);
+      for (let index = 0; index < 40; index += 1) {
+        const minute = 46 + index;
+        const hour = 14 + Math.floor(minute / 60);
+        fs.writeFileSync(
+          path.join(
+            activeSessionDir,
+            `rollout-2026-05-07T${String(hour).padStart(2, '0')}-${String(
+              minute % 60
+            ).padStart(2, '0')}-00-newer-${String(index).padStart(3, '0')}.jsonl`
+          ),
+          `${JSON.stringify({
+            timestamp: new Date(Date.parse('2026-05-07T14:46:00Z') + index * 60_000).toISOString(),
+            type: 'event_msg',
+            payload: { type: 'noise', workspace: '/tmp/unrelated-newer-workspace', padding: largePayload }
+          })}\n`,
+          'utf8'
+        );
+      }
+
+      const harness = createHarness({
+        configOverrides: {
+          running_wait_stall_threshold_ms: 10_000,
+          stall_timeout_ms: 8 * 60 * 60 * 1_000,
+          worker_opaque_activity_hard_timeout_ms: 8 * 60 * 60 * 1_000
+        },
+        spawnWorker: async ({ issue, worker_host }) => {
+          return {
+            ok: true,
+            worker_handle: { issue_id: issue.id },
+            monitor_handle: { issue_id: issue.id },
+            worker_host,
+            workspace_path: workspacePath
+          };
+        }
+      });
+      harness.now.value = Date.parse('2026-05-07T13:45:00Z');
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-newer-active', identifier: 'ABC-TRANSCRIPT-NEWER-ACTIVE' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-newer-active', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-newer-active',
+        turn_id: 'turn-newer-active',
+        session_id: 'session-newer-active'
+      });
+      writeSessionTranscript(codexHome, 'rollout-2026-05-07T13-45-00-active789.jsonl', [
+        {
+          timestamp: new Date(harness.now.value + 5).toISOString(),
+          type: 'turn_context',
+          payload: {
+            cwd: workspacePath
+          }
+        },
+        {
+          timestamp: new Date(harness.now.value + 10).toISOString(),
+          type: 'response_item',
+          thread_id: 'thread-newer-active',
+          turn_id: 'turn-newer-active',
+          session_id: 'session-newer-active',
+          payload: {
+            type: 'function_call',
+            name: 'linear_graphql',
+            call_id: 'call_newer_active'
+          }
+        },
+        {
+          timestamp: new Date(harness.now.value + 20).toISOString(),
+          type: 'response_item',
+          thread_id: 'thread-newer-active',
+          turn_id: 'turn-newer-active',
+          session_id: 'session-newer-active',
+          payload: {
+            type: 'function_call_output',
+            call_id: 'call_newer_active',
+            output: '{}'
+          }
+        }
+      ]);
+
+      const readdirSpy = vi.spyOn(fs, 'readdirSync');
+      const waitingAtMs = Date.parse('2026-05-07T15:00:00Z');
+      harness.orchestrator.onWorkerEvent('i-transcript-newer-active', {
+        timestamp_ms: waitingAtMs,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting much later with newer same-directory rollout transcripts present',
+        thread_id: 'thread-newer-active',
+        turn_id: 'turn-newer-active',
+        session_id: 'session-newer-active'
+      });
+      harness.now.value = waitingAtMs + 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const afterFirstScanReads = readdirSpy.mock.calls.length;
+      const runningAfterFirstScan = harness.orchestrator.getStateSnapshot().running.get('i-transcript-newer-active');
+      expect(runningAfterFirstScan?.tool_call_ledger?.call_newer_active).toMatchObject({
+        call_id: 'call_newer_active',
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.candidate_count).toBeGreaterThan(0);
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.files_considered).toBe(
+        runningAfterFirstScan?.codex_session_transcript_scan_budget?.limits.max_discovery_files
+      );
+      expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.reason_codes).toContain(
+        'transcript_discovery_file_count_budget_exhausted'
+      );
+
+      harness.now.value += 1_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(readdirSpy.mock.calls.length).toBe(afterFirstScanReads);
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-newer-active')?.tool_call_ledger?.call_newer_active).toMatchObject({
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+      readdirSpy.mockRestore();
+    });
+  });
+
+  it('preserves an incomplete active transcript line for a later scan', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-partial-line', identifier: 'ABC-TRANSCRIPT-PARTIAL' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-partial-line', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-partial-line',
+        turn_id: 'turn-partial-line',
+        session_id: 'session-partial-line'
+      });
+
+      const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const transcriptPath = path.join(sessionsDir, 'session-partial-line.jsonl');
+      const recordLine = JSON.stringify({
+        timestamp: new Date(harness.now.value + 10).toISOString(),
+        session_id: 'session-partial-line',
+        thread_id: 'thread-partial-line',
+        turn_id: 'turn-partial-line',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'linear_graphql',
+          call_id: 'call_partial_line'
+        }
+      });
+      const splitIndex = Math.floor(recordLine.length / 2);
+      fs.writeFileSync(transcriptPath, recordLine.slice(0, splitIndex), 'utf8');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-partial-line', {
+        timestamp_ms: harness.now.value + 20,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting while transcript line is still being appended',
+        thread_id: 'thread-partial-line',
+        turn_id: 'turn-partial-line',
+        session_id: 'session-partial-line'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-partial-line')?.tool_call_ledger ?? {}).toEqual({});
+
+      fs.appendFileSync(transcriptPath, `${recordLine.slice(splitIndex)}\n`, 'utf8');
+      harness.now.value += 100;
+      await harness.orchestrator.tick('interval');
+
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-partial-line')?.tool_call_ledger?.call_partial_line).toMatchObject({
+        call_id: 'call_partial_line',
+        completion_status: 'pending',
+        evidence_sources: ['session_transcript']
+      });
+    });
+  });
+
+  it('processes complete transcript lines while preserving a trailing partial line', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-trailing-partial', identifier: 'ABC-TRANSCRIPT-TRAILING' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-trailing-partial', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-trailing-partial',
+        turn_id: 'turn-trailing-partial',
+        session_id: 'session-trailing-partial'
+      });
+
+      const callLine = JSON.stringify({
+        timestamp: new Date(harness.now.value + 10).toISOString(),
+        session_id: 'session-trailing-partial',
+        thread_id: 'thread-trailing-partial',
+        turn_id: 'turn-trailing-partial',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'linear_graphql',
+          call_id: 'call_trailing_partial'
+        }
+      });
+      const outputLine = JSON.stringify({
+        timestamp: new Date(harness.now.value + 20).toISOString(),
+        session_id: 'session-trailing-partial',
+        thread_id: 'thread-trailing-partial',
+        turn_id: 'turn-trailing-partial',
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          call_id: 'call_trailing_partial',
+          output: '{}'
+        }
+      });
+      const outputSplitIndex = Math.floor(outputLine.length / 2);
+      const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const transcriptPath = path.join(sessionsDir, 'session-trailing-partial.jsonl');
+      fs.writeFileSync(transcriptPath, `${callLine}\n${outputLine.slice(0, outputSplitIndex)}`, 'utf8');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-trailing-partial', {
+        timestamp_ms: harness.now.value + 30,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with a complete call and partial output line',
+        thread_id: 'thread-trailing-partial',
+        turn_id: 'turn-trailing-partial',
+        session_id: 'session-trailing-partial'
+      });
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-trailing-partial')?.tool_call_ledger?.call_trailing_partial).toMatchObject({
+        call_id: 'call_trailing_partial',
+        completion_status: 'pending',
+        evidence_sources: ['session_transcript']
+      });
+
+      fs.appendFileSync(transcriptPath, `${outputLine.slice(outputSplitIndex)}\n`, 'utf8');
+      harness.now.value += 100;
+      await harness.orchestrator.tick('interval');
+
+      expect(harness.orchestrator.getStateSnapshot().running.get('i-transcript-trailing-partial')?.tool_call_ledger?.call_trailing_partial).toMatchObject({
+        call_id: 'call_trailing_partial',
+        completion_status: 'completed',
+        evidence_sources: ['session_transcript']
+      });
+    });
+  });
+
+  it('stops historical transcript discovery at the files-considered budget', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const historicalDir = path.join(codexHome, 'sessions', '2026', '05', '02');
+      fs.mkdirSync(historicalDir, { recursive: true });
+      const historicalFileCount = 120;
+      for (let index = 0; index < historicalFileCount; index += 1) {
+        fs.writeFileSync(
+          path.join(historicalDir, `rollout-2026-05-02T00-00-${String(index).padStart(3, '0')}-noise.jsonl`),
+          `${JSON.stringify({
+            timestamp: new Date(Date.now()).toISOString(),
+            type: 'event_msg',
+            payload: { type: 'noise', workspace: '/tmp/unrelated-workspace' }
+          })}\n`,
+          'utf8'
+        );
+      }
+
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 },
+        spawnWorker: async ({ issue, worker_host }) => {
+          return {
+            ok: true,
+            worker_handle: { issue_id: issue.id },
+            monitor_handle: { issue_id: issue.id },
+            worker_host
+          };
+        }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-file-limit', identifier: 'ABC-TRANSCRIPT-FILE-LIMIT' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-file-limit', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-file-limit',
+        turn_id: 'turn-file-limit',
+        session_id: 'session-file-limit'
+      });
+      harness.orchestrator.onWorkerEvent('i-transcript-file-limit', {
+        timestamp_ms: harness.now.value + 30,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with many nonmatching historical transcripts present',
+        thread_id: 'thread-file-limit',
+        turn_id: 'turn-file-limit',
+        session_id: 'session-file-limit'
+      });
+
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const scanBudget = harness.orchestrator.getStateSnapshot().running.get(
+        'i-transcript-file-limit'
+      )?.codex_session_transcript_scan_budget;
+      expect(scanBudget?.candidate_count).toBe(0);
+      expect(scanBudget?.files_considered).toBeLessThan(historicalFileCount);
+      expect(scanBudget?.files_considered).toBe(scanBudget?.limits.max_discovery_files);
+      expect(scanBudget?.reason_codes).toContain('transcript_discovery_file_count_budget_exhausted');
+    });
+  });
+
   it('ignores stale same-workspace rollout function_call records from a prior run', async () => {
     await withTemporaryCodexHome(async (codexHome) => {
       const workspacePath = path.join(codexHome, 'workspaces', 'NIE-79-reused');
