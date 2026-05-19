@@ -1,9 +1,14 @@
 import { CANONICAL_EVENT } from '../../observability/events';
+import { REASON_CODES } from '../../observability/reason-codes';
+import type { StructuredLogger } from '../../observability';
 import type {
+  BlockedEntry,
+  OrchestratorState,
   QuarantinedWorkerEventReason,
   ReleasedWorkerRecord,
   RunningEntry,
   WorkerExitDetails,
+  WorkerExitReason,
   WorkerObservabilityEvent
 } from '../types';
 
@@ -28,6 +33,72 @@ type InactiveWorkerPidEntry = {
 export interface WorkerEventLineageState {
   inactive_worker_pids?: Map<string, InactiveWorkerPidEntry[]>;
   released_workers?: Map<string, ReleasedWorkerRecord[]>;
+}
+
+export interface WorkerEventWorkflowContext {
+  state: OrchestratorState;
+  issueId: string;
+  workerEvent: WorkerObservabilityEvent;
+  inactiveWorkerPidTtlMs: number;
+  runningWaitThresholdMs: number;
+  nowMs: () => number;
+  logger?: StructuredLogger;
+  notifyObservers: () => void;
+  quarantineBlockedWorkerEvent: (
+    blockedEntry: BlockedEntry,
+    workerEvent: WorkerObservabilityEvent,
+    reason: 'awaiting_operator_latch' | 'lineage_mismatch'
+  ) => void;
+  captureWorkerProgressSignal: (runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent) => void;
+  maybeEmitHeartbeatOnly: (issueId: string, runningEntry: RunningEntry, observedAtMs: number) => void;
+  resetRunningWaitEpisode: (runningEntry: RunningEntry, progressAtMs: number) => void;
+  isMeaningfulWorkerProgressEvent: (workerEvent: WorkerObservabilityEvent) => boolean;
+  observeThroughput: (sample: { at_ms: number; tokens: number }) => void;
+  updateOutstandingToolCalls: (runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent) => void;
+  updateBudgetProjection: (issueId: string, runningEntry: RunningEntry, totalTokens: number) => void;
+  maybeEmitTokenTelemetryWarning: (runningEntry: RunningEntry, eventAtMs: number) => void;
+  maybeEmitBudgetTelemetryUnavailable: (runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent) => void;
+  maybeEnforceBudget: (issueId: string, runningEntry: RunningEntry, timestampMs: number) => void;
+  persistSession?: (params: { run_id: string; session_id: string }) => Promise<unknown>;
+  persistRunEvent?: (params: {
+    run_id: string;
+    timestamp_ms: number;
+    event: string;
+    message: string | null;
+    reason_code: string | null;
+    request_method: string | null;
+    request_category: string | null;
+  }) => Promise<unknown>;
+  beginExecutionGraphWorkerTurnObservation: (
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent
+  ) => boolean;
+  queuePersistExecutionGraphWorkerEvent: (
+    issueId: string,
+    runningEntry: RunningEntry,
+    workerEvent: WorkerObservabilityEvent,
+    turnAlreadyObserved: boolean
+  ) => void;
+  recordRuntimeEvent: (params: {
+    event: string;
+    severity: 'info' | 'warn' | 'error';
+    issue_identifier?: string;
+    session_id?: string;
+    detail?: string;
+    reason_code?: string | null;
+    request_method?: string | null;
+    request_category?: string | null;
+    tool_call_id?: string | null;
+    tool_name?: string | null;
+    protocol_warning?: WorkerObservabilityEvent['protocol_warning'];
+    model_reroute?: WorkerObservabilityEvent['model_reroute'];
+    requested_model?: string | null;
+    effective_model?: string | null;
+  }) => void;
+  emitExplicitPhaseMarker: (issueId: string, workerEvent: WorkerObservabilityEvent) => boolean;
+  emitMappedPhaseMarker: (issueId: string, workerEvent: WorkerObservabilityEvent) => void;
+  hasOutstandingToolCallEvidence: (runningEntry: RunningEntry) => boolean;
+  maybeClassifyRunningWaitStall: (issueId: string, runningEntry: RunningEntry, observedAtMs: number) => Promise<unknown>;
 }
 
 export function humanizeWorkerEvent(event: WorkerObservabilityEvent): string {
@@ -283,6 +354,503 @@ export function findReleasedWorkerRecord(
       return false;
     }) ?? null
   );
+}
+
+export function applyWorkerEvent(context: WorkerEventWorkflowContext): void {
+  const { state, issueId, workerEvent } = context;
+  const runningEntry = state.running.get(issueId);
+  if (!runningEntry) {
+    const blockedEntry = state.blocked_inputs.get(issueId);
+    if (blockedEntry?.awaiting_operator) {
+      context.quarantineBlockedWorkerEvent(blockedEntry, workerEvent, 'awaiting_operator_latch');
+    }
+    return;
+  }
+
+  const staleReason = staleWorkerEventReasonForRunningEntry({
+    runningEntry,
+    workerEvent,
+    inactiveWorkerEntries: pruneInactiveWorkerPidsForIssue({
+      state,
+      issueId,
+      nowMs: context.nowMs(),
+      ttlMs: context.inactiveWorkerPidTtlMs
+    })
+  });
+  if (staleReason) {
+    recordStaleRunningWorkerEvent(context, runningEntry, staleReason);
+    return;
+  }
+
+  runningEntry.last_codex_timestamp_ms = workerEvent.timestamp_ms;
+  runningEntry.last_event = workerEvent.event;
+  runningEntry.last_event_summary = humanizeWorkerEvent(workerEvent);
+  runningEntry.last_message = workerEvent.detail ?? null;
+  context.captureWorkerProgressSignal(runningEntry, workerEvent);
+  if (
+    workerEvent.codex_thread_activity_at_ms !== undefined &&
+    workerEvent.codex_thread_activity_at_ms !== null &&
+    (!workerEvent.thread_id || !runningEntry.thread_id || workerEvent.thread_id === runningEntry.thread_id)
+  ) {
+    runningEntry.codex_thread_activity_at_ms = workerEvent.codex_thread_activity_at_ms;
+    runningEntry.codex_thread_activity_source = workerEvent.codex_thread_activity_source ?? 'app_server_protocol_thread_updated_at';
+    runningEntry.codex_thread_activity_status = workerEvent.codex_thread_activity_status ?? null;
+  }
+  if (workerEvent.event === CANONICAL_EVENT.codex.turnInputRequired) {
+    runningEntry.awaiting_input_since_ms = workerEvent.timestamp_ms;
+    runningEntry.pending_input_preview = {
+      type: REASON_CODES.turnInputRequired,
+      prompt_preview: workerEvent.detail ?? null,
+      option_count: null
+    };
+  }
+  if (workerEvent.event === CANONICAL_EVENT.codex.turnWaiting) {
+    runningEntry.last_heartbeat_at_ms = workerEvent.timestamp_ms;
+    if (runningEntry.running_waiting_started_at_ms === undefined || runningEntry.running_waiting_started_at_ms === null) {
+      runningEntry.running_waiting_started_at_ms = workerEvent.timestamp_ms;
+      runningEntry.running_wait_stall_event_emitted = false;
+      runningEntry.heartbeat_only_event_emitted = false;
+    }
+    if (
+      (runningEntry.stalled_waiting_since_ms === undefined || runningEntry.stalled_waiting_since_ms === null) &&
+      context.runningWaitThresholdMs > 0
+    ) {
+      runningEntry.stalled_waiting_since_ms = runningEntry.running_waiting_started_at_ms + context.runningWaitThresholdMs;
+    }
+    runningEntry.stalled_waiting_reason = null;
+    context.maybeEmitHeartbeatOnly(issueId, runningEntry, workerEvent.timestamp_ms);
+  } else if (shouldResetRunningWaitEpisode(workerEvent.event)) {
+    context.resetRunningWaitEpisode(runningEntry, workerEvent.timestamp_ms);
+  } else if (context.isMeaningfulWorkerProgressEvent(workerEvent)) {
+    runningEntry.last_progress_transition_at_ms = workerEvent.timestamp_ms;
+  }
+
+  if (workerEvent.thread_id && !runningEntry.thread_id) {
+    runningEntry.thread_id = workerEvent.thread_id;
+  }
+  if (workerEvent.turn_id) {
+    runningEntry.turn_id = workerEvent.turn_id;
+  }
+  if (workerEvent.codex_app_server_pid !== undefined && workerEvent.codex_app_server_pid !== null) {
+    runningEntry.codex_app_server_pid = String(workerEvent.codex_app_server_pid);
+  }
+  if (!workerEvent.session_id && runningEntry.thread_id && runningEntry.turn_id) {
+    workerEvent.session_id = `${runningEntry.thread_id}-${runningEntry.turn_id}`;
+  }
+
+  if (workerEvent.session_id) {
+    const hadSessionId = runningEntry.session_id;
+    runningEntry.session_id = workerEvent.session_id;
+    if (runningEntry.run_id && hadSessionId !== workerEvent.session_id) {
+      void context
+        .persistSession?.({
+          run_id: runningEntry.run_id,
+          session_id: workerEvent.session_id
+        })
+        .catch(() => {
+          context.logger?.log({
+            level: 'warn',
+            event: CANONICAL_EVENT.persistence.recordSessionFailed,
+            message: `failed to persist session for ${runningEntry.identifier}`,
+            context: {
+              issue_id: issueId,
+              issue_identifier: runningEntry.identifier,
+              session_id: workerEvent.session_id
+            }
+          });
+        });
+    }
+  }
+
+  captureMissingToolOutputRecoveryReplacementLineage(runningEntry, workerEvent);
+  context.updateOutstandingToolCalls(runningEntry, workerEvent);
+
+  if (workerEvent.event === CANONICAL_EVENT.codex.turnStarted) {
+    runningEntry.turn_count += 1;
+    runningEntry.token_telemetry_status = 'pending';
+    runningEntry.token_telemetry_turn_started_at_ms = workerEvent.timestamp_ms;
+    runningEntry.token_telemetry_warning_emitted = false;
+  }
+
+  const usageThreadMatches =
+    !workerEvent.thread_id || !runningEntry.thread_id || workerEvent.thread_id === runningEntry.thread_id;
+  if (workerEvent.usage && usageThreadMatches) {
+    const usage = workerEvent.usage;
+    const inputDelta = Math.max(0, usage.input_tokens - runningEntry.last_reported_tokens.input_tokens);
+    const outputDelta = Math.max(0, usage.output_tokens - runningEntry.last_reported_tokens.output_tokens);
+    const totalDelta = Math.max(0, usage.total_tokens - runningEntry.last_reported_tokens.total_tokens);
+    state.codex_totals.input_tokens += inputDelta;
+    state.codex_totals.output_tokens += outputDelta;
+    state.codex_totals.total_tokens += totalDelta;
+    if (
+      typeof usage.cached_input_tokens === 'number' &&
+      typeof runningEntry.last_reported_tokens.cached_input_tokens === 'number'
+    ) {
+      state.codex_totals.cached_input_tokens =
+        (state.codex_totals.cached_input_tokens ?? 0) +
+        Math.max(0, usage.cached_input_tokens - runningEntry.last_reported_tokens.cached_input_tokens);
+    } else if (typeof usage.cached_input_tokens === 'number' && state.codex_totals.cached_input_tokens === undefined) {
+      state.codex_totals.cached_input_tokens = usage.cached_input_tokens;
+    }
+    if (
+      typeof usage.reasoning_output_tokens === 'number' &&
+      typeof runningEntry.last_reported_tokens.reasoning_output_tokens === 'number'
+    ) {
+      state.codex_totals.reasoning_output_tokens =
+        (state.codex_totals.reasoning_output_tokens ?? 0) +
+        Math.max(0, usage.reasoning_output_tokens - runningEntry.last_reported_tokens.reasoning_output_tokens);
+    } else if (
+      typeof usage.reasoning_output_tokens === 'number' &&
+      state.codex_totals.reasoning_output_tokens === undefined
+    ) {
+      state.codex_totals.reasoning_output_tokens = usage.reasoning_output_tokens;
+    }
+    if (typeof usage.model_context_window === 'number') {
+      state.codex_totals.model_context_window =
+        typeof state.codex_totals.model_context_window === 'number'
+          ? Math.max(state.codex_totals.model_context_window, usage.model_context_window)
+          : usage.model_context_window;
+    }
+    runningEntry.tokens = { ...usage };
+    runningEntry.last_reported_tokens = { ...usage };
+    runningEntry.token_telemetry_status = workerEvent.token_telemetry_status ?? 'available';
+    runningEntry.token_telemetry_last_source = workerEvent.token_telemetry_last_source ?? 'worker_event_usage';
+    runningEntry.token_telemetry_last_at_ms = workerEvent.token_telemetry_last_at_ms ?? workerEvent.timestamp_ms;
+    if (totalDelta > 0) {
+      context.resetRunningWaitEpisode(runningEntry, runningEntry.token_telemetry_last_at_ms);
+      context.observeThroughput({
+        at_ms: workerEvent.timestamp_ms,
+        tokens: totalDelta
+      });
+    }
+    context.updateBudgetProjection(issueId, runningEntry, usage.total_tokens);
+  }
+
+  if (workerEvent.token_telemetry_status && !workerEvent.usage) {
+    runningEntry.token_telemetry_status = workerEvent.token_telemetry_status;
+    runningEntry.token_telemetry_last_source = workerEvent.token_telemetry_last_source ?? runningEntry.token_telemetry_last_source;
+    runningEntry.token_telemetry_last_at_ms = workerEvent.token_telemetry_last_at_ms ?? runningEntry.token_telemetry_last_at_ms;
+  }
+  if (isTerminalTurnEvent(workerEvent.event) && !workerEvent.usage && runningEntry.token_telemetry_status === 'pending') {
+    runningEntry.token_telemetry_status = 'unavailable';
+  }
+
+  context.maybeEmitTokenTelemetryWarning(runningEntry, workerEvent.timestamp_ms);
+  context.maybeEmitBudgetTelemetryUnavailable(runningEntry, workerEvent);
+  context.maybeEnforceBudget(issueId, runningEntry, workerEvent.timestamp_ms);
+
+  if (workerEvent.rate_limits) {
+    state.codex_rate_limits = { ...workerEvent.rate_limits };
+    runningEntry.rate_limits = { ...workerEvent.rate_limits };
+  }
+  if (workerEvent.protocol_warnings) {
+    runningEntry.protocol_warnings = workerEvent.protocol_warnings.map((warning) => ({ ...warning }));
+  } else if (workerEvent.protocol_warning) {
+    runningEntry.protocol_warnings = [...(runningEntry.protocol_warnings ?? []), { ...workerEvent.protocol_warning }];
+  }
+  if (workerEvent.model_reroute !== undefined) {
+    runningEntry.model_reroute = workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null;
+  }
+  if (workerEvent.requested_model !== undefined) {
+    runningEntry.requested_model = workerEvent.requested_model ?? null;
+  }
+  if (workerEvent.effective_model !== undefined) {
+    runningEntry.effective_model = workerEvent.effective_model ?? null;
+  }
+
+  runningEntry.recent_events.push({
+    at_ms: workerEvent.timestamp_ms,
+    event: workerEvent.event,
+    message: workerEvent.detail ?? null,
+    ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
+    ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {}),
+    ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {}),
+    ...(workerEvent.tool_call_id !== undefined ? { tool_call_id: workerEvent.tool_call_id } : {}),
+    ...(workerEvent.tool_name !== undefined ? { tool_name: workerEvent.tool_name } : {}),
+    ...(workerEvent.protocol_warning !== undefined ? { protocol_warning: { ...workerEvent.protocol_warning } } : {}),
+    ...(workerEvent.model_reroute !== undefined
+      ? { model_reroute: workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null }
+      : {}),
+    ...(workerEvent.requested_model !== undefined ? { requested_model: workerEvent.requested_model } : {}),
+    ...(workerEvent.effective_model !== undefined ? { effective_model: workerEvent.effective_model } : {})
+  });
+  if (runningEntry.recent_events.length > 20) {
+    runningEntry.recent_events.splice(0, runningEntry.recent_events.length - 20);
+  }
+
+  if (runningEntry.run_id) {
+    void context
+      .persistRunEvent?.({
+        run_id: runningEntry.run_id,
+        timestamp_ms: workerEvent.timestamp_ms,
+        event: workerEvent.event,
+        message: workerEvent.detail ?? null,
+        reason_code: workerEvent.reason_code ?? null,
+        request_method: workerEvent.request_method ?? null,
+        request_category: workerEvent.request_category ?? null
+      })
+      .catch(() => {
+        context.logger?.log({
+          level: 'warn',
+          event: CANONICAL_EVENT.persistence.recordEventFailed,
+          message: `failed to persist worker event for ${runningEntry.identifier}`,
+          context: {
+            issue_id: issueId,
+            issue_identifier: runningEntry.identifier,
+            session_id: runningEntry.session_id
+          }
+        });
+      });
+  }
+
+  const turnAlreadyObserved = context.beginExecutionGraphWorkerTurnObservation(runningEntry, workerEvent);
+  context.queuePersistExecutionGraphWorkerEvent(issueId, runningEntry, workerEvent, turnAlreadyObserved);
+
+  context.logger?.log({
+    level: 'info',
+    event: CANONICAL_EVENT.orchestration.workerEvent,
+    message: workerEvent.event,
+    context: {
+      issue_id: issueId,
+      issue_identifier: runningEntry.identifier,
+      session_id: runningEntry.session_id,
+      thread_id: runningEntry.thread_id,
+      turn_id: runningEntry.turn_id,
+      worker_host: runningEntry.worker_host,
+      codex_app_server_pid: runningEntry.codex_app_server_pid,
+      event: workerEvent.event,
+      event_summary: runningEntry.last_event_summary,
+      reason_code: workerEvent.reason_code ?? null,
+      request_method: workerEvent.request_method ?? null,
+      request_category: workerEvent.request_category ?? null
+    }
+  });
+  context.recordRuntimeEvent({
+    event: workerEvent.event,
+    severity: severityForRuntimeEvent(workerEvent.event),
+    issue_identifier: runningEntry.identifier,
+    session_id: runningEntry.session_id ?? undefined,
+    detail: workerEvent.detail,
+    ...(workerEvent.reason_code !== undefined ? { reason_code: workerEvent.reason_code } : {}),
+    ...(workerEvent.request_method !== undefined ? { request_method: workerEvent.request_method } : {}),
+    ...(workerEvent.request_category !== undefined ? { request_category: workerEvent.request_category } : {}),
+    ...(workerEvent.tool_call_id !== undefined ? { tool_call_id: workerEvent.tool_call_id } : {}),
+    ...(workerEvent.tool_name !== undefined ? { tool_name: workerEvent.tool_name } : {}),
+    ...(workerEvent.protocol_warning !== undefined ? { protocol_warning: { ...workerEvent.protocol_warning } } : {}),
+    ...(workerEvent.model_reroute !== undefined
+      ? { model_reroute: workerEvent.model_reroute ? { ...workerEvent.model_reroute } : null }
+      : {}),
+    ...(workerEvent.requested_model !== undefined ? { requested_model: workerEvent.requested_model } : {}),
+    ...(workerEvent.effective_model !== undefined ? { effective_model: workerEvent.effective_model } : {})
+  });
+  if (!context.emitExplicitPhaseMarker(issueId, workerEvent)) {
+    context.emitMappedPhaseMarker(issueId, workerEvent);
+  }
+
+  if (
+    workerEvent.event === CANONICAL_EVENT.codex.turnWaiting ||
+    runningEntry.running_waiting_started_at_ms != null ||
+    context.hasOutstandingToolCallEvidence(runningEntry)
+  ) {
+    void context.maybeClassifyRunningWaitStall(issueId, runningEntry, workerEvent.timestamp_ms);
+  }
+}
+
+function recordStaleRunningWorkerEvent(
+  context: WorkerEventWorkflowContext,
+  runningEntry: RunningEntry,
+  reason: QuarantinedWorkerEventReason
+): void {
+  const { issueId, workerEvent } = context;
+  const quarantinedEvent = {
+    at_ms: workerEvent.timestamp_ms,
+    event: workerEvent.event,
+    message: workerEvent.detail ?? null,
+    codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
+    worker_instance_id: normalizeWorkerInstanceId(workerEvent.worker_instance_id),
+    session_id: workerEvent.session_id ?? null,
+    thread_id: workerEvent.thread_id ?? null,
+    turn_id: workerEvent.turn_id ?? null,
+    active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+    active_worker_instance_id: runningEntry.worker_instance_id ?? null,
+    run_id: null,
+    issue_run_id: null,
+    attempt_id: null,
+    active_run_id: runningEntry.run_id ?? null,
+    active_issue_run_id: runningEntry.issue_run_id ?? null,
+    active_attempt_id: runningEntry.attempt_id ?? null,
+    active_session_id: runningEntry.session_id ?? null,
+    active_thread_id: runningEntry.thread_id ?? null,
+    active_turn_id: runningEntry.turn_id ?? null,
+    reason
+  };
+  runningEntry.quarantined_events = [...(runningEntry.quarantined_events ?? []), quarantinedEvent].slice(-40);
+  runningEntry.quarantined_event_count = (runningEntry.quarantined_event_count ?? 0) + 1;
+  runningEntry.last_quarantined_event_at_ms = workerEvent.timestamp_ms;
+
+  context.logger?.log({
+    level: 'warn',
+    event: CANONICAL_EVENT.orchestration.staleWorkerEventIgnored,
+    message: 'stale worker event ignored for active run',
+    context: {
+      issue_id: issueId,
+      issue_identifier: runningEntry.identifier,
+      active_thread_id: runningEntry.thread_id,
+      event_thread_id: workerEvent.thread_id ?? null,
+      active_turn_id: runningEntry.turn_id,
+      event_turn_id: workerEvent.turn_id ?? null,
+      active_session_id: runningEntry.session_id,
+      event_session_id: workerEvent.session_id ?? null,
+      active_codex_app_server_pid: runningEntry.codex_app_server_pid,
+      event_codex_app_server_pid: normalizeCodexAppServerPid(workerEvent.codex_app_server_pid),
+      active_worker_instance_id: runningEntry.worker_instance_id ?? null,
+      event_worker_instance_id: normalizeWorkerInstanceId(workerEvent.worker_instance_id),
+      active_run_id: runningEntry.run_id ?? null,
+      active_issue_run_id: runningEntry.issue_run_id ?? null,
+      active_attempt_id: runningEntry.attempt_id ?? null,
+      event: workerEvent.event,
+      reason: quarantinedEvent.reason
+    }
+  });
+  maybeRecordOwnershipConflict(runningEntry, workerEvent, reason);
+  context.notifyObservers();
+}
+
+function maybeRecordOwnershipConflict(
+  runningEntry: RunningEntry,
+  workerEvent: WorkerObservabilityEvent,
+  reason: QuarantinedWorkerEventReason
+): void {
+  if (reason !== 'worker_identity_mismatch' && reason !== 'inactive_worker_pid') {
+    return;
+  }
+  if (runningEntry.session_id || runningEntry.thread_id || runningEntry.turn_id) {
+    return;
+  }
+
+  const eventPid = normalizeCodexAppServerPid(workerEvent.codex_app_server_pid);
+  const eventWorkerInstanceId = normalizeWorkerInstanceId(workerEvent.worker_instance_id);
+  if (!eventPid && !eventWorkerInstanceId) {
+    return;
+  }
+
+  runningEntry.ownership_conflict = {
+    reason: 'pre_session_identity_conflict',
+    detected_at_ms: workerEvent.timestamp_ms,
+    event: workerEvent.event,
+    event_codex_app_server_pid: eventPid,
+    active_codex_app_server_pid: runningEntry.codex_app_server_pid ?? null,
+    event_worker_instance_id: eventWorkerInstanceId,
+    active_worker_instance_id: runningEntry.worker_instance_id ?? null,
+    event_thread_id: workerEvent.thread_id ?? null,
+    event_turn_id: workerEvent.turn_id ?? null,
+    event_session_id: workerEvent.session_id ?? null
+  };
+}
+
+export function staleWorkerExitReasonForRunningEntry(
+  running: RunningEntry,
+  details: WorkerExitDetails
+): 'worker_instance_mismatch' | 'worker_handle_mismatch' | 'worker_pid_mismatch' | 'thread_mismatch' | 'turn_mismatch' | 'session_mismatch' | null {
+  const exitWorkerInstanceId = normalizeWorkerInstanceId(details.worker_instance_id);
+  if (exitWorkerInstanceId && running.worker_instance_id && exitWorkerInstanceId !== running.worker_instance_id) {
+    return 'worker_instance_mismatch';
+  }
+
+  if (details.worker_handle !== undefined && details.worker_handle !== running.worker_handle) {
+    return 'worker_handle_mismatch';
+  }
+
+  const exitPid = normalizeCodexAppServerPid(details.codex_app_server_pid);
+  if (exitPid && running.codex_app_server_pid && exitPid !== running.codex_app_server_pid) {
+    return 'worker_pid_mismatch';
+  }
+
+  if (details.thread_id && running.thread_id && details.thread_id !== running.thread_id) {
+    return 'thread_mismatch';
+  }
+
+  if (details.turn_id && running.turn_id && details.turn_id !== running.turn_id) {
+    return 'turn_mismatch';
+  }
+
+  if (details.session_id && running.session_id && details.session_id !== running.session_id) {
+    return 'session_mismatch';
+  }
+
+  return null;
+}
+
+export async function applyWorkerExitLineage(params: {
+  running: RunningEntry;
+  details: WorkerExitDetails;
+  persistSession?: (params: { run_id: string; session_id: string }) => Promise<unknown>;
+}): Promise<void> {
+  const { running, details } = params;
+  const sessionId = details.session_id ?? null;
+  if (sessionId && !running.session_id) {
+    running.session_id = sessionId;
+    if (running.run_id) {
+      await params.persistSession?.({
+        run_id: running.run_id,
+        session_id: sessionId
+      });
+    }
+  }
+  if (details.thread_id && !running.thread_id) {
+    running.thread_id = details.thread_id;
+  }
+  if (details.turn_id && !running.turn_id) {
+    running.turn_id = details.turn_id;
+  }
+  const codexAppServerPid = normalizeCodexAppServerPid(details.codex_app_server_pid);
+  if (codexAppServerPid && !running.codex_app_server_pid) {
+    running.codex_app_server_pid = codexAppServerPid;
+  }
+}
+
+export function recordTerminationExitObserved(params: {
+  issueId: string;
+  running: RunningEntry;
+  reason: WorkerExitReason;
+  error: string | undefined;
+  details: WorkerExitDetails;
+  observedAtMs: number;
+  logger?: StructuredLogger;
+}): void {
+  const { issueId, running, reason, error, details } = params;
+  const termination = running.termination;
+  if (!termination) {
+    return;
+  }
+  running.termination = {
+    ...termination,
+    state: 'exit_observed',
+    exit_observed_at_ms: termination.exit_observed_at_ms ?? params.observedAtMs,
+    worker_instance_id: normalizeWorkerInstanceId(details.worker_instance_id) ?? termination.worker_instance_id ?? running.worker_instance_id ?? null,
+    codex_app_server_pid: normalizeCodexAppServerPid(details.codex_app_server_pid) ?? termination.codex_app_server_pid ?? running.codex_app_server_pid ?? null,
+    thread_id: details.thread_id ?? termination.thread_id ?? running.thread_id ?? null,
+    turn_id: details.turn_id ?? termination.turn_id ?? running.turn_id ?? null,
+    session_id: details.session_id ?? termination.session_id ?? running.session_id ?? null
+  };
+  params.logger?.log({
+    level: 'info',
+    event: CANONICAL_EVENT.orchestration.workerExitHandled,
+    message: 'termination-in-progress worker exit observed',
+    context: {
+      issue_id: issueId,
+      issue_identifier: running.identifier,
+      session_id: running.session_id,
+      reason,
+      outcome: 'termination_exit_observed',
+      termination_reason: termination.reason,
+      error: error ?? null,
+      worker_instance_id: running.termination.worker_instance_id,
+      codex_app_server_pid: running.termination.codex_app_server_pid,
+      thread_id: running.termination.thread_id,
+      turn_id: running.termination.turn_id
+    }
+  });
 }
 
 export function classifyWorkerActivity(params: {
