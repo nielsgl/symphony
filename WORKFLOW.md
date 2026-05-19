@@ -371,6 +371,7 @@ Use this only when completion is blocked by missing required tools or missing au
       - explicit reviewer instructions to access and verify.
     - Add review routing lines:
       - `Review routing: UI review required` and `UI evidence: published in this Linear issue`, or
+      - `Review routing: Human Review label present` and `UI evidence: <published in this Linear issue | not applicable>`, or
       - `Review routing: no UI review required` and `UI evidence: not applicable`, or
       - `Review routing: blocked human input required` and `UI evidence: not applicable`.
     - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
@@ -411,6 +412,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - UI review is required when the change affects user-visible UI behavior, layout, styling, visual hierarchy, navigation, interactions, loading/error/empty states, or meaningful user-facing copy.
    - UI review is not required for frontend-internal refactors, tests-only changes, dependency/build mechanics, or typo-only copy fixes that do not change product meaning.
    - Non-UI human review is required only when the ticket explicitly asks for human acceptance, product/architecture intent is unclear, or the reviewer cannot safely approve the behavior without owner judgment.
+   - A Linear label named `Human Review` is an explicit human-review routing requirement. Match this label case-insensitively against the prompt-visible issue labels, which are normalized to lowercase by the tracker model.
 5. For UI-routed work, verify that the Linear issue contains rendered rich media evidence.
    - The evidence must be visible as Linear-rendered image/video media, not just local paths, attachments, markdown-only links, or text descriptions.
    - This is a reviewer responsibility in v1; programmatic rendering enforcement is a future improvement.
@@ -464,10 +466,10 @@ Use this only when completion is blocked by missing required tools or missing au
 9. If the implementation needs a fresh approach:
    - Post a normal Linear review findings comment that explains the reset-level reason.
    - Move issue from `Agent Review` to `Rework`.
-10. If review passes and UI or human review is required:
+10. If review passes and UI review, non-UI human review, or the `Human Review` label requirement is present:
    - Post a short Linear comment: `Agent Review passed: no blocking findings. Routing: Human Review.`
    - Move issue from `Agent Review` to `Human Review`.
-11. If review passes and no human review is required:
+11. If review passes and none of these are present: UI review, non-UI human review, or the `Human Review` label requirement:
    - Post a short Linear comment: `Agent Review passed: no blocking findings. Routing: Merging.`
    - Move issue from `Agent Review` to `Merging`.
 
@@ -567,7 +569,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 - Branch:
 - PR:
 - PR checks:
-- Review routing: `<UI review required | no UI review required | blocked human input required>`
+- Review routing: `<UI review required | Human Review label present | no UI review required | blocked human input required>`
 - UI evidence: `<published in this Linear issue | not applicable>`
 
 ### Notes

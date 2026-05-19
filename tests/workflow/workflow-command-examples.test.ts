@@ -44,6 +44,13 @@ describe('workflow command examples', () => {
     );
     expect(workflow).toContain('Move issue from `Agent Review` to `In Progress`');
     expect(workflow).toContain('Move issue from `Agent Review` to `Rework`');
+    expect(workflow).toContain('A Linear label named `Human Review` is an explicit human-review routing requirement');
+    expect(workflow).toContain('Match this label case-insensitively');
+    expect(workflow).toContain('normalized to lowercase by the tracker model');
+    expect(workflow).toContain('Review routing: Human Review label present');
+    expect(workflow).toContain(
+      'If review passes and none of these are present: UI review, non-UI human review, or the `Human Review` label requirement'
+    );
     expect(workflow).toContain('Routing: Human Review');
     expect(workflow).toContain('Routing: Merging');
   });
