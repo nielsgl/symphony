@@ -43,6 +43,7 @@ import type {
   ToolCallLedgerObservation,
   QuarantinedWorkerEventReason,
   TranscriptToolCallDiagnostic,
+  CodexSessionTranscriptScanBudget,
   TranscriptToolCallDiagnosticStats,
   TranscriptToolCallLineage,
   WorkerCompletionReason,
@@ -457,6 +458,19 @@ function cloneTranscriptToolCallDiagnostics(
   };
 }
 
+function cloneCodexSessionTranscriptScanBudget(
+  budget: CodexSessionTranscriptScanBudget | undefined
+): CodexSessionTranscriptScanBudget | undefined {
+  if (!budget) {
+    return undefined;
+  }
+  return {
+    ...budget,
+    reason_codes: [...budget.reason_codes],
+    limits: { ...budget.limits }
+  };
+}
+
 function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotOptions>): RunningEntry {
   return {
     ...entry,
@@ -500,6 +514,10 @@ function cloneRunningEntry(entry: RunningEntry, options: Required<StateSnapshotO
     ),
     ...cloneTranscriptToolCallDiagnostics(entry.transcript_tool_call_diagnostics, options),
     codex_session_transcript_scan_offsets: { ...(entry.codex_session_transcript_scan_offsets ?? {}) },
+    codex_session_transcript_scan_budget: cloneCodexSessionTranscriptScanBudget(
+      entry.codex_session_transcript_scan_budget
+    ),
+    codex_session_transcript_candidate_cache: undefined,
     recovery: entry.recovery ? { ...entry.recovery } : null,
     termination: entry.termination ? { ...entry.termination } : null,
     ownership_conflict: entry.ownership_conflict ? { ...entry.ownership_conflict } : null,

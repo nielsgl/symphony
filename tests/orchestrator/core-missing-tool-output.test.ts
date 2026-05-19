@@ -964,6 +964,45 @@ describe('OrchestratorCore missing tool output', () => {
         exhausted: true
       });
       expect(runningAfterFirstScan?.codex_session_transcript_scan_budget?.reason_codes).toContain('transcript_probe_byte_budget_exhausted');
+      expect(
+        (runningAfterFirstScan as { codex_session_transcript_candidate_cache?: unknown } | undefined)
+          ?.codex_session_transcript_candidate_cache
+      ).toBeUndefined();
+
+      const snapshotAfterFirstScan = harness.orchestrator.getStateSnapshot();
+      const snapshotBudget = snapshotAfterFirstScan.running.get('i-transcript-bounded')
+        ?.codex_session_transcript_scan_budget;
+      const service = new SnapshotService({ nowMs: () => harness.now.value });
+      const projectedState = service.projectState(snapshotAfterFirstScan);
+      const projectedIssue = service.projectIssue(snapshotAfterFirstScan, 'ABC-TRANSCRIPT-BOUNDED');
+      const projectedDiagnostics = service.projectIssueRuntimeDiagnostics(
+        snapshotAfterFirstScan,
+        'ABC-TRANSCRIPT-BOUNDED'
+      );
+
+      expect(projectedState.running[0]?.codex_session_transcript_scan_budget).toMatchObject({
+        exhausted: true,
+        reason_codes: expect.arrayContaining(['transcript_probe_byte_budget_exhausted']),
+        limits: expect.objectContaining({ max_discovery_files: 20 })
+      });
+      expect(projectedIssue.running?.codex_session_transcript_scan_budget).toEqual(
+        projectedState.running[0]?.codex_session_transcript_scan_budget
+      );
+      expect(projectedDiagnostics.codex_session_transcript_scan_budget).toEqual(
+        projectedState.running[0]?.codex_session_transcript_scan_budget
+      );
+      expect(JSON.stringify(snapshotAfterFirstScan)).not.toContain(`${path.sep}sessions${path.sep}`);
+      expect(JSON.stringify(projectedState)).not.toContain(`${path.sep}sessions${path.sep}`);
+
+      snapshotBudget?.reason_codes.push('mutated_snapshot_reason');
+      if (snapshotBudget) {
+        snapshotBudget.limits.max_scan_bytes = 1;
+      }
+      const resnapshotBudget = harness.orchestrator
+        .getStateSnapshot()
+        .running.get('i-transcript-bounded')?.codex_session_transcript_scan_budget;
+      expect(resnapshotBudget?.reason_codes).not.toContain('mutated_snapshot_reason');
+      expect(resnapshotBudget?.limits.max_scan_bytes).toBe(262_144);
 
       harness.now.value += 1_000;
       await harness.orchestrator.tick('interval');
