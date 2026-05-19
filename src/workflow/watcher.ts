@@ -11,6 +11,10 @@ import { ConfigValidator } from './validator';
 
 type ReloadSource = 'startup' | 'watch' | 'preflight';
 
+export type WorkflowWatchListener = (eventType: fs.WatchEventType, filename: string | Buffer | null) => void;
+export type WorkflowWatchHandle = Pick<fs.FSWatcher, 'close'>;
+export type WorkflowWatchFileSystem = (path: string, listener: WorkflowWatchListener) => WorkflowWatchHandle;
+
 interface WorkflowWatcherOptions {
   explicitPath?: string;
   cwd?: string;
@@ -21,6 +25,7 @@ interface WorkflowWatcherOptions {
   resolver?: ConfigResolver;
   validator?: ConfigValidator;
   store?: EffectiveConfigStore;
+  watchFileSystem?: WorkflowWatchFileSystem;
 }
 
 export class WorkflowWatcher {
@@ -33,9 +38,10 @@ export class WorkflowWatcher {
   private readonly resolver: ConfigResolver;
   private readonly validator: ConfigValidator;
   private readonly store: EffectiveConfigStore;
+  private readonly watchFileSystem: WorkflowWatchFileSystem;
 
-  private directoryWatcher?: fs.FSWatcher;
-  private fileWatcher?: fs.FSWatcher;
+  private directoryWatcher?: WorkflowWatchHandle;
+  private fileWatcher?: WorkflowWatchHandle;
   private timer?: NodeJS.Timeout;
   private watchedPath?: string;
   private watchedFile?: string;
@@ -50,6 +56,7 @@ export class WorkflowWatcher {
     this.resolver = options.resolver ?? new ConfigResolver();
     this.validator = options.validator ?? new ConfigValidator({ clock: this.clock });
     this.store = options.store ?? new EffectiveConfigStore();
+    this.watchFileSystem = options.watchFileSystem ?? ((targetPath, listener) => fs.watch(targetPath, listener));
   }
 
   getStore(): EffectiveConfigStore {
@@ -66,7 +73,7 @@ export class WorkflowWatcher {
     this.watchedFile = path.basename(this.watchedPath);
     const watchedDir = path.dirname(this.watchedPath);
 
-    this.directoryWatcher = fs.watch(watchedDir, (eventType, filename) => {
+    this.directoryWatcher = this.watchFileSystem(watchedDir, (eventType, filename) => {
       if (filename != null && this.watchedFile) {
         const changedName = filename.toString();
         // Atomic-save flows can report rename with transient filenames. Accept all
@@ -228,7 +235,7 @@ export class WorkflowWatcher {
     }
 
     try {
-      this.fileWatcher = fs.watch(this.watchedPath, (eventType) => {
+      this.fileWatcher = this.watchFileSystem(this.watchedPath, (eventType) => {
         this.scheduleWatchReload();
 
         // Atomic save can swap inode and invalidate the file watcher.
