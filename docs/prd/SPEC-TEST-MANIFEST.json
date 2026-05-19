@@ -42,7 +42,7 @@
       "title_contains": "[SPEC-9.1-1][SPEC-17.2-1] derives deterministic workspace key and path from issue identifier"
     },
     "SPEC-10.1-1": {
-      "file": "tests/codex/runner.test.ts",
+      "file": "tests/codex/runner-lifecycle.test.ts",
       "title_contains": "[SPEC-10.1-1][SPEC-17.5-1] launches with bash command/cwd and performs ordered startup handshake"
     },
     "SPEC-11.2-1": {
@@ -54,7 +54,7 @@
       "title_contains": "keeps last known good config on invalid reload"
     },
     "SPEC-13.5-1": {
-      "file": "tests/codex/runner.test.ts",
+      "file": "tests/codex/runner-telemetry.test.ts",
       "title_contains": "[SPEC-13.5-1] extracts usage/rate-limit telemetry from compatible payload variants"
     },
     "SPEC-13.7-1": {
@@ -90,7 +90,7 @@
       "title_contains": "dispatches in priority->created_at->identifier order"
     },
     "SPEC-17.5-1": {
-      "file": "tests/codex/runner.test.ts",
+      "file": "tests/codex/runner-lifecycle.test.ts",
       "title_contains": "[SPEC-10.1-1][SPEC-17.5-1] launches with bash command/cwd and performs ordered startup handshake"
     },
     "SPEC-17.6-1": {
