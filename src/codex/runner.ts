@@ -82,6 +82,7 @@ interface TurnEventContext {
   thread_id: string;
   turn_id: string;
   session_id: string;
+  turn_started_at_ms: number;
 }
 
 interface TranscriptTerminalEvidence {
@@ -201,6 +202,16 @@ function serializeTranscriptLookupMetadata(lookup: TranscriptCandidateLookupResu
     cache_refreshed_at_ms: lookup.refreshedAtMs,
     cache_expires_at_ms: lookup.expiresAtMs
   };
+}
+
+function parseCodexRolloutTimestampMs(filename: string): number | null {
+  const match = filename.match(/rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})(?:[.-](\d{3}))?/);
+  if (!match) {
+    return null;
+  }
+  const [, date, hour, minute, second, millis = '000'] = match;
+  const parsed = Date.parse(`${date}T${hour}:${minute}:${second}.${millis}Z`);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function normalizeCodexHome(input: CodexRunnerStartInput): string {
@@ -1211,7 +1222,8 @@ export class CodexRunner {
         protocol.setTurnContext({
           thread_id,
           turn_id,
-          session_id: `${thread_id}-${turn_id}`
+          session_id: `${thread_id}-${turn_id}`,
+          turn_started_at_ms: Date.now()
         });
         void protocol.refreshThreadActivity(thread_id, input.readTimeoutMs, emit);
 
@@ -1482,7 +1494,7 @@ export class CodexRunner {
 
       const session_id = `${thread_id}-${turn_id}`;
       emit({ event: CANONICAL_EVENT.codex.turnStarted, thread_id, turn_id, session_id });
-      protocol.setTurnContext({ thread_id, turn_id, session_id });
+      protocol.setTurnContext({ thread_id, turn_id, session_id, turn_started_at_ms: Date.now() });
 
       const waitResult = await cancellation.withCancellation(protocol.waitForTurnTerminal(input.turnTimeoutMs, emit));
       const usage = waitResult.usage;
@@ -2321,7 +2333,10 @@ class ProtocolClient {
       }
       let entries: fs.Dirent[];
       try {
-        entries = this.sortTranscriptDiscoveryEntries(fs.readdirSync(current.directory, { withFileTypes: true }));
+        entries = this.sortTranscriptDiscoveryEntries(
+          fs.readdirSync(current.directory, { withFileTypes: true }),
+          context.turn_started_at_ms
+        );
       } catch {
         continue;
       }
@@ -2504,7 +2519,7 @@ class ProtocolClient {
     );
   }
 
-  private sortTranscriptDiscoveryEntries(entries: fs.Dirent[]): fs.Dirent[] {
+  private sortTranscriptDiscoveryEntries(entries: fs.Dirent[], activeStartedAtMs?: number): fs.Dirent[] {
     return [...entries].sort((left, right) => {
       const leftTranscript = left.isFile() && left.name.endsWith('.jsonl');
       const rightTranscript = right.isFile() && right.name.endsWith('.jsonl');
@@ -2512,6 +2527,21 @@ class ProtocolClient {
         return leftTranscript ? -1 : 1;
       }
       if (leftTranscript && rightTranscript) {
+        const leftTimestampMs = parseCodexRolloutTimestampMs(left.name);
+        const rightTimestampMs = parseCodexRolloutTimestampMs(right.name);
+        if (activeStartedAtMs !== undefined && (leftTimestampMs !== null || rightTimestampMs !== null)) {
+          if (leftTimestampMs === null) {
+            return 1;
+          }
+          if (rightTimestampMs === null) {
+            return -1;
+          }
+          const proximity = Math.abs(leftTimestampMs - activeStartedAtMs) - Math.abs(rightTimestampMs - activeStartedAtMs);
+          if (proximity !== 0) {
+            return proximity;
+          }
+          return rightTimestampMs - leftTimestampMs;
+        }
         return right.name.localeCompare(left.name);
       }
       const leftDirectory = left.isDirectory();

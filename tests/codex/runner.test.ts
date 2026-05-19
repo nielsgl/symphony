@@ -2557,6 +2557,69 @@ describe('CodexRunner', () => {
     });
   });
 
+  it('prioritizes the active fallback transcript before newer same-directory noise under discovery budget', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const sessionsDir = path.join(codexHome, 'sessions', '2026', '05', '07');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const filenameTimestamp = (date: Date) => date.toISOString().slice(0, 19).replace(/:/g, '-');
+    const activeStartedAtMs = Date.now();
+    const activeTranscriptTimestamp = filenameTimestamp(new Date(activeStartedAtMs - 10_000));
+
+    fs.writeFileSync(
+      path.join(sessionsDir, `rollout-${activeTranscriptTimestamp}-active.jsonl`),
+      `${JSON.stringify({
+        timestamp: new Date(activeStartedAtMs - 10_000).toISOString(),
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          thread_id: 'thread-long-running',
+          turn_id: 'turn-long-running',
+          last_agent_message: 'older active fallback transcript won'
+        }
+      })}\n`,
+      'utf8'
+    );
+    for (let index = 0; index < 40; index += 1) {
+      const noiseTimestamp = filenameTimestamp(new Date(activeStartedAtMs + (60 + index) * 60_000));
+      fs.writeFileSync(
+        path.join(sessionsDir, `rollout-${noiseTimestamp}-noise.jsonl`),
+        `${JSON.stringify({
+          timestamp: new Date(activeStartedAtMs + (60 + index) * 60_000).toISOString(),
+          type: 'event_msg',
+          payload: { type: 'noise', padding: 'x'.repeat(128) }
+        })}\n`,
+        'utf8'
+      );
+    }
+
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-long-running"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-long-running"}}}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-long-running',
+      turn_id: 'turn-long-running',
+      terminal_source: 'session_transcript',
+      last_agent_message: 'older active fallback transcript won',
+      transcript_lookup: expect.objectContaining({
+        source: 'fallback',
+        candidate_count: 1,
+        exhausted: false
+      })
+    });
+  });
+
   it('emits transcript lookup diagnostics when fallback budget is exhausted', async () => {
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
