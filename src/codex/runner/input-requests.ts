@@ -1,3 +1,5 @@
+import { REASON_CODES } from '../../observability/reason-codes';
+
 import type { CodexInputRequestPayload } from '../types';
 
 import { asRecord, readString, type ProtocolMessage } from './common';
@@ -107,10 +109,7 @@ function selectApprovalOptionLabel(options: unknown[]): string | null {
   return best?.answerLabel ?? null;
 }
 
-type NonInteractiveInputAnswerMode =
-  | 'approval_option_exact'
-  | 'approval_option_permissive'
-  | 'non_interactive_fallback';
+type NonInteractiveInputAnswerMode = 'approval_option_exact' | 'approval_option_permissive' | 'non_interactive_fallback';
 
 interface NonInteractiveInputAnswers {
   answers: Record<string, { answers: string[] }>;
@@ -192,7 +191,15 @@ function toInputRequestPayload(message: ProtocolMessage): CodexInputRequestPaylo
         ...(options.length > 0 ? { options } : {})
       };
     })
-    .filter((question): question is { id: string; prompt?: string; options?: Array<{ label: string; value?: string }> } => question !== null);
+    .filter(
+      (
+        question
+      ): question is {
+        id: string;
+        prompt?: string;
+        options?: Array<{ label: string; value?: string }>;
+      } => question !== null
+    );
 
   const promptText = readString(params.prompt) ?? readString(params.message) ?? null;
   const flattenedOptions = questions.flatMap((question) => (question.options ?? []).map((option) => option.label));
@@ -209,4 +216,137 @@ function toInputRequestPayload(message: ProtocolMessage): CodexInputRequestPaylo
   };
 }
 
-export { buildNonInteractiveInputAnswers, readOptionalToolCallId, readResponseItem, readToolCallId, toInputRequestPayload };
+type UnsupportedServerRequestCategory = 'approval' | 'permission' | 'authentication' | 'account' | 'safety_sensitive' | 'unsupported';
+
+interface UnsupportedServerRequestClassification {
+  category: UnsupportedServerRequestCategory;
+  reason_code: string;
+  terminal: boolean;
+}
+
+function approvalResponse(message: ProtocolMessage): { result: Record<string, string>; detail: string } | null {
+  if (typeof message.id !== 'number') {
+    return null;
+  }
+
+  const method = (message.method ?? '').toLowerCase();
+  if (method === 'item/commandexecution/requestapproval') {
+    return {
+      result: { decision: 'acceptForSession' },
+      detail: 'acceptForSession'
+    };
+  }
+  if (method === 'item/filechange/requestapproval') {
+    return {
+      result: { decision: 'acceptForSession' },
+      detail: 'acceptForSession'
+    };
+  }
+  if (method === 'execcommandapproval') {
+    return {
+      result: { decision: 'approved_for_session' },
+      detail: 'approved_for_session'
+    };
+  }
+  if (method === 'applypatchapproval') {
+    return {
+      result: { decision: 'approved_for_session' },
+      detail: 'approved_for_session'
+    };
+  }
+  return null;
+}
+
+function isApprovalLikeServerRequest(message: ProtocolMessage): boolean {
+  if (typeof message.id !== 'number') {
+    return false;
+  }
+
+  const method = (message.method ?? '').toLowerCase();
+  return method.includes('approval') && (method.includes('request') || method.includes('required'));
+}
+
+function unsupportedServerRequestClassification(message: ProtocolMessage): UnsupportedServerRequestClassification {
+  const method = (message.method ?? '').toLowerCase();
+  const safetySensitiveTerminal = true;
+
+  if (method.includes('permission') && (method.includes('approval') || method.includes('request') || method.includes('required'))) {
+    return {
+      category: 'permission',
+      reason_code: REASON_CODES.unsupportedPermissionServerRequest,
+      terminal: safetySensitiveTerminal
+    };
+  }
+
+  if (method.startsWith('account/') || method.includes('token')) {
+    return {
+      category: 'account',
+      reason_code: REASON_CODES.unsupportedAccountServerRequest,
+      terminal: safetySensitiveTerminal
+    };
+  }
+
+  if (method.includes('auth') || method.includes('oauth') || method.includes('login')) {
+    return {
+      category: 'authentication',
+      reason_code: REASON_CODES.unsupportedAuthenticationServerRequest,
+      terminal: safetySensitiveTerminal
+    };
+  }
+
+  if (method.includes('credential') || method.includes('secret') || method.includes('session')) {
+    return {
+      category: 'safety_sensitive',
+      reason_code: REASON_CODES.unsupportedSafetySensitiveServerRequest,
+      terminal: safetySensitiveTerminal
+    };
+  }
+
+  if (isApprovalLikeServerRequest(message)) {
+    return {
+      category: 'approval',
+      reason_code: REASON_CODES.unsupportedApprovalServerRequest,
+      terminal: false
+    };
+  }
+
+  return {
+    category: 'unsupported',
+    reason_code: REASON_CODES.unsupportedServerRequest,
+    terminal: false
+  };
+}
+
+function isMcpElicitationRequest(message: ProtocolMessage): boolean {
+  if (typeof message.id !== 'number') {
+    return false;
+  }
+
+  return (message.method ?? '').toLowerCase() === 'mcpserver/elicitation/request';
+}
+
+function isToolRequestUserInput(message: ProtocolMessage): boolean {
+  if (typeof message.id !== 'number') {
+    return false;
+  }
+
+  const method = (message.method ?? '').toLowerCase();
+  return method === 'item/tool/requestuserinput';
+}
+
+function isUnhandledServerRequest(message: ProtocolMessage): boolean {
+  return typeof message.id === 'number' && typeof message.method === 'string';
+}
+
+export {
+  approvalResponse,
+  buildNonInteractiveInputAnswers,
+  isMcpElicitationRequest,
+  isToolRequestUserInput,
+  isUnhandledServerRequest,
+  readOptionalToolCallId,
+  readResponseItem,
+  readToolCallId,
+  toInputRequestPayload,
+  unsupportedServerRequestClassification
+};
