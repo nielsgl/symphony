@@ -20,6 +20,17 @@ import {
   shouldDispatchIssue,
   sortCandidatesForDispatch
 } from './decisions';
+import {
+  budgetConfigured,
+  budgetScopeLabel,
+  computeBudgetProjection,
+  defaultBudgetProjection,
+  pruneBudgetSamples,
+  recordBudgetUsageSample,
+  selectBudgetCandidate,
+  type BudgetCandidate,
+  type BudgetUsageSample
+} from './core/budget';
 import type {
   BlockedEntry,
   BudgetRuntimeProjection,
@@ -730,42 +741,6 @@ function classifyPersistenceFailure(error: unknown): string {
 
 function normalizeStateName(state: string): string {
   return state.trim().toLowerCase();
-}
-
-function defaultBudgetProjection(windowMinutes = 1440): BudgetRuntimeProjection {
-  return {
-    budget_usage_tokens: null,
-    budget_limit_tokens: null,
-    budget_window_minutes: windowMinutes,
-    budget_status: 'ok',
-    budget_policy: null,
-    budget_message: null
-  };
-}
-
-type BudgetScope = 'per_run_total_tokens' | 'per_issue_rolling_tokens';
-
-interface BudgetCandidate {
-  scope: BudgetScope;
-  usage: number;
-  limit: number;
-  warning_threshold: number;
-  status: Exclude<BudgetRuntimeProjection['budget_status'], 'telemetry_unavailable'>;
-}
-
-function budgetScopeLabel(scope: BudgetScope): string {
-  return scope === 'per_issue_rolling_tokens' ? 'rolling issue budget' : 'per-run budget';
-}
-
-function budgetStatusRank(status: BudgetCandidate['status']): number {
-  switch (status) {
-    case 'hard_limited':
-      return 2;
-    case 'warning':
-      return 1;
-    case 'ok':
-      return 0;
-  }
 }
 
 export class OrchestratorCore {
@@ -2857,61 +2832,22 @@ export class OrchestratorCore {
   }
 
   private budgetConfigured(): boolean {
-    return Boolean(
-      this.config.budget &&
-        (typeof this.config.budget.per_run_total_tokens === 'number' ||
-          typeof this.config.budget.per_issue_rolling_tokens === 'number')
-    );
+    return budgetConfigured(this.config.budget);
   }
 
-  private pruneBudgetSamples(issueId: string, nowMs: number): Array<{ at_ms: number; total_tokens: number }> {
-    const windowMinutes = this.config.budget?.rolling_window_minutes ?? 1440;
-    const windowMs = Math.max(1, windowMinutes) * 60_000;
-    const budgetSamples = this.state.budget_usage_samples ?? new Map<string, Array<{ at_ms: number; total_tokens: number }>>();
+  private pruneBudgetSamples(issueId: string, nowMs: number): BudgetUsageSample[] {
+    const budgetSamples = this.state.budget_usage_samples ?? new Map<string, BudgetUsageSample[]>();
     this.state.budget_usage_samples = budgetSamples;
-    const samples = (budgetSamples.get(issueId) ?? []).filter((sample) => nowMs - sample.at_ms <= windowMs);
-    budgetSamples.set(issueId, samples);
-    return samples;
+    return pruneBudgetSamples(this.config.budget, budgetSamples, issueId, nowMs);
   }
 
   private selectBudgetCandidate(issueId: string, currentAttemptTokens: number): BudgetCandidate | null {
-    const budget = this.config.budget;
-    if (!budget) {
-      return null;
-    }
-
-    const currentUsage = Math.max(0, currentAttemptTokens);
     const samples = this.pruneBudgetSamples(issueId, this.nowMs());
-    const rollingUsage = samples.reduce((sum, sample) => sum + sample.total_tokens, 0) + currentUsage;
-    const candidates: BudgetCandidate[] = [];
-    const addCandidate = (scope: BudgetScope, usage: number, limit: number) => {
-      const warningThreshold = Math.ceil(limit * budget.warning_threshold_ratio);
-      candidates.push({
-        scope,
-        usage,
-        limit,
-        warning_threshold: warningThreshold,
-        status: usage >= limit ? 'hard_limited' : usage >= warningThreshold ? 'warning' : 'ok'
-      });
-    };
-    if (typeof budget.per_run_total_tokens === 'number') {
-      addCandidate('per_run_total_tokens', currentUsage, budget.per_run_total_tokens);
-    }
-    if (typeof budget.per_issue_rolling_tokens === 'number') {
-      addCandidate('per_issue_rolling_tokens', rollingUsage, budget.per_issue_rolling_tokens);
-    }
-    const [selected] = candidates.sort((a, b) => {
-      const statusDelta = budgetStatusRank(b.status) - budgetStatusRank(a.status);
-      if (statusDelta !== 0) {
-        return statusDelta;
-      }
-      const ratioDelta = b.usage / b.limit - a.usage / a.limit;
-      if (ratioDelta !== 0) {
-        return ratioDelta;
-      }
-      return a.scope.localeCompare(b.scope);
+    return selectBudgetCandidate({
+      budget: this.config.budget,
+      samples,
+      currentAttemptTokens
     });
-    return selected ?? null;
   }
 
   private computeBudgetProjection(
@@ -2927,23 +2863,13 @@ export class OrchestratorCore {
     }
 
     const selected = this.selectBudgetCandidate(issueId, currentAttemptTokens);
-    let status: BudgetRuntimeProjection['budget_status'] = 'ok';
-    if (forcedStatus) {
-      status = forcedStatus;
-    } else if (this.budgetConfigured() && telemetryStatus === 'unavailable') {
-      status = 'telemetry_unavailable';
-    } else if (selected) {
-      status = selected.status;
-    }
-
-    return {
-      budget_usage_tokens: this.budgetConfigured() && telemetryStatus !== 'unavailable' ? selected?.usage ?? null : null,
-      budget_limit_tokens: selected?.limit ?? null,
-      budget_window_minutes: budget.rolling_window_minutes,
-      budget_status: status,
-      budget_policy: this.budgetConfigured() ? budget.hard_limit_policy : null,
-      budget_message: forcedMessage ?? null
-    };
+    return computeBudgetProjection({
+      budget,
+      selected,
+      telemetryStatus,
+      forcedStatus,
+      forcedMessage
+    });
   }
 
   private maybeEmitBudgetTelemetryUnavailable(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
@@ -3202,8 +3128,15 @@ export class OrchestratorCore {
       return;
     }
     const samples = this.pruneBudgetSamples(issueId, timestampMs);
-    samples.push({ at_ms: timestampMs, total_tokens: Math.max(0, totalTokens) });
-    this.state.budget_usage_samples?.set(issueId, samples);
+    this.state.budget_usage_samples?.set(
+      issueId,
+      recordBudgetUsageSample({
+        budget: this.config.budget,
+        samples,
+        totalTokens,
+        timestampMs
+      })
+    );
   }
 
   private quarantineBlockedWorkerEvent(
