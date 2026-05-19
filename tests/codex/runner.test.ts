@@ -2615,7 +2615,7 @@ describe('CodexRunner', () => {
 
     await expect(promise).rejects.toMatchObject({ code: REASON_CODES.turnTimeout });
 
-    expect(readdirSpy.mock.calls.length).toBeLessThanOrEqual(25);
+    expect(readdirSpy.mock.calls.length).toBeLessThanOrEqual(70);
     readdirSpy.mockRestore();
   });
 
@@ -2969,6 +2969,74 @@ describe('CodexRunner', () => {
         transcript_lookup_reason_codes: expect.arrayContaining(['transcript_discovery_file_count_budget_exhausted'])
       })
     );
+  });
+
+  it('finds filename-matched transcripts beyond the fallback probe budget', async () => {
+    const fake = new FakeProcess();
+    const workspaceCwd = makeWorkspace();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
+    const now = new Date();
+    const sessionsDir = path.join(
+      codexHome,
+      'sessions',
+      String(now.getFullYear()).padStart(4, '0'),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0')
+    );
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    for (let index = 0; index < 60; index += 1) {
+      fs.writeFileSync(
+        path.join(sessionsDir, `rollout-2026-05-07T23-59-${String(index).padStart(2, '0')}-noise.jsonl`),
+        `${JSON.stringify({
+          timestamp: new Date().toISOString(),
+          type: 'event_msg',
+          payload: { type: 'noise', padding: 'x'.repeat(1024) }
+        })}\n`,
+        'utf8'
+      );
+    }
+    fs.writeFileSync(
+      path.join(sessionsDir, 'rollout-2026-05-07T00-00-00-thread-filename-budget.jsonl'),
+      `${JSON.stringify({
+        timestamp: '2026-05-07T00:00:00.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          thread_id: 'thread-filename-budget',
+          turn_id: 'turn-filename-budget',
+          last_agent_message: 'filename lookup found active transcript'
+        }
+      })}\n`,
+      'utf8'
+    );
+
+    const runner = new CodexRunner({ spawnProcess: () => fake });
+    const promise = runner.startSessionAndRunTurn(
+      makeStartInput(workspaceCwd, {
+        commandEnv: { CODEX_HOME: codexHome },
+        turnTimeoutMs: 1000
+      })
+    );
+
+    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-filename-budget"}}}\n');
+    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-filename-budget"}}}\n');
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'completed',
+      thread_id: 'thread-filename-budget',
+      turn_id: 'turn-filename-budget',
+      terminal_source: 'session_transcript',
+      last_agent_message: 'filename lookup found active transcript',
+      transcript_lookup: expect.objectContaining({
+        source: 'filename',
+        candidate_count: 1,
+        files_considered: 61,
+        files_parsed: 0,
+        bytes_read: 0,
+        exhausted: false
+      })
+    });
   });
 
   it('keeps wrong-lineage transcript task_complete diagnostic-only until protocol completion', async () => {

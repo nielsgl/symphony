@@ -108,8 +108,8 @@ interface TranscriptCandidateCache {
 }
 
 interface TranscriptCandidateLookupStats {
-  source: 'indexed' | 'fallback' | 'cache' | 'missing' | 'budget_exhausted';
-  cachedSource?: 'indexed' | 'fallback' | 'missing' | 'budget_exhausted';
+  source: 'indexed' | 'filename' | 'fallback' | 'cache' | 'missing' | 'budget_exhausted';
+  cachedSource?: 'indexed' | 'filename' | 'fallback' | 'missing' | 'budget_exhausted';
   candidateCount: number;
   filesConsidered: number;
   filesParsed: number;
@@ -1780,10 +1780,11 @@ class ProtocolClient {
   private static readonly TRANSCRIPT_SCAN_INTERVAL_MS = 100;
   private static readonly TRANSCRIPT_CANDIDATE_CACHE_TTL_MS = 15_000;
   private static readonly TRANSCRIPT_MAX_CANDIDATE_FILES = 40;
+  private static readonly TRANSCRIPT_MAX_FILENAME_DISCOVERY_FILES = 1000;
   private static readonly TRANSCRIPT_MAX_DISCOVERY_FILES = 20;
   private static readonly TRANSCRIPT_MAX_PROBE_BYTES = 256 * 1024;
   private static readonly TRANSCRIPT_MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-  private static readonly TRANSCRIPT_MAX_WALL_CLOCK_MS = 20;
+  private static readonly TRANSCRIPT_MAX_WALL_CLOCK_MS = 50;
   private static readonly TRANSCRIPT_MAX_DEPTH = 5;
 
   constructor(
@@ -2373,6 +2374,17 @@ class ProtocolClient {
       });
     }
 
+    const filenameLookup = this.findFilenameMatchedTranscriptPaths(sessionsRoot, context, nowMs);
+    if (filenameLookup.paths.length > 0) {
+      return this.cacheTranscriptLookup(
+        identityKey,
+        nowMs,
+        filenameLookup.paths,
+        filenameLookup.stats,
+        filenameLookup.scannedDirectoryMtimes
+      );
+    }
+
     const candidates: string[] = [];
     const deadlineAtMs = Date.now() + ProtocolClient.TRANSCRIPT_MAX_WALL_CLOCK_MS;
     const reasonCodes = new Set<string>();
@@ -2559,6 +2571,132 @@ class ProtocolClient {
     } catch {
       return true;
     }
+  }
+
+  private findFilenameMatchedTranscriptPaths(
+    sessionsRoot: string,
+    context: TurnEventContext,
+    nowMs: number
+  ): {
+    paths: string[];
+    stats: TranscriptCandidateLookupStats;
+    scannedDirectoryMtimes: Array<{ directory: string; mtimeMs: number }>;
+  } {
+    const paths: string[] = [];
+    const reasonCodes = new Set<string>();
+    const scannedDirectoryMtimes = new Map<string, number>();
+    const deadlineAtMs = Date.now() + ProtocolClient.TRANSCRIPT_MAX_WALL_CLOCK_MS;
+    let filesConsidered = 0;
+    const stack = this.likelyTranscriptSessionDirectories(sessionsRoot, context.turn_started_at_ms)
+      .map((directory) => ({ directory, depth: 0 }));
+
+    while (
+      stack.length > 0 &&
+      paths.length < ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES &&
+      filesConsidered < ProtocolClient.TRANSCRIPT_MAX_FILENAME_DISCOVERY_FILES
+    ) {
+      if (Date.now() > deadlineAtMs) {
+        reasonCodes.add('transcript_filename_discovery_wall_clock_budget_exhausted');
+        break;
+      }
+      const current = stack.pop();
+      if (!current) {
+        continue;
+      }
+      try {
+        const directoryStat = fs.statSync(current.directory);
+        if (directoryStat.isDirectory()) {
+          scannedDirectoryMtimes.set(current.directory, directoryStat.mtimeMs);
+        }
+      } catch {
+        continue;
+      }
+
+      let entries: fs.Dirent[];
+      try {
+        entries = this.sortTranscriptDiscoveryEntries(
+          fs.readdirSync(current.directory, { withFileTypes: true }),
+          context.turn_started_at_ms,
+          current.directory,
+          sessionsRoot
+        );
+      } catch {
+        continue;
+      }
+
+      const nextDirectories: Array<{ directory: string; depth: number }> = [];
+      for (const entry of entries) {
+        if (Date.now() > deadlineAtMs) {
+          reasonCodes.add('transcript_filename_discovery_wall_clock_budget_exhausted');
+          break;
+        }
+        const entryPath = path.join(current.directory, entry.name);
+        if (entry.isDirectory()) {
+          if (current.depth < ProtocolClient.TRANSCRIPT_MAX_DEPTH) {
+            nextDirectories.push({ directory: entryPath, depth: current.depth + 1 });
+          }
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
+          continue;
+        }
+        filesConsidered += 1;
+        if (this.transcriptPathMayMatch(entryPath, context)) {
+          paths.push(entryPath);
+          if (paths.length >= ProtocolClient.TRANSCRIPT_MAX_CANDIDATE_FILES) {
+            reasonCodes.add('transcript_candidate_file_budget_exhausted');
+            break;
+          }
+        }
+        if (filesConsidered >= ProtocolClient.TRANSCRIPT_MAX_FILENAME_DISCOVERY_FILES) {
+          reasonCodes.add('transcript_filename_discovery_file_count_budget_exhausted');
+          break;
+        }
+      }
+      for (const nextDirectory of nextDirectories.reverse()) {
+        stack.push(nextDirectory);
+      }
+    }
+
+    const exhausted = reasonCodes.size > 0;
+    return {
+      paths,
+      stats: {
+        source: 'filename',
+        candidateCount: paths.length,
+        filesConsidered,
+        filesParsed: 0,
+        bytesRead: 0,
+        exhausted,
+        reasonCodes: [...reasonCodes].sort()
+      },
+      scannedDirectoryMtimes: [...scannedDirectoryMtimes.entries()].map(([directory, mtimeMs]) => ({ directory, mtimeMs }))
+    };
+  }
+
+  private likelyTranscriptSessionDirectories(sessionsRoot: string, startedAtMs: number): string[] {
+    const directories = new Set<string>();
+    const addDate = (date: Date, utc: boolean): void => {
+      const year = utc ? date.getUTCFullYear() : date.getFullYear();
+      const month = (utc ? date.getUTCMonth() : date.getMonth()) + 1;
+      const day = utc ? date.getUTCDate() : date.getDate();
+      directories.add(
+        path.join(
+          sessionsRoot,
+          String(year).padStart(4, '0'),
+          String(month).padStart(2, '0'),
+          String(day).padStart(2, '0')
+        )
+      );
+    };
+
+    const dayMs = 24 * 60 * 60 * 1000;
+    for (const offset of [-dayMs, 0, dayMs]) {
+      const date = new Date(startedAtMs + offset);
+      addDate(date, false);
+      addDate(date, true);
+    }
+    return [...directories];
   }
 
   private areTranscriptScannedDirectoriesFresh(): boolean {

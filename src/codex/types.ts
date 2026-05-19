@@ -133,8 +133,8 @@ export interface CodexTurnResult {
 }
 
 export interface CodexTranscriptLookupMetadata {
-  source: 'indexed' | 'fallback' | 'cache' | 'missing' | 'budget_exhausted';
-  cached_source?: 'indexed' | 'fallback' | 'missing' | 'budget_exhausted';
+  source: 'indexed' | 'filename' | 'fallback' | 'cache' | 'missing' | 'budget_exhausted';
+  cached_source?: 'indexed' | 'filename' | 'fallback' | 'missing' | 'budget_exhausted';
   candidate_count: number;
   files_considered: number;
   files_parsed: number;
