@@ -161,6 +161,7 @@ function makeTranscriptScanBudget() {
     reason_codes: ['transcript_probe_byte_budget_exhausted', 'transcript_scan_wall_clock_budget_exhausted'],
     limits: {
       max_candidate_files: 12,
+      max_discovery_files: 20,
       max_probe_bytes: 8192,
       max_scan_bytes: 16384,
       max_file_age_ms: 86_400_000,
@@ -891,6 +892,7 @@ describe('SnapshotService', () => {
       reason_codes: ['transcript_probe_byte_budget_exhausted', 'transcript_scan_wall_clock_budget_exhausted'],
       limits: {
         max_candidate_files: 12,
+        max_discovery_files: 20,
         max_probe_bytes: 8192,
         max_scan_bytes: 16384,
         max_file_age_ms: 86_400_000,

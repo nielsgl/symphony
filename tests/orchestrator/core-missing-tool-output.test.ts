@@ -978,6 +978,69 @@ describe('OrchestratorCore missing tool output', () => {
     });
   });
 
+  it('stops historical transcript discovery at the files-considered budget', async () => {
+    await withTemporaryCodexHome(async (codexHome) => {
+      const historicalDir = path.join(codexHome, 'sessions', '2026', '05', '02');
+      fs.mkdirSync(historicalDir, { recursive: true });
+      const historicalFileCount = 120;
+      for (let index = 0; index < historicalFileCount; index += 1) {
+        fs.writeFileSync(
+          path.join(historicalDir, `rollout-2026-05-02T00-00-${String(index).padStart(3, '0')}-noise.jsonl`),
+          `${JSON.stringify({
+            timestamp: new Date(Date.now()).toISOString(),
+            type: 'event_msg',
+            payload: { type: 'noise', workspace: '/tmp/unrelated-workspace' }
+          })}\n`,
+          'utf8'
+        );
+      }
+
+      const harness = createHarness({
+        configOverrides: { running_wait_stall_threshold_ms: 10_000, stall_timeout_ms: 60_000 },
+        spawnWorker: async ({ issue, worker_host }) => {
+          return {
+            ok: true,
+            worker_handle: { issue_id: issue.id },
+            monitor_handle: { issue_id: issue.id },
+            worker_host
+          };
+        }
+      });
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: 'i-transcript-file-limit', identifier: 'ABC-TRANSCRIPT-FILE-LIMIT' })
+      ]);
+      await harness.orchestrator.tick('interval');
+
+      harness.orchestrator.onWorkerEvent('i-transcript-file-limit', {
+        timestamp_ms: harness.now.value,
+        event: CANONICAL_EVENT.codex.turnStarted,
+        thread_id: 'thread-file-limit',
+        turn_id: 'turn-file-limit',
+        session_id: 'session-file-limit'
+      });
+      harness.orchestrator.onWorkerEvent('i-transcript-file-limit', {
+        timestamp_ms: harness.now.value + 30,
+        event: CANONICAL_EVENT.codex.turnWaiting,
+        detail: 'waiting with many nonmatching historical transcripts present',
+        thread_id: 'thread-file-limit',
+        turn_id: 'turn-file-limit',
+        session_id: 'session-file-limit'
+      });
+
+      harness.now.value += 2_000;
+      await harness.orchestrator.tick('interval');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const scanBudget = harness.orchestrator.getStateSnapshot().running.get(
+        'i-transcript-file-limit'
+      )?.codex_session_transcript_scan_budget;
+      expect(scanBudget?.candidate_count).toBe(0);
+      expect(scanBudget?.files_considered).toBeLessThan(historicalFileCount);
+      expect(scanBudget?.files_considered).toBe(scanBudget?.limits.max_discovery_files);
+      expect(scanBudget?.reason_codes).toContain('transcript_discovery_file_count_budget_exhausted');
+    });
+  });
+
   it('ignores stale same-workspace rollout function_call records from a prior run', async () => {
     await withTemporaryCodexHome(async (codexHome) => {
       const workspacePath = path.join(codexHome, 'workspaces', 'NIE-79-reused');

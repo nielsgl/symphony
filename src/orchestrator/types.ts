@@ -363,6 +363,7 @@ export interface CodexSessionTranscriptScanBudget {
   reason_codes: string[];
   limits: {
     max_candidate_files: number;
+    max_discovery_files: number;
     max_probe_bytes: number;
     max_scan_bytes: number;
     max_file_age_ms: number;

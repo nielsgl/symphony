@@ -60,6 +60,7 @@ const DEFAULT_BACKPRESSURE_CONTROL_PLANE_HEALTH: ControlPlaneHealthState = 'degr
 const DEFAULT_BACKPRESSURE_CONTROL_PLANE_STALE_AFTER_MS = 60_000;
 const CODEX_SESSION_TRANSCRIPT_CANDIDATE_CACHE_TTL_MS = 15_000;
 const CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES = 40;
+const CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES = 20;
 const CODEX_SESSION_TRANSCRIPT_MAX_PROBE_BYTES = 256 * 1024;
 const CODEX_SESSION_TRANSCRIPT_MAX_SCAN_BYTES = 256 * 1024;
 const CODEX_SESSION_TRANSCRIPT_MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -8362,7 +8363,11 @@ export class OrchestratorCore {
     let filesParsed = 0;
     let remainingProbeBytes = CODEX_SESSION_TRANSCRIPT_MAX_PROBE_BYTES;
     const stack: Array<{ directory: string; depth: number }> = [{ directory: sessionsRoot, depth: 0 }];
-    while (stack.length > 0 && candidates.length < CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES) {
+    while (
+      stack.length > 0 &&
+      candidates.length < CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES &&
+      filesConsidered < CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES
+    ) {
       if (Date.now() > deadlineAtMs) {
         reasonCodes.add('transcript_discovery_wall_clock_budget_exhausted');
         break;
@@ -8391,6 +8396,10 @@ export class OrchestratorCore {
         }
         if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
           continue;
+        }
+        if (filesConsidered >= CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES) {
+          reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
+          break;
         }
         filesConsidered += 1;
         if (this.transcriptPathMayMatch(entryPath, runningEntry)) {
@@ -8440,6 +8449,9 @@ export class OrchestratorCore {
     }
     if (candidates.length >= CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES) {
       reasonCodes.add('transcript_candidate_file_budget_exhausted');
+    }
+    if (filesConsidered >= CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES && stack.length > 0) {
+      reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
     }
     this.updateTranscriptScanBudget(runningEntry, observedAtMs, {
       candidate_count: candidates.length,
@@ -8556,6 +8568,7 @@ export class OrchestratorCore {
       reason_codes: [...new Set(stats.reason_codes)].sort(),
       limits: {
         max_candidate_files: CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES,
+        max_discovery_files: CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES,
         max_probe_bytes: CODEX_SESSION_TRANSCRIPT_MAX_PROBE_BYTES,
         max_scan_bytes: CODEX_SESSION_TRANSCRIPT_MAX_SCAN_BYTES,
         max_file_age_ms: CODEX_SESSION_TRANSCRIPT_MAX_FILE_AGE_MS,
