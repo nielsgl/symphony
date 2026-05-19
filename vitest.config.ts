@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
     environment: 'node',
-    setupFiles: ['tests/setup/test-log-capture.ts'],
+    setupFiles: ['tests/setup/sqlite-warning-filter.ts', 'tests/setup/test-log-capture.ts'],
     testTimeout: 10000
   },
   coverage: {
