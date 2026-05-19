@@ -835,11 +835,41 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return typeof value === 'number' ? formatNumber(value) : unavailableLabel;
   }
 
-  function formatOverviewTokenValue(codexTotals, field, splitUnavailable) {
+  function hasOverviewTokenEvidence(payload) {
+    const codexTotals = payload && payload.codex_totals;
+    if (!codexTotals) {
+      return false;
+    }
+    if (codexTotals.token_split_status === 'aggregate_only') {
+      return true;
+    }
+    const tokenFields = [
+      'total_tokens',
+      'input_tokens',
+      'output_tokens',
+      'cached_input_tokens',
+      'reasoning_output_tokens',
+      'model_context_window'
+    ];
+    if (tokenFields.some((field) => typeof codexTotals[field] === 'number' && codexTotals[field] > 0)) {
+      return true;
+    }
+    const rows = []
+      .concat(payload.running || [])
+      .concat(payload.retrying || [])
+      .concat(payload.stopped_runs || []);
+    return rows.some((row) => row && row.token_telemetry_status === 'available' && row.tokens);
+  }
+
+  function formatOverviewTokenValue(payload, field, splitUnavailable) {
+    const codexTotals = payload && payload.codex_totals;
     if (!codexTotals) {
       return 'Unavailable';
     }
-    if (splitUnavailable && field !== 'model_context_window') {
+    if (!hasOverviewTokenEvidence(payload)) {
+      return 'Unavailable';
+    }
+    if (splitUnavailable && field !== 'total_tokens' && field !== 'model_context_window') {
       return 'Split unavailable';
     }
     return formatTokenDimension(codexTotals[field], 'Unavailable');
@@ -887,12 +917,12 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       createMetricCard('Stopped', formatNumber(payload.counts.stopped || 0)),
       createMetricCard('Stalled Waiting', formatNumber(payload.counts.running_stalled_waiting_count || 0)),
       createMetricCard('Awaiting Input', formatNumber(payload.counts.running_awaiting_input_count || 0)),
-      createMetricCard('Total Tokens', formatNumber(payload.codex_totals.total_tokens)),
-      createMetricCard('Input Tokens', formatOverviewTokenValue(payload.codex_totals, 'input_tokens', splitUnavailable)),
-      createMetricCard('Output Tokens', formatOverviewTokenValue(payload.codex_totals, 'output_tokens', splitUnavailable)),
-      createMetricCard('Cached Input Tokens', formatOverviewTokenValue(payload.codex_totals, 'cached_input_tokens', splitUnavailable)),
-      createMetricCard('Reasoning Output Tokens', formatOverviewTokenValue(payload.codex_totals, 'reasoning_output_tokens', splitUnavailable)),
-      createMetricCard('Max Context Window', formatOverviewTokenValue(payload.codex_totals, 'model_context_window', splitUnavailable)),
+      createMetricCard('Total Tokens', formatOverviewTokenValue(payload, 'total_tokens', splitUnavailable)),
+      createMetricCard('Input Tokens', formatOverviewTokenValue(payload, 'input_tokens', splitUnavailable)),
+      createMetricCard('Output Tokens', formatOverviewTokenValue(payload, 'output_tokens', splitUnavailable)),
+      createMetricCard('Cached Input Tokens', formatOverviewTokenValue(payload, 'cached_input_tokens', splitUnavailable)),
+      createMetricCard('Reasoning Output Tokens', formatOverviewTokenValue(payload, 'reasoning_output_tokens', splitUnavailable)),
+      createMetricCard('Max Context Window', formatOverviewTokenValue(payload, 'model_context_window', splitUnavailable)),
       createMetricCard('Runtime Seconds', formatNumber(computeDisplayRuntimeSeconds(payload)))
     );
 

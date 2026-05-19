@@ -521,7 +521,8 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('tokensCell.append(createBudgetBlock(entry));');
     expect(clientJs).toContain('function formatTokenDimension(value, unavailableLabel)');
     expect(clientJs).toContain('function formatTokenBreakdown(tokens, telemetrySource)');
-    expect(clientJs).toContain('function formatOverviewTokenValue(codexTotals, field, splitUnavailable)');
+    expect(clientJs).toContain('function hasOverviewTokenEvidence(payload)');
+    expect(clientJs).toContain('function formatOverviewTokenValue(payload, field, splitUnavailable)');
     expect(clientJs).toContain('Split unavailable');
     expect(clientJs).toContain('Cached Input Tokens');
     expect(clientJs).toContain('Reasoning Output Tokens');
@@ -911,6 +912,34 @@ describe('dashboard assets', () => {
     expect(rowText).not.toContain('Cached 0');
     expect(rowText).not.toContain('Reasoning 0');
     expect(rowText).not.toContain('Context 0');
+  });
+
+  it('renders unavailable token overview values when no token telemetry exists', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    const state = makeStatePayload() as any;
+    state.codex_totals = {
+      total_tokens: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      seconds_running: 0
+    };
+    state.running = [];
+
+    harness.stream().onopen?.();
+    harness.stream().onmessage?.({
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state } })
+    });
+    await flushPromises();
+
+    const overviewText = harness.document.getElementById('kpi-grid').textContent;
+    expect(overviewText).toContain('Total TokensUnavailable');
+    expect(overviewText).toContain('Input TokensUnavailable');
+    expect(overviewText).toContain('Output TokensUnavailable');
+    expect(overviewText).toContain('Cached Input TokensUnavailable');
+    expect(overviewText).toContain('Reasoning Output TokensUnavailable');
+    expect(overviewText).toContain('Max Context WindowUnavailable');
   });
 
   it('renders issue console timestamps as local labels with UTC companions', async () => {
