@@ -189,6 +189,45 @@ describe('OrchestratorCore budget', () => {
     });
   });
 
+  it('keeps aggregate context window as the maximum observed capacity', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-context-window' })]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-context-window', {
+      timestamp_ms: harness.now.value + 100,
+      event: CANONICAL_EVENT.codex.tokenUsageUpdated,
+      thread_id: 'thread-context-window',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        model_context_window: 200000
+      },
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'transcript_token_count',
+      token_telemetry_last_at_ms: harness.now.value + 100
+    });
+    harness.orchestrator.onWorkerEvent('i-context-window', {
+      timestamp_ms: harness.now.value + 200,
+      event: CANONICAL_EVENT.codex.tokenUsageUpdated,
+      thread_id: 'thread-context-window',
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+        model_context_window: 128000
+      },
+      token_telemetry_status: 'available',
+      token_telemetry_last_source: 'transcript_token_count',
+      token_telemetry_last_at_ms: harness.now.value + 200
+    });
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.running.get('i-context-window')?.tokens.model_context_window).toBe(128000);
+    expect(snapshot.codex_totals.model_context_window).toBe(200000);
+  });
+
   it('persists worker token snapshots and requested/effective models into history', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-worker-token-model-'));
     const store = new SqlitePersistenceStore({

@@ -1514,7 +1514,10 @@ export class OrchestratorCore {
         this.state.codex_totals.reasoning_output_tokens = usage.reasoning_output_tokens;
       }
       if (typeof usage.model_context_window === 'number') {
-        this.state.codex_totals.model_context_window = usage.model_context_window;
+        this.state.codex_totals.model_context_window =
+          typeof this.state.codex_totals.model_context_window === 'number'
+            ? Math.max(this.state.codex_totals.model_context_window, usage.model_context_window)
+            : usage.model_context_window;
       }
       runningEntry.tokens = { ...usage };
       runningEntry.last_reported_tokens = { ...usage };

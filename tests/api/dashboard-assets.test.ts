@@ -301,6 +301,43 @@ function createRuntimeStatePayload() {
   return makeStatePayload();
 }
 
+function makeRunningSessionPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    issue_identifier: 'NIE-184',
+    state: 'In Progress',
+    session_id: 'thread-token-turn-token',
+    worker_host: 'hessian',
+    workspace_path: '/tmp/symphony/NIE-184',
+    provisioner_type: 'worktree',
+    branch_name: 'feature/NIE-184',
+    workspace_git_status: 'clean',
+    thread_id: 'thread-token',
+    turn_id: 'turn-token',
+    turn_count: 1,
+    current_phase: 'implementation',
+    current_phase_at: '2026-05-08T15:00:00.000Z',
+    phase_elapsed_ms: 0,
+    started_at: '2026-05-08T14:55:00.000Z',
+    last_event: 'codex.token_usage.updated',
+    last_event_summary: 'codex token usage updated',
+    last_message: 'token usage updated',
+    last_event_at: '2026-05-08T15:00:00.000Z',
+    tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    token_telemetry_status: 'available',
+    token_telemetry_confidence: 'observed_live',
+    token_telemetry_source: 'transcript_token_count',
+    turn_control_state: 'agent_turn',
+    progress_signal_state: 'advancing',
+    current_blocker_class: null,
+    time_since_progress: 0,
+    last_successful_step: 'codex.token_usage.updated',
+    transcript_tool_call_diagnostic_summary: null,
+    operator_actions: [],
+    actions: {},
+    ...overrides
+  };
+}
+
 function createStoppedRunRecoveryPayload() {
   return {
     counts: {
@@ -482,9 +519,18 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('Policy ');
     expect(clientJs).toContain('Budget stopped continuation: ');
     expect(clientJs).toContain('tokensCell.append(createBudgetBlock(entry));');
+    expect(clientJs).toContain('function formatTokenDimension(value, unavailableLabel)');
+    expect(clientJs).toContain('function formatTokenBreakdown(tokens, telemetrySource)');
+    expect(clientJs).toContain('function formatOverviewTokenValue(codexTotals, field, splitUnavailable)');
     expect(clientJs).toContain('Split unavailable');
+    expect(clientJs).toContain('Cached Input Tokens');
+    expect(clientJs).toContain('Reasoning Output Tokens');
+    expect(clientJs).toContain('Max Context Window');
+    expect(clientJs).toContain('Cached ');
+    expect(clientJs).toContain('Reasoning ');
+    expect(clientJs).toContain('Context ');
     expect(clientJs).toContain("payload.codex_totals.token_split_status === 'aggregate_only'");
-    expect(clientJs).toContain("entry.tokens.token_split_status === 'aggregate_only'");
+    expect(clientJs).toContain("tokens.token_split_status === 'aggregate_only'");
     expect(clientJs).toContain("token_split_status === 'aggregate_only'");
     expect(clientJs.split('stopReasonCell.append(createBudgetBlock(entry));')).toHaveLength(3);
     expect(clientJs).toContain("'\\n\\nBudget\\n' +");
@@ -769,6 +815,102 @@ describe('dashboard assets', () => {
     expect(text).toContain('codex turn waiting: heartbeat');
     expect(text).toContain('5:04:30');
     expect(text).toContain('(UTC 2026-05-08T15:04:30.000Z)');
+  });
+
+  it('renders all token dimensions in overview and running rows', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    const state = makeStatePayload() as any;
+    state.counts.running = 1;
+    state.codex_totals = {
+      total_tokens: 123456,
+      input_tokens: 100000,
+      output_tokens: 23456,
+      cached_input_tokens: 90000,
+      reasoning_output_tokens: 3456,
+      model_context_window: 200000,
+      seconds_running: 0
+    };
+    state.running = [
+      makeRunningSessionPayload({
+        tokens: {
+          input_tokens: 100000,
+          output_tokens: 23456,
+          total_tokens: 123456,
+          cached_input_tokens: 90000,
+          reasoning_output_tokens: 3456,
+          model_context_window: 200000
+        }
+      })
+    ];
+
+    harness.stream().onopen?.();
+    harness.stream().onmessage?.({
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state } })
+    });
+    await flushPromises();
+
+    const overviewText = harness.document.getElementById('kpi-grid').textContent;
+    expect(overviewText).toContain('Total Tokens123,456');
+    expect(overviewText).toContain('Input Tokens100,000');
+    expect(overviewText).toContain('Output Tokens23,456');
+    expect(overviewText).toContain('Cached Input Tokens90,000');
+    expect(overviewText).toContain('Reasoning Output Tokens3,456');
+    expect(overviewText).toContain('Max Context Window200,000');
+
+    const rowText = harness.document.getElementById('running-rows').textContent;
+    expect(rowText).toContain('Total: 123,456');
+    expect(rowText).toContain('In 100,000 / Out 23,456 / Cached 90,000 / Reasoning 3,456 / Context 200,000');
+    expect(rowText).toContain('transcript_token_count');
+  });
+
+  it('keeps aggregate-only token fallback from rendering fake split dimensions', async () => {
+    const harness = installDashboardClientHarness();
+    await flushPromises();
+
+    const state = makeStatePayload() as any;
+    state.counts.running = 1;
+    state.codex_totals = {
+      total_tokens: 321,
+      input_tokens: 0,
+      output_tokens: 0,
+      token_split_status: 'aggregate_only',
+      seconds_running: 0
+    };
+    state.running = [
+      makeRunningSessionPayload({
+        token_telemetry_source: 'codex_home_state_sqlite',
+        tokens: {
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 321,
+          token_split_status: 'aggregate_only'
+        }
+      })
+    ];
+
+    harness.stream().onopen?.();
+    harness.stream().onmessage?.({
+      data: JSON.stringify({ type: 'state_snapshot', payload: { state } })
+    });
+    await flushPromises();
+
+    const overviewText = harness.document.getElementById('kpi-grid').textContent;
+    expect(overviewText).toContain('Total Tokens321');
+    expect(overviewText).toContain('Input TokensSplit unavailable');
+    expect(overviewText).toContain('Output TokensSplit unavailable');
+    expect(overviewText).toContain('Cached Input TokensSplit unavailable');
+    expect(overviewText).toContain('Reasoning Output TokensSplit unavailable');
+    expect(overviewText).toContain('Max Context WindowUnavailable');
+
+    const rowText = harness.document.getElementById('running-rows').textContent;
+    expect(rowText).toContain('Total: 321');
+    expect(rowText).toContain('Split unavailable');
+    expect(rowText).toContain('codex_home_state_sqlite');
+    expect(rowText).not.toContain('Cached 0');
+    expect(rowText).not.toContain('Reasoning 0');
+    expect(rowText).not.toContain('Context 0');
   });
 
   it('renders issue console timestamps as local labels with UTC companions', async () => {

@@ -831,6 +831,40 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return card;
   }
 
+  function formatTokenDimension(value, unavailableLabel) {
+    return typeof value === 'number' ? formatNumber(value) : unavailableLabel;
+  }
+
+  function formatOverviewTokenValue(codexTotals, field, splitUnavailable) {
+    if (!codexTotals) {
+      return 'Unavailable';
+    }
+    if (splitUnavailable && field !== 'model_context_window') {
+      return 'Split unavailable';
+    }
+    return formatTokenDimension(codexTotals[field], 'Unavailable');
+  }
+
+  function formatTokenBreakdown(tokens, telemetrySource) {
+    if (tokens && tokens.token_split_status === 'aggregate_only') {
+      return 'Split unavailable' + (telemetrySource ? ' • ' + telemetrySource : '');
+    }
+    const parts = [
+      'In ' + formatNumber(tokens.input_tokens),
+      'Out ' + formatNumber(tokens.output_tokens)
+    ];
+    if (typeof tokens.cached_input_tokens === 'number') {
+      parts.push('Cached ' + formatNumber(tokens.cached_input_tokens));
+    }
+    if (typeof tokens.reasoning_output_tokens === 'number') {
+      parts.push('Reasoning ' + formatNumber(tokens.reasoning_output_tokens));
+    }
+    if (typeof tokens.model_context_window === 'number') {
+      parts.push('Context ' + formatNumber(tokens.model_context_window));
+    }
+    return parts.join(' / ') + (telemetrySource ? ' • ' + telemetrySource : '');
+  }
+
   function computeDisplayRuntimeSeconds(payload) {
     if (!payload || !payload.codex_totals) {
       return 0;
@@ -854,8 +888,11 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       createMetricCard('Stalled Waiting', formatNumber(payload.counts.running_stalled_waiting_count || 0)),
       createMetricCard('Awaiting Input', formatNumber(payload.counts.running_awaiting_input_count || 0)),
       createMetricCard('Total Tokens', formatNumber(payload.codex_totals.total_tokens)),
-      createMetricCard('Input Tokens', splitUnavailable ? 'Split unavailable' : formatNumber(payload.codex_totals.input_tokens)),
-      createMetricCard('Output Tokens', splitUnavailable ? 'Split unavailable' : formatNumber(payload.codex_totals.output_tokens)),
+      createMetricCard('Input Tokens', formatOverviewTokenValue(payload.codex_totals, 'input_tokens', splitUnavailable)),
+      createMetricCard('Output Tokens', formatOverviewTokenValue(payload.codex_totals, 'output_tokens', splitUnavailable)),
+      createMetricCard('Cached Input Tokens', formatOverviewTokenValue(payload.codex_totals, 'cached_input_tokens', splitUnavailable)),
+      createMetricCard('Reasoning Output Tokens', formatOverviewTokenValue(payload.codex_totals, 'reasoning_output_tokens', splitUnavailable)),
+      createMetricCard('Max Context Window', formatOverviewTokenValue(payload.codex_totals, 'model_context_window', splitUnavailable)),
       createMetricCard('Runtime Seconds', formatNumber(computeDisplayRuntimeSeconds(payload)))
     );
 
@@ -1704,17 +1741,7 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
       const tokenDetail = document.createElement('div');
       tokenDetail.className = 'muted';
       if (telemetryStatus === 'available') {
-        if (entry.tokens && entry.tokens.token_split_status === 'aggregate_only') {
-          tokenDetail.textContent =
-            'Split unavailable' + (entry.token_telemetry_source ? ' • ' + entry.token_telemetry_source : '');
-        } else {
-          tokenDetail.textContent =
-            'In ' +
-            formatNumber(entry.tokens.input_tokens) +
-            ' / Out ' +
-            formatNumber(entry.tokens.output_tokens) +
-            (entry.token_telemetry_source ? ' • ' + entry.token_telemetry_source : '');
-        }
+        tokenDetail.textContent = formatTokenBreakdown(entry.tokens, entry.token_telemetry_source);
       } else {
         tokenDetail.textContent = telemetryStatus === 'pending' ? 'Waiting for first usage payload' : 'No telemetry path detected';
       }
