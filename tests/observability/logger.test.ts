@@ -5,11 +5,12 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  LevelFilterSink,
   MultiSinkLogger,
   RotatingFileSink,
-  StderrSink,
   type LogEntry,
-  type LogSink
+  type LogSink,
+  resolveTestLoggingPolicy
 } from '../../src/observability';
 
 class MemorySink implements LogSink {
@@ -57,8 +58,10 @@ describe('MultiSinkLogger', () => {
       })
     };
 
+    const fallbackSink = new MemorySink();
     const logger = new MultiSinkLogger({
       sinks: [failingSink, healthySink],
+      fallbackSink,
       nowIso: () => '2026-04-11T12:00:00.000Z'
     });
 
@@ -69,6 +72,61 @@ describe('MultiSinkLogger', () => {
     });
 
     expect(healthySink.entries.some((entry) => entry.includes('event=api_internal_error'))).toBe(true);
+    expect(fallbackSink.entries.some((entry) => entry.includes('event=log_sink_failure'))).toBe(true);
+    expect(fallbackSink.entries.some((entry) => entry.includes('surviving_sink_available=false'))).toBe(true);
+  });
+
+  it('filters wrapped sinks below the configured visible level', () => {
+    const sink = new MemorySink();
+    const filteredSink = new LevelFilterSink(sink, 'warn');
+
+    filteredSink.write(
+      {
+        level: 'info',
+        event: 'info.event',
+        message: 'hidden',
+        timestamp: '2026-04-11T12:00:00.000Z',
+        context: {}
+      },
+      'level=info event=info.event message="hidden"'
+    );
+    filteredSink.write(
+      {
+        level: 'warn',
+        event: 'warn.event',
+        message: 'visible',
+        timestamp: '2026-04-11T12:00:00.000Z',
+        context: {}
+      },
+      'level=warn event=warn.event message="visible"'
+    );
+
+    expect(filteredSink.name).toBe('memory');
+    expect(sink.entries).toEqual(['level=warn event=warn.event message="visible"']);
+  });
+
+  it('resolves quiet test logging by default and verbose stderr by opt-in', () => {
+    expect(resolveTestLoggingPolicy({ VITEST: 'true' })).toEqual({
+      isTest: true,
+      visibleStderr: false,
+      visibleLevel: 'info'
+    });
+    expect(
+      resolveTestLoggingPolicy({
+        VITEST: 'true',
+        SYMPHONY_TEST_LOGS: '1',
+        SYMPHONY_TEST_LOG_LEVEL: 'warn'
+      })
+    ).toEqual({
+      isTest: true,
+      visibleStderr: true,
+      visibleLevel: 'warn'
+    });
+    expect(resolveTestLoggingPolicy({})).toEqual({
+      isTest: false,
+      visibleStderr: true,
+      visibleLevel: 'info'
+    });
   });
 
   it('redacts secrets in message and context', () => {
@@ -93,7 +151,6 @@ describe('MultiSinkLogger', () => {
     const logRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-log-test-'));
     const logger = new MultiSinkLogger({
       sinks: [
-        new StderrSink(),
         new RotatingFileSink({
           root: logRoot,
           maxBytes: 1024,

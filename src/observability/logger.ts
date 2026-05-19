@@ -31,12 +31,59 @@ export const DEFAULT_LOG_FILE_NAME = 'symphony.log';
 export const DEFAULT_LOG_ROTATION_MAX_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_LOG_ROTATION_MAX_FILES = 5;
 
+const LOG_LEVEL_WEIGHT: Record<LogLevel, number> = {
+  info: 10,
+  warn: 20,
+  error: 30
+};
+
 export class StderrSink implements LogSink {
   name = 'stderr';
 
   write(_entry: LogEntry, rendered: string): void {
     process.stderr.write(`${rendered}\n`);
   }
+}
+
+export class LevelFilterSink implements LogSink {
+  readonly name: string;
+  private readonly sink: LogSink;
+  private readonly minimumLevel: LogLevel;
+
+  constructor(sink: LogSink, minimumLevel: LogLevel) {
+    this.name = sink.name;
+    this.sink = sink;
+    this.minimumLevel = minimumLevel;
+  }
+
+  write(entry: LogEntry, rendered: string): void {
+    if (LOG_LEVEL_WEIGHT[entry.level] >= LOG_LEVEL_WEIGHT[this.minimumLevel]) {
+      this.sink.write(entry, rendered);
+    }
+  }
+}
+
+export interface TestLoggingPolicy {
+  isTest: boolean;
+  visibleStderr: boolean;
+  visibleLevel: LogLevel;
+}
+
+function parseLogLevel(value: string | undefined): LogLevel {
+  return value === 'warn' || value === 'error' || value === 'info' ? value : 'info';
+}
+
+function parseVisibleStderr(value: string | undefined): boolean {
+  return value === '1' || value === 'true' || value === 'stderr';
+}
+
+export function resolveTestLoggingPolicy(env: NodeJS.ProcessEnv = process.env): TestLoggingPolicy {
+  const isTest = env.VITEST === 'true' || env.NODE_ENV === 'test';
+  return {
+    isTest,
+    visibleStderr: !isTest || parseVisibleStderr(env.SYMPHONY_TEST_LOGS),
+    visibleLevel: parseLogLevel(env.SYMPHONY_TEST_LOG_LEVEL)
+  };
 }
 
 function rotateFile(baseFilePath: string, maxFiles: number): void {
@@ -136,8 +183,8 @@ export class MultiSinkLogger implements StructuredLogger {
   private readonly fallbackSink: LogSink;
   private readonly nowIso: () => string;
 
-  constructor(options: { sinks?: LogSink[]; nowIso?: () => string } = {}) {
-    this.fallbackSink = new StderrSink();
+  constructor(options: { sinks?: LogSink[]; nowIso?: () => string; fallbackSink?: LogSink } = {}) {
+    this.fallbackSink = options.fallbackSink ?? new StderrSink();
     this.sinks = options.sinks && options.sinks.length > 0 ? options.sinks : [this.fallbackSink];
     this.nowIso = options.nowIso ?? (() => new Date().toISOString());
   }

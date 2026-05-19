@@ -9,10 +9,12 @@ import { ControlPlaneHealthRecorder, LocalApiServer } from '../api';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
 import {
   DEFAULT_LOG_FILE_NAME,
+  LevelFilterSink,
   type LogEntry,
   type LogSink,
   MultiSinkLogger,
   RotatingFileSink,
+  resolveTestLoggingPolicy,
   StderrSink,
   type StructuredLogger
 } from '../observability';
@@ -241,8 +243,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
   const activeLogFile = path.join(loggingResolution.logsRoot, DEFAULT_LOG_FILE_NAME);
   const observer = options.logObserver;
+  const testLoggingPolicy = resolveTestLoggingPolicy();
   const activeSinks: LogSink[] = [
-    new StderrSink(),
     new RotatingFileSink({
       root: loggingResolution.logsRoot,
       baseFileName: DEFAULT_LOG_FILE_NAME,
@@ -250,6 +252,9 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       maxFiles: effectiveConfig.logging.max_files
     })
   ];
+  if (testLoggingPolicy.visibleStderr) {
+    activeSinks.unshift(new LevelFilterSink(new StderrSink(), testLoggingPolicy.visibleLevel));
+  }
   if (observer) {
     activeSinks.push(new StructuredLoggerObserverSink(observer));
   }

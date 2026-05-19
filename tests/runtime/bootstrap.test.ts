@@ -104,6 +104,9 @@ describe('createRuntimeEnvironment', () => {
   const dirs: string[] = [];
 
   afterEach(async () => {
+    delete process.env.SYMPHONY_TEST_LOGS;
+    delete process.env.SYMPHONY_TEST_LOG_LEVEL;
+
     while (runtimes.length > 0) {
       const runtime = runtimes.pop();
       if (runtime) {
@@ -513,7 +516,7 @@ describe('createRuntimeEnvironment', () => {
     expect(payload.persistence.integrity_ok).toBe(true);
     expect(payload.logging.root).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log'));
     expect(payload.logging.active_file).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log', 'symphony.log'));
-    expect(payload.logging.sinks).toEqual(['stderr', 'file']);
+    expect(payload.logging.sinks).toEqual(['file']);
     expect(payload.logging.rotation.max_files).toBe(5);
     expect((payload as Record<string, unknown>).workspace_copy_ignored).toMatchObject({
       enabled: false,
@@ -940,6 +943,42 @@ describe('createRuntimeEnvironment', () => {
       logging: { sinks: string[] };
     };
     expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.logging.sinks).toEqual(['file', 'observer']);
+  });
+
+  it('enables stderr runtime logs in tests when explicitly requested', async () => {
+    process.env.SYMPHONY_TEST_LOGS = '1';
+    process.env.SYMPHONY_TEST_LOG_LEVEL = 'warn';
+
+    const workflowPath = await makeWorkflowFile({ includeServerPort: true, serverPort: 41001 });
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0,
+      logObserver: {
+        log: () => undefined
+      }
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      logging: { sinks: string[] };
+    };
+
+    expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file', 'observer']);
   });
 
@@ -1029,7 +1068,7 @@ describe('createRuntimeEnvironment', () => {
       expect(diagnosticsResponse.status).toBe(200);
       expect(diagnosticsPayload.logging.root).toBe(workflowLogsRoot);
       expect(diagnosticsPayload.logging.active_file).toBe(path.join(workflowLogsRoot, 'symphony.log'));
-      expect(diagnosticsPayload.logging.sinks).toEqual(['stderr', 'file', 'observer']);
+      expect(diagnosticsPayload.logging.sinks).toEqual(['file', 'observer']);
       const loggingConfiguredEvent = entries.find((entry) => entry.event === CANONICAL_EVENT.runtime.loggingConfigured);
       expect(loggingConfiguredEvent?.context.logs_root_source).toBe('workflow');
     } finally {
