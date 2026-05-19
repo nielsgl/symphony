@@ -521,7 +521,6 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('tokensCell.append(createBudgetBlock(entry));');
     expect(clientJs).toContain('function formatTokenDimension(value, unavailableLabel)');
     expect(clientJs).toContain('function formatTokenBreakdown(tokens, telemetrySource)');
-    expect(clientJs).toContain('function hasOverviewTokenEvidence(payload)');
     expect(clientJs).toContain('function formatOverviewTokenValue(payload, field, splitUnavailable)');
     expect(clientJs).toContain('Split unavailable');
     expect(clientJs).toContain('Cached Input Tokens');
@@ -903,7 +902,7 @@ describe('dashboard assets', () => {
     expect(overviewText).toContain('Output TokensSplit unavailable');
     expect(overviewText).toContain('Cached Input TokensSplit unavailable');
     expect(overviewText).toContain('Reasoning Output TokensSplit unavailable');
-    expect(overviewText).toContain('Max Context WindowUnavailable');
+    expect(overviewText).toContain('Max Context Window0');
 
     const rowText = harness.document.getElementById('running-rows').textContent;
     expect(rowText).toContain('Total: 321');
@@ -914,7 +913,7 @@ describe('dashboard assets', () => {
     expect(rowText).not.toContain('Context 0');
   });
 
-  it('renders unavailable token overview values when no token telemetry exists', async () => {
+  it('renders zero token overview values when no token telemetry exists', async () => {
     const harness = installDashboardClientHarness();
     await flushPromises();
 
@@ -934,12 +933,12 @@ describe('dashboard assets', () => {
     await flushPromises();
 
     const overviewText = harness.document.getElementById('kpi-grid').textContent;
-    expect(overviewText).toContain('Total TokensUnavailable');
-    expect(overviewText).toContain('Input TokensUnavailable');
-    expect(overviewText).toContain('Output TokensUnavailable');
-    expect(overviewText).toContain('Cached Input TokensUnavailable');
-    expect(overviewText).toContain('Reasoning Output TokensUnavailable');
-    expect(overviewText).toContain('Max Context WindowUnavailable');
+    expect(overviewText).toContain('Total Tokens0');
+    expect(overviewText).toContain('Input Tokens0');
+    expect(overviewText).toContain('Output Tokens0');
+    expect(overviewText).toContain('Cached Input Tokens0');
+    expect(overviewText).toContain('Reasoning Output Tokens0');
+    expect(overviewText).toContain('Max Context Window0');
   });
 
   it('renders issue console timestamps as local labels with UTC companions', async () => {

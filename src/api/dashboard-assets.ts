@@ -835,44 +835,15 @@ export function renderDashboardClientJs(config: DashboardClientConfig = {
     return typeof value === 'number' ? formatNumber(value) : unavailableLabel;
   }
 
-  function hasOverviewTokenEvidence(payload) {
-    const codexTotals = payload && payload.codex_totals;
-    if (!codexTotals) {
-      return false;
-    }
-    if (codexTotals.token_split_status === 'aggregate_only') {
-      return true;
-    }
-    const tokenFields = [
-      'total_tokens',
-      'input_tokens',
-      'output_tokens',
-      'cached_input_tokens',
-      'reasoning_output_tokens',
-      'model_context_window'
-    ];
-    if (tokenFields.some((field) => typeof codexTotals[field] === 'number' && codexTotals[field] > 0)) {
-      return true;
-    }
-    const rows = []
-      .concat(payload.running || [])
-      .concat(payload.retrying || [])
-      .concat(payload.stopped_runs || []);
-    return rows.some((row) => row && row.token_telemetry_status === 'available' && row.tokens);
-  }
-
   function formatOverviewTokenValue(payload, field, splitUnavailable) {
     const codexTotals = payload && payload.codex_totals;
     if (!codexTotals) {
       return 'Unavailable';
     }
-    if (!hasOverviewTokenEvidence(payload)) {
-      return 'Unavailable';
-    }
     if (splitUnavailable && field !== 'total_tokens' && field !== 'model_context_window') {
       return 'Split unavailable';
     }
-    return formatTokenDimension(codexTotals[field], 'Unavailable');
+    return formatTokenDimension(codexTotals[field], '0');
   }
 
   function formatTokenBreakdown(tokens, telemetrySource) {
