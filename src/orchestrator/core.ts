@@ -21,14 +21,14 @@ import {
   sortCandidatesForDispatch
 } from './decisions';
 import {
-  budgetConfigured,
-  budgetScopeLabel,
-  computeBudgetProjection,
+  applyBudgetBlockedTerminationEvidence,
+  applyBudgetTelemetryUnavailable,
+  computeIssueBudgetProjection,
   defaultBudgetProjection,
-  pruneBudgetSamples,
-  recordBudgetUsageSample,
-  selectBudgetCandidate,
-  type BudgetCandidate,
+  evaluateBudgetEnforcement,
+  recordIssueBudgetUsageSample,
+  updateRunningBudgetProjection,
+  type BudgetHardLimitDecision,
   type BudgetUsageSample
 } from './core/budget';
 import {
@@ -38,8 +38,7 @@ import {
   cloneOperatorAction,
   cloneReleasedWorkerRecord,
   cloneRetryEntry,
-  cloneRunningEntry,
-  cloneWorkerTerminationResult
+  cloneRunningEntry
 } from './core/snapshot-cloning';
 import {
   captureMissingToolOutputRecoveryReplacementLineage,
@@ -1242,7 +1241,15 @@ export class OrchestratorCore {
           tokens: totalDelta
         });
       }
-      runningEntry.budget = this.computeBudgetProjection(issue_id, usage.total_tokens, 'available');
+      updateRunningBudgetProjection({
+        budget: this.config.budget,
+        budgetSamples: this.budgetUsageSamples(),
+        nowMs: this.nowMs(),
+        issueId: issue_id,
+        runningEntry,
+        currentAttemptTokens: usage.total_tokens,
+        telemetryStatus: 'available'
+      });
     }
 
     if (workerEvent.token_telemetry_status && !workerEvent.usage) {
@@ -2291,23 +2298,10 @@ export class OrchestratorCore {
     }
   }
 
-  private budgetConfigured(): boolean {
-    return budgetConfigured(this.config.budget);
-  }
-
-  private pruneBudgetSamples(issueId: string, nowMs: number): BudgetUsageSample[] {
+  private budgetUsageSamples(): Map<string, BudgetUsageSample[]> {
     const budgetSamples = this.state.budget_usage_samples ?? new Map<string, BudgetUsageSample[]>();
     this.state.budget_usage_samples = budgetSamples;
-    return pruneBudgetSamples(this.config.budget, budgetSamples, issueId, nowMs);
-  }
-
-  private selectBudgetCandidate(issueId: string, currentAttemptTokens: number): BudgetCandidate | null {
-    const samples = this.pruneBudgetSamples(issueId, this.nowMs());
-    return selectBudgetCandidate({
-      budget: this.config.budget,
-      samples,
-      currentAttemptTokens
-    });
+    return budgetSamples;
   }
 
   private computeBudgetProjection(
@@ -2317,15 +2311,12 @@ export class OrchestratorCore {
     forcedStatus?: BudgetRuntimeProjection['budget_status'],
     forcedMessage?: string | null
   ): BudgetRuntimeProjection {
-    const budget = this.config.budget;
-    if (!budget) {
-      return defaultBudgetProjection();
-    }
-
-    const selected = this.selectBudgetCandidate(issueId, currentAttemptTokens);
-    return computeBudgetProjection({
-      budget,
-      selected,
+    return computeIssueBudgetProjection({
+      budget: this.config.budget,
+      budgetSamples: this.budgetUsageSamples(),
+      nowMs: this.nowMs(),
+      issueId,
+      currentAttemptTokens,
       telemetryStatus,
       forcedStatus,
       forcedMessage
@@ -2333,109 +2324,31 @@ export class OrchestratorCore {
   }
 
   private maybeEmitBudgetTelemetryUnavailable(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
-    if (!this.budgetConfigured()) {
-      return;
-    }
-    if (!isTerminalTurnEvent(workerEvent.event) || runningEntry.token_telemetry_status !== 'unavailable') {
-      return;
-    }
-    runningEntry.budget = this.computeBudgetProjection(
-      runningEntry.issue.id,
-      runningEntry.tokens.total_tokens,
-      'unavailable',
-      'telemetry_unavailable',
-      'Budget accounting unavailable because runtime token telemetry was not reported.'
-    );
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.budget.telemetryUnavailable,
-      message: 'budget telemetry unavailable',
-      context: {
-        issue_id: runningEntry.issue.id,
-        issue_identifier: runningEntry.identifier
-      }
-    });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.budget.telemetryUnavailable,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: 'runtime token telemetry unavailable for budget accounting'
+    applyBudgetTelemetryUnavailable({
+      budget: this.config.budget,
+      budgetSamples: this.budgetUsageSamples(),
+      nowMs: this.nowMs(),
+      logger: this.logger,
+      recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+      runningEntry,
+      workerEvent
     });
   }
 
   private maybeEnforceBudget(issueId: string, runningEntry: RunningEntry, timestampMs: number): void {
-    if (!this.budgetConfigured()) {
-      return;
-    }
-    if (runningEntry.token_telemetry_status !== 'available') {
-      return;
-    }
-    const budget = this.config.budget;
-    if (!budget || runningEntry.budget_hard_limit_enforced) {
-      return;
-    }
-
-    const projection = this.computeBudgetProjection(issueId, runningEntry.tokens.total_tokens, 'available');
-    runningEntry.budget = projection;
-    if (projection.budget_status === 'warning' && !runningEntry.budget_warning_emitted) {
-      runningEntry.budget_warning_emitted = true;
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.budget.warningThresholdCrossed,
-        message: 'budget warning threshold crossed',
-        context: {
-          issue_id: issueId,
-          issue_identifier: runningEntry.identifier,
-          budget_usage_tokens: projection.budget_usage_tokens,
-          budget_limit_tokens: projection.budget_limit_tokens,
-          budget_policy: projection.budget_policy
-        }
-      });
-      this.recordRuntimeEvent({
-        event: CANONICAL_EVENT.budget.warningThresholdCrossed,
-        severity: 'warn',
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id ?? undefined,
-        detail: `usage=${projection.budget_usage_tokens} limit=${projection.budget_limit_tokens}`
-      });
-    }
-
-    if (projection.budget_status !== 'hard_limited') {
-      return;
-    }
-
-    const triggeringCandidate = this.selectBudgetCandidate(issueId, runningEntry.tokens.total_tokens);
-    runningEntry.budget_hard_limit_enforced = true;
-    const scopeDetail = triggeringCandidate ? `${budgetScopeLabel(triggeringCandidate.scope)} ` : '';
-    const detail = `Budget hard limit exceeded: ${scopeDetail}usage ${projection.budget_usage_tokens} tokens, limit ${projection.budget_limit_tokens} tokens.`;
-    runningEntry.budget = {
-      ...projection,
-      budget_message:
-        budget.hard_limit_policy === 'block_requires_resume'
-          ? `${detail} Continuation blocked until manual resume.`
-          : `${detail} Attempt terminated by budget policy.`
-    };
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.budget.hardLimitExceeded,
-      message: 'budget hard limit exceeded',
-      context: {
-        issue_id: issueId,
-        issue_identifier: runningEntry.identifier,
-        budget_usage_tokens: projection.budget_usage_tokens,
-        budget_limit_tokens: projection.budget_limit_tokens,
-        budget_policy: projection.budget_policy
-      }
+    const decision = evaluateBudgetEnforcement({
+      budget: this.config.budget,
+      budgetSamples: this.budgetUsageSamples(),
+      nowMs: this.nowMs(),
+      logger: this.logger,
+      recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+      issueId,
+      runningEntry
     });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.budget.hardLimitExceeded,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: runningEntry.budget?.budget_message ?? detail
-    });
-    this.enforceBudgetHardLimit(issueId, runningEntry, timestampMs).catch((error) => {
+    if (!decision) {
+      return;
+    }
+    this.enforceBudgetHardLimit(issueId, runningEntry, timestampMs, decision).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       const failureDetail = `Budget hard limit cleanup failed: ${message}`;
       this.state.health.last_error = failureDetail;
@@ -2460,23 +2373,20 @@ export class OrchestratorCore {
     });
   }
 
-  private async enforceBudgetHardLimit(issueId: string, running: RunningEntry, timestampMs: number): Promise<void> {
+  private async enforceBudgetHardLimit(
+    issueId: string,
+    running: RunningEntry,
+    timestampMs: number,
+    decision: BudgetHardLimitDecision
+  ): Promise<void> {
     const budget = this.config.budget;
     if (!budget) {
       return;
     }
 
-    const stopReasonCode =
-      budget.hard_limit_policy === 'terminate_attempt'
-        ? REASON_CODES.attemptTerminatedBudgetLimitExceeded
-        : REASON_CODES.operatorBudgetLimitExceeded;
-    const stopReasonDetail =
-      running.budget?.budget_message ??
-      `Budget hard limit exceeded: usage ${running.budget?.budget_usage_tokens} tokens, limit ${running.budget?.budget_limit_tokens} tokens.`;
-
     this.emitPhaseMarker(issueId, {
-      phase: budget.hard_limit_policy === 'terminate_attempt' ? 'failed' : 'blocked_input',
-      detail: stopReasonDetail,
+      phase: decision.phase,
+      detail: decision.stopReasonDetail,
       attempt: running.retry_attempt,
       thread_id: running.thread_id,
       session_id: running.session_id
@@ -2485,7 +2395,7 @@ export class OrchestratorCore {
     this.addRuntimeSecondsFromEntry(running);
     this.recordBudgetUsageSample(issueId, running.tokens.total_tokens, timestampMs);
     this.state.running.delete(issueId);
-    this.state.health.last_error = stopReasonDetail;
+    this.state.health.last_error = decision.stopReasonDetail;
 
     if (budget.hard_limit_policy === 'block_requires_resume') {
       void this.scheduleBlockedInput({
@@ -2506,8 +2416,8 @@ export class OrchestratorCore {
         copy_ignored_applied: running.copy_ignored_applied,
         copy_ignored_status: running.copy_ignored_status,
         copy_ignored_summary: running.copy_ignored_summary,
-        stop_reason_code: stopReasonCode,
-        stop_reason_detail: stopReasonDetail,
+        stop_reason_code: decision.stopReasonCode,
+        stop_reason_detail: decision.stopReasonDetail,
         session_console: running.recent_events,
         previous_thread_id: running.thread_id,
         previous_turn_id: running.turn_id,
@@ -2540,25 +2450,25 @@ export class OrchestratorCore {
         issue_id: issueId,
         worker_handle: running.worker_handle,
         cleanup_workspace: false,
-        reason: stopReasonCode
+        reason: decision.stopReasonCode
       });
     } catch (error) {
       if (budget.hard_limit_policy === 'block_requires_resume') {
         const unknownResult = workerTerminationExceptionResult(error);
         this.updateBudgetBlockedTerminationEvidence(
           issueId,
-          workerTerminationResultDetail(stopReasonDetail, unknownResult),
+          workerTerminationResultDetail(decision.stopReasonDetail, unknownResult),
           unknownResult
         );
       }
       throw error;
     }
 
-    const terminalReasonDetail = workerTerminationResultDetail(stopReasonDetail, terminationResult);
+    const terminalReasonDetail = workerTerminationResultDetail(decision.stopReasonDetail, terminationResult);
     if (budget.hard_limit_policy === 'block_requires_resume') {
       this.updateBudgetBlockedTerminationEvidence(issueId, terminalReasonDetail, terminationResult);
     }
-    await this.completeRunRecord(running, 'failed', stopReasonCode, null, terminalReasonDetail);
+    await this.completeRunRecord(running, 'failed', decision.stopReasonCode, null, terminalReasonDetail);
   }
 
   private updateBudgetBlockedTerminationEvidence(
@@ -2567,36 +2477,28 @@ export class OrchestratorCore {
     terminationResult: WorkerTerminationResult
   ): void {
     const blockedEntry = this.state.blocked_inputs.get(issueId);
-    if (!blockedEntry || blockedEntry.stop_reason_code !== REASON_CODES.operatorBudgetLimitExceeded) {
+    if (
+      !applyBudgetBlockedTerminationEvidence({
+        blockedEntry,
+        stopReasonDetail,
+        terminationResult
+      })
+    ) {
       return;
-    }
-
-    blockedEntry.stop_reason_detail = stopReasonDetail;
-    blockedEntry.worker_termination_result = cloneWorkerTerminationResult(terminationResult);
-    if (blockedEntry.budget) {
-      blockedEntry.budget = {
-        ...blockedEntry.budget,
-        budget_message: stopReasonDetail
-      };
     }
     void this.persistence?.upsertBlockedInput?.(issueId, JSON.stringify(blockedEntry));
     this.ports.notifyObservers?.();
   }
 
   private recordBudgetUsageSample(issueId: string, totalTokens: number, timestampMs: number): void {
-    if (!this.budgetConfigured() || totalTokens <= 0) {
-      return;
-    }
-    const samples = this.pruneBudgetSamples(issueId, timestampMs);
-    this.state.budget_usage_samples?.set(
+    recordIssueBudgetUsageSample({
+      budget: this.config.budget,
+      budgetSamples: this.budgetUsageSamples(),
+      nowMs: timestampMs,
       issueId,
-      recordBudgetUsageSample({
-        budget: this.config.budget,
-        samples,
-        totalTokens,
-        timestampMs
-      })
-    );
+      totalTokens,
+      timestampMs
+    });
   }
 
   private quarantineBlockedWorkerEvent(
