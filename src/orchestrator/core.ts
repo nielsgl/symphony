@@ -5,6 +5,22 @@ import path from 'node:path';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
+import {
+  buildOperatorInputResumeContext as coordinateBuildOperatorInputResumeContext,
+  cancelBlockedIssue as coordinateCancelBlockedIssue,
+  clearBlockedInput as coordinateClearBlockedInput,
+  persistBlockedInputEvent as coordinatePersistBlockedInputEvent,
+  persistTicketBlocker as coordinatePersistTicketBlocker,
+  resolveBacklogStateName as coordinateResolveBacklogStateName,
+  resumeBlockedIssue as coordinateResumeBlockedIssue,
+  scheduleBlockedInput as coordinateScheduleBlockedInput,
+  submitBlockedIssueInput as coordinateSubmitBlockedIssueInput,
+  submitBlockedIssueInputNative as coordinateSubmitBlockedIssueInputNative,
+  ticketBlockerTypeForBlockedEntry as coordinateTicketBlockerTypeForBlockedEntry,
+  type BlockedInputCoordinatorContext,
+  type BlockedInputScheduleParams,
+  type SubmitBlockedIssueInputNativeResult
+} from './core/blocked-input-coordinator';
 import { coordinateDispatchIssue, coordinateDispatchTick, type DispatchCoordinatorContext } from './core/dispatch-coordinator';
 import {
   addRuntimeSecondsFromEntry as coordinateAddRuntimeSecondsFromEntry,
@@ -215,10 +231,6 @@ function readTimestampMs(value: Record<string, unknown> | null): number | null {
     }
   }
   return null;
-}
-
-function asIso(timestampMs: number): string {
-  return new Date(timestampMs).toISOString();
 }
 
 export class OrchestratorCore {
@@ -1158,6 +1170,39 @@ export class OrchestratorCore {
     await this.persistence?.deleteBreaker?.(issueId);
   }
 
+  private blockedInputCoordinatorContext(): BlockedInputCoordinatorContext {
+    return {
+      state: this.state,
+      config: this.config,
+      tracker: this.ports.tracker,
+      cancelRetryTimer: (timerHandle) => this.ports.cancelRetryTimer(timerHandle),
+      submitBlockedIssueInputNative: this.ports.submitBlockedIssueInputNative
+        ? (params) => this.ports.submitBlockedIssueInputNative!(params)
+        : undefined,
+      notifyObservers: this.ports.notifyObservers ? () => this.ports.notifyObservers!() : undefined,
+      persistence: this.persistence,
+      logger: this.logger,
+      nowMs: () => this.nowMs(),
+      hooks: {
+        getLastPhaseMarker: (issueId) => this.getLastPhaseMarker(issueId),
+        inferInputSchemaType: (questions) => this.inferInputSchemaType(questions),
+        upsertCircuitBreaker: (entry) => this.upsertCircuitBreaker(entry),
+        clearCircuitBreaker: (issueId) => this.clearCircuitBreaker(issueId),
+        recordHistoryWriteFailure: (operation, reasonCode, error) =>
+          this.recordHistoryWriteFailure(operation, reasonCode, error),
+        captureProgressSignals: (params) => this.captureProgressSignals(params),
+        dispatchIssue: (issue, attempt, resumeContext, graphContext) =>
+          this.dispatchIssue(issue, attempt, resumeContext ?? null, graphContext),
+        scheduleRetry: (params) => this.scheduleRetry(params),
+        describeIssueRuntimeState: (issueId) => this.describeIssueRuntimeState(issueId),
+        targetIdentifiersFromRuntimeState: (issueId, runtimeState) =>
+          this.targetIdentifiersFromRuntimeState(issueId, runtimeState),
+        recordOperatorAction: (issueId, action) => this.recordOperatorAction(issueId, action),
+        recordRuntimeEvent: (params) => this.recordRuntimeEvent(params)
+      }
+    };
+  }
+
   getCircuitBreakerSnapshot(): CircuitBreakerEntry[] {
     return Array.from(this.state.circuit_breakers.values()).map((entry) => ({ ...entry }));
   }
@@ -1798,340 +1843,28 @@ export class OrchestratorCore {
     ].join('\n');
   }
 
-  private async scheduleBlockedInput(params: {
-    issue_id: string;
-    issue_identifier: string;
-    attempt: number;
-    issue_run_id?: string | null;
-    previous_attempt_id?: string | null;
-    worker_host: string | null;
-    workspace_path: string | null;
-    provisioner_type: string | null;
-    branch_name: string | null;
-    repo_root: string | null;
-    workspace_exists: boolean;
-    workspace_git_status: 'clean' | 'dirty' | 'unknown' | null;
-    workspace_provisioned: boolean;
-    workspace_is_git_worktree: boolean;
-    copy_ignored_applied?: boolean;
-    copy_ignored_status?: 'skipped' | 'success' | 'failed' | null;
-    copy_ignored_summary?:
-      | {
-          copied_files: number;
-          skipped_existing: number;
-          blocked_files: number;
-          bytes_copied: number;
-          duration_ms: number;
-        }
-      | null;
-    stop_reason_code: string;
-    stop_reason_detail: string | null;
-    conflict_files?: Array<{
-      path: string;
-      status: 'staged' | 'unstaged' | 'unknown';
-      classification?: 'ephemeral' | 'tracked_ephemeral' | 'unknown_non_ephemeral';
-    }>;
-    classification_summary?: {
-      ephemeral: number;
-      tracked_ephemeral: number;
-      unknown_non_ephemeral: number;
-    };
-    resolution_hints?: string[];
-    pending_input?: {
-      detail: string;
-      request_id: string | null;
-      request_method: string | null;
-      prompt_text: string | null;
-      questions: Array<{ id: string; prompt?: string; options?: Array<{ label: string; value?: string }> }>;
-    } | null;
-    tool_output_wait?: BlockedEntry['tool_output_wait'];
-    transcript_tool_call_diagnostics?: BlockedEntry['transcript_tool_call_diagnostics'];
-    recovery?: BlockedEntry['recovery'];
-    session_console?: Array<{ at_ms: number; event: string; message: string | null }>;
-    previous_thread_id: string | null;
-    previous_turn_id?: string | null;
-    previous_session_id: string | null;
-    attempt_count_window?: number;
-    window_minutes?: number;
-    last_known_commit_sha?: string | null;
-    last_progress_checkpoint_at?: number | null;
-    progress_signals?: ProgressSignals;
-    required_actions?: string[];
-    apply_circuit_breaker?: boolean;
-    budget?: BudgetRuntimeProjection;
-  }): Promise<{ created: boolean }> {
-    const existingRetry = this.state.retry_attempts.get(params.issue_id);
-    if (existingRetry) {
-      this.ports.cancelRetryTimer(existingRetry.timer_handle);
-      this.state.retry_attempts.delete(params.issue_id);
-    }
-
-    const existingBlocked = this.state.blocked_inputs.get(params.issue_id);
-    if (existingBlocked && existingBlocked.stop_reason_code === params.stop_reason_code && existingBlocked.requires_manual_resume) {
-      return { created: false };
-    }
-
-    const blockedEntry: BlockedEntry = {
-      issue_id: params.issue_id,
-      issue_identifier: params.issue_identifier,
-      attempt: params.attempt,
-      issue_run_id: params.issue_run_id ?? null,
-      previous_attempt_id: params.previous_attempt_id ?? null,
-      worker_host: params.worker_host,
-      workspace_path: params.workspace_path,
-      provisioner_type: params.provisioner_type,
-      branch_name: params.branch_name,
-      repo_root: params.repo_root,
-      workspace_exists: params.workspace_exists,
-      workspace_git_status: params.workspace_git_status,
-      workspace_provisioned: params.workspace_provisioned,
-      workspace_is_git_worktree: params.workspace_is_git_worktree,
-      copy_ignored_applied: params.copy_ignored_applied ?? false,
-      copy_ignored_status: params.copy_ignored_status ?? null,
-      copy_ignored_summary: params.copy_ignored_summary ?? null,
-      stop_reason_code: params.stop_reason_code,
-      stop_reason_detail: params.stop_reason_detail,
-      conflict_files: (params.conflict_files ?? []).map((file) => ({ ...file })),
-      classification_summary: params.classification_summary ? { ...params.classification_summary } : undefined,
-      resolution_hints: [...(params.resolution_hints ?? [])],
-      previous_thread_id: params.previous_thread_id,
-      previous_turn_id: params.previous_turn_id ?? null,
-      previous_session_id: params.previous_session_id,
-      last_phase: this.getLastPhaseMarker(params.issue_id)?.phase ?? null,
-      last_phase_at_ms: this.getLastPhaseMarker(params.issue_id)?.at_ms ?? null,
-      last_phase_detail: this.getLastPhaseMarker(params.issue_id)?.detail ?? null,
-      blocked_at_ms: this.nowMs(),
-      requires_manual_resume: true,
-      awaiting_operator: true,
-      awaiting_operator_reason_code: params.stop_reason_code,
-      awaiting_operator_since_ms: this.nowMs(),
-      awaiting_operator_resume_nonce: (existingBlocked?.awaiting_operator_resume_nonce ?? 0) + 1,
-      attempt_count_window: params.attempt_count_window,
-      window_minutes: params.window_minutes,
-      last_known_commit_sha: params.last_known_commit_sha ?? null,
-      last_progress_checkpoint_at: params.last_progress_checkpoint_at ?? null,
-      progress_signals: params.progress_signals
-        ? {
-            commit_sha: params.progress_signals.commit_sha ?? null,
-            checklist_checkpoint: params.progress_signals.checklist_checkpoint ?? null,
-            state_marker: params.progress_signals.state_marker ?? null,
-            tracker_comment_created: params.progress_signals.tracker_comment_created ?? false,
-            tracker_status_transition: params.progress_signals.tracker_status_transition ?? null,
-            agent_review_handoff: params.progress_signals.agent_review_handoff ?? null,
-            tracker_started_state: params.progress_signals.tracker_started_state ?? null
-          }
-        : undefined,
-      required_actions: [...(params.required_actions ?? [])],
-      resume_override_reason: null,
-      budget: params.budget ? { ...params.budget } : undefined,
-      pending_input: params.pending_input
-        ? {
-            request_id: params.pending_input.request_id,
-            request_method: params.pending_input.request_method,
-            prompt_text: params.pending_input.prompt_text,
-            questions: params.pending_input.questions,
-            input_schema_type: this.inferInputSchemaType(params.pending_input.questions),
-            input_required_at_ms: this.nowMs()
-          }
-        : null,
-      last_input_submit: null,
-      resume_history: [],
-      tool_output_wait: params.tool_output_wait
-        ? {
-            ...params.tool_output_wait,
-            recommended_actions: [...params.tool_output_wait.recommended_actions]
-          }
-        : null,
-      transcript_tool_call_diagnostics: (params.transcript_tool_call_diagnostics ?? []).map((diagnostic) => ({ ...diagnostic })),
-      recovery: params.recovery ? { ...params.recovery } : null,
-      session_console: (params.session_console ?? []).slice(-40),
-      quarantined_events: [],
-      quarantined_event_count: 0,
-      last_quarantined_event_at_ms: null
-    };
-    this.state.blocked_inputs.set(params.issue_id, blockedEntry);
-    this.state.claimed.add(params.issue_id);
-
-    if (params.apply_circuit_breaker) {
-      await this.upsertCircuitBreaker({
-        issue_id: params.issue_id,
-        issue_identifier: params.issue_identifier,
-        breaker_active: true,
-        breaker_hit_count: Math.max(1, params.attempt_count_window ?? 1),
-        breaker_window_minutes: Math.max(1, params.window_minutes ?? this.config.respawn_window_minutes ?? 30),
-        breaker_first_hit_at_ms: blockedEntry.blocked_at_ms,
-        breaker_last_hit_at_ms: blockedEntry.blocked_at_ms
-      });
-    }
-
-    void this.persistence?.upsertBlockedInput?.(params.issue_id, JSON.stringify(blockedEntry));
-    void this.persistTicketBlocker(blockedEntry);
-    void this.persistBlockedInputEvent(blockedEntry);
-
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.orchestration.blockedInputScheduled,
-      message: 'issue blocked: operator input required',
-      context: {
-        issue_id: params.issue_id,
-        issue_identifier: params.issue_identifier,
-        stop_reason_code: params.stop_reason_code,
-        request_id: params.pending_input?.request_id ?? null,
-        previous_thread_id: params.previous_thread_id,
-        previous_session_id: params.previous_session_id
-      }
-    });
-    return { created: true };
+  private async scheduleBlockedInput(params: BlockedInputScheduleParams): Promise<{ created: boolean }> {
+    return coordinateScheduleBlockedInput(this.blockedInputCoordinatorContext(), params);
   }
 
   private clearBlockedInput(issue_id: string, reason: string): void {
-    const blocked = this.state.blocked_inputs.get(issue_id);
-    if (!blocked) {
-      return;
-    }
-
-    this.state.blocked_inputs.delete(issue_id);
-    this.state.claimed.delete(issue_id);
-    void this.persistence?.deleteBlockedInput?.(issue_id);
-    this.logger?.log({
-      level: 'info',
-      event: CANONICAL_EVENT.orchestration.blockedInputCleared,
-      message: 'blocked issue cleared',
-      context: {
-        issue_id,
-        issue_identifier: blocked.issue_identifier,
-        reason
-      }
-    });
+    coordinateClearBlockedInput(this.blockedInputCoordinatorContext(), issue_id, reason);
   }
 
   private async persistTicketBlocker(blockedEntry: BlockedEntry): Promise<void> {
-    if (!this.persistence?.appendTicketBlocker || !blockedEntry.issue_run_id) {
-      return;
-    }
-
-    try {
-      await this.persistence.appendTicketBlocker({
-        issue_run_id: blockedEntry.issue_run_id,
-        attempt_id: blockedEntry.previous_attempt_id ?? null,
-        thread_id: blockedEntry.previous_thread_id ?? null,
-        turn_id: blockedEntry.previous_turn_id ?? null,
-        blocker_type: this.ticketBlockerTypeForBlockedEntry(blockedEntry),
-        status: 'active',
-        reason_code: blockedEntry.stop_reason_code,
-        reason_detail: blockedEntry.stop_reason_detail,
-        blocked_at: asIso(blockedEntry.blocked_at_ms)
-      });
-    } catch (error) {
-      await this.recordHistoryWriteFailure('appendTicketBlocker', blockedEntry.stop_reason_code, error);
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.persistence.recordEventFailed,
-        message: `failed to persist ticket blocker for ${blockedEntry.issue_identifier}`,
-        context: {
-          issue_id: blockedEntry.issue_id,
-          issue_identifier: blockedEntry.issue_identifier,
-          issue_run_id: blockedEntry.issue_run_id,
-          previous_attempt_id: blockedEntry.previous_attempt_id ?? null,
-          reason_code: blockedEntry.stop_reason_code,
-          error: error instanceof Error ? error.message : String(error)
-        }
-      });
-    }
+    await coordinatePersistTicketBlocker(this.blockedInputCoordinatorContext(), blockedEntry);
   }
 
   private async persistBlockedInputEvent(blockedEntry: BlockedEntry): Promise<void> {
-    if (!this.persistence?.appendBlockedInputEvent || !blockedEntry.issue_run_id) {
-      return;
-    }
-
-    try {
-      await this.persistence.appendBlockedInputEvent({
-        issue_run_id: blockedEntry.issue_run_id,
-        attempt_id: blockedEntry.previous_attempt_id ?? null,
-        thread_id: blockedEntry.previous_thread_id ?? null,
-        turn_id: blockedEntry.previous_turn_id ?? null,
-        issue_id: blockedEntry.issue_id,
-        issue_identifier: blockedEntry.issue_identifier,
-        phase: blockedEntry.last_phase,
-        runtime_state: 'blocked',
-        reason_code: blockedEntry.stop_reason_code,
-        reason_detail: blockedEntry.stop_reason_detail,
-        request_id: blockedEntry.pending_input?.request_id ?? null,
-        request_method: blockedEntry.pending_input?.request_method ?? null,
-        input_schema_type: blockedEntry.pending_input?.input_schema_type ?? null,
-        prompt_text: blockedEntry.pending_input?.prompt_text ?? null,
-        pending_input: blockedEntry.pending_input
-          ? {
-              request_id: blockedEntry.pending_input.request_id,
-              request_method: blockedEntry.pending_input.request_method,
-              prompt_text: blockedEntry.pending_input.prompt_text,
-              input_schema_type: blockedEntry.pending_input.input_schema_type,
-              questions: blockedEntry.pending_input.questions
-            }
-          : null,
-        state_context: {
-          previous_session_id: blockedEntry.previous_session_id,
-          previous_turn_id: blockedEntry.previous_turn_id ?? null,
-          worker_host: blockedEntry.worker_host,
-          workspace_path: blockedEntry.workspace_path,
-          branch_name: blockedEntry.branch_name,
-          last_phase_at_ms: blockedEntry.last_phase_at_ms,
-          last_phase_detail: blockedEntry.last_phase_detail,
-          tool_output_wait: blockedEntry.tool_output_wait,
-          conflict_files: blockedEntry.conflict_files,
-          budget: blockedEntry.budget ?? null,
-          recovery: blockedEntry.recovery,
-          required_actions: blockedEntry.required_actions,
-          progress_signals: blockedEntry.progress_signals ?? null
-        },
-        blocked_at: asIso(blockedEntry.blocked_at_ms)
-      });
-    } catch (error) {
-      await this.recordHistoryWriteFailure('appendBlockedInputEvent', blockedEntry.stop_reason_code, error);
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.persistence.recordEventFailed,
-        message: `failed to persist blocked input event for ${blockedEntry.issue_identifier}`,
-        context: {
-          issue_id: blockedEntry.issue_id,
-          issue_identifier: blockedEntry.issue_identifier,
-          issue_run_id: blockedEntry.issue_run_id,
-          previous_attempt_id: blockedEntry.previous_attempt_id ?? null,
-          reason_code: blockedEntry.stop_reason_code,
-          error: error instanceof Error ? error.message : String(error)
-        }
-      });
-    }
+    await coordinatePersistBlockedInputEvent(this.blockedInputCoordinatorContext(), blockedEntry);
   }
 
   private ticketBlockerTypeForBlockedEntry(blockedEntry: BlockedEntry): string {
-    if (blockedEntry.pending_input) {
-      return 'operator_input';
-    }
-    if (blockedEntry.tool_output_wait) {
-      return REASON_CODES.missingToolOutput;
-    }
-    if (blockedEntry.conflict_files.length > 0) {
-      return 'workspace_conflict';
-    }
-    if (blockedEntry.budget?.budget_status === 'hard_limited') {
-      return 'budget_limit';
-    }
-    return 'orchestration_blocker';
+    return coordinateTicketBlockerTypeForBlockedEntry(blockedEntry);
   }
 
   private resolveBacklogStateName(): string {
-    const candidates = this.config.active_states ?? [];
-    const backlog = candidates.find((entry) => entry.trim().toLowerCase() === 'backlog');
-    if (backlog) {
-      return backlog;
-    }
-    const todo = candidates.find((entry) => entry.trim().toLowerCase() === 'todo');
-    if (todo) {
-      return todo;
-    }
-    return 'Todo';
+    return coordinateResolveBacklogStateName(this.blockedInputCoordinatorContext());
   }
 
   private async captureProgressSignals(params: {
@@ -2466,234 +2199,14 @@ export class OrchestratorCore {
       resume_reason_code: string;
     }
   ): Promise<{ ok: true; issue_id: string } | { ok: false; code: string; message: string }> {
-    const reasonNote = normalizeOperatorReasonNote(operator_context?.reason_note);
-    if (!reasonNote) {
-      return reasonNoteRequiredFailure();
-    }
-    const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
-    if (!blocked) {
-      return {
-        ok: false,
-        code: 'issue_not_blocked',
-        message: `Issue ${issue_identifier} is not blocked`
-      };
-    }
-    const preState = this.describeIssueRuntimeState(blocked.issue_id);
-
-    let refreshedIssues: Issue[];
-    try {
-      refreshedIssues = await this.ports.tracker.fetch_issue_states_by_ids([blocked.issue_id]);
-    } catch (error) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'resume',
-        requested_at_ms: this.nowMs(),
-        result: 'failed',
-        result_code: 'resume_failed',
-        message: error instanceof Error ? error.message : 'failed to refresh issue state',
-        actor: operator_context?.actor ?? null,
-        reason_note: reasonNote,
-        pre_state: preState,
-        post_state: this.describeIssueRuntimeState(blocked.issue_id)
-      });
-      return {
-        ok: false,
-        code: 'resume_failed',
-        message: error instanceof Error ? error.message : 'failed to refresh issue state'
-      };
-    }
-
-    const issue = refreshedIssues.find((entry) => entry.id === blocked.issue_id);
-    if (!issue) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'resume',
-        requested_at_ms: this.nowMs(),
-        result: 'rejected',
-        result_code: 'issue_not_found',
-        message: `Issue ${issue_identifier} no longer exists in tracker`,
-        actor: operator_context?.actor ?? null,
-        reason_note: reasonNote,
-        pre_state: preState
-      });
-      this.clearBlockedInput(blocked.issue_id, 'issue_not_found');
-      return {
-        ok: false,
-        code: 'issue_not_found',
-        message: `Issue ${issue_identifier} no longer exists in tracker`
-      };
-    }
-
-    if (!isActiveState(issue.state, this.config)) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'resume',
-        requested_at_ms: this.nowMs(),
-        result: 'rejected',
-        result_code: 'issue_not_active',
-        message: `Issue ${issue_identifier} is no longer in an active state`,
-        actor: operator_context?.actor ?? null,
-        reason_note: reasonNote,
-        pre_state: preState
-      });
-      this.clearBlockedInput(blocked.issue_id, 'issue_not_active');
-      return {
-        ok: false,
-        code: 'issue_not_active',
-        message: `Issue ${issue_identifier} is no longer in an active state`
-      };
-    }
-
-    const currentSignals = await this.captureProgressSignals({
-      issue,
-      issue_id: blocked.issue_id,
-      branch_name: blocked.branch_name,
-      repo_root: blocked.repo_root
-    });
-    const hasProgressSignal =
-      currentSignals.commit_sha !== (blocked.progress_signals?.commit_sha ?? null) ||
-      currentSignals.checklist_checkpoint !== (blocked.progress_signals?.checklist_checkpoint ?? null) ||
-      currentSignals.state_marker !== (blocked.progress_signals?.state_marker ?? null);
-    const requiresProgressResume =
-      blocked.stop_reason_code === REASON_CODES.operatorNoProgressRedispatchBlocked ||
-      blocked.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete;
-    if (requiresProgressResume && !hasProgressSignal && (!resume_override_reason || resume_override_reason.trim().length === 0)) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'resume',
-        requested_at_ms: this.nowMs(),
-        result: 'rejected',
-        result_code: 'resume_failed',
-        message: `Issue ${issue_identifier} requires progress or an explicit resume override reason`,
-        actor: operator_context?.actor ?? null,
-        reason_note: reasonNote,
-        pre_state: preState,
-        post_state: this.describeIssueRuntimeState(blocked.issue_id)
-      });
-      return {
-        ok: false,
-        code: 'resume_failed',
-        message: `Issue ${issue_identifier} requires progress or an explicit resume override reason`
-      };
-    }
-    blocked.resume_override_reason = resume_override_reason?.trim() || null;
-
-    this.state.blocked_inputs.delete(blocked.issue_id);
-    this.state.claimed.delete(blocked.issue_id);
-    this.state.redispatch_progress?.delete(blocked.issue_id);
-    await this.clearCircuitBreaker(blocked.issue_id);
-    await this.persistence?.deleteBlockedInput?.(blocked.issue_id);
-
-    const eligibility = shouldDispatchIssue(issue, this.state, this.config);
-    if (eligibility.eligible) {
-      await this.dispatchIssue(issue, blocked.attempt, resume_context, {
-        issue_run_id: blocked.issue_run_id,
-        previous_attempt_id: blocked.previous_attempt_id
-      });
-    } else if (eligibility.reason === 'global_slots_exhausted' || eligibility.reason === 'state_slots_exhausted') {
-      await this.scheduleRetry({
-        issue_id: blocked.issue_id,
-        identifier: blocked.issue_identifier,
-        attempt: blocked.attempt,
-        issue_run_id: blocked.issue_run_id,
-        previous_attempt_id: blocked.previous_attempt_id,
-        delay_type: 'failure',
-        error: 'no available orchestrator slots',
-        worker_host: blocked.worker_host,
-        workspace_path: blocked.workspace_path,
-        provisioner_type: blocked.provisioner_type,
-        branch_name: blocked.branch_name,
-        repo_root: blocked.repo_root,
-        workspace_exists: blocked.workspace_exists,
-        workspace_git_status: blocked.workspace_git_status,
-        workspace_provisioned: blocked.workspace_provisioned,
-        workspace_is_git_worktree: blocked.workspace_is_git_worktree,
-        copy_ignored_applied: blocked.copy_ignored_applied,
-        copy_ignored_status: blocked.copy_ignored_status,
-        copy_ignored_summary: blocked.copy_ignored_summary,
-        stop_reason_code: REASON_CODES.slotsExhausted,
-        stop_reason_detail: 'resume blocked by no available orchestrator slots',
-        previous_thread_id: blocked.previous_thread_id,
-        previous_turn_id: blocked.previous_turn_id ?? null,
-        previous_session_id: blocked.previous_session_id,
-        issue_snapshot: issue
-      });
-    } else {
-      await this.scheduleRetry({
-        issue_id: blocked.issue_id,
-        identifier: blocked.issue_identifier,
-        attempt: blocked.attempt,
-        issue_run_id: blocked.issue_run_id,
-        previous_attempt_id: blocked.previous_attempt_id,
-        delay_type: 'continuation',
-        error: null,
-        worker_host: blocked.worker_host,
-        workspace_path: blocked.workspace_path,
-        provisioner_type: blocked.provisioner_type,
-        branch_name: blocked.branch_name,
-        repo_root: blocked.repo_root,
-        workspace_exists: blocked.workspace_exists,
-        workspace_git_status: blocked.workspace_git_status,
-        workspace_provisioned: blocked.workspace_provisioned,
-        workspace_is_git_worktree: blocked.workspace_is_git_worktree,
-        copy_ignored_applied: blocked.copy_ignored_applied,
-        copy_ignored_status: blocked.copy_ignored_status,
-        copy_ignored_summary: blocked.copy_ignored_summary,
-        stop_reason_code: REASON_CODES.manualResume,
-        stop_reason_detail: 'manual resume requested',
-        previous_thread_id: blocked.previous_thread_id,
-        previous_turn_id: blocked.previous_turn_id ?? null,
-        previous_session_id: blocked.previous_session_id,
-        issue_snapshot: issue
-      });
-    }
-
-    if (resume_metadata) {
-      const submittedAtMs = this.nowMs();
-      const record = {
-        submitted_at_ms: submittedAtMs,
-        request_id: resume_metadata.request_id,
-        resume_mode: resume_metadata.resume_mode,
-        resume_reason_code: resume_metadata.resume_reason_code,
-        previous_thread_id: blocked.previous_thread_id ?? null,
-        previous_session_id: blocked.previous_session_id ?? null
-      };
-      blocked.last_input_submit = {
-        submitted_at_ms: submittedAtMs,
-        request_id: resume_metadata.request_id,
-        resume_mode: resume_metadata.resume_mode,
-        resume_reason_code: resume_metadata.resume_reason_code
-      };
-      blocked.resume_history = [...(blocked.resume_history ?? []), record].slice(-20);
-    }
-
-    this.logger?.log({
-      level: 'info',
-      event: CANONICAL_EVENT.orchestration.blockedInputResumed,
-      message: 'blocked issue resumed',
-      context: {
-        issue_id: blocked.issue_id,
-        issue_identifier: blocked.issue_identifier,
-        request_id: resume_metadata?.request_id ?? blocked.pending_input?.request_id ?? null,
-        resume_mode: resume_metadata?.resume_mode ?? null,
-        resume_reason_code: resume_metadata?.resume_reason_code ?? null,
-        previous_thread_id: blocked.previous_thread_id,
-        previous_session_id: blocked.previous_session_id
-      }
-    });
-
-    this.recordOperatorAction(blocked.issue_id, {
-      action: resume_metadata ? 'submit_input' : 'resume',
-      requested_at_ms: this.nowMs(),
-      result: 'accepted',
-      result_code: resume_metadata?.resume_reason_code ?? 'resume_accepted',
-      message: 'blocked issue resumed',
-      actor: operator_context?.actor ?? null,
-      reason_note: reasonNote,
-      pre_state: preState,
-      post_state: this.describeIssueRuntimeState(blocked.issue_id)
-    });
-    this.ports.notifyObservers?.();
-    return {
-      ok: true,
-      issue_id: blocked.issue_id
-    };
+    return coordinateResumeBlockedIssue(
+      this.blockedInputCoordinatorContext(),
+      issue_identifier,
+      resume_context,
+      resume_override_reason,
+      operator_context,
+      resume_metadata
+    );
   }
 
   async cancelBlockedIssue(
@@ -2701,98 +2214,7 @@ export class OrchestratorCore {
     cancel_reason: string | null = null,
     operator_context: { actor?: string | null; reason_note?: string | null; confirmed?: boolean | null } | null = null
   ): Promise<{ ok: true; issue_id: string; moved_to_state: string } | { ok: false; code: string; message: string }> {
-    const reasonNote = normalizeOperatorReasonNote(operator_context?.reason_note ?? cancel_reason);
-    if (!reasonNote) {
-      return reasonNoteRequiredFailure();
-    }
-    const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === issue_identifier);
-    if (!blocked) {
-      return {
-        ok: false,
-        code: 'issue_not_blocked',
-        message: `Issue ${issue_identifier} is not blocked`
-      };
-    }
-    const preState = this.describeIssueRuntimeState(blocked.issue_id);
-    if (operator_context?.confirmed !== true) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'cancel',
-        requested_at_ms: this.nowMs(),
-        result: 'rejected',
-        result_code: 'confirmation_required',
-        message: 'Cancel requires explicit confirmation',
-        actor: operator_context?.actor ?? null,
-        reason_note: reasonNote,
-        pre_state: preState,
-        post_state: this.describeIssueRuntimeState(blocked.issue_id)
-      });
-      return { ok: false, code: 'confirmation_required', message: 'Cancel requires explicit confirmation' };
-    }
-
-    const targetState = this.resolveBacklogStateName();
-    try {
-      await this.ports.tracker.update_issue_state(blocked.issue_id, targetState);
-    } catch (error) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'cancel',
-        requested_at_ms: this.nowMs(),
-        result: 'failed',
-        result_code: 'cancel_failed',
-        message: error instanceof Error ? error.message : 'failed to move issue to backlog state',
-        actor: operator_context?.actor ?? null,
-        reason_note: reasonNote,
-        pre_state: preState,
-        post_state: this.describeIssueRuntimeState(blocked.issue_id)
-      });
-      return {
-        ok: false,
-        code: 'cancel_failed',
-        message: error instanceof Error ? error.message : 'failed to move issue to backlog state'
-      };
-    }
-
-    this.clearBlockedInput(blocked.issue_id, 'operator_cancelled_to_backlog');
-    this.state.redispatch_progress?.delete(blocked.issue_id);
-    await this.clearCircuitBreaker(blocked.issue_id);
-    this.recordOperatorAction(blocked.issue_id, {
-      action: 'cancel',
-      requested_at_ms: this.nowMs(),
-      result: 'accepted',
-      result_code: targetState,
-      message: `cancelled to backlog: ${reasonNote}`,
-      actor: operator_context?.actor ?? null,
-      reason_note: reasonNote,
-      target_identifiers: this.targetIdentifiersFromRuntimeState(blocked.issue_id, preState),
-      pre_state: preState,
-      post_state: this.describeIssueRuntimeState(blocked.issue_id)
-    });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.orchestration.cancelToBacklogExecuted,
-      severity: 'info',
-      issue_identifier,
-      detail: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog'
-    });
-    this.logger?.log({
-      level: 'info',
-      event: CANONICAL_EVENT.orchestration.cancelToBacklogExecuted,
-      message: cancel_reason?.trim() ? `cancelled to backlog: ${cancel_reason.trim()}` : 'cancelled to backlog',
-      context: {
-        issue_id: blocked.issue_id,
-        issue_identifier,
-        stop_reason_code: blocked.stop_reason_code,
-        classification_summary: JSON.stringify(
-          blocked.classification_summary ?? {
-            ephemeral: 0,
-            tracked_ephemeral: 0,
-            unknown_non_ephemeral: 0
-          }
-        ),
-        next_operator_action: 'issue.state.todo',
-        next_operator_action_endpoint: '/api/v1/issues/:issue_identifier/cancel'
-      }
-    });
-    this.ports.notifyObservers?.();
-    return { ok: true, issue_id: blocked.issue_id, moved_to_state: targetState };
+    return coordinateCancelBlockedIssue(this.blockedInputCoordinatorContext(), issue_identifier, cancel_reason, operator_context);
   }
 
   async submitBlockedIssueInput(params: {
@@ -2813,183 +2235,21 @@ export class OrchestratorCore {
       }
     | { ok: false; code: string; message: string }
   > {
-    const reasonNote = normalizeOperatorReasonNote(params.reason_note);
-    if (!reasonNote) {
-      return reasonNoteRequiredFailure();
-    }
-    const blocked = Array.from(this.state.blocked_inputs.values()).find((entry) => entry.issue_identifier === params.issue_identifier);
-    if (!blocked) {
-      return { ok: false, code: 'issue_not_blocked', message: `Issue ${params.issue_identifier} is not blocked` };
-    }
-    const preState = this.describeIssueRuntimeState(blocked.issue_id);
-    const operatorContext = { actor: params.actor ?? null, reason_note: reasonNote };
-    if (!blocked.pending_input) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'submit_input',
-        requested_at_ms: this.nowMs(),
-        result: 'rejected',
-        result_code: 'input_submission_not_answerable',
-        message: 'Blocked issue has no pending input request payload',
-        actor: operatorContext.actor,
-        reason_note: operatorContext.reason_note,
-        pre_state: preState,
-        post_state: this.describeIssueRuntimeState(blocked.issue_id)
-      });
-      return { ok: false, code: 'input_submission_not_answerable', message: 'Blocked issue has no pending input request payload' };
-    }
-    if (!blocked.pending_input.request_id || blocked.pending_input.request_id !== params.request_id) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'submit_input',
-        requested_at_ms: this.nowMs(),
-        result: 'rejected',
-        result_code: 'input_submission_expired',
-        message: 'Input request_id does not match current blocked request',
-        actor: operatorContext.actor,
-        reason_note: operatorContext.reason_note,
-        pre_state: preState,
-        post_state: this.describeIssueRuntimeState(blocked.issue_id)
-      });
-      return { ok: false, code: 'input_submission_expired', message: 'Input request_id does not match current blocked request' };
-    }
-
-    if (blocked.pending_input.input_schema_type === 'options') {
-      const q = blocked.pending_input.questions.find((question) => question.id === params.answer.question_id) ?? blocked.pending_input.questions[0];
-      const options = q?.options ?? [];
-      if (!params.answer.option_label || !options.some((option) => option.label === params.answer.option_label)) {
-      this.recordOperatorAction(blocked.issue_id, {
-        action: 'submit_input',
-        requested_at_ms: this.nowMs(),
-        result: 'rejected',
-        result_code: 'input_submission_invalid',
-        message: 'Answer must select a valid option label for the pending question',
-        actor: operatorContext.actor,
-        reason_note: operatorContext.reason_note,
-        pre_state: preState,
-        post_state: this.describeIssueRuntimeState(blocked.issue_id)
-      });
-      return { ok: false, code: 'input_submission_invalid', message: 'Answer must select a valid option label for the pending question' };
-      }
-    } else if (blocked.pending_input.input_schema_type === 'text') {
-      if (!params.answer.text || !params.answer.text.trim()) {
-        this.recordOperatorAction(blocked.issue_id, {
-          action: 'submit_input',
-          requested_at_ms: this.nowMs(),
-          result: 'rejected',
-          result_code: 'input_submission_invalid',
-          message: 'Answer text is required for this input request',
-          actor: operatorContext.actor,
-          reason_note: operatorContext.reason_note,
-          pre_state: preState,
-          post_state: this.describeIssueRuntimeState(blocked.issue_id)
-        });
-        return { ok: false, code: 'input_submission_invalid', message: 'Answer text is required for this input request' };
-      }
-    }
-
-    const nativeAttempt = await this.submitBlockedIssueInputNative(blocked, params);
-    if (nativeAttempt.applied) {
-      this.logger?.log({
-        level: 'info',
-        event: CANONICAL_EVENT.orchestration.blockedInputSubmitNativeApplied,
-        message: 'native blocked input submission applied',
-        context: {
-          issue_id: blocked.issue_id,
-          issue_identifier: blocked.issue_identifier,
-          request_id: params.request_id
-        }
-      });
-      const resumed = await this.resumeBlockedIssue(params.issue_identifier, nativeAttempt.resume_context ?? null, null, operatorContext, {
-        request_id: params.request_id,
-        resume_mode: 'native',
-        resume_reason_code: 'native_applied'
-      });
-      if (!resumed.ok) {
-        return resumed;
-      }
-      return {
-        ok: true,
-        issue_id: resumed.issue_id,
-        request_id: params.request_id,
-        resume_mode: 'native',
-        resume_reason_code: 'native_applied',
-        requested_at: new Date().toISOString(),
-        request_lineage: {
-          previous_thread_id: blocked.previous_thread_id ?? null,
-          previous_session_id: blocked.previous_session_id ?? null
-        }
-      };
-    }
-
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.orchestration.blockedInputSubmitNativeFailed,
-      message: 'native blocked input submission unavailable',
-      context: {
-        issue_id: blocked.issue_id,
-        issue_identifier: blocked.issue_identifier,
-        request_id: params.request_id,
-        resume_reason_code: nativeAttempt.code
-      }
-    });
-
-    const mappedCode =
-      nativeAttempt.code === 'session_expired' || nativeAttempt.code === 'request_not_found'
-        ? 'input_submission_expired'
-        : nativeAttempt.code === 'transport_unsupported'
-          ? 'input_submission_transport_unavailable'
-          : 'input_submission_not_answerable';
-    this.recordOperatorAction(blocked.issue_id, {
-      action: 'submit_input',
-      requested_at_ms: this.nowMs(),
-      result: mappedCode === 'input_submission_transport_unavailable' ? 'failed' : 'rejected',
-      result_code: mappedCode,
-      message: nativeAttempt.message ?? 'Input submission unavailable for this request',
-      actor: operatorContext.actor,
-      reason_note: operatorContext.reason_note,
-      pre_state: preState,
-      post_state: this.describeIssueRuntimeState(blocked.issue_id)
-    });
-    return { ok: false, code: mappedCode, message: nativeAttempt.message ?? 'Input submission unavailable for this request' };
+    return coordinateSubmitBlockedIssueInput(this.blockedInputCoordinatorContext(), params);
   }
 
   private async submitBlockedIssueInputNative(
     blocked: BlockedEntry,
     params: { issue_identifier: string; request_id: string; answer: { question_id?: string; option_label?: string; text?: string } }
-  ): Promise<{
-    applied: boolean;
-    code: 'native_applied' | 'session_expired' | 'request_not_found' | 'transport_unsupported' | 'native_submit_failed';
-    message?: string;
-    resume_context?: string;
-  }> {
-    if (!this.ports.submitBlockedIssueInputNative) {
-      return { applied: false, code: 'transport_unsupported' };
-    }
-    return this.ports.submitBlockedIssueInputNative({
-      issue_id: blocked.issue_id,
-      issue_identifier: params.issue_identifier,
-      request_id: params.request_id,
-      request_method: blocked.pending_input?.request_method ?? null,
-      previous_thread_id: blocked.previous_thread_id ?? null,
-      previous_session_id: blocked.previous_session_id ?? null,
-      answer: params.answer
-    });
+  ): Promise<SubmitBlockedIssueInputNativeResult> {
+    return coordinateSubmitBlockedIssueInputNative(this.blockedInputCoordinatorContext(), blocked, params);
   }
 
   private buildOperatorInputResumeContext(
     blocked: BlockedEntry,
     answer: { question_id?: string; option_label?: string; text?: string }
   ): string {
-    const question =
-      blocked.pending_input?.questions.find((entry) => entry.id === answer.question_id) ?? blocked.pending_input?.questions[0] ?? null;
-    const promptText = question?.prompt ?? blocked.pending_input?.prompt_text ?? 'Operator input requested';
-    const normalizedAnswer = answer.option_label ?? answer.text?.trim() ?? '';
-    const requestId = blocked.pending_input?.request_id ?? 'unknown';
-    return [
-      'Operator provided input for a previously blocked request. Apply this answer and continue execution.',
-      `Request ID: ${requestId}`,
-      `Question: ${promptText}`,
-      `Answer: ${normalizedAnswer}`
-    ].join('\n');
+    return coordinateBuildOperatorInputResumeContext(blocked, answer);
   }
 
   getPhaseMarkerSettings(): PhaseMarkerSettings {
@@ -3429,7 +2689,8 @@ export class OrchestratorCore {
       ...action,
       actor: action.actor ?? 'operator',
       reason_note: action.reason_note ?? null,
-      target_identifiers: action.target_identifiers ?? this.targetIdentifiersFromRuntimeState(issueId, action.pre_state ?? currentState),
+      target_identifiers:
+        action.target_identifiers ?? this.targetIdentifiersFromRuntimeState(issueId, action.pre_state ?? currentState),
       pre_state: action.pre_state ?? currentState,
       post_state: action.post_state ?? currentState
     };
@@ -3437,29 +2698,35 @@ export class OrchestratorCore {
     const updated = [...existing, normalized].slice(-20);
     operatorActions.set(issueId, updated);
     void this.persistence?.upsertOperatorActions?.(issueId, JSON.stringify(updated));
-    void this.persistence?.appendOperatorActionHistory?.({
-      issue_run_id: this.stringOrNull(normalized.target_identifiers?.issue_run_id) ?? this.stringOrNull((normalized.pre_state ?? {}).issue_run_id),
-      attempt_id: this.stringOrNull(normalized.target_identifiers?.attempt_id),
-      thread_id: this.stringOrNull(normalized.target_identifiers?.thread_id),
-      turn_id: this.stringOrNull(normalized.target_identifiers?.turn_id),
-      action: normalized.action,
-      actor: normalized.actor ?? 'operator',
-      result: normalized.result,
-      result_code: normalized.result_code,
-      message: normalized.message,
-      reason_note: normalized.reason_note,
-      phase: this.stringOrNull((normalized.pre_state ?? {}).current_phase) ?? this.stringOrNull((normalized.pre_state ?? {}).last_phase),
-      state_context: {
-        issue_id: issueId,
-        target_identifiers: normalized.target_identifiers ?? null,
-        pre_state: normalized.pre_state ?? null,
-        post_state: normalized.post_state ?? null
-      },
-      requested_at: asIso(normalized.requested_at_ms),
-      observed_at: asIso(this.nowMs())
-    })?.catch((error: unknown) => {
-      void this.recordHistoryWriteFailure('appendOperatorActionHistory', normalized.result_code ?? normalized.action, error);
-    });
+    void this.persistence
+      ?.appendOperatorActionHistory?.({
+        issue_run_id:
+          this.stringOrNull(normalized.target_identifiers?.issue_run_id) ??
+          this.stringOrNull((normalized.pre_state ?? {}).issue_run_id),
+        attempt_id: this.stringOrNull(normalized.target_identifiers?.attempt_id),
+        thread_id: this.stringOrNull(normalized.target_identifiers?.thread_id),
+        turn_id: this.stringOrNull(normalized.target_identifiers?.turn_id),
+        action: normalized.action,
+        actor: normalized.actor ?? 'operator',
+        result: normalized.result,
+        result_code: normalized.result_code,
+        message: normalized.message,
+        reason_note: normalized.reason_note,
+        phase:
+          this.stringOrNull((normalized.pre_state ?? {}).current_phase) ??
+          this.stringOrNull((normalized.pre_state ?? {}).last_phase),
+        state_context: {
+          issue_id: issueId,
+          target_identifiers: normalized.target_identifiers ?? null,
+          pre_state: normalized.pre_state ?? null,
+          post_state: normalized.post_state ?? null
+        },
+        requested_at: new Date(normalized.requested_at_ms).toISOString(),
+        observed_at: new Date(this.nowMs()).toISOString()
+      })
+      ?.catch((error: unknown) => {
+        void this.recordHistoryWriteFailure('appendOperatorActionHistory', normalized.result_code ?? normalized.action, error);
+      });
   }
 
   private stringOrNull(value: unknown): string | null {
