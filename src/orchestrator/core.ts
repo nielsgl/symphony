@@ -30,6 +30,18 @@ import {
   type MissingToolOutputCoordinatorContext
 } from './core/missing-tool-output-coordinator';
 import {
+  coordinateCaptureWorkerProgressSignal,
+  coordinateIsMeaningfulWorkerProgressEvent,
+  coordinateMarkRunningWaitStallRootCauseIfThresholdExceeded,
+  coordinateMaybeClassifyRunningWaitStall,
+  coordinateMaybeEmitHeartbeatOnly,
+  coordinateMaybeTerminateOpaqueActivityHardTimeout,
+  coordinateReconcileStalledRuns,
+  coordinateRecoverRunningWaitStall,
+  coordinateResetRunningWaitEpisode,
+  type RunningWaitCoordinatorContext
+} from './core/running-wait-coordinator';
+import {
   addRuntimeSecondsFromEntry as coordinateAddRuntimeSecondsFromEntry,
   completeRunRecord as coordinateCompleteRunRecord,
   terminateRunningIssue as coordinateTerminateRunningIssue,
@@ -85,27 +97,22 @@ import {
   normalizeOperatorReasonNote,
   reasonNoteRequiredFailure,
   workerTerminationExceptionResult,
-  workerTerminationResultContext,
   workerTerminationResultDetail
 } from './core/blocked-input-recovery';
 import {
   applyWorkerEvent,
-  classifyWorkerActivity,
   isTerminalTurnEvent,
   normalizeCodexAppServerPid,
   normalizeWorkerInstanceId,
   rememberInactiveWorkerPid,
   rememberReleasedWorker,
-  shouldResetRunningWaitEpisode,
-  workerEventLooksLikeTrackerComment
+  shouldResetRunningWaitEpisode
 } from './core/worker-events';
 import {
-  classifyProgressSignals,
   emptyDispatchBackpressureState,
   getBackpressureRetryDelayMs,
   isFreshDispatchState,
   isHandoffFreshDispatchState,
-  isKnownReviewHandoffTransition,
   normalizeStateName
 } from './core/retry-backpressure';
 import type {
@@ -571,6 +578,35 @@ export class OrchestratorCore {
         workerTerminationAllowsRecovery: (result) => this.workerTerminationAllowsRecovery(result),
         workerTerminationInterruptStatus: (result) => this.workerTerminationInterruptStatus(result),
         workerInstanceIdFromHandle: (workerHandle) => this.workerInstanceIdFromHandle(workerHandle)
+      }
+    };
+  }
+
+  private runningWaitCoordinatorContext(): RunningWaitCoordinatorContext {
+    return {
+      state: this.state,
+      config: this.config,
+      tracker: this.ports.tracker,
+      terminateWorker: (params) => this.ports.terminateWorker(params),
+      logger: this.logger,
+      nowMs: () => this.nowMs(),
+      hooks: {
+        scanCodexSessionTranscriptForToolCalls: (runningEntry, observedAtMs) =>
+          this.scanCodexSessionTranscriptForToolCalls(runningEntry, observedAtMs),
+        findMissingToolOutputCandidate: (runningEntry, observedAtMs, waitThresholdMs) =>
+          this.findMissingToolOutputCandidate(runningEntry, observedAtMs, waitThresholdMs),
+        recoverOrBlockMissingToolOutput: (issueId, runningEntry, missingToolOutput, observedAtMs) =>
+          this.recoverOrBlockMissingToolOutput(issueId, runningEntry, missingToolOutput, observedAtMs),
+        addRuntimeSecondsFromEntry: (runningEntry) => this.addRuntimeSecondsFromEntry(runningEntry),
+        completeRunRecord: (runningEntry, terminalStatus, errorCode, recoveryOverride, terminalReasonDetail) =>
+          this.completeRunRecord(runningEntry, terminalStatus, errorCode, recoveryOverride, terminalReasonDetail),
+        persistExecutionGraphStateTransition: (runningEntry, toStatus, status, reasonCode, reasonDetail) =>
+          this.persistExecutionGraphStateTransition(runningEntry, toStatus, status, reasonCode, reasonDetail),
+        scheduleRetry: (params) => this.scheduleRetry(params),
+        recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+        getLastPhaseMarker: (issueId) => this.getLastPhaseMarker(issueId),
+        clearCircuitBreaker: (issueId) => this.clearCircuitBreaker(issueId),
+        dispatchIssue: (issue, attempt) => this.dispatchIssue(issue, attempt)
       }
     };
   }
@@ -1608,97 +1644,7 @@ export class OrchestratorCore {
   }
 
   private async reconcileStalledRuns(): Promise<void> {
-    const now = this.nowMs();
-    const waitThresholdMs = this.config.running_wait_stall_threshold_ms ?? 300_000;
-
-    for (const [issueId, runningEntry] of Array.from(this.state.running.entries())) {
-      const elapsedMs = now - (runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms);
-      if (waitThresholdMs > 0) {
-        this.maybeEmitHeartbeatOnly(issueId, runningEntry, now);
-        const handledAsBlocked = await this.maybeClassifyRunningWaitStall(issueId, runningEntry, now);
-        if (handledAsBlocked) {
-          continue;
-        }
-      }
-      if (runningEntry.last_event && shouldResetRunningWaitEpisode(runningEntry.last_event)) {
-        runningEntry.running_waiting_started_at_ms = null;
-        runningEntry.running_wait_stall_event_emitted = false;
-        runningEntry.heartbeat_only_event_emitted = false;
-        runningEntry.stalled_waiting_since_ms = null;
-        runningEntry.stalled_waiting_reason = null;
-      }
-      if (this.config.stall_timeout_ms > 0 && elapsedMs > this.config.stall_timeout_ms) {
-        const terminationResult = await this.ports.terminateWorker({
-          issue_id: issueId,
-          worker_handle: runningEntry.worker_handle,
-          cleanup_workspace: false,
-          reason: 'stall_timeout'
-        });
-
-        this.addRuntimeSecondsFromEntry(runningEntry);
-        this.state.running.delete(issueId);
-
-        const stalledDetail = workerTerminationResultDetail('worker stalled', terminationResult);
-        await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.workerStalled, null, stalledDetail);
-
-        await this.scheduleRetry({
-          issue_id: issueId,
-          identifier: runningEntry.identifier,
-          attempt: runningEntry.retry_attempt + 1,
-          issue_run_id: runningEntry.issue_run_id ?? null,
-          previous_attempt_id: runningEntry.attempt_id ?? null,
-          delay_type: 'failure',
-          error: 'worker stalled',
-          worker_host: runningEntry.worker_host ?? null,
-          workspace_path: runningEntry.workspace_path ?? null,
-          provisioner_type: runningEntry.provisioner_type ?? null,
-          branch_name: runningEntry.branch_name ?? null,
-          repo_root: runningEntry.repo_root ?? null,
-          workspace_exists: runningEntry.workspace_exists,
-          workspace_git_status: runningEntry.workspace_git_status,
-          workspace_provisioned: runningEntry.workspace_provisioned,
-          workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
-          copy_ignored_applied: runningEntry.copy_ignored_applied,
-          copy_ignored_status: runningEntry.copy_ignored_status,
-          copy_ignored_summary: runningEntry.copy_ignored_summary,
-          stop_reason_code: REASON_CODES.workerStalled,
-          stop_reason_detail: stalledDetail,
-          previous_thread_id: runningEntry.thread_id,
-          previous_turn_id: runningEntry.turn_id,
-          previous_session_id: runningEntry.session_id,
-          last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
-          issue_snapshot: runningEntry.issue,
-          progress_signals: runningEntry.progress_signals,
-          recover_workspace_attempt_residue: true
-        });
-        this.state.health.last_error = `worker stalled for ${runningEntry.identifier}`;
-        this.logger?.log({
-          level: 'warn',
-          event: CANONICAL_EVENT.orchestration.workerStalled,
-          message: 'worker stalled; retrying',
-          context: {
-            issue_id: issueId,
-            issue_identifier: runningEntry.identifier,
-            session_id: runningEntry.session_id,
-            elapsed_ms: elapsedMs,
-            ...workerTerminationResultContext(terminationResult)
-          }
-        });
-        this.recordRuntimeEvent({
-          event: CANONICAL_EVENT.orchestration.workerStalled,
-          severity: 'warn',
-          issue_identifier: runningEntry.identifier,
-          session_id: runningEntry.session_id ?? undefined,
-          detail: stalledDetail
-        });
-        continue;
-      }
-
-      const handledAsOpaqueTimeout = await this.maybeTerminateOpaqueActivityHardTimeout(issueId, runningEntry, now);
-      if (handledAsOpaqueTimeout) {
-        continue;
-      }
-    }
+    await coordinateReconcileStalledRuns(this.runningWaitCoordinatorContext());
   }
 
   private async dispatchIssue(
@@ -2794,21 +2740,11 @@ export class OrchestratorCore {
   }
 
   private resetRunningWaitEpisode(runningEntry: RunningEntry, progressAtMs: number): void {
-    runningEntry.running_waiting_started_at_ms = null;
-    runningEntry.running_wait_stall_event_emitted = false;
-    runningEntry.heartbeat_only_event_emitted = false;
-    runningEntry.stalled_waiting_since_ms = null;
-    runningEntry.stalled_waiting_reason = null;
-    runningEntry.last_progress_transition_at_ms = progressAtMs;
+    coordinateResetRunningWaitEpisode(runningEntry, progressAtMs);
   }
 
   private isMeaningfulWorkerProgressEvent(workerEvent: WorkerObservabilityEvent): boolean {
-    return (
-      workerEvent.event === CANONICAL_EVENT.codex.dynamicToolCapabilityMismatch ||
-      workerEvent.event === CANONICAL_EVENT.codex.approvalAutoApproved ||
-      workerEvent.event === CANONICAL_EVENT.codex.toolInputAutoAnswered ||
-      workerEvent.event === CANONICAL_EVENT.codex.sideOutput
-    );
+    return coordinateIsMeaningfulWorkerProgressEvent(workerEvent);
   }
 
   private updateOutstandingToolCalls(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
@@ -2980,24 +2916,7 @@ export class OrchestratorCore {
   }
 
   private maybeEmitHeartbeatOnly(issueId: string, runningEntry: RunningEntry, observedAtMs: number): void {
-    const thresholdMs = this.config.progress_heartbeat_only_warn_ms ?? 120_000;
-    if (thresholdMs <= 0 || (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting && runningEntry.running_waiting_started_at_ms == null)) {
-      return;
-    }
-    const waitingStartedAtMs =
-      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
-    runningEntry.running_waiting_started_at_ms = waitingStartedAtMs;
-    if (observedAtMs - waitingStartedAtMs < thresholdMs || runningEntry.heartbeat_only_event_emitted) {
-      return;
-    }
-    runningEntry.heartbeat_only_event_emitted = true;
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.progress.heartbeatOnlyDetected,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${Math.max(0, observedAtMs - waitingStartedAtMs)}`
-    });
+    coordinateMaybeEmitHeartbeatOnly(this.runningWaitCoordinatorContext(), issueId, runningEntry, observedAtMs);
   }
 
   private async maybeClassifyRunningWaitStall(
@@ -3005,80 +2924,7 @@ export class OrchestratorCore {
     runningEntry: RunningEntry,
     observedAtMs: number
   ): Promise<boolean> {
-    const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
-    if (waitThresholdMs <= 0) {
-      return false;
-    }
-
-    this.scanCodexSessionTranscriptForToolCalls(runningEntry, observedAtMs);
-
-    const missingToolOutput = this.findMissingToolOutputCandidate(runningEntry, observedAtMs, waitThresholdMs);
-    if (missingToolOutput) {
-      runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
-      await this.recoverOrBlockMissingToolOutput(issueId, runningEntry, missingToolOutput, observedAtMs);
-      return true;
-    }
-
-    if (runningEntry.awaiting_input_since_ms !== null) {
-      return false;
-    }
-
-    if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting && runningEntry.running_waiting_started_at_ms == null) {
-      return false;
-    }
-
-    const waitingStartedAtMs =
-      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
-    runningEntry.running_waiting_started_at_ms = waitingStartedAtMs;
-    const activity = classifyWorkerActivity({
-      runningEntry,
-      observedAtMs,
-      waitThresholdMs: this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000
-    });
-    const lastMeaningfulActivityAtMs =
-      typeof activity.latest_meaningful_progress_at_ms === 'number' && activity.latest_meaningful_progress_at_ms > waitingStartedAtMs
-        ? activity.latest_meaningful_progress_at_ms
-        : waitingStartedAtMs;
-    const thresholdCrossedAtMs = lastMeaningfulActivityAtMs + waitThresholdMs;
-    runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
-
-    if (observedAtMs < thresholdCrossedAtMs) {
-      runningEntry.stalled_waiting_reason = null;
-      return false;
-    }
-
-    const elapsedMs = Math.max(0, observedAtMs - waitingStartedAtMs);
-    if (!runningEntry.running_wait_stall_event_emitted) {
-      runningEntry.running_wait_stall_event_emitted = true;
-      const progressEvent =
-        activity.activity_state === 'active_but_opaque'
-          ? CANONICAL_EVENT.progress.activeButOpaqueDetected
-          : CANONICAL_EVENT.progress.stalledWaitingDetected;
-      this.recordRuntimeEvent({
-        event: progressEvent,
-        severity: 'warn',
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id ?? undefined,
-        detail: [
-          `issue_id=${issueId}`,
-          `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
-          `session_id=${runningEntry.session_id ?? 'unknown'}`,
-          `activity_state=${activity.activity_state}`,
-          `elapsed_ms=${elapsedMs}`,
-          `latest_liveness_at_ms=${activity.latest_liveness_at_ms ?? 'unknown'}`,
-          `latest_thread_activity_at_ms=${activity.latest_thread_activity_at_ms ?? 'unknown'}`
-        ].join(' ')
-      });
-      this.recordRuntimeEvent({
-        event: CANONICAL_EVENT.orchestration.runningWaitStallThresholdExceeded,
-        severity: 'warn',
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id ?? undefined,
-        detail: `issue_id=${issueId} thread_id=${runningEntry.thread_id ?? 'unknown'} session_id=${runningEntry.session_id ?? 'unknown'} elapsed_ms=${elapsedMs}`
-      });
-    }
-    runningEntry.stalled_waiting_reason = null;
-    return false;
+    return coordinateMaybeClassifyRunningWaitStall(this.runningWaitCoordinatorContext(), issueId, runningEntry, observedAtMs);
   }
 
   private async recoverRunningWaitStall(
@@ -3087,105 +2933,7 @@ export class OrchestratorCore {
     observedAtMs: number,
     elapsedMs: number
   ): Promise<void> {
-    if (this.state.running.get(issueId) !== runningEntry) {
-      return;
-    }
-
-    const handoffProgress = await this.classifyTrackerHandoffProgress(issueId, runningEntry);
-    if (handoffProgress?.kind === 'unknown') {
-      await this.completeStalledTrackerRefreshUncertain(issueId, runningEntry, handoffProgress.error_detail, observedAtMs, elapsedMs);
-      return;
-    }
-    if (handoffProgress?.kind === 'progress') {
-      await this.completeStalledReviewHandoff(issueId, runningEntry, handoffProgress, observedAtMs, elapsedMs);
-      return;
-    }
-
-    const detail = [
-      'no meaningful progress while waiting for Codex turn completion',
-      `reason_code=${REASON_CODES.turnWaitingThresholdExceeded}`,
-      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
-      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
-      `session_id=${runningEntry.session_id ?? 'unknown'}`,
-      `elapsed_wait_ms=${elapsedMs}`,
-      `observed_at_ms=${observedAtMs}`
-    ].join(' ');
-    const terminationResult = await this.ports.terminateWorker({
-      issue_id: issueId,
-      worker_handle: runningEntry.worker_handle,
-      cleanup_workspace: false,
-      reason: REASON_CODES.turnWaitingThresholdExceeded
-    });
-    const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
-
-    rememberInactiveWorkerPid({
-      state: this.state,
-      runningEntry,
-      reason: REASON_CODES.turnWaitingThresholdExceeded,
-      nowMs: this.nowMs(),
-      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
-    });
-    this.addRuntimeSecondsFromEntry(runningEntry);
-    await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.turnWaitingThresholdExceeded, null, stalledDetail);
-    await this.persistExecutionGraphStateTransition(
-      runningEntry,
-      'failed',
-      'failed',
-      REASON_CODES.turnWaitingThresholdExceeded,
-      stalledDetail
-    );
-    this.state.running.delete(issueId);
-
-    await this.scheduleRetry({
-      issue_id: issueId,
-      identifier: runningEntry.identifier,
-      attempt: runningEntry.retry_attempt + 1,
-      issue_run_id: runningEntry.issue_run_id ?? null,
-      previous_attempt_id: runningEntry.attempt_id ?? null,
-      delay_type: 'failure',
-      error: 'turn waiting threshold exceeded',
-      worker_host: runningEntry.worker_host ?? null,
-      workspace_path: runningEntry.workspace_path ?? null,
-      provisioner_type: runningEntry.provisioner_type ?? null,
-      branch_name: runningEntry.branch_name ?? null,
-      repo_root: runningEntry.repo_root ?? null,
-      workspace_exists: runningEntry.workspace_exists,
-      workspace_git_status: runningEntry.workspace_git_status,
-      workspace_provisioned: runningEntry.workspace_provisioned,
-      workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
-      copy_ignored_applied: runningEntry.copy_ignored_applied,
-      copy_ignored_status: runningEntry.copy_ignored_status,
-      copy_ignored_summary: runningEntry.copy_ignored_summary,
-      stop_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
-      stop_reason_detail: stalledDetail,
-      previous_thread_id: runningEntry.thread_id,
-      previous_turn_id: runningEntry.turn_id,
-      previous_session_id: runningEntry.session_id,
-      last_progress_checkpoint_at: runningEntry.last_progress_transition_at_ms ?? runningEntry.started_at_ms,
-      issue_snapshot: runningEntry.issue,
-      progress_signals: runningEntry.progress_signals
-    });
-    this.state.health.last_error = `turn waiting threshold exceeded for ${runningEntry.identifier}`;
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.orchestration.workerStalled,
-      message: 'turn waiting threshold exceeded; retrying',
-      context: {
-        issue_id: issueId,
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id,
-        elapsed_ms: elapsedMs,
-        stop_reason_code: REASON_CODES.turnWaitingThresholdExceeded,
-        ...workerTerminationResultContext(terminationResult)
-      }
-    });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.orchestration.workerStalled,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: stalledDetail
-    });
+    await coordinateRecoverRunningWaitStall(this.runningWaitCoordinatorContext(), issueId, runningEntry, observedAtMs, elapsedMs);
   }
 
   private async maybeTerminateOpaqueActivityHardTimeout(
@@ -3193,443 +2941,15 @@ export class OrchestratorCore {
     runningEntry: RunningEntry,
     observedAtMs: number
   ): Promise<boolean> {
-    if (this.state.running.get(issueId) !== runningEntry || runningEntry.awaiting_input_since_ms !== null) {
-      return false;
-    }
-
-    const hardTimeoutMs = this.config.worker_opaque_activity_hard_timeout_ms ?? 1_800_000;
-    if (hardTimeoutMs <= 0) {
-      return false;
-    }
-
-    this.scanCodexSessionTranscriptForToolCalls(runningEntry, observedAtMs);
-    if (this.findMissingToolOutputCandidate(runningEntry, observedAtMs, this.config.progress_stalled_waiting_ms ?? 300_000)) {
-      return false;
-    }
-
-    const activity = classifyWorkerActivity({
-      runningEntry,
-      observedAtMs,
-      waitThresholdMs: this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000
-    });
-    if (activity.activity_state !== 'active_but_opaque' && activity.activity_state !== 'heartbeat_only') {
-      return false;
-    }
-    const lastMeaningfulProgressAtMs = activity.latest_meaningful_progress_at_ms ?? runningEntry.started_at_ms;
-    const opaqueElapsedMs = Math.max(0, observedAtMs - lastMeaningfulProgressAtMs);
-    if (opaqueElapsedMs <= hardTimeoutMs) {
-      return false;
-    }
-
-    const handoffProgress = await this.classifyTrackerHandoffProgress(issueId, runningEntry);
-    if (handoffProgress?.kind === 'unknown') {
-      await this.completeStalledTrackerRefreshUncertain(issueId, runningEntry, handoffProgress.error_detail, observedAtMs, opaqueElapsedMs);
-      return true;
-    }
-    if (handoffProgress?.kind === 'progress') {
-      await this.completeStalledReviewHandoff(issueId, runningEntry, handoffProgress, observedAtMs, opaqueElapsedMs);
-      return true;
-    }
-
-    const detail = [
-      'active but opaque hard timeout',
-      `reason_code=${REASON_CODES.workerOpaqueActivityHardTimeout}`,
-      `activity_state=${activity.activity_state}`,
-      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
-      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
-      `session_id=${runningEntry.session_id ?? 'unknown'}`,
-      `latest_meaningful_progress_at_ms=${activity.latest_meaningful_progress_at_ms ?? 'unknown'}`,
-      `latest_liveness_at_ms=${activity.latest_liveness_at_ms ?? 'unknown'}`,
-      `latest_thread_activity_at_ms=${activity.latest_thread_activity_at_ms ?? 'unknown'}`,
-      `opaque_elapsed_ms=${opaqueElapsedMs}`,
-      `observed_at_ms=${observedAtMs}`
-    ].join(' ');
-    const terminationResult = await this.ports.terminateWorker({
-      issue_id: issueId,
-      worker_handle: runningEntry.worker_handle,
-      cleanup_workspace: false,
-      reason: REASON_CODES.workerOpaqueActivityHardTimeout
-    });
-    const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
-
-    rememberInactiveWorkerPid({
-      state: this.state,
-      runningEntry,
-      reason: REASON_CODES.workerOpaqueActivityHardTimeout,
-      nowMs: this.nowMs(),
-      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
-    });
-    this.addRuntimeSecondsFromEntry(runningEntry);
-    await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.workerOpaqueActivityHardTimeout, null, stalledDetail);
-    await this.persistExecutionGraphStateTransition(
-      runningEntry,
-      'failed',
-      'failed',
-      REASON_CODES.workerOpaqueActivityHardTimeout,
-      stalledDetail
-    );
-    this.state.running.delete(issueId);
-
-    await this.scheduleRetry({
-      issue_id: issueId,
-      identifier: runningEntry.identifier,
-      attempt: runningEntry.retry_attempt + 1,
-      issue_run_id: runningEntry.issue_run_id ?? null,
-      previous_attempt_id: runningEntry.attempt_id ?? null,
-      delay_type: 'failure',
-      error: 'active but opaque hard timeout',
-      worker_host: runningEntry.worker_host ?? null,
-      workspace_path: runningEntry.workspace_path ?? null,
-      provisioner_type: runningEntry.provisioner_type ?? null,
-      branch_name: runningEntry.branch_name ?? null,
-      repo_root: runningEntry.repo_root ?? null,
-      workspace_exists: runningEntry.workspace_exists,
-      workspace_git_status: runningEntry.workspace_git_status,
-      workspace_provisioned: runningEntry.workspace_provisioned,
-      workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
-      copy_ignored_applied: runningEntry.copy_ignored_applied,
-      copy_ignored_status: runningEntry.copy_ignored_status,
-      copy_ignored_summary: runningEntry.copy_ignored_summary,
-      stop_reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
-      stop_reason_detail: stalledDetail,
-      previous_thread_id: runningEntry.thread_id,
-      previous_turn_id: runningEntry.turn_id,
-      previous_session_id: runningEntry.session_id,
-      last_progress_checkpoint_at: activity.latest_meaningful_progress_at_ms ?? runningEntry.started_at_ms,
-      issue_snapshot: runningEntry.issue,
-      progress_signals: runningEntry.progress_signals,
-      recover_workspace_attempt_residue: true
-    });
-    this.state.health.last_error = `active but opaque hard timeout for ${runningEntry.identifier}`;
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.orchestration.workerStalled,
-      message: 'active but opaque hard timeout; retrying',
-      context: {
-        issue_id: issueId,
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id,
-        elapsed_ms: opaqueElapsedMs,
-        stop_reason_code: REASON_CODES.workerOpaqueActivityHardTimeout,
-        ...workerTerminationResultContext(terminationResult)
-      }
-    });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.orchestration.workerStalled,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: stalledDetail
-    });
-    return true;
-  }
-
-  private async completeStalledTrackerRefreshUncertain(
-    issueId: string,
-    runningEntry: RunningEntry,
-    errorDetail: string,
-    observedAtMs: number,
-    elapsedMs: number
-  ): Promise<void> {
-    const detail = [
-      'tracker state refresh failed during stalled-wait recovery',
-      `reason_code=${REASON_CODES.issueStateRefreshFailed}`,
-      `refresh_error=${errorDetail}`,
-      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
-      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
-      `session_id=${runningEntry.session_id ?? 'unknown'}`,
-      `elapsed_wait_ms=${elapsedMs}`,
-      `observed_at_ms=${observedAtMs}`
-    ].join(' ');
-    const terminationResult = await this.ports.terminateWorker({
-      issue_id: issueId,
-      worker_handle: runningEntry.worker_handle,
-      cleanup_workspace: false,
-      reason: REASON_CODES.turnWaitingThresholdExceeded
-    });
-    const stalledDetail = workerTerminationResultDetail(detail, terminationResult);
-
-    rememberInactiveWorkerPid({
-      state: this.state,
-      runningEntry,
-      reason: REASON_CODES.issueStateRefreshFailed,
-      nowMs: this.nowMs(),
-      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
-    });
-    this.addRuntimeSecondsFromEntry(runningEntry);
-    await this.completeRunRecord(runningEntry, 'stalled', REASON_CODES.issueStateRefreshFailed, null, stalledDetail);
-    await this.persistExecutionGraphStateTransition(
-      runningEntry,
-      'failed',
-      'failed',
-      REASON_CODES.issueStateRefreshFailed,
-      stalledDetail
-    );
-    this.state.running.delete(issueId);
-
-    await this.scheduleRetry({
-      issue_id: issueId,
-      identifier: runningEntry.identifier,
-      attempt: runningEntry.retry_attempt + 1,
-      issue_run_id: runningEntry.issue_run_id ?? null,
-      previous_attempt_id: runningEntry.attempt_id ?? null,
-      delay_type: 'failure',
-      error: 'tracker state refresh failed during stalled-wait recovery',
-      worker_host: runningEntry.worker_host ?? null,
-      workspace_path: runningEntry.workspace_path ?? null,
-      provisioner_type: runningEntry.provisioner_type ?? null,
-      branch_name: runningEntry.branch_name ?? null,
-      repo_root: runningEntry.repo_root ?? null,
-      workspace_exists: runningEntry.workspace_exists,
-      workspace_git_status: runningEntry.workspace_git_status,
-      workspace_provisioned: runningEntry.workspace_provisioned,
-      workspace_is_git_worktree: runningEntry.workspace_is_git_worktree,
-      copy_ignored_applied: runningEntry.copy_ignored_applied,
-      copy_ignored_status: runningEntry.copy_ignored_status,
-      copy_ignored_summary: runningEntry.copy_ignored_summary,
-      stop_reason_code: REASON_CODES.issueStateRefreshFailed,
-      stop_reason_detail: stalledDetail,
-      previous_thread_id: runningEntry.thread_id,
-      previous_turn_id: runningEntry.turn_id,
-      previous_session_id: runningEntry.session_id,
-      issue_snapshot: runningEntry.issue,
-      progress_signals: runningEntry.progress_signals
-    });
-    this.state.health.last_error = `tracker state refresh failed during stalled-wait recovery for ${runningEntry.identifier}`;
-    this.logger?.log({
-      level: 'warn',
-      event: CANONICAL_EVENT.tracker.stateRefreshFailed,
-      message: 'tracker refresh uncertainty scheduled bounded retry',
-      context: {
-        issue_id: issueId,
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id,
-        elapsed_ms: elapsedMs,
-        stop_reason_code: REASON_CODES.issueStateRefreshFailed,
-        error: errorDetail,
-        ...workerTerminationResultContext(terminationResult)
-      }
-    });
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.tracker.stateRefreshFailed,
-      severity: 'warn',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail: stalledDetail
-    });
-  }
-
-  private async classifyTrackerHandoffProgress(
-    issueId: string,
-    runningEntry: RunningEntry
-  ): Promise<
-    | { kind: 'progress'; issue: Issue; signals: ProgressSignals; reasons: string[] }
-    | { kind: 'unknown'; error_detail: string }
-    | null
-  > {
-    let refreshed: Issue[];
-    try {
-      refreshed = await this.ports.tracker.fetch_issue_states_by_ids([issueId]);
-    } catch (error) {
-      const errorDetail = error instanceof Error ? error.message : String(error);
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
-        message: 'failed to refresh tracker state before stalled-wait recovery',
-        context: {
-          issue_id: issueId,
-          issue_identifier: runningEntry.identifier,
-          error: errorDetail
-        }
-      });
-      return { kind: 'unknown', error_detail: errorDetail };
-    }
-
-    const issue = refreshed.find((candidate) => candidate.id === issueId);
-    if (!issue) {
-      return null;
-    }
-
-    const startedState = runningEntry.started_issue_state ?? runningEntry.issue.state;
-    if (normalizeStateName(startedState) !== normalizeStateName('Agent Review')) {
-      return null;
-    }
-    if (normalizeStateName(issue.state) === normalizeStateName(startedState)) {
-      return null;
-    }
-
-    if (!isKnownReviewHandoffTransition({ startedState, currentState: issue.state, config: this.config })) {
-      return null;
-    }
-
-    const signals: ProgressSignals = {
-      commit_sha: null,
-      checklist_checkpoint: null,
-      state_marker: this.getLastPhaseMarker(issueId)?.phase ?? null,
-      tracker_comment_created: this.hasWorkerTrackerCommentSignal(runningEntry),
-      tracker_status_transition: `${startedState} -> ${issue.state}`,
-      agent_review_handoff: issue.state,
-      tracker_started_state: startedState
-    };
-    const reasons = classifyProgressSignals(signals);
-    if (!reasons.includes('agent_review_handoff')) {
-      return null;
-    }
-    return { kind: 'progress', issue, signals, reasons };
-  }
-
-  private hasWorkerTrackerCommentSignal(runningEntry: RunningEntry): boolean {
-    if (runningEntry.progress_signals?.tracker_comment_created) {
-      return true;
-    }
-    return runningEntry.recent_events.some((event) => {
-      return workerEventLooksLikeTrackerComment(event);
-    });
+    return coordinateMaybeTerminateOpaqueActivityHardTimeout(this.runningWaitCoordinatorContext(), issueId, runningEntry, observedAtMs);
   }
 
   private captureWorkerProgressSignal(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
-    if (!workerEventLooksLikeTrackerComment(workerEvent)) {
-      return;
-    }
-
-    runningEntry.progress_signals = {
-      commit_sha: runningEntry.progress_signals?.commit_sha ?? null,
-      checklist_checkpoint: runningEntry.progress_signals?.checklist_checkpoint ?? null,
-      state_marker: runningEntry.progress_signals?.state_marker ?? this.getLastPhaseMarker(runningEntry.issue.id)?.phase ?? null,
-      tracker_comment_created: true,
-      tracker_status_transition: runningEntry.progress_signals?.tracker_status_transition ?? null,
-      agent_review_handoff: runningEntry.progress_signals?.agent_review_handoff ?? null,
-      tracker_started_state:
-        runningEntry.progress_signals?.tracker_started_state ?? runningEntry.started_issue_state ?? runningEntry.issue.state
-    };
-  }
-
-  private async completeStalledReviewHandoff(
-    issueId: string,
-    runningEntry: RunningEntry,
-    handoffProgress: { issue: Issue; signals: ProgressSignals; reasons: string[] },
-    observedAtMs: number,
-    elapsedMs: number
-  ): Promise<void> {
-    const detail = [
-      'Agent Review handoff progress observed before stalled-wait cleanup',
-      `reason_code=${REASON_CODES.agentReviewHandoffProgressObserved}`,
-      `tracker_status_transition=${handoffProgress.signals.tracker_status_transition ?? 'unknown'}`,
-      `thread_id=${runningEntry.thread_id ?? 'unknown'}`,
-      `turn_id=${runningEntry.turn_id ?? 'unknown'}`,
-      `session_id=${runningEntry.session_id ?? 'unknown'}`,
-      `elapsed_wait_ms=${elapsedMs}`,
-      `observed_at_ms=${observedAtMs}`
-    ].join(' ');
-    const terminationResult = await this.ports.terminateWorker({
-      issue_id: issueId,
-      worker_handle: runningEntry.worker_handle,
-      cleanup_workspace: false,
-      reason: REASON_CODES.turnWaitingThresholdExceeded
-    });
-    const terminalDetail = workerTerminationResultDetail(detail, terminationResult);
-
-    rememberInactiveWorkerPid({
-      state: this.state,
-      runningEntry,
-      reason: REASON_CODES.turnWaitingThresholdExceeded,
-      nowMs: this.nowMs(),
-      ttlMs: this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS
-    });
-    this.addRuntimeSecondsFromEntry(runningEntry);
-    await this.completeRunRecord(
-      runningEntry,
-      'succeeded',
-      REASON_CODES.agentReviewHandoffProgressObserved,
-      null,
-      terminalDetail
-    );
-    await this.persistExecutionGraphStateTransition(
-      runningEntry,
-      'succeeded',
-      'succeeded',
-      REASON_CODES.agentReviewHandoffProgressObserved,
-      terminalDetail
-    );
-    rememberReleasedWorker({
-      state: this.state,
-      runningEntry,
-      reason: REASON_CODES.agentReviewHandoffProgressObserved,
-      cleanupWorkspace: false,
-      nowMs: this.nowMs()
-    });
-    this.state.running.delete(issueId);
-    this.state.retry_attempts.delete(issueId);
-    this.state.blocked_inputs.delete(issueId);
-    this.state.claimed.delete(issueId);
-    this.state.redispatch_progress?.delete(issueId);
-    await this.clearCircuitBreaker(issueId);
-
-    this.recordRuntimeEvent({
-      event: CANONICAL_EVENT.orchestration.agentReviewHandoffProgressObserved,
-      severity: 'info',
-      issue_identifier: runningEntry.identifier,
-      session_id: runningEntry.session_id ?? undefined,
-      detail
-    });
-    this.logger?.log({
-      level: 'info',
-      event: CANONICAL_EVENT.orchestration.agentReviewHandoffProgressObserved,
-      message: 'Agent Review handoff progress observed during stalled-wait recovery',
-      context: {
-        issue_id: issueId,
-        issue_identifier: runningEntry.identifier,
-        session_id: runningEntry.session_id,
-        progress_signal_reasons: handoffProgress.reasons.join(','),
-        progress_signals: JSON.stringify(handoffProgress.signals),
-        ...workerTerminationResultContext(terminationResult)
-      }
-    });
-
-    if (isActiveState(handoffProgress.issue.state, this.config) && isFreshDispatchState(handoffProgress.issue.state, this.config)) {
-      this.recordRuntimeEvent({
-        event: CANONICAL_EVENT.orchestration.freshDispatchAfterReviewHandoff,
-        severity: 'info',
-        issue_identifier: runningEntry.identifier,
-        detail: `tracker_state=${handoffProgress.issue.state}`
-      });
-      this.logger?.log({
-        level: 'info',
-        event: CANONICAL_EVENT.orchestration.freshDispatchAfterReviewHandoff,
-        message: 'fresh dispatch after Agent Review handoff',
-        context: {
-          issue_id: issueId,
-          issue_identifier: runningEntry.identifier,
-          tracker_state: handoffProgress.issue.state
-        }
-      });
-      await this.dispatchIssue(handoffProgress.issue, null);
-    } else {
-      this.state.completed.add(issueId);
-    }
+    coordinateCaptureWorkerProgressSignal(this.runningWaitCoordinatorContext(), runningEntry, workerEvent);
   }
 
   private markRunningWaitStallRootCauseIfThresholdExceeded(runningEntry: RunningEntry, observedAtMs: number): void {
-    const waitThresholdMs = this.config.progress_stalled_waiting_ms ?? this.config.running_wait_stall_threshold_ms ?? 300_000;
-    if (waitThresholdMs <= 0 || runningEntry.awaiting_input_since_ms !== null) {
-      return;
-    }
-    if (runningEntry.last_event !== CANONICAL_EVENT.codex.turnWaiting && runningEntry.running_waiting_started_at_ms == null) {
-      return;
-    }
-
-    const waitingStartedAtMs =
-      runningEntry.running_waiting_started_at_ms ?? runningEntry.last_codex_timestamp_ms ?? runningEntry.started_at_ms;
-    const lastMeaningfulActivityAtMs =
-      typeof runningEntry.last_progress_transition_at_ms === 'number' &&
-      runningEntry.last_progress_transition_at_ms > waitingStartedAtMs
-        ? runningEntry.last_progress_transition_at_ms
-        : waitingStartedAtMs;
-    const thresholdCrossedAtMs = lastMeaningfulActivityAtMs + waitThresholdMs;
-    runningEntry.stalled_waiting_since_ms = thresholdCrossedAtMs;
-    if (observedAtMs >= thresholdCrossedAtMs) {
-      runningEntry.stalled_waiting_reason = REASON_CODES.turnWaitingThresholdExceeded;
-    }
+    coordinateMarkRunningWaitStallRootCauseIfThresholdExceeded(this.runningWaitCoordinatorContext(), runningEntry, observedAtMs);
   }
 
   private hasOutstandingToolCallEvidence(runningEntry: RunningEntry): boolean {
