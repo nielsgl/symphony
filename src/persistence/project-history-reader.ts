@@ -1,4 +1,5 @@
 import { sqlPlaceholders } from './sqlite-helpers';
+import { parseDurableIdentity } from './identity-projection-store';
 import type { PersistenceDatabase } from './store-context';
 import type {
   AppServerEventLedgerRecord,
@@ -51,48 +52,6 @@ function parseJsonArray(value: string): unknown[] {
 
 function parseStringArray(value: string): string[] {
   return parseJsonArray(value).filter((entry): entry is string => typeof entry === 'string');
-}
-
-function isIdentityEvidence(value: unknown): boolean {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const evidence = value as { status?: unknown; value?: unknown; reason?: unknown };
-  return (
-    (evidence.status === 'present' && typeof evidence.value === 'string') ||
-    (evidence.status === 'missing' && typeof evidence.reason === 'string')
-  );
-}
-
-function isDurableIdentity(value: unknown): value is DurableIdentity {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const candidate = value as DurableIdentity;
-  return (
-    typeof candidate.project?.key === 'string' &&
-    typeof candidate.project.project_root === 'string' &&
-    typeof candidate.project.workflow_path === 'string' &&
-    isIdentityEvidence(candidate.project.workflow_hash) &&
-    isIdentityEvidence(candidate.project.repository_remote) &&
-    typeof candidate.ticket?.key === 'string' &&
-    typeof candidate.ticket.tracker_kind === 'string' &&
-    isIdentityEvidence(candidate.ticket.tracker_scope) &&
-    typeof candidate.ticket.remote_issue_id === 'string' &&
-    typeof candidate.ticket.human_issue_identifier === 'string'
-  );
-}
-
-function parseDurableIdentity(value: string | null): DurableIdentity | null {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isDurableIdentity(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function parseHistoryPayloadTruncation(value: string): AppServerEventLedgerRecord['truncation'] {
