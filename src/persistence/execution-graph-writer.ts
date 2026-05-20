@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { redactUnknown } from '../security/redaction';
+import { serializeDurableIdentity } from './identity-projection-store';
 import type { PersistenceDatabase } from './store-context';
 import type {
   DurableIdentity,
@@ -17,6 +18,7 @@ export interface ExecutionGraphWriterDependencies {
   transaction: <T>(fn: () => T) => T;
   upsertHistoryIdentity: (identity: DurableIdentity) => void;
   recordIdentityProjection: (record: Omit<HistoryIdentityProjectionRecord, 'updated_at'>) => void;
+  readIssueRunIdentity: (issueRunId: string | null) => DurableIdentity | null;
 }
 
 export interface AppendIssueRunParams {
@@ -308,63 +310,19 @@ function normalizeTelemetryConfidence(value: TokenModelTelemetryConfidence): Tok
   return value;
 }
 
-function serializeDurableIdentity(identity: DurableIdentity): string {
-  return JSON.stringify(redactUnknown(identity));
-}
-
-function isIdentityEvidence(value: unknown): boolean {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const evidence = value as { status?: unknown; value?: unknown; reason?: unknown };
-  return (
-    (evidence.status === 'present' && typeof evidence.value === 'string') ||
-    (evidence.status === 'missing' && typeof evidence.reason === 'string')
-  );
-}
-
-function isDurableIdentity(value: unknown): value is DurableIdentity {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const candidate = value as DurableIdentity;
-  return (
-    typeof candidate.project?.key === 'string' &&
-    typeof candidate.project.project_root === 'string' &&
-    typeof candidate.project.workflow_path === 'string' &&
-    isIdentityEvidence(candidate.project.workflow_hash) &&
-    isIdentityEvidence(candidate.project.repository_remote) &&
-    typeof candidate.ticket?.key === 'string' &&
-    typeof candidate.ticket.tracker_kind === 'string' &&
-    isIdentityEvidence(candidate.ticket.tracker_scope) &&
-    typeof candidate.ticket.remote_issue_id === 'string' &&
-    typeof candidate.ticket.human_issue_identifier === 'string'
-  );
-}
-
-function parseDurableIdentity(value: string | null): DurableIdentity | null {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isDurableIdentity(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 export class ExecutionGraphWriter {
   private readonly db: PersistenceDatabase;
   private readonly transaction: <T>(fn: () => T) => T;
   private readonly upsertHistoryIdentity: (identity: DurableIdentity) => void;
   private readonly recordIdentityProjection: ExecutionGraphWriterDependencies['recordIdentityProjection'];
+  private readonly readIssueRunIdentity: ExecutionGraphWriterDependencies['readIssueRunIdentity'];
 
   constructor(dependencies: ExecutionGraphWriterDependencies) {
     this.db = dependencies.db;
     this.transaction = dependencies.transaction;
     this.upsertHistoryIdentity = dependencies.upsertHistoryIdentity;
     this.recordIdentityProjection = dependencies.recordIdentityProjection;
+    this.readIssueRunIdentity = dependencies.readIssueRunIdentity;
   }
 
   appendIssueRun(params: AppendIssueRunParams): string {
@@ -1049,16 +1007,6 @@ export class ExecutionGraphWriter {
         WHERE attempt_id = ?`
       )
       .run(params.ended_at, params.status, params.reason_code, params.reason_detail, params.attempt_id);
-  }
-
-  private readIssueRunIdentity(issueRunId: string | null): DurableIdentity | null {
-    if (!issueRunId) {
-      return null;
-    }
-    const row = this.db.prepare('SELECT identity FROM issue_run WHERE issue_run_id = ?').get(issueRunId) as
-      | { identity: string | null }
-      | undefined;
-    return parseDurableIdentity(row?.identity ?? null);
   }
 
   private ensureTurnTimestamp(turnId: string, timestamp: string, label: string): void {
