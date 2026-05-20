@@ -35,9 +35,7 @@ import {
   coordinateMarkRunningWaitStallRootCauseIfThresholdExceeded,
   coordinateMaybeClassifyRunningWaitStall,
   coordinateMaybeEmitHeartbeatOnly,
-  coordinateMaybeTerminateOpaqueActivityHardTimeout,
   coordinateReconcileStalledRuns,
-  coordinateRecoverRunningWaitStall,
   coordinateResetRunningWaitEpisode,
   type RunningWaitCoordinatorContext
 } from './core/running-wait-coordinator';
@@ -2925,23 +2923,6 @@ export class OrchestratorCore {
     observedAtMs: number
   ): Promise<boolean> {
     return coordinateMaybeClassifyRunningWaitStall(this.runningWaitCoordinatorContext(), issueId, runningEntry, observedAtMs);
-  }
-
-  private async recoverRunningWaitStall(
-    issueId: string,
-    runningEntry: RunningEntry,
-    observedAtMs: number,
-    elapsedMs: number
-  ): Promise<void> {
-    await coordinateRecoverRunningWaitStall(this.runningWaitCoordinatorContext(), issueId, runningEntry, observedAtMs, elapsedMs);
-  }
-
-  private async maybeTerminateOpaqueActivityHardTimeout(
-    issueId: string,
-    runningEntry: RunningEntry,
-    observedAtMs: number
-  ): Promise<boolean> {
-    return coordinateMaybeTerminateOpaqueActivityHardTimeout(this.runningWaitCoordinatorContext(), issueId, runningEntry, observedAtMs);
   }
 
   private captureWorkerProgressSignal(runningEntry: RunningEntry, workerEvent: WorkerObservabilityEvent): void {
