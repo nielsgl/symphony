@@ -157,6 +157,7 @@ export interface BlockedInputCoordinatorHooks {
     issueId: string,
     runtimeState: Record<string, unknown>
   ) => NonNullable<OperatorActionRecord['target_identifiers']>;
+  recordOperatorAction: (issueId: string, action: OperatorActionRecord) => void;
   recordRuntimeEvent: (params: {
     event: string;
     severity: 'info' | 'warn' | 'error';
@@ -193,10 +194,6 @@ export type SubmitBlockedIssueInputNativeResult = {
 
 function asIso(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value : null;
 }
 
 export async function scheduleBlockedInput(
@@ -508,7 +505,7 @@ export async function resumeBlockedIssue(
   try {
     refreshedIssues = await context.tracker.fetch_issue_states_by_ids([blocked.issue_id]);
   } catch (error) {
-    recordOperatorAction(context, blocked.issue_id, {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'resume',
       requested_at_ms: context.nowMs(),
       result: 'failed',
@@ -528,7 +525,7 @@ export async function resumeBlockedIssue(
 
   const issue = refreshedIssues.find((entry) => entry.id === blocked.issue_id);
   if (!issue) {
-    recordOperatorAction(context, blocked.issue_id, {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'resume',
       requested_at_ms: context.nowMs(),
       result: 'rejected',
@@ -547,7 +544,7 @@ export async function resumeBlockedIssue(
   }
 
   if (!isActiveState(issue.state, context.config)) {
-    recordOperatorAction(context, blocked.issue_id, {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'resume',
       requested_at_ms: context.nowMs(),
       result: 'rejected',
@@ -579,7 +576,7 @@ export async function resumeBlockedIssue(
     blocked.stop_reason_code === REASON_CODES.operatorNoProgressRedispatchBlocked ||
     blocked.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete;
   if (requiresProgressResume && !hasProgressSignal && (!resume_override_reason || resume_override_reason.trim().length === 0)) {
-    recordOperatorAction(context, blocked.issue_id, {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'resume',
       requested_at_ms: context.nowMs(),
       result: 'rejected',
@@ -702,7 +699,7 @@ export async function resumeBlockedIssue(
     }
   });
 
-  recordOperatorAction(context, blocked.issue_id, {
+  context.hooks.recordOperatorAction(blocked.issue_id, {
     action: resume_metadata ? 'submit_input' : 'resume',
     requested_at_ms: context.nowMs(),
     result: 'accepted',
@@ -740,7 +737,7 @@ export async function cancelBlockedIssue(
   }
   const preState = context.hooks.describeIssueRuntimeState(blocked.issue_id);
   if (operator_context?.confirmed !== true) {
-    recordOperatorAction(context, blocked.issue_id, {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'cancel',
       requested_at_ms: context.nowMs(),
       result: 'rejected',
@@ -758,7 +755,7 @@ export async function cancelBlockedIssue(
   try {
     await context.tracker.update_issue_state(blocked.issue_id, targetState);
   } catch (error) {
-    recordOperatorAction(context, blocked.issue_id, {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'cancel',
       requested_at_ms: context.nowMs(),
       result: 'failed',
@@ -779,7 +776,7 @@ export async function cancelBlockedIssue(
   clearBlockedInput(context, blocked.issue_id, 'operator_cancelled_to_backlog');
   context.state.redispatch_progress?.delete(blocked.issue_id);
   await context.hooks.clearCircuitBreaker(blocked.issue_id);
-  recordOperatorAction(context, blocked.issue_id, {
+  context.hooks.recordOperatorAction(blocked.issue_id, {
     action: 'cancel',
     requested_at_ms: context.nowMs(),
     result: 'accepted',
@@ -852,7 +849,7 @@ export async function submitBlockedIssueInput(
   const preState = context.hooks.describeIssueRuntimeState(blocked.issue_id);
   const operatorContext = { actor: params.actor ?? null, reason_note: reasonNote };
   if (!blocked.pending_input) {
-    recordOperatorAction(context, blocked.issue_id, {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'submit_input',
       requested_at_ms: context.nowMs(),
       result: 'rejected',
@@ -866,7 +863,7 @@ export async function submitBlockedIssueInput(
     return { ok: false, code: 'input_submission_not_answerable', message: 'Blocked issue has no pending input request payload' };
   }
   if (!blocked.pending_input.request_id || blocked.pending_input.request_id !== params.request_id) {
-    recordOperatorAction(context, blocked.issue_id, {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'submit_input',
       requested_at_ms: context.nowMs(),
       result: 'rejected',
@@ -884,7 +881,7 @@ export async function submitBlockedIssueInput(
     const q = blocked.pending_input.questions.find((question) => question.id === params.answer.question_id) ?? blocked.pending_input.questions[0];
     const options = q?.options ?? [];
     if (!params.answer.option_label || !options.some((option) => option.label === params.answer.option_label)) {
-      recordOperatorAction(context, blocked.issue_id, {
+      context.hooks.recordOperatorAction(blocked.issue_id, {
         action: 'submit_input',
         requested_at_ms: context.nowMs(),
         result: 'rejected',
@@ -899,7 +896,7 @@ export async function submitBlockedIssueInput(
     }
   } else if (blocked.pending_input.input_schema_type === 'text') {
     if (!params.answer.text || !params.answer.text.trim()) {
-      recordOperatorAction(context, blocked.issue_id, {
+      context.hooks.recordOperatorAction(blocked.issue_id, {
         action: 'submit_input',
         requested_at_ms: context.nowMs(),
         result: 'rejected',
@@ -966,7 +963,7 @@ export async function submitBlockedIssueInput(
       : nativeAttempt.code === 'transport_unsupported'
         ? 'input_submission_transport_unavailable'
         : 'input_submission_not_answerable';
-  recordOperatorAction(context, blocked.issue_id, {
+  context.hooks.recordOperatorAction(blocked.issue_id, {
     action: 'submit_input',
     requested_at_ms: context.nowMs(),
     result: mappedCode === 'input_submission_transport_unavailable' ? 'failed' : 'rejected',
@@ -1014,51 +1011,4 @@ export function buildOperatorInputResumeContext(
     `Question: ${promptText}`,
     `Answer: ${normalizedAnswer}`
   ].join('\n');
-}
-
-export function recordOperatorAction(
-  context: BlockedInputCoordinatorContext,
-  issueId: string,
-  action: OperatorActionRecord
-): void {
-  const operatorActions = context.state.operator_actions ?? new Map<string, OperatorActionRecord[]>();
-  context.state.operator_actions = operatorActions;
-  const currentState = context.hooks.describeIssueRuntimeState(issueId);
-  const normalized: OperatorActionRecord = {
-    ...action,
-    actor: action.actor ?? 'operator',
-    reason_note: action.reason_note ?? null,
-    target_identifiers: action.target_identifiers ?? context.hooks.targetIdentifiersFromRuntimeState(issueId, action.pre_state ?? currentState),
-    pre_state: action.pre_state ?? currentState,
-    post_state: action.post_state ?? currentState
-  };
-  const existing = operatorActions.get(issueId) ?? [];
-  const updated = [...existing, normalized].slice(-20);
-  operatorActions.set(issueId, updated);
-  void context.persistence?.upsertOperatorActions?.(issueId, JSON.stringify(updated));
-  void context.persistence
-    ?.appendOperatorActionHistory?.({
-      issue_run_id: stringOrNull(normalized.target_identifiers?.issue_run_id) ?? stringOrNull((normalized.pre_state ?? {}).issue_run_id),
-      attempt_id: stringOrNull(normalized.target_identifiers?.attempt_id),
-      thread_id: stringOrNull(normalized.target_identifiers?.thread_id),
-      turn_id: stringOrNull(normalized.target_identifiers?.turn_id),
-      action: normalized.action,
-      actor: normalized.actor ?? 'operator',
-      result: normalized.result,
-      result_code: normalized.result_code,
-      message: normalized.message,
-      reason_note: normalized.reason_note,
-      phase: stringOrNull((normalized.pre_state ?? {}).current_phase) ?? stringOrNull((normalized.pre_state ?? {}).last_phase),
-      state_context: {
-        issue_id: issueId,
-        target_identifiers: normalized.target_identifiers ?? null,
-        pre_state: normalized.pre_state ?? null,
-        post_state: normalized.post_state ?? null
-      },
-      requested_at: asIso(normalized.requested_at_ms),
-      observed_at: asIso(context.nowMs())
-    })
-    ?.catch((error: unknown) => {
-      void context.hooks.recordHistoryWriteFailure('appendOperatorActionHistory', normalized.result_code ?? normalized.action, error);
-    });
 }

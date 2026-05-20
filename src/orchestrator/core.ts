@@ -11,7 +11,6 @@ import {
   clearBlockedInput as coordinateClearBlockedInput,
   persistBlockedInputEvent as coordinatePersistBlockedInputEvent,
   persistTicketBlocker as coordinatePersistTicketBlocker,
-  recordOperatorAction as coordinateRecordOperatorAction,
   resolveBacklogStateName as coordinateResolveBacklogStateName,
   resumeBlockedIssue as coordinateResumeBlockedIssue,
   scheduleBlockedInput as coordinateScheduleBlockedInput,
@@ -1198,6 +1197,7 @@ export class OrchestratorCore {
         describeIssueRuntimeState: (issueId) => this.describeIssueRuntimeState(issueId),
         targetIdentifiersFromRuntimeState: (issueId, runtimeState) =>
           this.targetIdentifiersFromRuntimeState(issueId, runtimeState),
+        recordOperatorAction: (issueId, action) => this.recordOperatorAction(issueId, action),
         recordRuntimeEvent: (params) => this.recordRuntimeEvent(params)
       }
     };
@@ -2682,7 +2682,55 @@ export class OrchestratorCore {
   }
 
   private recordOperatorAction(issueId: string, action: OperatorActionRecord): void {
-    coordinateRecordOperatorAction(this.blockedInputCoordinatorContext(), issueId, action);
+    const operatorActions = this.state.operator_actions ?? new Map<string, OperatorActionRecord[]>();
+    this.state.operator_actions = operatorActions;
+    const currentState = this.describeIssueRuntimeState(issueId);
+    const normalized: OperatorActionRecord = {
+      ...action,
+      actor: action.actor ?? 'operator',
+      reason_note: action.reason_note ?? null,
+      target_identifiers:
+        action.target_identifiers ?? this.targetIdentifiersFromRuntimeState(issueId, action.pre_state ?? currentState),
+      pre_state: action.pre_state ?? currentState,
+      post_state: action.post_state ?? currentState
+    };
+    const existing = operatorActions.get(issueId) ?? [];
+    const updated = [...existing, normalized].slice(-20);
+    operatorActions.set(issueId, updated);
+    void this.persistence?.upsertOperatorActions?.(issueId, JSON.stringify(updated));
+    void this.persistence
+      ?.appendOperatorActionHistory?.({
+        issue_run_id:
+          this.stringOrNull(normalized.target_identifiers?.issue_run_id) ??
+          this.stringOrNull((normalized.pre_state ?? {}).issue_run_id),
+        attempt_id: this.stringOrNull(normalized.target_identifiers?.attempt_id),
+        thread_id: this.stringOrNull(normalized.target_identifiers?.thread_id),
+        turn_id: this.stringOrNull(normalized.target_identifiers?.turn_id),
+        action: normalized.action,
+        actor: normalized.actor ?? 'operator',
+        result: normalized.result,
+        result_code: normalized.result_code,
+        message: normalized.message,
+        reason_note: normalized.reason_note,
+        phase:
+          this.stringOrNull((normalized.pre_state ?? {}).current_phase) ??
+          this.stringOrNull((normalized.pre_state ?? {}).last_phase),
+        state_context: {
+          issue_id: issueId,
+          target_identifiers: normalized.target_identifiers ?? null,
+          pre_state: normalized.pre_state ?? null,
+          post_state: normalized.post_state ?? null
+        },
+        requested_at: new Date(normalized.requested_at_ms).toISOString(),
+        observed_at: new Date(this.nowMs()).toISOString()
+      })
+      ?.catch((error: unknown) => {
+        void this.recordHistoryWriteFailure('appendOperatorActionHistory', normalized.result_code ?? normalized.action, error);
+      });
+  }
+
+  private stringOrNull(value: unknown): string | null {
+    return typeof value === 'string' && value.trim() ? value : null;
   }
 
   private targetIdentifiersFromRuntimeState(
