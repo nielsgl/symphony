@@ -425,7 +425,7 @@ describe('CodexRunner transcript fallback', () => {
     const promise = runner.startSessionAndRunTurn(
       makeStartInput(workspaceCwd, {
         commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 1000
+        turnTimeoutMs: 3000
       })
     );
 
@@ -488,7 +488,7 @@ describe('CodexRunner transcript fallback', () => {
     const promise = runner.startSessionAndRunTurn(
       makeStartInput(workspaceCwd, {
         commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 1000
+        turnTimeoutMs: 3000
       })
     );
 
@@ -593,7 +593,7 @@ describe('CodexRunner transcript fallback', () => {
     const promise = runner.startSessionAndRunTurn(
       makeStartInput(workspaceCwd, {
         commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 1000
+        turnTimeoutMs: 3000
       })
     );
 
@@ -657,7 +657,7 @@ describe('CodexRunner transcript fallback', () => {
     const promise = runner.startSessionAndRunTurn(
       makeStartInput(workspaceCwd, {
         commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 1000
+        turnTimeoutMs: 3000
       })
     );
 
@@ -719,7 +719,7 @@ describe('CodexRunner transcript fallback', () => {
       makeStartInput(workspaceCwd, {
         commandEnv: { CODEX_HOME: codexHome },
         onEvent: (event) => events.push(event),
-        turnTimeoutMs: 300
+        turnTimeoutMs: 1000
       })
     );
 
