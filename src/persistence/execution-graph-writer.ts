@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 
 import { redactUnknown } from '../security/redaction';
-import { buildProjectIdentity } from './identity';
 import type { PersistenceDatabase } from './store-context';
 import type {
   DurableIdentity,
@@ -309,20 +308,8 @@ function normalizeTelemetryConfidence(value: TokenModelTelemetryConfidence): Tok
   return value;
 }
 
-function normalizeProjectIdentityKey(identity: DurableIdentity): DurableIdentity {
-  return {
-    ...identity,
-    project: buildProjectIdentity({
-      projectRoot: identity.project.project_root,
-      workflowPath: identity.project.workflow_path,
-      workflowHash: identity.project.workflow_hash,
-      repositoryRemote: identity.project.repository_remote
-    })
-  };
-}
-
 function serializeDurableIdentity(identity: DurableIdentity): string {
-  return JSON.stringify(redactUnknown(normalizeProjectIdentityKey(identity)));
+  return JSON.stringify(redactUnknown(identity));
 }
 
 function isIdentityEvidence(value: unknown): boolean {

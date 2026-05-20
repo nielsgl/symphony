@@ -13,6 +13,36 @@ describe('SqlitePersistenceStore execution graph', () => {
   const { dirs, stores, identity, openDatabase, tableNames, withLegacyProjectKey, cleanup } = createStoreTestHarness();
 
   afterEach(cleanup);
+
+  it('preserves raw durable identity payloads for issue_run rows', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-identity-payload-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const durableIdentity = withLegacyProjectKey(identity({ issue_id: 'i-legacy-key', issue_identifier: 'ABC-LEGACY' }));
+
+    const store = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(store);
+    const started = store.recordRunStarted({
+      issue_id: 'i-legacy-key',
+      issue_identifier: 'ABC-LEGACY',
+      identity: durableIdentity,
+      started_at: '2026-04-11T10:00:00.000Z',
+      attempt_number: 0,
+      status: 'running',
+      reason_code: 'dispatch_started'
+    });
+
+    const db = openDatabase(dbPath);
+    try {
+      const run = db.prepare('SELECT identity FROM runs WHERE run_id = ?').get(started.run_id) as { identity: string };
+      const issueRun = db.prepare('SELECT identity FROM issue_run WHERE issue_run_id = ?').get(started.issue_run_id) as { identity: string };
+      expect(JSON.parse(issueRun.identity)).toEqual(JSON.parse(run.identity));
+      expect(JSON.parse(issueRun.identity)).toEqual(durableIdentity);
+    } finally {
+      db.close();
+    }
+  });
+
   it('closes normalized execution graph rows when a linked legacy run completes', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-execution-graph-complete-'));
     dirs.push(dir);
