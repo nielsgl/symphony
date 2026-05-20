@@ -145,7 +145,10 @@ export interface RetryTimerCoordinatorHooks {
 export interface RetryTimerCoordinatorContext {
   readonly state: OrchestratorState;
   readonly config: OrchestratorOptions['config'];
-  readonly ports: OrchestratorOptions['ports'];
+  readonly tracker: Pick<OrchestratorOptions['ports']['tracker'], 'fetch_candidate_issues' | 'fetch_issue_states_by_ids'>;
+  readonly cancelRetryTimer: OrchestratorOptions['ports']['cancelRetryTimer'];
+  readonly getControlPlaneHealth?: OrchestratorOptions['ports']['getControlPlaneHealth'];
+  readonly getHostLoad?: OrchestratorOptions['ports']['getHostLoad'];
   readonly logger: StructuredLogger | undefined;
   readonly nowMs: () => number;
   readonly hooks: RetryTimerCoordinatorHooks;
@@ -171,7 +174,7 @@ export async function coordinateRetryTimer(context: RetryTimerCoordinatorContext
 
   let candidates: Issue[];
   try {
-    candidates = await context.ports.tracker.fetch_candidate_issues();
+    candidates = await context.tracker.fetch_candidate_issues();
   } catch (error) {
     context.logger?.log({
       level: 'warn',
@@ -285,8 +288,8 @@ export async function coordinateRetryTimer(context: RetryTimerCoordinatorContext
   const backpressure = evaluateDispatchBackpressure({
     config: context.config,
     runningCount: state.running.size,
-    getControlPlaneHealth: () => context.ports.getControlPlaneHealth?.(),
-    getHostLoad: () => context.ports.getHostLoad?.(),
+    getControlPlaneHealth: () => context.getControlPlaneHealth?.(),
+    getHostLoad: () => context.getHostLoad?.(),
     nowMs: context.nowMs
   });
   if (backpressure.active) {
@@ -370,7 +373,7 @@ export async function coordinateRetryTimer(context: RetryTimerCoordinatorContext
     } else {
       const existingRetry = state.retry_attempts.get(issue_id);
       if (existingRetry) {
-        context.ports.cancelRetryTimer(existingRetry.timer_handle);
+        context.cancelRetryTimer(existingRetry.timer_handle);
         state.retry_attempts.delete(issue_id);
       }
       state.claimed.delete(issue_id);
@@ -493,7 +496,7 @@ async function coordinateTrackerRefreshRetryTimer(
 ): Promise<void> {
   let refreshedIssues: Issue[];
   try {
-    refreshedIssues = await context.ports.tracker.fetch_issue_states_by_ids([issue_id]);
+    refreshedIssues = await context.tracker.fetch_issue_states_by_ids([issue_id]);
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'unknown';
     context.logger?.log({

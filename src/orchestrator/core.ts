@@ -1191,7 +1191,12 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      ports: this.ports,
+      tracker: this.ports.tracker,
+      cancelRetryTimer: (timerHandle) => this.ports.cancelRetryTimer(timerHandle),
+      getControlPlaneHealth: this.ports.getControlPlaneHealth
+        ? () => this.ports.getControlPlaneHealth!()
+        : undefined,
+      getHostLoad: this.ports.getHostLoad ? () => this.ports.getHostLoad!() : undefined,
       logger: this.logger,
       nowMs: () => this.nowMs(),
       hooks: {
