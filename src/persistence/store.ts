@@ -1,10 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 
 import { redactUnknown } from '../security/redaction';
 import { buildHistoryPayloadDetails } from './history-payload-policy';
 import { buildProjectIdentity } from './identity';
+import {
+  createBasePersistenceSchema,
+  createHistoryRetentionPruneRecordTable,
+  createProjectExecutionHistoryTables,
+  ensureHistoryMigrationTables,
+  ensureHistoryWriteFailureTable
+} from './schema';
+import { sqlPlaceholders } from './sqlite-helpers';
+import { createPersistenceStoreContext, type PersistenceDatabase, type PersistenceStoreContext } from './store-context';
 import type {
   AppServerEventLedgerRecord,
   BlockedInputEventRecord,
@@ -231,210 +238,29 @@ function normalizeTelemetryConfidence(value: TokenModelTelemetryConfidence): Tok
 }
 
 export class SqlitePersistenceStore {
+  private readonly context: PersistenceStoreContext;
   private readonly dbPath: string;
   private readonly retentionDays: number;
   private readonly nowMs: () => number;
   private readonly migrationFailureForTest: string | undefined;
   private readonly pruneFailureForTest: string | undefined;
   private transactionDepth = 0;
-  private readonly db: {
-    exec(sql: string): void;
-    close(): void;
-    prepare(sql: string): {
-      run(...args: unknown[]): void;
-      all(...args: unknown[]): unknown[];
-      get(...args: unknown[]): unknown;
-    };
-  };
+  private readonly db: PersistenceDatabase;
 
   constructor(options: PersistenceStoreOptions) {
-    this.dbPath = options.dbPath;
-    this.retentionDays = options.retentionDays;
-    this.nowMs = options.nowMs ?? (() => Date.now());
+    this.context = createPersistenceStoreContext({
+      dbPath: options.dbPath,
+      retentionDays: options.retentionDays,
+      nowMs: options.nowMs ?? (() => Date.now())
+    });
+    this.dbPath = this.context.dbPath;
+    this.retentionDays = this.context.retentionDays;
+    this.nowMs = this.context.nowMs;
     this.migrationFailureForTest = options.migrationFailureForTest;
     this.pruneFailureForTest = options.pruneFailureForTest;
 
-    const parent = path.dirname(this.dbPath);
-    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
-    try {
-      fs.chmodSync(parent, 0o700);
-    } catch {
-      // Best effort only.
-    }
-
-    const sqlite = require('node:sqlite') as { DatabaseSync: new (path: string) => SqlitePersistenceStore['db'] };
-    this.db = new sqlite.DatabaseSync(this.dbPath);
-    try {
-      fs.chmodSync(this.dbPath, 0o600);
-    } catch {
-      // Best effort only.
-    }
-
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA synchronous = NORMAL;');
-    this.db.exec('PRAGMA foreign_keys = ON;');
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS issue_run (
-        issue_run_id TEXT PRIMARY KEY,
-        issue_id TEXT NOT NULL,
-        issue_identifier TEXT NOT NULL,
-        identity TEXT,
-        project_key TEXT,
-        ticket_key TEXT,
-        started_at TEXT NOT NULL,
-        ended_at TEXT,
-        status TEXT NOT NULL,
-        reason_code TEXT,
-        reason_detail TEXT,
-        CHECK (ended_at IS NULL OR ended_at >= started_at)
-      );
-      CREATE TABLE IF NOT EXISTS attempt (
-        attempt_id TEXT PRIMARY KEY,
-        issue_run_id TEXT NOT NULL,
-        attempt_number INTEGER NOT NULL,
-        started_at TEXT NOT NULL,
-        ended_at TEXT,
-        status TEXT NOT NULL,
-        reason_code TEXT,
-        reason_detail TEXT,
-        UNIQUE (issue_run_id, attempt_number),
-        CHECK (attempt_number >= 0),
-        CHECK (ended_at IS NULL OR ended_at >= started_at),
-        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS thread (
-        thread_id TEXT PRIMARY KEY,
-        attempt_id TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        ended_at TEXT,
-        status TEXT NOT NULL,
-        reason_code TEXT,
-        reason_detail TEXT,
-        CHECK (ended_at IS NULL OR ended_at >= started_at),
-        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS turn (
-        turn_id TEXT PRIMARY KEY,
-        thread_id TEXT NOT NULL,
-        turn_index INTEGER NOT NULL,
-        started_at TEXT NOT NULL,
-        ended_at TEXT,
-        status TEXT NOT NULL,
-        reason_code TEXT,
-        reason_detail TEXT,
-        UNIQUE (thread_id, turn_index),
-        CHECK (turn_index >= 0),
-        CHECK (ended_at IS NULL OR ended_at >= started_at),
-        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS phase_span (
-        phase_span_id TEXT PRIMARY KEY,
-        turn_id TEXT NOT NULL,
-        phase TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        ended_at TEXT,
-        status TEXT NOT NULL,
-        reason_code TEXT,
-        reason_detail TEXT,
-        CHECK (ended_at IS NULL OR ended_at >= started_at),
-        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS tool_span (
-        tool_span_id TEXT PRIMARY KEY,
-        turn_id TEXT NOT NULL,
-        tool_name TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        ended_at TEXT,
-        status TEXT NOT NULL,
-        reason_code TEXT,
-        reason_detail TEXT,
-        CHECK (ended_at IS NULL OR ended_at >= started_at),
-        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS state_transition (
-        state_transition_id TEXT PRIMARY KEY,
-        issue_run_id TEXT NOT NULL,
-        attempt_id TEXT,
-        thread_id TEXT,
-        turn_id TEXT,
-        from_status TEXT,
-        to_status TEXT NOT NULL,
-        transitioned_at TEXT NOT NULL,
-        status TEXT NOT NULL,
-        reason_code TEXT,
-        reason_detail TEXT,
-        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
-        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
-        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
-        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS runs (
-        run_id TEXT PRIMARY KEY,
-        issue_id TEXT NOT NULL,
-        issue_identifier TEXT NOT NULL,
-        identity TEXT,
-        started_at TEXT NOT NULL,
-        ended_at TEXT,
-        completed_at TEXT,
-        terminal_status TEXT,
-        error_code TEXT,
-        terminal_reason_code TEXT,
-        terminal_reason_detail TEXT,
-        root_cause_status TEXT,
-        root_cause_reason_code TEXT,
-        root_cause_reason_detail TEXT,
-        root_cause_at TEXT,
-        session_id TEXT,
-        thread_id TEXT,
-        turn_id TEXT,
-        missing_tool_output_recovery TEXT
-      );
-      CREATE TABLE IF NOT EXISTS run_sessions (
-        run_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        PRIMARY KEY (run_id, session_id)
-      );
-      CREATE TABLE IF NOT EXISTS run_events (
-        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        run_id TEXT NOT NULL,
-        at TEXT NOT NULL,
-        event TEXT NOT NULL,
-        message TEXT,
-        reason_code TEXT,
-        request_method TEXT,
-        request_category TEXT
-      );
-      CREATE TABLE IF NOT EXISTS ui_state (
-        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-        payload TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS issue_breakers (
-        issue_id TEXT PRIMARY KEY,
-        issue_identifier TEXT NOT NULL,
-        breaker_active INTEGER NOT NULL,
-        breaker_hit_count INTEGER NOT NULL,
-        breaker_window_minutes INTEGER NOT NULL,
-        breaker_first_hit_at TEXT,
-        breaker_last_hit_at TEXT,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS blocked_inputs (
-        issue_id TEXT PRIMARY KEY,
-        payload TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS operator_actions (
-        issue_id TEXT PRIMARY KEY,
-        payload TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
+    this.db = this.context.db;
+    createBasePersistenceSchema(this.db);
     this.runHistorySchemaMigrations();
   }
 
@@ -1759,7 +1585,7 @@ export class SqlitePersistenceStore {
     const attempts = this.selectByIssueRunIds<AttemptRecord>(
       `SELECT attempt.* FROM attempt
        JOIN issue_run ON issue_run.issue_run_id = attempt.issue_run_id
-       WHERE issue_run.issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run.issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY issue_run.started_at ASC, attempt.attempt_number ASC, attempt.started_at ASC`,
       issueRunIds
     );
@@ -1767,7 +1593,7 @@ export class SqlitePersistenceStore {
       `SELECT thread.* FROM thread
        JOIN attempt ON attempt.attempt_id = thread.attempt_id
        JOIN issue_run ON issue_run.issue_run_id = attempt.issue_run_id
-       WHERE issue_run.issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run.issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY issue_run.started_at ASC, attempt.attempt_number ASC, thread.started_at ASC, thread.thread_id ASC`,
       issueRunIds
     );
@@ -1776,7 +1602,7 @@ export class SqlitePersistenceStore {
        JOIN thread ON thread.thread_id = turn.thread_id
        JOIN attempt ON attempt.attempt_id = thread.attempt_id
        JOIN issue_run ON issue_run.issue_run_id = attempt.issue_run_id
-       WHERE issue_run.issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run.issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY issue_run.started_at ASC, attempt.attempt_number ASC, thread.started_at ASC, turn.turn_index ASC`,
       issueRunIds
     );
@@ -1786,49 +1612,49 @@ export class SqlitePersistenceStore {
        JOIN thread ON thread.thread_id = turn.thread_id
        JOIN attempt ON attempt.attempt_id = thread.attempt_id
        JOIN issue_run ON issue_run.issue_run_id = attempt.issue_run_id
-       WHERE issue_run.issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run.issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY phase_span.started_at ASC, phase_span.phase_span_id ASC`,
       issueRunIds
     );
     const stateTransitions = this.selectByIssueRunIds<StateTransitionRecord>(
       `SELECT * FROM state_transition
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY transitioned_at ASC, state_transition_id ASC`,
       issueRunIds
     );
     const terminalOutcomes = this.selectByIssueRunIds<TicketTerminalOutcomeRecord>(
       `SELECT * FROM history_ticket_terminal_outcome
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY recorded_at ASC, terminal_outcome_id ASC`,
       issueRunIds
     );
     const blockers = this.selectByIssueRunIds<TicketBlockerRecord>(
       `SELECT * FROM history_ticket_blocker
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY blocked_at ASC, blocker_id ASC`,
       issueRunIds
     );
     const evidenceRows = this.selectByIssueRunIds<Omit<TicketEvidenceReferenceRecord, 'metadata'> & { metadata: string | null }>(
       `SELECT * FROM history_ticket_evidence_reference
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY recorded_at ASC, evidence_reference_id ASC`,
       issueRunIds
     );
     const trackerSnapshotRows = this.selectByIssueRunIds<Omit<TrackerTicketSnapshotRecord, 'labels'> & { labels: string }>(
       `SELECT * FROM history_tracker_ticket_snapshot
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY observed_at ASC, tracker_snapshot_id ASC`,
       issueRunIds
     );
     const ticketReferenceRows = this.selectByIssueRunIds<Omit<TicketReferenceRecord, 'metadata'> & { metadata: string | null }>(
       `SELECT * FROM history_ticket_reference
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY observed_at ASC, ticket_reference_id ASC`,
       issueRunIds
     );
     const operatorActionRows = this.selectByIssueRunIds<Omit<OperatorActionHistoryRecord, 'state_context'> & { state_context: string | null }>(
       `SELECT * FROM history_operator_action
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY requested_at ASC, operator_action_id ASC`,
       issueRunIds
     );
@@ -1839,13 +1665,13 @@ export class SqlitePersistenceStore {
       }
     >(
       `SELECT * FROM history_blocked_input_event
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY blocked_at ASC, blocked_input_event_id ASC`,
       issueRunIds
     );
     const tokenModelFacts = this.selectByIssueRunIds<TokenModelFactRecord>(
       `SELECT * FROM history_token_model_fact
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY observed_at ASC, token_model_fact_id ASC`,
       issueRunIds
     );
@@ -1861,7 +1687,7 @@ export class SqlitePersistenceStore {
           summary, summary_fields, redacted_excerpt, truncation, unavailable_reason_code,
           full_payload_stored, policy_version
        FROM history_app_server_event
-       WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+       WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
        ORDER BY observed_at ASC, app_server_event_id ASC`,
       issueRunIds
     );
@@ -2182,7 +2008,7 @@ export class SqlitePersistenceStore {
   }
 
   private runHistorySchemaMigrations(): void {
-    this.ensureHistoryMigrationTables();
+    ensureHistoryMigrationTables(this.db);
 
     const migrations: HistoryMigration[] = [
       {
@@ -2192,7 +2018,7 @@ export class SqlitePersistenceStore {
           store.ensureRunDiagnosticColumns();
           store.ensureIssueRunIdentityColumn();
           store.ensureRunEventDiagnosticColumns();
-          store.createProjectExecutionHistoryTables();
+          createProjectExecutionHistoryTables(store.context);
         }
       },
       {
@@ -2236,7 +2062,7 @@ export class SqlitePersistenceStore {
         version: 7,
         name: 'history_retention_prune_evidence_v1',
         apply: (store) => {
-          store.createHistoryRetentionPruneRecordTable();
+          createHistoryRetentionPruneRecordTable(store.db);
         }
       },
       {
@@ -2303,7 +2129,7 @@ export class SqlitePersistenceStore {
       }
     }
 
-    this.ensureHistoryWriteFailureTable();
+    ensureHistoryWriteFailureTable(this.db);
 
     const state = this.db
       .prepare('SELECT status FROM history_schema_state WHERE schema_name = ?')
@@ -2316,30 +2142,6 @@ export class SqlitePersistenceStore {
         degradedDetail: 'No Project Execution History migration completed.'
       });
     }
-  }
-
-  private ensureHistoryMigrationTables(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS history_schema_state (
-        schema_name TEXT PRIMARY KEY,
-        target_version INTEGER NOT NULL,
-        applied_version INTEGER NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('healthy', 'degraded')),
-        degraded_reason_code TEXT,
-        degraded_detail TEXT,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS history_schema_migrations (
-        schema_name TEXT NOT NULL,
-        version INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('applied', 'failed')),
-        started_at TEXT NOT NULL,
-        finished_at TEXT,
-        error_message TEXT,
-        PRIMARY KEY (schema_name, version)
-      );
-    `);
   }
 
   private recordHistorySchemaState(params: {
@@ -2396,153 +2198,6 @@ export class SqlitePersistenceStore {
     });
   }
 
-  private createProjectExecutionHistoryTables(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS history_project_identity (
-        project_key TEXT PRIMARY KEY,
-        project_root TEXT NOT NULL,
-        workflow_path TEXT NOT NULL,
-        workflow_hash_status TEXT NOT NULL,
-        workflow_hash_value TEXT,
-        workflow_hash_reason TEXT,
-        repository_remote_status TEXT NOT NULL,
-        repository_remote_value TEXT,
-        repository_remote_reason TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS history_ticket_identity (
-        project_key TEXT NOT NULL,
-        ticket_key TEXT NOT NULL,
-        tracker_kind TEXT NOT NULL,
-        tracker_scope_status TEXT NOT NULL,
-        tracker_scope_value TEXT,
-        tracker_scope_reason TEXT,
-        remote_issue_id TEXT NOT NULL,
-        human_issue_identifier TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (project_key, ticket_key),
-        FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS history_protocol_summary (
-        protocol_summary_id TEXT PRIMARY KEY,
-        issue_run_id TEXT NOT NULL,
-        attempt_id TEXT,
-        thread_id TEXT,
-        turn_id TEXT,
-        protocol_name TEXT NOT NULL,
-        protocol_version TEXT,
-        event_count INTEGER NOT NULL DEFAULT 0,
-        warning_count INTEGER NOT NULL DEFAULT 0,
-        error_count INTEGER NOT NULL DEFAULT 0,
-        summary TEXT,
-        recorded_at TEXT NOT NULL,
-        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
-        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
-        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
-        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS history_token_model_fact (
-        token_model_fact_id TEXT PRIMARY KEY,
-        issue_run_id TEXT NOT NULL,
-        attempt_id TEXT,
-        thread_id TEXT,
-        turn_id TEXT,
-        requested_model TEXT,
-        effective_model TEXT,
-        model_source TEXT,
-        input_tokens INTEGER,
-        output_tokens INTEGER,
-        cached_input_tokens INTEGER,
-        reasoning_output_tokens INTEGER,
-        total_tokens INTEGER,
-        model_context_window INTEGER,
-        telemetry_confidence TEXT NOT NULL,
-        observed_at TEXT NOT NULL,
-        FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
-        FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
-        FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
-        FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
-      );
-      CREATE TABLE IF NOT EXISTS history_retention_metadata (
-        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-        retention_days INTEGER NOT NULL,
-        last_pruned_at TEXT,
-        policy_version INTEGER NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS history_health_metadata (
-        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-        status TEXT NOT NULL CHECK (status IN ('healthy', 'degraded')),
-        reason_code TEXT,
-        detail TEXT,
-        checked_at TEXT NOT NULL,
-        schema_version INTEGER NOT NULL,
-        applied_migration_version INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS history_write_failure (
-        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-        operation TEXT NOT NULL,
-        reason_code TEXT NOT NULL,
-        detail TEXT,
-        recorded_at TEXT NOT NULL
-      );
-    `);
-    this.db
-      .prepare(
-        `INSERT INTO history_retention_metadata
-          (singleton_id, retention_days, last_pruned_at, policy_version, updated_at)
-         VALUES (1, ?, (SELECT value FROM meta WHERE key = 'last_pruned_at'), 1, ?)
-         ON CONFLICT(singleton_id) DO UPDATE SET
-          retention_days = excluded.retention_days,
-          last_pruned_at = excluded.last_pruned_at,
-          policy_version = excluded.policy_version,
-          updated_at = excluded.updated_at`
-      )
-      .run(this.retentionDays, asIso(this.nowMs()));
-    this.db
-      .prepare(
-        `INSERT INTO history_health_metadata
-          (singleton_id, status, reason_code, detail, checked_at, schema_version, applied_migration_version)
-         VALUES (1, 'healthy', NULL, NULL, ?, ?, ?)
-         ON CONFLICT(singleton_id) DO UPDATE SET
-          status = excluded.status,
-          reason_code = excluded.reason_code,
-          detail = excluded.detail,
-          checked_at = excluded.checked_at,
-          schema_version = excluded.schema_version,
-          applied_migration_version = excluded.applied_migration_version`
-      )
-      .run(asIso(this.nowMs()), 1, 1);
-  }
-
-  private createHistoryRetentionPruneRecordTable(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS history_retention_prune_record (
-        prune_record_id TEXT PRIMARY KEY,
-        source_table TEXT NOT NULL CHECK (source_table IN ('runs', 'issue_run')),
-        source_id TEXT NOT NULL,
-        issue_id TEXT NOT NULL,
-        issue_identifier TEXT NOT NULL,
-        project_key TEXT,
-        ticket_key TEXT,
-        started_at TEXT NOT NULL,
-        completed_at TEXT NOT NULL,
-        pruned_at TEXT NOT NULL,
-        retention_days INTEGER NOT NULL,
-        cutoff_at TEXT NOT NULL,
-        pruned_record_count INTEGER NOT NULL,
-        reason_code TEXT NOT NULL,
-        metadata TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS history_retention_prune_record_source_idx
-        ON history_retention_prune_record(source_table, source_id);
-      CREATE INDEX IF NOT EXISTS history_retention_prune_record_pruned_at_idx
-        ON history_retention_prune_record(pruned_at, prune_record_id);
-    `);
-  }
-
   private createTicketOrchestrationLedgerTables(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS history_ticket_terminal_outcome (
@@ -2595,20 +2250,8 @@ export class SqlitePersistenceStore {
         FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
       );
     `);
-    this.ensureHistoryWriteFailureTable();
+    ensureHistoryWriteFailureTable(this.db);
     this.recordHistoryHealthMetadata('healthy', null, null);
-  }
-
-  private ensureHistoryWriteFailureTable(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS history_write_failure (
-        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-        operation TEXT NOT NULL,
-        reason_code TEXT NOT NULL,
-        detail TEXT,
-        recorded_at TEXT NOT NULL
-      );
-    `);
   }
 
   private createOperationalHistoryFactTables(): void {
@@ -3240,7 +2883,7 @@ export class SqlitePersistenceStore {
   }
 
   private readHistorySchemaHealth(): HistorySchemaHealth {
-    this.ensureHistoryMigrationTables();
+    ensureHistoryMigrationTables(this.db);
     const row = this.db.prepare('SELECT * FROM history_schema_state WHERE schema_name = ?').get(HISTORY_SCHEMA_NAME) as
       | {
           schema_name: 'project_execution_history';
@@ -3566,10 +3209,6 @@ export class SqlitePersistenceStore {
     ensureMonotonicTimestamp(timestamp, parent.started_at, label);
   }
 
-  private placeholders(values: unknown[]): string {
-    return values.map(() => '?').join(', ');
-  }
-
   private isSummaryActive(latestIssueRun: Pick<IssueRunRecord, 'ended_at' | 'status'> | null): boolean {
     if (!latestIssueRun) {
       return false;
@@ -3585,7 +3224,7 @@ export class SqlitePersistenceStore {
       this.db
         .prepare(
           `SELECT * FROM attempt
-           WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+           WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
            ORDER BY started_at DESC, attempt_number DESC, attempt_id DESC
            LIMIT 1`
         )
@@ -3601,7 +3240,7 @@ export class SqlitePersistenceStore {
       this.db
         .prepare(
           `SELECT * FROM history_ticket_terminal_outcome
-           WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+           WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
            ORDER BY recorded_at DESC, terminal_outcome_id DESC
            LIMIT 1`
         )
@@ -3616,7 +3255,7 @@ export class SqlitePersistenceStore {
     const row = this.db
       .prepare(
         `SELECT * FROM history_tracker_ticket_snapshot
-         WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+         WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
          ORDER BY last_observed_at DESC, tracker_snapshot_id DESC
          LIMIT 1`
       )
@@ -3632,7 +3271,7 @@ export class SqlitePersistenceStore {
       this.db
         .prepare(
           `SELECT * FROM state_transition
-           WHERE issue_run_id IN (${this.placeholders(issueRunIds)})
+           WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})
            ORDER BY transitioned_at DESC, state_transition_id DESC
            LIMIT 1`
         )
@@ -3648,7 +3287,7 @@ export class SqlitePersistenceStore {
       .prepare(
         `SELECT MAX(observed_at) AS observed_at
          FROM history_app_server_event
-         WHERE issue_run_id IN (${this.placeholders(issueRunIds)})`
+         WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})`
       )
       .get(...issueRunIds) as { observed_at: string | null } | undefined;
     return row?.observed_at ?? null;
@@ -3663,7 +3302,7 @@ export class SqlitePersistenceStore {
         .prepare(
           `SELECT COUNT(*) AS count
            FROM ${table}
-           WHERE issue_run_id IN (${this.placeholders(issueRunIds)})${where}`
+           WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})${where}`
         )
         .get(...issueRunIds) as { count: number };
       return row.count;
@@ -3675,7 +3314,7 @@ export class SqlitePersistenceStore {
             .prepare(
               `SELECT COUNT(*) AS count, SUM(total_tokens) AS total_tokens
                FROM history_token_model_fact
-               WHERE issue_run_id IN (${this.placeholders(issueRunIds)})`
+               WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})`
             )
             .get(...issueRunIds) as { count: number; total_tokens: number | null });
     return {
@@ -3707,7 +3346,7 @@ export class SqlitePersistenceStore {
         `SELECT COUNT(*) AS count
          FROM thread
          JOIN attempt ON attempt.attempt_id = thread.attempt_id
-         WHERE attempt.issue_run_id IN (${this.placeholders(issueRunIds)})`
+         WHERE attempt.issue_run_id IN (${sqlPlaceholders(issueRunIds)})`
       )
       .get(...issueRunIds) as { count: number };
     return row.count;
@@ -3723,7 +3362,7 @@ export class SqlitePersistenceStore {
          FROM turn
          JOIN thread ON thread.thread_id = turn.thread_id
          JOIN attempt ON attempt.attempt_id = thread.attempt_id
-         WHERE attempt.issue_run_id IN (${this.placeholders(issueRunIds)})`
+         WHERE attempt.issue_run_id IN (${sqlPlaceholders(issueRunIds)})`
       )
       .get(...issueRunIds) as { count: number };
     return row.count;
@@ -3740,7 +3379,7 @@ export class SqlitePersistenceStore {
          JOIN turn ON turn.turn_id = phase_span.turn_id
          JOIN thread ON thread.thread_id = turn.thread_id
          JOIN attempt ON attempt.attempt_id = thread.attempt_id
-         WHERE attempt.issue_run_id IN (${this.placeholders(issueRunIds)})`
+         WHERE attempt.issue_run_id IN (${sqlPlaceholders(issueRunIds)})`
       )
       .get(...issueRunIds) as { count: number };
     return row.count;
@@ -3764,7 +3403,7 @@ export class SqlitePersistenceStore {
       .prepare(
         `SELECT detail_status, redaction_status, truncation, unavailable_reason_code, full_payload_stored, policy_version
          FROM history_app_server_event
-         WHERE issue_run_id IN (${this.placeholders(issueRunIds)})`
+         WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})`
       )
       .all(...issueRunIds) as Array<{
         detail_status: AppServerEventLedgerRecord['detail_status'];
