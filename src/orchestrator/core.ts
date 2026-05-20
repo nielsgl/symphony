@@ -1,7 +1,6 @@
 import type { Issue } from '../tracker';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
@@ -78,6 +77,19 @@ import {
   shouldResetRunningWaitEpisode,
   workerEventLooksLikeTrackerComment
 } from './core/worker-events';
+import {
+  buildRetryClearedContext,
+  buildRetryClearedDetail,
+  classifyProgressSignals,
+  emptyDispatchBackpressureState,
+  evaluateDispatchBackpressure,
+  evaluateRedispatchGate,
+  getBackpressureRetryDelayMs,
+  isFreshDispatchState,
+  isHandoffFreshDispatchState,
+  isKnownReviewHandoffTransition,
+  normalizeStateName
+} from './core/retry-backpressure';
 import type {
   BlockedEntry,
   BudgetRuntimeProjection,
@@ -108,13 +120,8 @@ import type {
   WorkerExitReason,
   WorkerTerminationResult
 } from './types';
-import type { ControlPlaneEndpointHealth, ControlPlaneHealthState, ControlPlaneHealthSummary } from '../api/control-plane-health';
 
 const DEFAULT_INACTIVE_WORKER_PID_TTL_MS = 60 * 60 * 1000;
-const DEFAULT_BACKPRESSURE_RETRY_DELAY_MS = 30_000;
-const DEFAULT_BACKPRESSURE_MIN_RUNNING_AGENTS = 1;
-const DEFAULT_BACKPRESSURE_CONTROL_PLANE_HEALTH: ControlPlaneHealthState = 'degraded';
-const DEFAULT_BACKPRESSURE_CONTROL_PLANE_STALE_AFTER_MS = 60_000;
 const CODEX_SESSION_TRANSCRIPT_CANDIDATE_CACHE_TTL_MS = 15_000;
 const CODEX_SESSION_TRANSCRIPT_MAX_CANDIDATE_FILES = 40;
 const CODEX_SESSION_TRANSCRIPT_MAX_DISCOVERY_FILES = 20;
@@ -123,13 +130,6 @@ const CODEX_SESSION_TRANSCRIPT_MAX_SCAN_BYTES = 256 * 1024;
 const CODEX_SESSION_TRANSCRIPT_MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const CODEX_SESSION_TRANSCRIPT_MAX_WALL_CLOCK_MS = 20;
 const CODEX_SESSION_TRANSCRIPT_MAX_DEPTH = 5;
-
-const CONTROL_PLANE_HEALTH_RANK: Record<ControlPlaneHealthState, number> = {
-  ok: 0,
-  slow: 1,
-  large: 2,
-  degraded: 3
-};
 
 interface ScheduleRetryParams {
   issue_id: string;
@@ -219,23 +219,8 @@ function readTimestampMs(value: Record<string, unknown> | null): number | null {
   return null;
 }
 
-function emptyDispatchBackpressureState(retryDelayMs = DEFAULT_BACKPRESSURE_RETRY_DELAY_MS): DispatchBackpressureState {
-  return {
-    active: false,
-    reason_code: null,
-    reason_detail: null,
-    source: null,
-    observed_at_ms: null,
-    retry_delay_ms: retryDelayMs
-  };
-}
-
 function asIso(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
-}
-
-function normalizeStateName(state: string): string {
-  return state.trim().toLowerCase();
 }
 
 export class OrchestratorCore {
@@ -296,7 +281,7 @@ export class OrchestratorCore {
       health: {
         dispatch_validation: 'ok',
         last_error: null,
-        dispatch_backpressure: emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs())
+        dispatch_backpressure: emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config))
       },
       throughput: {
         current_tps: 0,
@@ -385,7 +370,7 @@ export class OrchestratorCore {
       health: {
         ...this.state.health,
         dispatch_backpressure: cloneDispatchBackpressureState(
-          this.state.health.dispatch_backpressure ?? emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs())
+          this.state.health.dispatch_backpressure ?? emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config))
         )
       },
       throughput: this.throughputTracker.snapshot(this.nowMs()),
@@ -449,153 +434,13 @@ export class OrchestratorCore {
     this.state.poll_interval_ms = config.poll_interval_ms;
     this.state.max_concurrent_agents = config.max_concurrent_agents;
     this.state.health.dispatch_backpressure = {
-      ...(this.state.health.dispatch_backpressure ?? emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs())),
-      retry_delay_ms: this.getBackpressureRetryDelayMs()
+      ...(this.state.health.dispatch_backpressure ?? emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config))),
+      retry_delay_ms: getBackpressureRetryDelayMs(this.config)
     };
   }
 
   async tick(reason: TickReason): Promise<void> {
     await this.runSerializedOperation(() => this.tickOnce(reason));
-  }
-
-  private getBackpressureRetryDelayMs(): number {
-    const configured = this.config.dispatch_backpressure?.retry_delay_ms;
-    if (typeof configured === 'number' && Number.isFinite(configured) && configured > 0) {
-      return Math.trunc(configured);
-    }
-    return DEFAULT_BACKPRESSURE_RETRY_DELAY_MS;
-  }
-
-  private isBackpressureEnabled(): boolean {
-    return this.config.dispatch_backpressure?.enabled !== false;
-  }
-
-  private classifyControlPlaneEndpointLastHealth(
-    endpoint: ControlPlaneEndpointHealth,
-    summary: ControlPlaneHealthSummary
-  ): ControlPlaneHealthState {
-    if (endpoint.last_snapshot_error_code) {
-      return 'degraded';
-    }
-    const duration = endpoint.last_duration_ms ?? 0;
-    const payload = endpoint.last_payload_bytes ?? 0;
-    if (duration >= summary.thresholds.degraded_ms || payload >= summary.thresholds.degraded_payload_bytes) {
-      return 'degraded';
-    }
-    if (payload >= summary.thresholds.large_payload_bytes) {
-      return 'large';
-    }
-    if (duration >= summary.thresholds.slow_ms) {
-      return 'slow';
-    }
-    return 'ok';
-  }
-
-  private evaluateControlPlaneBackpressure(): DispatchBackpressureState | null {
-    const summary = this.ports.getControlPlaneHealth?.();
-    if (!summary || summary.endpoints.length === 0) {
-      return null;
-    }
-
-    const staleAfterMs =
-      this.config.dispatch_backpressure?.control_plane_stale_after_ms ?? DEFAULT_BACKPRESSURE_CONTROL_PLANE_STALE_AFTER_MS;
-    const threshold = this.config.dispatch_backpressure?.control_plane_health ?? DEFAULT_BACKPRESSURE_CONTROL_PLANE_HEALTH;
-    const thresholdRank = CONTROL_PLANE_HEALTH_RANK[threshold] ?? CONTROL_PLANE_HEALTH_RANK.degraded;
-    const nowMs = this.nowMs();
-
-    let selected:
-      | {
-          endpoint: ControlPlaneEndpointHealth;
-          health: ControlPlaneHealthState;
-          observedAtMs: number;
-        }
-      | null = null;
-
-    for (const endpoint of summary.endpoints) {
-      if (!endpoint.last_observed_at) {
-        continue;
-      }
-      const observedAtMs = Date.parse(endpoint.last_observed_at);
-      if (!Number.isFinite(observedAtMs) || nowMs - observedAtMs > staleAfterMs) {
-        continue;
-      }
-      const health = this.classifyControlPlaneEndpointLastHealth(endpoint, summary);
-      if (CONTROL_PLANE_HEALTH_RANK[health] < thresholdRank) {
-        continue;
-      }
-      if (!selected || CONTROL_PLANE_HEALTH_RANK[health] > CONTROL_PLANE_HEALTH_RANK[selected.health]) {
-        selected = { endpoint, health, observedAtMs };
-      }
-    }
-
-    if (!selected) {
-      return null;
-    }
-
-    const reasonDetail = [
-      `source=control_plane`,
-      `endpoint=${selected.endpoint.endpoint}`,
-      `transport=${selected.endpoint.transport}`,
-      `health=${selected.health}`,
-      `duration_ms=${selected.endpoint.last_duration_ms ?? 'unknown'}`,
-      `payload_bytes=${selected.endpoint.last_payload_bytes ?? 'unknown'}`
-    ].join(' ');
-
-    return {
-      active: true,
-      reason_code: REASON_CODES.dispatchBackpressureControlPlane,
-      reason_detail: reasonDetail,
-      source: 'control_plane',
-      observed_at_ms: selected.observedAtMs,
-      retry_delay_ms: this.getBackpressureRetryDelayMs()
-    };
-  }
-
-  private evaluateHostLoadBackpressure(): DispatchBackpressureState | null {
-    const threshold = this.config.dispatch_backpressure?.host_load_per_cpu;
-    if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold <= 0) {
-      return null;
-    }
-
-    const configuredLoad = this.ports.getHostLoad?.();
-    const load = configuredLoad ?? {
-      load_average_1m: os.loadavg()[0] ?? 0,
-      cpu_count: os.cpus().length
-    };
-    const cpuCount = Math.max(1, Math.trunc(load.cpu_count));
-    const loadPerCpu = load.load_average_1m / cpuCount;
-    if (!Number.isFinite(loadPerCpu) || loadPerCpu < threshold) {
-      return null;
-    }
-
-    return {
-      active: true,
-      reason_code: REASON_CODES.dispatchBackpressureHostLoad,
-      reason_detail: [
-        `source=host_load`,
-        `load_average_1m=${Math.round(load.load_average_1m * 100) / 100}`,
-        `cpu_count=${cpuCount}`,
-        `load_per_cpu=${Math.round(loadPerCpu * 100) / 100}`,
-        `threshold_per_cpu=${threshold}`
-      ].join(' '),
-      source: 'host_load',
-      observed_at_ms: this.nowMs(),
-      retry_delay_ms: this.getBackpressureRetryDelayMs()
-    };
-  }
-
-  private evaluateDispatchBackpressure(): DispatchBackpressureState {
-    const retryDelayMs = this.getBackpressureRetryDelayMs();
-    const minRunningAgents = Math.max(
-      0,
-      Math.trunc(this.config.dispatch_backpressure?.min_running_agents ?? DEFAULT_BACKPRESSURE_MIN_RUNNING_AGENTS)
-    );
-
-    if (!this.isBackpressureEnabled() || this.state.running.size < minRunningAgents) {
-      return emptyDispatchBackpressureState(retryDelayMs);
-    }
-
-    return this.evaluateControlPlaneBackpressure() ?? this.evaluateHostLoadBackpressure() ?? emptyDispatchBackpressureState(retryDelayMs);
   }
 
   private recordDispatchBackpressure(issue: Issue, backpressure: DispatchBackpressureState, attempt: number | null): void {
@@ -734,7 +579,7 @@ export class OrchestratorCore {
       });
     }
     this.state.health.last_error = null;
-    this.state.health.dispatch_backpressure = emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs());
+    this.state.health.dispatch_backpressure = emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config));
 
     let candidates: Issue[];
     try {
@@ -813,7 +658,13 @@ export class OrchestratorCore {
         }
       }
 
-      const backpressure = this.evaluateDispatchBackpressure();
+      const backpressure = evaluateDispatchBackpressure({
+        config: this.config,
+        runningCount: this.state.running.size,
+        getControlPlaneHealth: () => this.ports.getControlPlaneHealth?.(),
+        getHostLoad: () => this.ports.getHostLoad?.(),
+        nowMs: this.nowMs
+      });
       if (backpressure.active) {
         await this.delayDispatchForBackpressure(issue, null, backpressure);
         break;
@@ -1847,15 +1698,7 @@ export class OrchestratorCore {
       observed_tracker_state: string | null;
     }
   ): void {
-    const context = {
-      issue_id: retryEntry.issue_id,
-      issue_identifier: retryEntry.identifier,
-      previous_retry_reason: retryEntry.stop_reason_code ?? retryEntry.error,
-      retry_attempt: retryEntry.attempt,
-      due_at_ms: retryEntry.due_at_ms,
-      observed_tracker_state: params.observed_tracker_state,
-      cleanup_reason: params.cleanup_reason
-    };
+    const context = buildRetryClearedContext(retryEntry, params);
     this.logger?.log({
       level: 'info',
       event: CANONICAL_EVENT.tracker.retryCleared,
@@ -1866,10 +1709,7 @@ export class OrchestratorCore {
       event: CANONICAL_EVENT.tracker.retryCleared,
       severity: 'info',
       issue_identifier: retryEntry.identifier,
-      detail:
-        `cleanup_reason=${params.cleanup_reason} previous_retry_reason=${context.previous_retry_reason ?? 'unknown'} ` +
-        `retry_attempt=${retryEntry.attempt} due_at_ms=${retryEntry.due_at_ms} ` +
-        `observed_tracker_state=${params.observed_tracker_state ?? 'unknown'}`
+      detail: buildRetryClearedDetail(retryEntry, context)
     });
   }
 
@@ -1961,7 +1801,7 @@ export class OrchestratorCore {
       return;
     }
 
-    const freshDispatch = this.isFreshDispatchState(issue.state);
+    const freshDispatch = isFreshDispatchState(issue.state, this.config);
     const eligibility = shouldDispatchIssue(issue, this.state, this.config, {
       skipClaimCheckForIssueId: issue_id
     });
@@ -2003,12 +1843,18 @@ export class OrchestratorCore {
       return;
     }
 
-    const backpressure = this.evaluateDispatchBackpressure();
+    const backpressure = evaluateDispatchBackpressure({
+      config: this.config,
+      runningCount: this.state.running.size,
+      getControlPlaneHealth: () => this.ports.getControlPlaneHealth?.(),
+      getHostLoad: () => this.ports.getHostLoad?.(),
+      nowMs: this.nowMs
+    });
     if (backpressure.active) {
       await this.delayRetryForBackpressure(issue, retryEntry, backpressure, freshDispatch);
       return;
     }
-    this.state.health.dispatch_backpressure = emptyDispatchBackpressureState(this.getBackpressureRetryDelayMs());
+    this.state.health.dispatch_backpressure = emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config));
 
     if (freshDispatch) {
       this.state.claimed.delete(issue_id);
@@ -2029,7 +1875,16 @@ export class OrchestratorCore {
       return;
     }
 
-    const gateEvaluation = this.evaluateRedispatchGate(issue_id, retryEntry, issue);
+    const progressMap = this.state.redispatch_progress ?? new Map<string, RedispatchProgressSample[]>();
+    this.state.redispatch_progress = progressMap;
+    const gateEvaluation = evaluateRedispatchGate({
+      issue_id,
+      retryEntry,
+      issue,
+      config: this.config,
+      progressMap,
+      nowMs: this.nowMs()
+    });
     if (!gateEvaluation.allow_redispatch) {
       const stopReasonCode = gateEvaluation.awaiting_human_review_scope_incomplete
         ? REASON_CODES.awaitingHumanReviewScopeIncomplete
@@ -2268,7 +2123,7 @@ export class OrchestratorCore {
       return;
     }
 
-    if (this.isFreshDispatchState(issue.state)) {
+    if (isFreshDispatchState(issue.state, this.config)) {
       this.state.claimed.delete(issue_id);
       await this.dispatchIssue(issue, null);
       return;
@@ -2304,140 +2159,6 @@ export class OrchestratorCore {
       budget: retryEntry.budget,
       recovery: retryEntry.recovery ? { ...retryEntry.recovery } : null
     });
-  }
-
-  private evaluateRedispatchGate(
-    issue_id: string,
-    retryEntry: RetryEntry,
-    issue: Issue
-  ): {
-    allow_redispatch: boolean;
-    awaiting_human_review_scope_incomplete: boolean;
-    breaker_hit: boolean;
-    attempt_count_window: number;
-    window_minutes: number;
-    last_known_commit_sha: string | null;
-    last_progress_checkpoint_at: number | null;
-    progress_signals: ProgressSignals;
-    progress_signal_reasons: string[];
-  } {
-    const windowMinutes = Math.max(1, this.config.respawn_window_minutes ?? 30);
-    const windowMs = windowMinutes * 60_000;
-    const now = this.nowMs();
-    const startedState = retryEntry.progress_signals?.tracker_started_state ?? null;
-    const trackerStatusTransition =
-      retryEntry.progress_signals?.tracker_status_transition ??
-      (retryEntry.progress_signals?.tracker_comment_created &&
-      startedState &&
-      this.isKnownReviewHandoffTransition(startedState, issue.state)
-        ? `${startedState} -> ${issue.state}`
-        : null);
-    const agentReviewHandoff =
-      retryEntry.progress_signals?.agent_review_handoff ??
-      (trackerStatusTransition && this.isKnownReviewHandoffTransition(startedState, issue.state) ? issue.state : null);
-    const currentSignals = {
-      commit_sha: retryEntry.progress_signals?.commit_sha ?? null,
-      checklist_checkpoint: retryEntry.progress_signals?.checklist_checkpoint ?? null,
-      state_marker: retryEntry.progress_signals?.state_marker ?? null,
-      tracker_comment_created: retryEntry.progress_signals?.tracker_comment_created ?? false,
-      tracker_status_transition: trackerStatusTransition,
-      agent_review_handoff: agentReviewHandoff,
-      tracker_started_state: startedState
-    };
-    const progressMap = this.state.redispatch_progress ?? new Map<string, RedispatchProgressSample[]>();
-    this.state.redispatch_progress = progressMap;
-    const existing = progressMap.get(issue_id) ?? [];
-    const sample = {
-      at_ms: now,
-      commit_sha: currentSignals.commit_sha,
-      checklist_checkpoint: currentSignals.checklist_checkpoint,
-      state_marker: currentSignals.state_marker,
-      pr_open: this.hasOpenPullRequest(issue),
-      tracker_comment_created: currentSignals.tracker_comment_created,
-      tracker_status_transition: currentSignals.tracker_status_transition,
-      agent_review_handoff: currentSignals.agent_review_handoff
-    };
-    const kept = existing.filter((entry) => now - entry.at_ms <= windowMs);
-    const updated = [...kept, sample];
-    progressMap.set(issue_id, updated);
-    const first = updated[0] ?? sample;
-    const noProgress =
-      first.commit_sha === sample.commit_sha &&
-      first.checklist_checkpoint === sample.checklist_checkpoint &&
-      first.state_marker === sample.state_marker;
-    const progressSignalReasons = this.classifyProgressSignals(currentSignals);
-    const hasExternalProgress = progressSignalReasons.length > 0;
-    const attemptCountWindow = updated.length;
-    const breakerHit = noProgress && !hasExternalProgress && attemptCountWindow >= Math.max(1, this.config.respawn_max_attempts_without_progress ?? 3);
-    const awaitingHuman = Boolean(sample.pr_open && noProgress && !hasExternalProgress);
-    return {
-      allow_redispatch: !awaitingHuman && !breakerHit,
-      awaiting_human_review_scope_incomplete: awaitingHuman,
-      breaker_hit: breakerHit,
-      attempt_count_window: attemptCountWindow,
-      window_minutes: windowMinutes,
-      last_known_commit_sha: sample.commit_sha,
-      last_progress_checkpoint_at: noProgress && !hasExternalProgress ? retryEntry.last_progress_checkpoint_at ?? null : sample.at_ms,
-      progress_signals: currentSignals,
-      progress_signal_reasons: progressSignalReasons
-    };
-  }
-
-  private classifyProgressSignals(signals: ProgressSignals): string[] {
-    const reasons: string[] = [];
-    if (signals.tracker_comment_created) {
-      reasons.push('tracker_comment_created');
-    }
-    if (signals.tracker_comment_created && signals.tracker_status_transition) {
-      reasons.push('tracker_status_transition');
-    }
-    if (signals.tracker_comment_created && signals.tracker_status_transition && signals.agent_review_handoff) {
-      reasons.push('agent_review_handoff');
-    }
-    return reasons;
-  }
-
-  private isKnownReviewHandoffTransition(startedState: string | null | undefined, currentState: string): boolean {
-    if (!startedState || normalizeStateName(startedState) !== normalizeStateName('Agent Review')) {
-      return false;
-    }
-    if (normalizeStateName(currentState) === normalizeStateName(startedState)) {
-      return false;
-    }
-    return (
-      normalizeStateName(currentState) === normalizeStateName('In Progress') ||
-      normalizeStateName(currentState) === normalizeStateName('Human Review') ||
-      normalizeStateName(currentState) === normalizeStateName('Merging') ||
-      isActiveState(currentState, this.config) ||
-      isTerminalState(currentState, this.config)
-    );
-  }
-
-  private hasOpenPullRequest(issue: Issue): boolean {
-    const links = issue.tracker_meta?.pr_links ?? [];
-    return links.some((link) => !link.merged && String(link.state).toLowerCase() === 'open');
-  }
-
-  private isFreshDispatchState(issueState: string): boolean {
-    const normalizedState = normalizeStateName(issueState);
-    return (this.config.fresh_dispatch_states ?? []).some((state) => normalizeStateName(state) === normalizedState);
-  }
-
-  private isHandoffFreshDispatchState(issueState: string): boolean {
-    const normalizedState = normalizeStateName(issueState);
-    const isFreshDispatch = (this.config.fresh_dispatch_states ?? []).some(
-      (state) => normalizeStateName(state) === normalizedState
-    );
-    if (!isFreshDispatch) {
-      return false;
-    }
-
-    const handoffStates = this.config.handoff_states ?? [];
-    if (handoffStates.length === 0) {
-      return true;
-    }
-
-    return handoffStates.some((state) => normalizeStateName(state) === normalizedState);
   }
 
   private didRunStartInState(runningEntry: RunningEntry, issueState: string): boolean {
@@ -2542,7 +2263,7 @@ export class OrchestratorCore {
       }
 
       if (
-        this.isHandoffFreshDispatchState(refreshedIssue.state) &&
+        isHandoffFreshDispatchState(refreshedIssue.state, this.config) &&
         !this.didRunStartInState(runningEntry, refreshedIssue.state)
       ) {
         await this.terminateRunningIssue(refreshedIssue.id, false, REASON_CODES.handoffRelease);
@@ -2551,7 +2272,7 @@ export class OrchestratorCore {
 
       if (
         runningEntry.last_event === CANONICAL_EVENT.codex.turnCompleted &&
-        this.isFreshDispatchState(refreshedIssue.state) &&
+        isFreshDispatchState(refreshedIssue.state, this.config) &&
         !this.didRunStartInState(runningEntry, refreshedIssue.state)
       ) {
         await this.terminateRunningIssue(refreshedIssue.id, false, REASON_CODES.handoffRelease);
@@ -3470,7 +3191,7 @@ export class OrchestratorCore {
       (params.delay_type === 'continuation'
         ? 1000
         : params.delay_type === 'backpressure'
-          ? this.getBackpressureRetryDelayMs()
+          ? getBackpressureRetryDelayMs(this.config)
           : computeFailureBackoffMs(params.attempt, this.config.max_retry_backoff_ms));
 
     const dueAtMs = this.nowMs() + delayMs;
@@ -5931,7 +5652,7 @@ export class OrchestratorCore {
       return null;
     }
 
-    if (!this.isKnownReviewHandoffTransition(startedState, issue.state)) {
+    if (!isKnownReviewHandoffTransition({ startedState, currentState: issue.state, config: this.config })) {
       return null;
     }
 
@@ -5944,7 +5665,7 @@ export class OrchestratorCore {
       agent_review_handoff: issue.state,
       tracker_started_state: startedState
     };
-    const reasons = this.classifyProgressSignals(signals);
+    const reasons = classifyProgressSignals(signals);
     if (!reasons.includes('agent_review_handoff')) {
       return null;
     }
@@ -6059,7 +5780,7 @@ export class OrchestratorCore {
       }
     });
 
-    if (isActiveState(handoffProgress.issue.state, this.config) && this.isFreshDispatchState(handoffProgress.issue.state)) {
+    if (isActiveState(handoffProgress.issue.state, this.config) && isFreshDispatchState(handoffProgress.issue.state, this.config)) {
       this.recordRuntimeEvent({
         event: CANONICAL_EVENT.orchestration.freshDispatchAfterReviewHandoff,
         severity: 'info',
