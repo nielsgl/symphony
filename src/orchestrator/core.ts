@@ -1,7 +1,4 @@
 import type { Issue } from '../tracker';
-import { spawnSync } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
@@ -35,7 +32,6 @@ import {
   coordinateMarkRunningWaitStallRootCauseIfThresholdExceeded,
   coordinateMaybeClassifyRunningWaitStall,
   coordinateMaybeEmitHeartbeatOnly,
-  coordinateReconcileStalledRuns,
   coordinateResetRunningWaitEpisode,
   type RunningWaitCoordinatorContext
 } from './core/running-wait-coordinator';
@@ -58,16 +54,16 @@ import {
   workerTerminationInterruptStatus as coordinateWorkerTerminationInterruptStatus
 } from './core/run-completion-coordinator';
 import { coordinateRetryTimer, type RetryTimerCoordinatorContext } from './core/retry-timer-coordinator';
+import {
+  coordinateReconcileBlockedInputs,
+  coordinateReconcileRunningIssues,
+  type ReconciliationCoordinatorContext
+} from './core/reconciliation-coordinator';
 import { coordinateWorkerExit, type WorkerExitCoordinatorContext } from './core/worker-exit-coordinator';
 import { parseDynamicToolCapabilityMismatchDetail } from '../observability/dynamic-tool-capability';
 import { isKnownPhaseMarker, isTerminalPhaseMarker, phaseMarkerOrder, type PhaseMarker, type PhaseMarkerName } from '../observability';
 import { ThroughputTracker } from '../observability/throughput';
-import {
-  computeFailureBackoffMs,
-  isActiveState,
-  isTerminalState,
-  shouldDispatchIssue
-} from './decisions';
+import { computeFailureBackoffMs } from './decisions';
 import {
   applyBudgetBlockedTerminationEvidence,
   applyBudgetTelemetryUnavailable,
@@ -117,9 +113,6 @@ import {
 import {
   emptyDispatchBackpressureState,
   getBackpressureRetryDelayMs,
-  isFreshDispatchState,
-  isHandoffFreshDispatchState,
-  normalizeStateName
 } from './core/retry-backpressure';
 import type {
   BlockedEntry,
@@ -549,6 +542,27 @@ export class OrchestratorCore {
 
   private async tickOnce(reason: TickReason): Promise<void> {
     await coordinateDispatchTick(this.dispatchCoordinatorContext(), reason);
+  }
+
+  private reconciliationCoordinatorContext(): ReconciliationCoordinatorContext {
+    return {
+      state: this.state,
+      config: this.config,
+      tracker: this.ports.tracker,
+      runningWait: this.runningWaitCoordinatorContext(),
+      logger: this.logger,
+      nowMs: () => this.nowMs(),
+      hooks: {
+        terminateRunningIssue: (issueId, cleanupWorkspace, reason) =>
+          this.terminateRunningIssue(issueId, cleanupWorkspace, reason),
+        clearBlockedInput: (issueId, reason) => this.clearBlockedInput(issueId, reason),
+        clearCircuitBreaker: (issueId) => this.clearCircuitBreaker(issueId),
+        scheduleRetry: (params) => this.scheduleRetry(params),
+        markRunningWaitStallRootCauseIfThresholdExceeded: (runningEntry, observedAtMs) =>
+          this.markRunningWaitStallRootCauseIfThresholdExceeded(runningEntry, observedAtMs),
+        recordRuntimeEvent: (params) => this.recordRuntimeEvent(params)
+      }
+    };
   }
 
   private async runSerializedOperation(operation: () => Promise<void>): Promise<void> {
@@ -1209,10 +1223,6 @@ export class OrchestratorCore {
     await this.runSerializedOperation(() => coordinateRetryTimer(this.retryTimerCoordinatorContext(), issue_id));
   }
 
-  private didRunStartInState(runningEntry: RunningEntry, issueState: string): boolean {
-    return normalizeStateName(runningEntry.started_issue_state ?? runningEntry.issue.state) === normalizeStateName(issueState);
-  }
-
   private async upsertCircuitBreaker(entry: CircuitBreakerEntry): Promise<void> {
     this.state.circuit_breakers.set(entry.issue_id, { ...entry });
     await this.persistence?.upsertBreaker?.({
@@ -1304,340 +1314,11 @@ export class OrchestratorCore {
   }
 
   async reconcileRunningIssues(): Promise<void> {
-    if (this.state.running.size === 0) {
-      return;
-    }
-
-    const runningIssueIds = Array.from(this.state.running.keys());
-
-    let refreshed: Issue[];
-    try {
-      refreshed = await this.ports.tracker.fetch_issue_states_by_ids(runningIssueIds);
-    } catch (error) {
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
-        message: 'failed to refresh tracker states for running issues',
-        context: {
-          issue_count: runningIssueIds.length,
-          error: error instanceof Error ? error.message : 'unknown'
-        }
-      });
-      this.recordRuntimeEvent({
-        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
-        severity: 'warn',
-        detail: error instanceof Error ? error.message : 'unknown'
-      });
-      await this.reconcileStalledRuns();
-      return;
-    }
-
-    for (const refreshedIssue of refreshed) {
-      const runningEntry = this.state.running.get(refreshedIssue.id);
-      if (!runningEntry) {
-        continue;
-      }
-
-      if (isTerminalState(refreshedIssue.state, this.config)) {
-        await this.terminateRunningIssue(refreshedIssue.id, true, 'terminal_state_transition');
-        continue;
-      }
-
-      if (
-        isHandoffFreshDispatchState(refreshedIssue.state, this.config) &&
-        !this.didRunStartInState(runningEntry, refreshedIssue.state)
-      ) {
-        await this.terminateRunningIssue(refreshedIssue.id, false, REASON_CODES.handoffRelease);
-        continue;
-      }
-
-      if (
-        runningEntry.last_event === CANONICAL_EVENT.codex.turnCompleted &&
-        isFreshDispatchState(refreshedIssue.state, this.config) &&
-        !this.didRunStartInState(runningEntry, refreshedIssue.state)
-      ) {
-        await this.terminateRunningIssue(refreshedIssue.id, false, REASON_CODES.handoffRelease);
-        continue;
-      }
-
-      if (isActiveState(refreshedIssue.state, this.config)) {
-        runningEntry.issue = refreshedIssue;
-        runningEntry.identifier = refreshedIssue.identifier;
-        continue;
-      }
-
-      this.markRunningWaitStallRootCauseIfThresholdExceeded(runningEntry, this.nowMs());
-      await this.terminateRunningIssue(refreshedIssue.id, false, 'non_active_state_transition');
-    }
-
-    await this.reconcileStalledRuns();
+    await coordinateReconcileRunningIssues(this.reconciliationCoordinatorContext());
   }
 
   async reconcileBlockedInputs(): Promise<void> {
-    if (this.state.blocked_inputs.size === 0) {
-      return;
-    }
-
-    const blockedIssueIds = Array.from(this.state.blocked_inputs.keys());
-    let refreshed: Issue[];
-    try {
-      refreshed = await this.ports.tracker.fetch_issue_states_by_ids(blockedIssueIds);
-    } catch (error) {
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.tracker.stateRefreshFailed,
-        message: 'failed to refresh tracker states for blocked issues',
-        context: {
-          issue_count: blockedIssueIds.length,
-          error: error instanceof Error ? error.message : 'unknown'
-        }
-      });
-      return;
-    }
-
-    const refreshedById = new Map(refreshed.map((issue) => [issue.id, issue]));
-    for (const issueId of blockedIssueIds) {
-      const blocked = this.state.blocked_inputs.get(issueId);
-      if (!blocked) {
-        continue;
-      }
-
-      const issue = refreshedById.get(issueId);
-      if (issue && this.shouldClearStaleNoProgressBlockedInput(blocked, issue)) {
-        this.clearBlockedInput(issueId, REASON_CODES.staleBlockedInputCleared);
-        this.state.redispatch_progress?.delete(issueId);
-        void this.clearCircuitBreaker(issueId);
-        this.recordRuntimeEvent({
-          event: CANONICAL_EVENT.orchestration.staleBlockedInputCleared,
-          severity: 'info',
-          issue_identifier: blocked.issue_identifier,
-          detail: `tracker_state=${issue.state} stop_reason_code=${blocked.stop_reason_code}`
-        });
-        this.logger?.log({
-          level: 'info',
-          event: CANONICAL_EVENT.orchestration.staleBlockedInputCleared,
-          message: 'stale no-progress blocked input cleared for actionable tracker state',
-          context: {
-            issue_id: issueId,
-            issue_identifier: blocked.issue_identifier,
-            tracker_state: issue.state,
-            stop_reason_code: blocked.stop_reason_code,
-            pending_input: blocked.pending_input ? JSON.stringify(blocked.pending_input) : null
-          }
-        });
-        continue;
-      }
-      if (issue && this.shouldRecoverWorkspaceAttemptResidue(blocked, issue)) {
-        this.clearBlockedInput(issueId, REASON_CODES.workspaceAttemptResidueRecovered);
-        await this.scheduleRetry({
-          issue_id: issueId,
-          identifier: blocked.issue_identifier,
-          attempt: blocked.attempt,
-          issue_run_id: blocked.issue_run_id,
-          previous_attempt_id: blocked.previous_attempt_id,
-          delay_type: 'continuation',
-          error: 'workspace attempt residue recovered',
-          worker_host: blocked.worker_host,
-          workspace_path: blocked.workspace_path,
-          provisioner_type: blocked.provisioner_type,
-          branch_name: blocked.branch_name,
-          repo_root: blocked.repo_root,
-          workspace_exists: blocked.workspace_exists,
-          workspace_git_status: blocked.workspace_git_status,
-          workspace_provisioned: blocked.workspace_provisioned,
-          workspace_is_git_worktree: blocked.workspace_is_git_worktree,
-          copy_ignored_applied: blocked.copy_ignored_applied,
-          copy_ignored_status: blocked.copy_ignored_status,
-          copy_ignored_summary: blocked.copy_ignored_summary,
-          stop_reason_code: REASON_CODES.workspaceAttemptResidueRecovered,
-          stop_reason_detail: 'recoverable workspace attempt residue will be continued',
-          previous_thread_id: blocked.previous_thread_id,
-          previous_turn_id: blocked.previous_turn_id ?? null,
-          previous_session_id: blocked.previous_session_id,
-          progress_signals: blocked.progress_signals,
-          recover_workspace_attempt_residue: true,
-          issue_snapshot: issue
-        });
-        this.recordRuntimeEvent({
-          event: CANONICAL_EVENT.orchestration.blockedInputCleared,
-          severity: 'info',
-          issue_identifier: blocked.issue_identifier,
-          detail: `workspace_attempt_residue_recovered conflict_files=${blocked.conflict_files.length}`
-        });
-        continue;
-      }
-      if (!issue || isTerminalState(issue.state, this.config) || !isActiveState(issue.state, this.config)) {
-        if (
-          blocked.stop_reason_code === REASON_CODES.missingToolOutput ||
-          blocked.stop_reason_code === REASON_CODES.missingToolOutputRecoveryStartFailed ||
-          blocked.stop_reason_code === REASON_CODES.missingToolOutputRecoveryExhausted ||
-          blocked.stop_reason_code === REASON_CODES.missingToolOutputRecoveryUnsafe
-        ) {
-          continue;
-        }
-        this.clearBlockedInput(issueId, issue ? 'issue_no_longer_active' : 'issue_not_found');
-      }
-    }
-  }
-
-  private shouldClearStaleNoProgressBlockedInput(blocked: BlockedEntry, issue: Issue): boolean {
-    if (blocked.pending_input) {
-      return false;
-    }
-    if (!isActiveState(issue.state, this.config)) {
-      return false;
-    }
-    return (
-      blocked.stop_reason_code === REASON_CODES.operatorNoProgressRedispatchBlocked ||
-      blocked.stop_reason_code === REASON_CODES.awaitingHumanReviewScopeIncomplete
-    );
-  }
-
-  private shouldRecoverWorkspaceAttemptResidue(blocked: BlockedEntry, issue: Issue): boolean {
-    if (blocked.stop_reason_code !== REASON_CODES.operatorWorkspaceConflict) {
-      return false;
-    }
-    if (blocked.pending_input || !isActiveState(issue.state, this.config)) {
-      return false;
-    }
-    if (blocked.attempt <= 0 || !blocked.workspace_path) {
-      return false;
-    }
-    if (!this.isRecoverableWorkspaceResiduePath(blocked)) {
-      return false;
-    }
-    if (blocked.conflict_files.length === 0) {
-      return false;
-    }
-    const summary = blocked.classification_summary;
-    if (summary && (summary.tracked_ephemeral > 0 || summary.ephemeral > 0)) {
-      return false;
-    }
-    const persistedClassificationsAreRecoverable = blocked.conflict_files.every((file) => {
-      const normalized = file.path.replace(/\\/g, '/');
-      const classification = file.classification ?? (summary?.unknown_non_ephemeral === blocked.conflict_files.length ? 'unknown_non_ephemeral' : null);
-      return classification === 'unknown_non_ephemeral' && !normalized.startsWith('output/playwright/');
-    });
-    if (persistedClassificationsAreRecoverable) {
-      return true;
-    }
-    return this.hasRecoverableLiveAttemptResidue(blocked);
-  }
-
-  private isRecoverableWorkspaceResiduePath(blocked: BlockedEntry): boolean {
-    if (!blocked.workspace_path) {
-      return false;
-    }
-    const workspacePath = blocked.workspace_path;
-    try {
-      const stat = fs.statSync(workspacePath);
-      if (!stat.isDirectory()) {
-        return false;
-      }
-      const gitDir = this.resolveGitDirSync(workspacePath);
-      if (!gitDir) {
-        return false;
-      }
-      const activeGitStatePaths = [
-        'MERGE_HEAD',
-        'REBASE_HEAD',
-        'AUTO_MERGE',
-        'CHERRY_PICK_HEAD',
-        'REVERT_HEAD',
-        'BISECT_LOG',
-        'sequencer',
-        'rebase-merge',
-        'rebase-apply'
-      ];
-      if (activeGitStatePaths.some((entry) => fs.existsSync(path.join(gitDir, entry)))) {
-        return false;
-      }
-      const unmerged = spawnSync('git', ['ls-files', '-u'], { cwd: workspacePath, encoding: 'utf8' });
-      if (unmerged.status !== 0 || unmerged.stdout.trim()) {
-        return false;
-      }
-      return !blocked.workspace_provisioned || (blocked.workspace_is_git_worktree && Boolean(blocked.branch_name && blocked.repo_root));
-    } catch {
-      return false;
-    }
-  }
-
-  private hasRecoverableLiveAttemptResidue(blocked: BlockedEntry): boolean {
-    if (!blocked.workspace_path || blocked.conflict_files.length === 0) {
-      return false;
-    }
-    const status = spawnSync('git', ['status', '--porcelain', '--untracked-files=no'], {
-      cwd: blocked.workspace_path,
-      encoding: 'utf8'
-    });
-    if (status.status !== 0) {
-      return false;
-    }
-
-    const livePaths = new Set<string>();
-    for (const entry of this.parseStatusPorcelain(status.stdout)) {
-      const normalized = this.normalizePorcelainPath(entry.path);
-      if (!normalized || this.isNonRecoverableResiduePath(normalized)) {
-        return false;
-      }
-      if (entry.staged !== ' ' || entry.unstaged !== ' ') {
-        livePaths.add(normalized);
-      }
-    }
-    if (livePaths.size === 0) {
-      return false;
-    }
-
-    const blockedPaths = new Set<string>();
-    for (const file of blocked.conflict_files) {
-      const normalized = this.normalizePorcelainPath(file.path);
-      if (!normalized || this.isNonRecoverableResiduePath(normalized)) {
-        return false;
-      }
-      blockedPaths.add(normalized);
-    }
-
-    return livePaths.size === blockedPaths.size && [...livePaths].every((livePath) => blockedPaths.has(livePath));
-  }
-
-  private parseStatusPorcelain(output: string): Array<{ staged: string; unstaged: string; path: string }> {
-    return output
-      .split(/\r?\n/)
-      .map((line) => line.trimEnd())
-      .filter((line) => line.length >= 4)
-      .map((line) => ({ staged: line[0] ?? ' ', unstaged: line[1] ?? ' ', path: line.slice(3).trim() }))
-      .filter((entry) => entry.path.length > 0);
-  }
-
-  private normalizePorcelainPath(rawPath: string): string {
-    const normalized = rawPath.replace(/\\/g, '/');
-    const renameTarget = normalized.includes(' -> ') ? normalized.slice(normalized.lastIndexOf(' -> ') + 4) : normalized;
-    return renameTarget.replace(/^"|"$/g, '');
-  }
-
-  private isNonRecoverableResiduePath(normalizedPath: string): boolean {
-    return normalizedPath === '.symphony-provision.json' || normalizedPath.startsWith('output/playwright/');
-  }
-
-  private resolveGitDirSync(workspacePath: string): string | null {
-    const dotGitPath = path.join(workspacePath, '.git');
-    try {
-      const stat = fs.statSync(dotGitPath);
-      if (stat.isDirectory()) {
-        return dotGitPath;
-      }
-      if (!stat.isFile()) {
-        return null;
-      }
-      const content = fs.readFileSync(dotGitPath, 'utf8').trim();
-      const match = /^gitdir:\s*(.+)$/i.exec(content);
-      if (!match) {
-        return null;
-      }
-      return path.resolve(workspacePath, match[1]);
-    } catch {
-      return null;
-    }
+    await coordinateReconcileBlockedInputs(this.reconciliationCoordinatorContext());
   }
 
   updateCodexTimestamp(issue_id: string, timestampMs: number): void {
@@ -1647,10 +1328,6 @@ export class OrchestratorCore {
     }
 
     runningEntry.last_codex_timestamp_ms = timestampMs;
-  }
-
-  private async reconcileStalledRuns(): Promise<void> {
-    await coordinateReconcileStalledRuns(this.runningWaitCoordinatorContext());
   }
 
   private async dispatchIssue(
