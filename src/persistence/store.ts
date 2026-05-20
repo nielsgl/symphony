@@ -1,6 +1,26 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { redactUnknown } from '../security/redaction';
+import {
+  ExecutionGraphWriter,
+  type AppendAttemptParams,
+  type AppendBlockedInputEventParams,
+  type AppendIssueRunParams,
+  type AppendOperatorActionHistoryParams,
+  type AppendPhaseSpanParams,
+  type AppendStateTransitionParams,
+  type AppendThreadParams,
+  type AppendTicketBlockerParams,
+  type AppendTicketEvidenceReferenceParams,
+  type AppendTicketReferenceParams,
+  type AppendTicketTerminalOutcomeParams,
+  type AppendTokenModelFactParams,
+  type AppendToolSpanParams,
+  type AppendTrackerTicketSnapshotParams,
+  type AppendTurnParams,
+  type CompleteAttemptRowParams,
+  type CompleteIssueRunRowParams
+} from './execution-graph-writer';
 import { buildHistoryPayloadDetails } from './history-payload-policy';
 import { buildProjectIdentity } from './identity';
 import {
@@ -25,7 +45,6 @@ import type {
   HistorySchemaHealth,
   HistoryIdentityProjectionRecord,
   HistoryWriteFailureRecord,
-  IdentityEvidence,
   IssueRunRecord,
   OperatorActionHistoryRecord,
   PhaseSpanRecord,
@@ -45,7 +64,6 @@ import type {
   ThreadRecord,
   TrackerTicketSnapshotRecord,
   TokenModelFactRecord,
-  TokenModelTelemetryConfidence,
   ToolSpanRecord,
   TurnRecord,
   UiContinuityState
@@ -182,28 +200,10 @@ function normalizeProjectIdentityKey(identity: DurableIdentity): DurableIdentity
   };
 }
 
-function stableOperationalHash(parts: unknown[]): string {
-  return createHash('sha256').update(JSON.stringify(redactUnknown(parts))).digest('hex');
-}
-
 function ensureMonotonicTimestamp(next: string, previous: string | null | undefined, label: string): void {
   if (previous && next < previous) {
     throw new Error(`${label} timestamp must be monotonic`);
   }
-}
-
-function ensureEndedAfterStarted(startedAt: string, endedAt: string | null | undefined, label: string): void {
-  if (endedAt && endedAt < startedAt) {
-    throw new Error(`${label} ended_at must be greater than or equal to started_at`);
-  }
-}
-
-function normalizeOptionalText(value: string | null | undefined): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
 }
 
 function normalizeBoundedLimit(value: number | null | undefined, fallback: number, max: number): number {
@@ -220,23 +220,6 @@ function normalizeOffset(value: number | null | undefined): number {
   return value;
 }
 
-function validateOptionalTokenCount(value: number | null | undefined, label: string): number | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative safe integer`);
-  }
-  return value;
-}
-
-function normalizeTelemetryConfidence(value: TokenModelTelemetryConfidence): TokenModelTelemetryConfidence {
-  if (value !== 'observed_live' && value !== 'backfilled' && value !== 'missing') {
-    throw new Error('telemetry_confidence must be observed_live, backfilled, or missing');
-  }
-  return value;
-}
-
 export class SqlitePersistenceStore {
   private readonly context: PersistenceStoreContext;
   private readonly dbPath: string;
@@ -244,6 +227,7 @@ export class SqlitePersistenceStore {
   private readonly nowMs: () => number;
   private readonly migrationFailureForTest: string | undefined;
   private readonly pruneFailureForTest: string | undefined;
+  private readonly executionGraphWriter: ExecutionGraphWriter;
   private transactionDepth = 0;
   private readonly db: PersistenceDatabase;
 
@@ -260,6 +244,12 @@ export class SqlitePersistenceStore {
     this.pruneFailureForTest = options.pruneFailureForTest;
 
     this.db = this.context.db;
+    this.executionGraphWriter = new ExecutionGraphWriter({
+      db: this.db,
+      transaction: (fn) => this.transaction(fn),
+      upsertHistoryIdentity: (identity) => this.upsertHistoryIdentity(identity),
+      recordIdentityProjection: (record) => this.recordIdentityProjection(record)
+    });
     createBasePersistenceSchema(this.db);
     this.runHistorySchemaMigrations();
   }
@@ -526,840 +516,64 @@ export class SqlitePersistenceStore {
     }));
   }
 
-  appendIssueRun(params: {
-    issue_id: string;
-    issue_identifier: string;
-    identity: DurableIdentity;
-    started_at: string;
-    ended_at?: string | null;
-    status: ExecutionGraphEntityStatus;
-    reason_code?: string | null;
-    reason_detail?: string | null;
-    issue_run_id?: string;
-  }): string {
-    ensureEndedAfterStarted(params.started_at, params.ended_at, 'issue_run');
-    const issueRunId = params.issue_run_id ?? asExecutionGraphId('issue_run', [params.issue_id, params.issue_identifier, params.started_at]);
-    this.upsertHistoryIdentity(params.identity);
-    this.db
-      .prepare(
-        `INSERT INTO issue_run
-        (issue_run_id, issue_id, issue_identifier, identity, project_key, ticket_key, started_at, ended_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        issueRunId,
-        params.issue_id,
-        params.issue_identifier,
-        serializeDurableIdentity(params.identity),
-        params.identity.project.key,
-        params.identity.ticket.key,
-        params.started_at,
-        params.ended_at ?? null,
-        params.status,
-        params.reason_code ?? null,
-        redactUnknown(params.reason_detail ?? null)
-      );
-    this.recordIdentityProjection({
-      source_table: 'issue_run',
-      source_id: issueRunId,
-      run_id: null,
-      issue_run_id: issueRunId,
-      issue_id: params.issue_id,
-      issue_identifier: params.issue_identifier,
-      projection_status: 'projected',
-      reason_code: null,
-      reason_detail: null,
-      project_key: params.identity.project.key,
-      ticket_key: params.identity.ticket.key
-    });
-    return issueRunId;
+  appendIssueRun(params: AppendIssueRunParams): string {
+    return this.executionGraphWriter.appendIssueRun(params);
   }
 
-  appendAttempt(params: {
-    issue_run_id: string;
-    attempt_number: number;
-    started_at: string;
-    ended_at?: string | null;
-    status: ExecutionGraphEntityStatus;
-    reason_code?: string | null;
-    reason_detail?: string | null;
-    attempt_id?: string;
-  }): string {
-    ensureEndedAfterStarted(params.started_at, params.ended_at, 'attempt');
-    const parent = this.db.prepare('SELECT started_at FROM issue_run WHERE issue_run_id = ?').get(params.issue_run_id) as
-      | { started_at: string }
-      | undefined;
-    if (!parent) {
-      throw new Error(`issue_run ${params.issue_run_id} does not exist`);
-    }
-    ensureMonotonicTimestamp(params.started_at, parent.started_at, 'attempt');
-    const attemptId = params.attempt_id ?? asExecutionGraphId('attempt', [params.issue_run_id, params.attempt_number]);
-    this.transaction(() => {
-      this.db
-        .prepare(
-          `INSERT INTO attempt
-          (attempt_id, issue_run_id, attempt_number, started_at, ended_at, status, reason_code, reason_detail)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          attemptId,
-          params.issue_run_id,
-          params.attempt_number,
-          params.started_at,
-          params.ended_at ?? null,
-          params.status,
-          params.reason_code ?? null,
-          redactUnknown(params.reason_detail ?? null)
-        );
-      if (params.status === 'running' && !params.ended_at) {
-        this.db
-          .prepare(
-            `UPDATE issue_run SET
-              ended_at = NULL,
-              status = 'running',
-              reason_code = ?,
-              reason_detail = ?
-            WHERE issue_run_id = ?`
-          )
-          .run(params.reason_code ?? null, redactUnknown(params.reason_detail ?? null), params.issue_run_id);
-      }
-    });
-    return attemptId;
+  appendAttempt(params: AppendAttemptParams): string {
+    return this.executionGraphWriter.appendAttempt(params);
   }
 
-  appendThread(params: {
-    attempt_id: string;
-    started_at: string;
-    ended_at?: string | null;
-    status: ExecutionGraphEntityStatus;
-    reason_code?: string | null;
-    reason_detail?: string | null;
-    thread_id?: string;
-  }): string {
-    ensureEndedAfterStarted(params.started_at, params.ended_at, 'thread');
-    const parent = this.db.prepare('SELECT started_at FROM attempt WHERE attempt_id = ?').get(params.attempt_id) as
-      | { started_at: string }
-      | undefined;
-    if (!parent) {
-      throw new Error(`attempt ${params.attempt_id} does not exist`);
-    }
-    ensureMonotonicTimestamp(params.started_at, parent.started_at, 'thread');
-    const threadId = params.thread_id ?? asExecutionGraphId('thread', [params.attempt_id, params.started_at]);
-    this.db
-      .prepare(
-        `INSERT INTO thread
-        (thread_id, attempt_id, started_at, ended_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        threadId,
-        params.attempt_id,
-        params.started_at,
-        params.ended_at ?? null,
-        params.status,
-        params.reason_code ?? null,
-        redactUnknown(params.reason_detail ?? null)
-      );
-    return threadId;
+  appendThread(params: AppendThreadParams): string {
+    return this.executionGraphWriter.appendThread(params);
   }
 
-  appendTurn(params: {
-    thread_id: string;
-    turn_index: number;
-    started_at: string;
-    ended_at?: string | null;
-    status: ExecutionGraphEntityStatus;
-    reason_code?: string | null;
-    reason_detail?: string | null;
-    turn_id?: string;
-  }): string {
-    ensureEndedAfterStarted(params.started_at, params.ended_at, 'turn');
-    const parent = this.db.prepare('SELECT started_at FROM thread WHERE thread_id = ?').get(params.thread_id) as
-      | { started_at: string }
-      | undefined;
-    if (!parent) {
-      throw new Error(`thread ${params.thread_id} does not exist`);
-    }
-    ensureMonotonicTimestamp(params.started_at, parent.started_at, 'turn');
-    const turnId = params.turn_id ?? asExecutionGraphId('turn', [params.thread_id, params.turn_index]);
-    this.db
-      .prepare(
-        `INSERT INTO turn
-        (turn_id, thread_id, turn_index, started_at, ended_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        turnId,
-        params.thread_id,
-        params.turn_index,
-        params.started_at,
-        params.ended_at ?? null,
-        params.status,
-        params.reason_code ?? null,
-        redactUnknown(params.reason_detail ?? null)
-      );
-    return turnId;
+  appendTurn(params: AppendTurnParams): string {
+    return this.executionGraphWriter.appendTurn(params);
   }
 
-  appendPhaseSpan(params: {
-    turn_id: string;
-    phase: string;
-    started_at: string;
-    ended_at?: string | null;
-    status: ExecutionGraphEntityStatus;
-    reason_code?: string | null;
-    reason_detail?: string | null;
-    phase_span_id?: string;
-  }): string {
-    ensureEndedAfterStarted(params.started_at, params.ended_at, 'phase_span');
-    this.ensureTurnTimestamp(params.turn_id, params.started_at, 'phase_span');
-    const phaseSpanId = params.phase_span_id ?? asExecutionGraphId('phase_span', [params.turn_id, params.phase, params.started_at]);
-    this.db
-      .prepare(
-        `INSERT INTO phase_span
-        (phase_span_id, turn_id, phase, started_at, ended_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        phaseSpanId,
-        params.turn_id,
-        params.phase,
-        params.started_at,
-        params.ended_at ?? null,
-        params.status,
-        params.reason_code ?? null,
-        redactUnknown(params.reason_detail ?? null)
-      );
-    return phaseSpanId;
+  appendPhaseSpan(params: AppendPhaseSpanParams): string {
+    return this.executionGraphWriter.appendPhaseSpan(params);
   }
 
-  appendToolSpan(params: {
-    turn_id: string;
-    tool_name: string;
-    started_at: string;
-    ended_at?: string | null;
-    status: ExecutionGraphEntityStatus;
-    reason_code?: string | null;
-    reason_detail?: string | null;
-    tool_span_id?: string;
-  }): string {
-    ensureEndedAfterStarted(params.started_at, params.ended_at, 'tool_span');
-    this.ensureTurnTimestamp(params.turn_id, params.started_at, 'tool_span');
-    const toolSpanId = params.tool_span_id ?? asExecutionGraphId('tool_span', [params.turn_id, params.tool_name, params.started_at]);
-    this.db
-      .prepare(
-        `INSERT INTO tool_span
-        (tool_span_id, turn_id, tool_name, started_at, ended_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        toolSpanId,
-        params.turn_id,
-        params.tool_name,
-        params.started_at,
-        params.ended_at ?? null,
-        params.status,
-        params.reason_code ?? null,
-        redactUnknown(params.reason_detail ?? null)
-      );
-    return toolSpanId;
+  appendToolSpan(params: AppendToolSpanParams): string {
+    return this.executionGraphWriter.appendToolSpan(params);
   }
 
-  appendStateTransition(params: {
-    issue_run_id: string;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    from_status?: string | null;
-    to_status: string;
-    transitioned_at: string;
-    status: ExecutionGraphEntityStatus;
-    reason_code?: string | null;
-    reason_detail?: string | null;
-    state_transition_id?: string;
-  }): string {
-    this.ensureStateTransitionReferences(params);
-    const latest = this.db
-      .prepare('SELECT transitioned_at FROM state_transition WHERE issue_run_id = ? ORDER BY transitioned_at DESC LIMIT 1')
-      .get(params.issue_run_id) as { transitioned_at: string } | undefined;
-    ensureMonotonicTimestamp(params.transitioned_at, latest?.transitioned_at, 'state_transition');
-    const stateTransitionId =
-      params.state_transition_id ??
-      asExecutionGraphId('state_transition', [
-        params.issue_run_id,
-        params.attempt_id,
-        params.thread_id,
-        params.turn_id,
-        params.from_status,
-        params.to_status,
-        params.transitioned_at,
-        params.reason_code
-      ]);
-    this.db
-      .prepare(
-        `INSERT INTO state_transition
-        (state_transition_id, issue_run_id, attempt_id, thread_id, turn_id, from_status, to_status, transitioned_at, status, reason_code, reason_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        stateTransitionId,
-        params.issue_run_id,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        params.from_status ?? null,
-        params.to_status,
-        params.transitioned_at,
-        params.status,
-        params.reason_code ?? null,
-        redactUnknown(params.reason_detail ?? null)
-      );
-    return stateTransitionId;
+  appendStateTransition(params: AppendStateTransitionParams): string {
+    return this.executionGraphWriter.appendStateTransition(params);
   }
 
-  appendTicketTerminalOutcome(params: {
-    issue_run_id: string;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    outcome: RunTerminalStatus;
-    reason_code?: string | null;
-    reason_detail?: string | null;
-    recorded_at: string;
-    terminal_outcome_id?: string;
-  }): string {
-    this.ensureTimelineFactReferences({
-      issue_run_id: params.issue_run_id,
-      attempt_id: params.attempt_id,
-      thread_id: params.thread_id,
-      turn_id: params.turn_id,
-      timestamp: params.recorded_at,
-      label: 'ticket_terminal_outcome'
-    });
-    const terminalOutcomeId =
-      params.terminal_outcome_id ??
-      asExecutionGraphId('ticket_terminal_outcome', [
-        params.issue_run_id,
-        params.attempt_id,
-        params.thread_id,
-        params.turn_id,
-        params.outcome,
-        params.recorded_at,
-        params.reason_code
-      ]);
-    this.db
-      .prepare(
-        `INSERT INTO history_ticket_terminal_outcome
-        (terminal_outcome_id, issue_run_id, attempt_id, thread_id, turn_id, outcome, reason_code, reason_detail, recorded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        terminalOutcomeId,
-        params.issue_run_id,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        params.outcome,
-        params.reason_code ?? null,
-        redactUnknown(params.reason_detail ?? null),
-        params.recorded_at
-      );
-    return terminalOutcomeId;
+  appendTicketTerminalOutcome(params: AppendTicketTerminalOutcomeParams): string {
+    return this.executionGraphWriter.appendTicketTerminalOutcome(params);
   }
 
-  appendTicketBlocker(params: {
-    issue_run_id: string;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    blocker_type: string;
-    status?: 'active' | 'resolved';
-    reason_code: string;
-    reason_detail?: string | null;
-    blocked_at: string;
-    resolved_at?: string | null;
-    blocker_id?: string;
-  }): string {
-    ensureEndedAfterStarted(params.blocked_at, params.resolved_at, 'ticket_blocker');
-    this.ensureTimelineFactReferences({
-      issue_run_id: params.issue_run_id,
-      attempt_id: params.attempt_id,
-      thread_id: params.thread_id,
-      turn_id: params.turn_id,
-      timestamp: params.blocked_at,
-      label: 'ticket_blocker'
-    });
-    const blockerId =
-      params.blocker_id ??
-      asExecutionGraphId('ticket_blocker', [
-        params.issue_run_id,
-        params.attempt_id,
-        params.thread_id,
-        params.turn_id,
-        params.blocker_type,
-        params.reason_code,
-        params.blocked_at
-      ]);
-    this.db
-      .prepare(
-        `INSERT INTO history_ticket_blocker
-        (blocker_id, issue_run_id, attempt_id, thread_id, turn_id, blocker_type, status, reason_code, reason_detail, blocked_at, resolved_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        blockerId,
-        params.issue_run_id,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        params.blocker_type,
-        params.status ?? 'active',
-        params.reason_code,
-        redactUnknown(params.reason_detail ?? null),
-        params.blocked_at,
-        params.resolved_at ?? null
-      );
-    return blockerId;
+  appendTicketBlocker(params: AppendTicketBlockerParams): string {
+    return this.executionGraphWriter.appendTicketBlocker(params);
   }
 
-  appendTicketEvidenceReference(params: {
-    issue_run_id: string;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    evidence_kind: string;
-    uri: string;
-    title?: string | null;
-    metadata?: Record<string, unknown> | null;
-    recorded_at: string;
-    evidence_reference_id?: string;
-  }): string {
-    this.ensureTimelineFactReferences({
-      issue_run_id: params.issue_run_id,
-      attempt_id: params.attempt_id,
-      thread_id: params.thread_id,
-      turn_id: params.turn_id,
-      timestamp: params.recorded_at,
-      label: 'ticket_evidence_reference'
-    });
-    const evidenceReferenceId =
-      params.evidence_reference_id ??
-      asExecutionGraphId('ticket_evidence_reference', [
-        params.issue_run_id,
-        params.attempt_id,
-        params.thread_id,
-        params.turn_id,
-        params.evidence_kind,
-        params.uri,
-        params.recorded_at
-      ]);
-    this.db
-      .prepare(
-        `INSERT INTO history_ticket_evidence_reference
-        (evidence_reference_id, issue_run_id, attempt_id, thread_id, turn_id, evidence_kind, uri, title, metadata, recorded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        evidenceReferenceId,
-        params.issue_run_id,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        params.evidence_kind,
-        params.uri,
-        redactUnknown(params.title ?? null),
-        params.metadata ? JSON.stringify(redactUnknown(params.metadata)) : null,
-        params.recorded_at
-      );
-    return evidenceReferenceId;
+  appendTicketEvidenceReference(params: AppendTicketEvidenceReferenceParams): string {
+    return this.executionGraphWriter.appendTicketEvidenceReference(params);
   }
 
-  appendTrackerTicketSnapshot(params: {
-    identity?: DurableIdentity | null;
-    issue_run_id?: string | null;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    tracker_kind: string;
-    tracker_scope?: IdentityEvidence | null;
-    remote_issue_id: string;
-    human_issue_identifier: string;
-    title: string;
-    tracker_status: string;
-    assignee_status?: 'available' | 'unavailable' | 'unknown';
-    assignee_identifier?: string | null;
-    assignee_reason?: string | null;
-    labels?: string[];
-    project_status?: 'available' | 'unavailable' | 'unknown';
-    project_identifier?: string | null;
-    project_reason?: string | null;
-    team_status?: 'available' | 'unavailable' | 'unknown';
-    team_identifier?: string | null;
-    team_reason?: string | null;
-    observed_at: string;
-    tracker_snapshot_id?: string;
-  }): string {
-    const identity = params.identity ?? this.readIssueRunIdentity(params.issue_run_id ?? null);
-    const trackerScope = identity?.ticket.tracker_scope ?? params.tracker_scope ?? { status: 'missing', reason: 'tracker_scope_unavailable' };
-    const labels = [...(params.labels ?? [])].sort();
-    const observationHash = stableOperationalHash([
-      identity?.ticket.tracker_kind ?? params.tracker_kind,
-      trackerScope,
-      params.remote_issue_id,
-      params.human_issue_identifier,
-      params.title,
-      params.tracker_status,
-      params.assignee_status ?? 'unknown',
-      params.assignee_identifier ?? null,
-      params.assignee_reason ?? null,
-      labels,
-      params.project_status ?? 'unknown',
-      params.project_identifier ?? null,
-      params.project_reason ?? null,
-      params.team_status ?? 'unknown',
-      params.team_identifier ?? null,
-      params.team_reason ?? null
-    ]);
-    const snapshotId =
-      params.tracker_snapshot_id ?? asExecutionGraphId('tracker_ticket_snapshot', [params.issue_run_id, observationHash, params.observed_at]);
-    this.db
-      .prepare(
-        `INSERT INTO history_tracker_ticket_snapshot
-          (tracker_snapshot_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
-           tracker_kind, tracker_scope_status, tracker_scope_value, tracker_scope_reason, remote_issue_id,
-           human_issue_identifier, title, tracker_status, assignee_status, assignee_identifier,
-           assignee_reason, labels, project_status, project_identifier, project_reason, team_status,
-           team_identifier, team_reason, observed_at, observation_hash, duplicate_count, last_observed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT(issue_run_id, observation_hash) DO UPDATE SET
-          duplicate_count = history_tracker_ticket_snapshot.duplicate_count + 1,
-          last_observed_at = excluded.last_observed_at`
-      )
-      .run(
-        snapshotId,
-        identity?.project.key ?? null,
-        identity?.ticket.key ?? null,
-        params.issue_run_id ?? null,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        identity?.ticket.tracker_kind ?? params.tracker_kind,
-        trackerScope.status,
-        trackerScope.status === 'present' ? trackerScope.value : null,
-        trackerScope.status === 'missing' ? trackerScope.reason : null,
-        params.remote_issue_id,
-        params.human_issue_identifier,
-        redactUnknown(params.title),
-        params.tracker_status,
-        params.assignee_status ?? 'unknown',
-        params.assignee_identifier ?? null,
-        params.assignee_reason ?? null,
-        JSON.stringify(labels),
-        params.project_status ?? 'unknown',
-        params.project_identifier ?? null,
-        params.project_reason ?? null,
-        params.team_status ?? 'unknown',
-        params.team_identifier ?? null,
-        params.team_reason ?? null,
-        params.observed_at,
-        observationHash,
-        params.observed_at
-      );
-    return snapshotId;
+  appendTrackerTicketSnapshot(params: AppendTrackerTicketSnapshotParams): string {
+    return this.executionGraphWriter.appendTrackerTicketSnapshot(params);
   }
 
-  appendTicketReference(params: {
-    identity?: DurableIdentity | null;
-    issue_run_id?: string | null;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    reference_kind: TicketReferenceRecord['reference_kind'];
-    availability: 'available' | 'unavailable' | 'unknown';
-    uri?: string | null;
-    label?: string | null;
-    external_id?: string | null;
-    state?: string | null;
-    metadata?: Record<string, unknown> | null;
-    observed_at: string;
-    ticket_reference_id?: string;
-  }): string {
-    const identity = params.identity ?? this.readIssueRunIdentity(params.issue_run_id ?? null);
-    const metadata = params.metadata ? (redactUnknown(params.metadata) as Record<string, unknown>) : null;
-    const observationHash = stableOperationalHash([
-      params.reference_kind,
-      params.availability,
-      params.uri ?? null,
-      params.label ?? null,
-      params.external_id ?? null,
-      params.state ?? null,
-      metadata
-    ]);
-    const referenceId =
-      params.ticket_reference_id ?? asExecutionGraphId('ticket_reference', [params.issue_run_id, params.reference_kind, observationHash, params.observed_at]);
-    this.db
-      .prepare(
-        `INSERT INTO history_ticket_reference
-          (ticket_reference_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
-           reference_kind, availability, uri, label, external_id, state, metadata, observed_at,
-           observation_hash, duplicate_count, last_observed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT(issue_run_id, reference_kind, observation_hash) DO UPDATE SET
-          duplicate_count = history_ticket_reference.duplicate_count + 1,
-          last_observed_at = excluded.last_observed_at`
-      )
-      .run(
-        referenceId,
-        identity?.project.key ?? null,
-        identity?.ticket.key ?? null,
-        params.issue_run_id ?? null,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        params.reference_kind,
-        params.availability,
-        params.uri ?? null,
-        redactUnknown(params.label ?? null),
-        params.external_id ?? null,
-        params.state ?? null,
-        metadata ? JSON.stringify(metadata) : null,
-        params.observed_at,
-        observationHash,
-        params.observed_at
-      );
-    return referenceId;
+  appendTicketReference(params: AppendTicketReferenceParams): string {
+    return this.executionGraphWriter.appendTicketReference(params);
   }
 
-  appendOperatorActionHistory(params: {
-    identity?: DurableIdentity | null;
-    issue_run_id?: string | null;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    action: string;
-    actor?: string | null;
-    result: 'accepted' | 'rejected' | 'failed';
-    result_code?: string | null;
-    message?: string | null;
-    reason_note?: string | null;
-    phase?: string | null;
-    state_context?: Record<string, unknown> | null;
-    requested_at: string;
-    observed_at: string;
-    operator_action_id?: string;
-  }): string {
-    const identity = params.identity ?? this.readIssueRunIdentity(params.issue_run_id ?? null);
-    const stateContext = params.state_context ? (redactUnknown(params.state_context) as Record<string, unknown>) : null;
-    const observationHash = stableOperationalHash([
-      params.action,
-      params.actor ?? null,
-      params.result,
-      params.result_code ?? null,
-      params.message ?? null,
-      params.reason_note ?? null,
-      params.phase ?? null,
-      stateContext,
-      params.requested_at
-    ]);
-    const operatorActionId =
-      params.operator_action_id ?? asExecutionGraphId('operator_action', [params.issue_run_id, params.action, observationHash, params.observed_at]);
-    this.db
-      .prepare(
-        `INSERT INTO history_operator_action
-          (operator_action_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
-           action, actor, result, result_code, message, reason_note, phase, state_context,
-           requested_at, observed_at, observation_hash, duplicate_count, last_observed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT(issue_run_id, action, observation_hash) DO UPDATE SET
-          duplicate_count = history_operator_action.duplicate_count + 1,
-          last_observed_at = excluded.last_observed_at`
-      )
-      .run(
-        operatorActionId,
-        identity?.project.key ?? null,
-        identity?.ticket.key ?? null,
-        params.issue_run_id ?? null,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        params.action,
-        params.actor ?? null,
-        params.result,
-        params.result_code ?? null,
-        redactUnknown(params.message ?? null),
-        redactUnknown(params.reason_note ?? null),
-        params.phase ?? null,
-        stateContext ? JSON.stringify(stateContext) : null,
-        params.requested_at,
-        params.observed_at,
-        observationHash,
-        params.observed_at
-      );
-    return operatorActionId;
+  appendOperatorActionHistory(params: AppendOperatorActionHistoryParams): string {
+    return this.executionGraphWriter.appendOperatorActionHistory(params);
   }
 
-  appendBlockedInputEvent(params: {
-    identity?: DurableIdentity | null;
-    issue_run_id?: string | null;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    issue_id: string;
-    issue_identifier: string;
-    phase?: string | null;
-    runtime_state: string;
-    reason_code: string;
-    reason_detail?: string | null;
-    request_id?: string | null;
-    request_method?: string | null;
-    input_schema_type?: string | null;
-    prompt_text?: string | null;
-    pending_input?: Record<string, unknown> | null;
-    state_context?: Record<string, unknown> | null;
-    blocked_at: string;
-    blocked_input_event_id?: string;
-  }): string {
-    const identity = params.identity ?? this.readIssueRunIdentity(params.issue_run_id ?? null);
-    const pendingInput = params.pending_input ? (redactUnknown(params.pending_input) as Record<string, unknown>) : null;
-    const stateContext = params.state_context ? (redactUnknown(params.state_context) as Record<string, unknown>) : null;
-    const observationHash = stableOperationalHash([
-      params.issue_id,
-      params.issue_identifier,
-      params.phase ?? null,
-      params.runtime_state,
-      params.reason_code,
-      params.reason_detail ?? null,
-      params.request_id ?? null,
-      params.request_method ?? null,
-      params.input_schema_type ?? null,
-      params.prompt_text ?? null,
-      pendingInput,
-      stateContext
-    ]);
-    const blockedInputEventId =
-      params.blocked_input_event_id ?? asExecutionGraphId('blocked_input_event', [params.issue_run_id, observationHash, params.blocked_at]);
-    this.db
-      .prepare(
-        `INSERT INTO history_blocked_input_event
-          (blocked_input_event_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
-           issue_id, issue_identifier, phase, runtime_state, reason_code, reason_detail, request_id,
-           request_method, input_schema_type, prompt_text, pending_input, state_context, blocked_at,
-           observation_hash, duplicate_count, last_observed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT(issue_run_id, observation_hash) DO UPDATE SET
-          duplicate_count = history_blocked_input_event.duplicate_count + 1,
-          last_observed_at = excluded.last_observed_at`
-      )
-      .run(
-        blockedInputEventId,
-        identity?.project.key ?? null,
-        identity?.ticket.key ?? null,
-        params.issue_run_id ?? null,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        params.issue_id,
-        params.issue_identifier,
-        params.phase ?? null,
-        params.runtime_state,
-        params.reason_code,
-        redactUnknown(params.reason_detail ?? null),
-        params.request_id ?? null,
-        params.request_method ?? null,
-        params.input_schema_type ?? null,
-        redactUnknown(params.prompt_text ?? null),
-        pendingInput ? JSON.stringify(pendingInput) : null,
-        stateContext ? JSON.stringify(stateContext) : null,
-        params.blocked_at,
-        observationHash,
-        params.blocked_at
-      );
-    return blockedInputEventId;
+  appendBlockedInputEvent(params: AppendBlockedInputEventParams): string {
+    return this.executionGraphWriter.appendBlockedInputEvent(params);
   }
 
-  appendTokenModelFact(params: {
-    issue_run_id: string;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    requested_model?: string | null;
-    effective_model?: string | null;
-    model_source?: string | null;
-    input_tokens?: number | null;
-    output_tokens?: number | null;
-    cached_input_tokens?: number | null;
-    reasoning_output_tokens?: number | null;
-    total_tokens?: number | null;
-    model_context_window?: number | null;
-    telemetry_confidence: TokenModelTelemetryConfidence;
-    observed_at: string;
-    token_model_fact_id?: string;
-  }): string {
-    this.ensureTimelineFactReferences({
-      issue_run_id: params.issue_run_id,
-      attempt_id: params.attempt_id,
-      thread_id: params.thread_id,
-      turn_id: params.turn_id,
-      timestamp: params.observed_at,
-      label: 'token_model_fact'
-    });
-    const requestedModel = normalizeOptionalText(params.requested_model);
-    const effectiveModel = normalizeOptionalText(params.effective_model);
-    const modelSource = normalizeOptionalText(params.model_source);
-    const inputTokens = validateOptionalTokenCount(params.input_tokens, 'input_tokens');
-    const outputTokens = validateOptionalTokenCount(params.output_tokens, 'output_tokens');
-    const cachedInputTokens = validateOptionalTokenCount(params.cached_input_tokens, 'cached_input_tokens');
-    const reasoningOutputTokens = validateOptionalTokenCount(params.reasoning_output_tokens, 'reasoning_output_tokens');
-    const totalTokens = validateOptionalTokenCount(params.total_tokens, 'total_tokens');
-    const modelContextWindow = validateOptionalTokenCount(params.model_context_window, 'model_context_window');
-    const telemetryConfidence = normalizeTelemetryConfidence(params.telemetry_confidence);
-    const tokenModelFactId =
-      params.token_model_fact_id ??
-      asExecutionGraphId('token_model_fact', [
-        params.issue_run_id,
-        params.attempt_id,
-        params.thread_id,
-        params.turn_id,
-        requestedModel,
-        effectiveModel,
-        modelSource,
-        inputTokens,
-        outputTokens,
-        cachedInputTokens,
-        reasoningOutputTokens,
-        totalTokens,
-        modelContextWindow,
-        telemetryConfidence,
-        params.observed_at
-      ]);
-
-    this.db
-      .prepare(
-        `INSERT INTO history_token_model_fact
-        (token_model_fact_id, issue_run_id, attempt_id, thread_id, turn_id, requested_model, effective_model,
-         model_source, input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens,
-         model_context_window, telemetry_confidence, observed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        tokenModelFactId,
-        params.issue_run_id,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        requestedModel,
-        effectiveModel,
-        modelSource,
-        inputTokens,
-        outputTokens,
-        cachedInputTokens,
-        reasoningOutputTokens,
-        totalTokens,
-        modelContextWindow,
-        telemetryConfidence,
-        params.observed_at
-      );
-    return tokenModelFactId;
+  appendTokenModelFact(params: AppendTokenModelFactParams): string {
+    return this.executionGraphWriter.appendTokenModelFact(params);
   }
 
   reconstructThreadLineage(threadId: string): ExecutionGraphThreadLineage | null {
@@ -1848,56 +1062,12 @@ export class SqlitePersistenceStore {
     return activeAttempt?.attempt_id ?? null;
   }
 
-  private completeIssueRunRow(params: {
-    issue_run_id: string;
-    ended_at: string;
-    status: RunTerminalStatus;
-    reason_code: string | null;
-    reason_detail: string | null;
-  }): void {
-    const row = this.db.prepare('SELECT started_at FROM issue_run WHERE issue_run_id = ?').get(params.issue_run_id) as
-      | { started_at: string }
-      | undefined;
-    if (!row) {
-      return;
-    }
-    ensureEndedAfterStarted(row.started_at, params.ended_at, 'issue_run');
-    this.db
-      .prepare(
-        `UPDATE issue_run SET
-          ended_at = ?,
-          status = ?,
-          reason_code = ?,
-          reason_detail = ?
-        WHERE issue_run_id = ?`
-      )
-      .run(params.ended_at, params.status, params.reason_code, params.reason_detail, params.issue_run_id);
+  private completeIssueRunRow(params: CompleteIssueRunRowParams): void {
+    this.executionGraphWriter.completeIssueRunRow(params);
   }
 
-  private completeAttemptRow(params: {
-    attempt_id: string;
-    ended_at: string;
-    status: RunTerminalStatus;
-    reason_code: string | null;
-    reason_detail: string | null;
-  }): void {
-    const row = this.db.prepare('SELECT started_at FROM attempt WHERE attempt_id = ?').get(params.attempt_id) as
-      | { started_at: string }
-      | undefined;
-    if (!row) {
-      return;
-    }
-    ensureEndedAfterStarted(row.started_at, params.ended_at, 'attempt');
-    this.db
-      .prepare(
-        `UPDATE attempt SET
-          ended_at = ?,
-          status = ?,
-          reason_code = ?,
-          reason_detail = ?
-        WHERE attempt_id = ?`
-      )
-      .run(params.ended_at, params.status, params.reason_code, params.reason_detail, params.attempt_id);
+  private completeAttemptRow(params: CompleteAttemptRowParams): void {
+    this.executionGraphWriter.completeAttemptRow(params);
   }
 
   listRunHistory(limit = 50): DurableRunHistoryRecord[] {
@@ -2790,16 +1960,6 @@ export class SqlitePersistenceStore {
     return (statement.get(sourceId) as HistoryIdentityProjectionRecord | undefined) ?? null;
   }
 
-  private readIssueRunIdentity(issueRunId: string | null): DurableIdentity | null {
-    if (!issueRunId) {
-      return null;
-    }
-    const row = this.db.prepare('SELECT identity FROM issue_run WHERE issue_run_id = ?').get(issueRunId) as
-      | { identity: string | null }
-      | undefined;
-    return parseDurableIdentity(row?.identity ?? null);
-  }
-
   private readIssueRunIdForRunContext(threadId: string | null, turnId: string | null): string | null {
     if (turnId) {
       const row = this.db
@@ -3201,14 +2361,6 @@ export class SqlitePersistenceStore {
       .all() as PersistedOperatorActionsRecord[];
   }
 
-  private ensureTurnTimestamp(turnId: string, timestamp: string, label: string): void {
-    const parent = this.db.prepare('SELECT started_at FROM turn WHERE turn_id = ?').get(turnId) as { started_at: string } | undefined;
-    if (!parent) {
-      throw new Error(`turn ${turnId} does not exist`);
-    }
-    ensureMonotonicTimestamp(timestamp, parent.started_at, label);
-  }
-
   private isSummaryActive(latestIssueRun: Pick<IssueRunRecord, 'ended_at' | 'status'> | null): boolean {
     if (!latestIssueRun) {
       return false;
@@ -3483,73 +2635,6 @@ export class SqlitePersistenceStore {
 
   private selectByIssueRunIds<T>(sql: string, issueRunIds: string[]): T[] {
     return this.db.prepare(sql).all(...issueRunIds) as T[];
-  }
-
-  private ensureTimelineFactReferences(params: {
-    issue_run_id: string;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    timestamp: string;
-    label: string;
-  }): void {
-    const issueRun = this.db.prepare('SELECT started_at FROM issue_run WHERE issue_run_id = ?').get(params.issue_run_id) as
-      | { started_at: string }
-      | undefined;
-    if (!issueRun) {
-      throw new Error(`issue_run ${params.issue_run_id} does not exist`);
-    }
-    ensureMonotonicTimestamp(params.timestamp, issueRun.started_at, params.label);
-
-    if (params.attempt_id) {
-      const attempt = this.db.prepare('SELECT issue_run_id, started_at FROM attempt WHERE attempt_id = ?').get(params.attempt_id) as
-        | { issue_run_id: string; started_at: string }
-        | undefined;
-      if (!attempt || attempt.issue_run_id !== params.issue_run_id) {
-        throw new Error(`attempt ${params.attempt_id} does not belong to issue_run ${params.issue_run_id}`);
-      }
-      ensureMonotonicTimestamp(params.timestamp, attempt.started_at, params.label);
-    }
-
-    if (params.thread_id) {
-      const thread = this.db
-        .prepare(
-          `SELECT thread.started_at, thread.attempt_id, attempt.issue_run_id
-           FROM thread
-           JOIN attempt ON attempt.attempt_id = thread.attempt_id
-           WHERE thread.thread_id = ?`
-        )
-        .get(params.thread_id) as { started_at: string; attempt_id: string; issue_run_id: string } | undefined;
-      if (!thread || thread.issue_run_id !== params.issue_run_id) {
-        throw new Error(`thread ${params.thread_id} does not belong to issue_run ${params.issue_run_id}`);
-      }
-      if (params.attempt_id && thread.attempt_id !== params.attempt_id) {
-        throw new Error(`thread ${params.thread_id} does not belong to attempt ${params.attempt_id}`);
-      }
-      ensureMonotonicTimestamp(params.timestamp, thread.started_at, params.label);
-    }
-
-    if (params.turn_id) {
-      const turn = this.db
-        .prepare(
-          `SELECT turn.started_at, turn.thread_id, thread.attempt_id, attempt.issue_run_id
-           FROM turn
-           JOIN thread ON thread.thread_id = turn.thread_id
-           JOIN attempt ON attempt.attempt_id = thread.attempt_id
-           WHERE turn.turn_id = ?`
-        )
-        .get(params.turn_id) as { started_at: string; thread_id: string; attempt_id: string; issue_run_id: string } | undefined;
-      if (!turn || turn.issue_run_id !== params.issue_run_id) {
-        throw new Error(`turn ${params.turn_id} does not belong to issue_run ${params.issue_run_id}`);
-      }
-      if (params.attempt_id && turn.attempt_id !== params.attempt_id) {
-        throw new Error(`turn ${params.turn_id} does not belong to attempt ${params.attempt_id}`);
-      }
-      if (params.thread_id && turn.thread_id !== params.thread_id) {
-        throw new Error(`turn ${params.turn_id} does not belong to thread ${params.thread_id}`);
-      }
-      ensureMonotonicTimestamp(params.timestamp, turn.started_at, params.label);
-    }
   }
 
   private ensureStateTransitionReferences(params: {
