@@ -1,5 +1,43 @@
 import type { PersistenceDatabase, PersistenceStoreContext } from './store-context';
 
+export const DRAIN_AUDIT_EVENT_TYPES = [
+  'drain-entered',
+  'drain-exited',
+  'quiescence-reached',
+  'wait-started',
+  'wait-timed-out',
+  'safe-shutdown-allowed',
+  'safe-shutdown-refused',
+  'update-detected',
+  'update-prepare-requested',
+  'update-drain-entered',
+  'update-quiescence-reached',
+  'update-fetch-started',
+  'update-fetch-succeeded',
+  'update-fetch-failed',
+  'update-pull-started',
+  'update-pull-succeeded',
+  'update-pull-failed',
+  'update-pull-refused',
+  'update-install-started',
+  'update-install-succeeded',
+  'update-install-failed',
+  'update-install-skipped',
+  'update-build-started',
+  'update-build-succeeded',
+  'update-build-failed',
+  'update-build-skipped',
+  'update-restart-ready',
+  'update-restart-started',
+  'update-restart-completed',
+  'update-restart-failed',
+  'update-manual-restart-required'
+] as const;
+
+export function drainAuditEventTypeCheckSql(column = 'event_type'): string {
+  return `${column} IN (${DRAIN_AUDIT_EVENT_TYPES.map((eventType) => `'${eventType}'`).join(', ')})`;
+}
+
 function asIso(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
 }
@@ -269,15 +307,7 @@ export function createProjectExecutionHistoryTables(context: PersistenceStoreCon
       attempt_id TEXT,
       thread_id TEXT,
       turn_id TEXT,
-      event_type TEXT NOT NULL CHECK (event_type IN (
-        'drain-entered',
-        'drain-exited',
-        'quiescence-reached',
-        'wait-started',
-        'wait-timed-out',
-        'safe-shutdown-allowed',
-        'safe-shutdown-refused'
-      )),
+      event_type TEXT NOT NULL CHECK (${drainAuditEventTypeCheckSql()}),
       actor TEXT,
       source TEXT NOT NULL,
       result TEXT NOT NULL CHECK (result IN ('accepted', 'rejected', 'failed', 'observed')),
