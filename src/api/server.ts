@@ -1098,21 +1098,43 @@ export class LocalApiServer {
               if (!this.drainControlSource) {
                 throw new LocalApiError('drain_control_unavailable', 'Drain Mode control source is not configured', 503);
               }
-              const drainMode = this.projectDrainControlState(
-                this.drainControlSource.enterDrainMode({ reason: 'runtime_update_prepare' })
-              );
-              this.broadcastStateSnapshot('runtime_update_prepare');
+              const requestedAt = new Date(this.nowMs()).toISOString();
+              const preflightDrainMode = this.projectDrainControlState(this.drainControlSource.readDrainMode());
               this.recordDrainAuditEvent({
                 event_type: 'update-prepare-requested',
                 actor: 'operator',
                 source: 'api',
                 result: 'accepted',
                 result_code: 'runtime_update_prepare_requested',
-                state_context: { drain_mode_active: drainMode.active },
+                state_context: { drain_mode_active: preflightDrainMode.active },
                 blocker_summaries: [],
-                occurred_at: new Date(this.nowMs()).toISOString(),
-                observed_at: new Date(this.nowMs()).toISOString()
+                occurred_at: requestedAt,
+                observed_at: requestedAt
               });
+              const preflight = await this.runtimeUpdateSource.prepareUpdate({ drain_mode: preflightDrainMode });
+              if (!preflight.success) {
+                this.broadcastStateSnapshot('runtime_update_prepare_refused');
+                this.recordDrainAuditEvent({
+                  event_type: 'update-pull-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: preflight.reason_code ?? 'runtime_update_prepare_refused',
+                  state_context: { drain_mode_active: preflightDrainMode.active },
+                  blocker_summaries: [],
+                  occurred_at: new Date(this.nowMs()).toISOString(),
+                  observed_at: new Date(this.nowMs()).toISOString()
+                });
+                sendJson(response, 409, {
+                  ...preflight,
+                  drain_mode: preflightDrainMode
+                });
+                return;
+              }
+              const drainMode = this.projectDrainControlState(
+                this.drainControlSource.enterDrainMode({ reason: 'runtime_update_prepare' })
+              );
+              this.broadcastStateSnapshot('runtime_update_prepare');
               this.recordDrainAuditEvent({
                 event_type: 'update-drain-entered',
                 actor: 'operator',
@@ -1124,9 +1146,8 @@ export class LocalApiServer {
                 occurred_at: new Date(this.nowMs()).toISOString(),
                 observed_at: new Date(this.nowMs()).toISOString()
               });
-              const payload = await this.runtimeUpdateSource.prepareUpdate({ drain_mode: drainMode });
-              sendJson(response, payload.success ? 202 : 409, {
-                ...payload,
+              sendJson(response, 202, {
+                ...preflight,
                 drain_mode: drainMode
               });
             }

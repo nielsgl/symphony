@@ -181,13 +181,84 @@ describe('LocalApiServer state API', () => {
     expect(response.status).toBe(202);
     expect(enterDrainMode).toHaveBeenCalledWith({ reason: 'runtime_update_prepare' });
     expect(prepareUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      drain_mode: expect.objectContaining({ active: true })
+      drain_mode: expect.objectContaining({ active: false })
     }));
     expect(payload).toMatchObject({
       success: true,
       status: 'draining',
       recommended_action: 'wait_for_quiescence',
       drain_mode: { active: true, reason: 'runtime_update_prepare' }
+    });
+  });
+
+  it.each([
+    ['dirty worktree', 'dirty_worktree'],
+    ['fetch unavailable', 'fetch_unavailable'],
+    ['branch mismatch', 'branch_mismatch']
+  ])('refuses guided runtime update prepare for %s before entering Drain Mode', async (_label, reasonCode) => {
+    const enterDrainMode = vi.fn(() => ({
+      active: true,
+      entered_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+      updated_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+      reason: 'runtime_update_prepare'
+    }));
+    const prepareUpdate = vi.fn(async () => ({
+      success: false,
+      status: 'refused',
+      step: 'prepare',
+      reason_code: reasonCode,
+      idempotent_replay: false,
+      recommended_action: 'inspect_status',
+      readiness: {
+        refusal_reasons: [reasonCode]
+      }
+    }));
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      drainControlSource: {
+        readDrainMode: () => ({
+          active: false,
+          entered_at_ms: null,
+          updated_at_ms: null,
+          reason: null
+        }),
+        enterDrainMode,
+        exitDrainMode: vi.fn()
+      },
+      runtimeUpdateSource: {
+        readUpdateReadiness: () => null,
+        prepareUpdate,
+        applyUpdate: vi.fn()
+      },
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z')
+    } as any);
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/runtime-update/prepare`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const payload = (await response.json()) as any;
+
+    expect(response.status).toBe(409);
+    expect(prepareUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      drain_mode: expect.objectContaining({ active: false })
+    }));
+    expect(enterDrainMode).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      success: false,
+      status: 'refused',
+      reason_code: reasonCode,
+      drain_mode: { active: false }
     });
   });
 

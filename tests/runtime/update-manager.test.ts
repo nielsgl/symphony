@@ -163,4 +163,46 @@ describe('runtime update manager', () => {
       'update-manual-restart-required'
     ]));
   });
+
+  it('returns the completed apply result on repeated apply without rerunning commands', async () => {
+    const { root, local } = await makeRepoPair();
+    const remoteWork = path.join(root, 'remote-work');
+    git(root, ['clone', path.join(root, 'remote.git'), remoteWork]);
+    git(remoteWork, ['config', 'user.email', 'symphony@example.test']);
+    git(remoteWork, ['config', 'user.name', 'Symphony Test']);
+    await writeFile(path.join(remoteWork, 'index.js'), 'console.log("two");\n');
+    git(remoteWork, ['add', '.']);
+    git(remoteWork, ['commit', '-m', 'remote update']);
+    git(remoteWork, ['push', 'origin', 'main']);
+
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      restartCommand: ['npm', 'run', 'start:dashboard']
+    });
+
+    await manager.prepareUpdate();
+    const first = await manager.applyUpdate();
+    const second = await manager.applyUpdate();
+
+    expect(first.success).toBe(true);
+    expect(second).toMatchObject({
+      success: true,
+      status: 'manual_restart_required',
+      idempotent_replay: true,
+      command_results: first.command_results
+    });
+    expect(auditEvents.filter((event) => event.event_type === 'update-pull-started')).toHaveLength(1);
+    expect(auditEvents.filter((event) => event.event_type === 'update-install-skipped')).toHaveLength(1);
+    expect(auditEvents.filter((event) => event.event_type === 'update-build-started')).toHaveLength(1);
+  });
 });

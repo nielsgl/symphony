@@ -365,7 +365,8 @@ export class LocalRuntimeUpdateManager {
   private readonly options: LocalRuntimeUpdateManagerOptions;
   private readiness: ApiRuntimeUpdateReadiness | null;
   private prepareStarted = false;
-  private applyStarted = false;
+  private applyInFlight: Promise<ApiRuntimeUpdateActionResponse> | null = null;
+  private completedApplyResult: ApiRuntimeUpdateActionResponse | null = null;
 
   constructor(options: LocalRuntimeUpdateManagerOptions) {
     this.options = options;
@@ -438,9 +439,46 @@ export class LocalRuntimeUpdateManager {
       };
     }
 
-    const idempotentReplay = this.applyStarted;
-    this.applyStarted = true;
+    if (this.completedApplyResult) {
+      return {
+        ...this.completedApplyResult,
+        idempotent_replay: true
+      };
+    }
+    if (this.applyInFlight) {
+      return this.applyInFlight.then((result) => ({
+        ...result,
+        idempotent_replay: true
+      }));
+    }
+
+    this.applyInFlight = this.runApplyUpdate(false)
+      .then((result) => {
+        if (result.success && result.status === 'manual_restart_required') {
+          this.completedApplyResult = result;
+        }
+        return result;
+      })
+      .finally(() => {
+        this.applyInFlight = null;
+      });
+    return this.applyInFlight;
+  }
+
+  private async runApplyUpdate(idempotentReplay: boolean): Promise<ApiRuntimeUpdateActionResponse> {
     const repoRoot = this.options.repoRoot;
+    if (!isSafeRepoRoot(repoRoot)) {
+      return {
+        success: false,
+        status: 'refused',
+        step: 'apply',
+        reason_code: REASON_CODES.runtimeUpdateRepositoryUnavailable,
+        recommended_action: 'inspect_status',
+        idempotent_replay: idempotentReplay,
+        readiness: this.readiness,
+        message: 'Runtime update repository is unavailable.'
+      };
+    }
     const timeoutMs = this.options.commandTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     const results: CommandResult[] = [];
     await this.record('update-fetch-started', 'observed', 'fetch_started', {});
