@@ -575,6 +575,22 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('optional unavailable ');
   });
 
+  it('renders guided runtime update controls and client actions', () => {
+    const html = renderDashboardHtml();
+    const clientJs = renderDashboardClientJs();
+
+    expect(html).toContain('id="runtime-update-banner"');
+    expect(html).toContain('id="runtime-update-panel"');
+    expect(html).toContain('id="runtime-update-prepare-button"');
+    expect(html).toContain('id="runtime-update-apply-button"');
+    expect(html).toContain('Runtime Update');
+    expect(clientJs).toContain('function renderRuntimeUpdate(readiness, payload)');
+    expect(clientJs).toContain('/api/v1/runtime-update/prepare');
+    expect(clientJs).toContain('/api/v1/runtime-update/apply');
+    expect(clientJs).toContain('Restart command: ');
+    expect(clientJs).toContain('Runtime Update JSON');
+  });
+
   it('lazy-loads issue diagnostics only for opened detail surfaces', () => {
     const clientJs = renderDashboardClientJs();
     const refreshBlock = clientJs.slice(clientJs.indexOf('async function refreshNow()'), clientJs.indexOf('async function loadDiagnostics()'));

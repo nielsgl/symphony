@@ -7,7 +7,7 @@ import { loadIssue } from './issue-detail';
 import { renderRuntimeEvents } from './runtime';
 import { loadStoppedRunRecovery } from './stopped-runs';
 import { loadProjectHistory } from './project-history';
-import { enterDrainMode, exitDrainMode, requestDrainSafeShutdown, waitForDrainQuiescence } from './operator-actions';
+import { applyRuntimeUpdate, enterDrainMode, exitDrainMode, prepareRuntimeUpdate, requestDrainSafeShutdown, waitForDrainQuiescence } from './operator-actions';
 
 export function wireEvents() {
     elements.refreshButton.addEventListener('click', function () {
@@ -47,6 +47,24 @@ export function wireEvents() {
         void requestDrainSafeShutdown();
       });
     }
+
+    [
+      elements.runtimeUpdatePrepareButton,
+      elements.runtimeUpdatePreparePanelButton
+    ].filter(Boolean).forEach(function (button: any) {
+      button.addEventListener('click', function () {
+        void prepareRuntimeUpdate();
+      });
+    });
+
+    [
+      elements.runtimeUpdateApplyButton,
+      elements.runtimeUpdateApplyPanelButton
+    ].filter(Boolean).forEach(function (button: any) {
+      button.addEventListener('click', function () {
+        void applyRuntimeUpdate();
+      });
+    });
 
     elements.projectHistoryLoad.addEventListener('click', function () {
       void loadProjectHistory(elements.projectHistoryProjectKey.value);

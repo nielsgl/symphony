@@ -42,6 +42,15 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     <span id="runtime-stale-summary"></span>
   </section>
 
+  <section id="runtime-update-banner" class="runtime-update-banner hidden" role="region" aria-live="polite">
+    <strong id="runtime-update-title">Runtime Update Available</strong>
+    <span id="runtime-update-summary"></span>
+    <div class="runtime-update-actions">
+      <button id="runtime-update-prepare-button" type="button">Prepare update</button>
+      <button id="runtime-update-apply-button" class="ghost-button" type="button">Apply update</button>
+    </div>
+  </section>
+
   <section id="api-degraded-banner" class="api-degraded-banner hidden" role="region" aria-live="polite">
     <strong>API Degraded</strong>
     <span id="api-degraded-summary"></span>
@@ -83,6 +92,24 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
           <p id="drain-control-status" class="muted"></p>
         </div>
         <div id="drain-blockers-list" class="drain-blockers-list"></div>
+      </div>
+    </section>
+
+    <section id="runtime-update-panel" class="panel panel-wide runtime-update-panel" aria-live="polite">
+      <div class="panel-head">
+        <h2>Runtime Update</h2>
+        <div class="runtime-update-actions">
+          <button id="runtime-update-prepare-panel-button" type="button">Prepare update</button>
+          <button id="runtime-update-apply-panel-button" class="ghost-button" type="button">Apply update</button>
+        </div>
+      </div>
+      <div class="runtime-update-grid">
+        <div>
+          <strong id="runtime-update-state">No update action required</strong>
+          <p id="runtime-update-recommendation" class="muted">Runtime update readiness has not been evaluated yet.</p>
+          <p id="runtime-update-status" class="muted"></p>
+        </div>
+        <pre id="runtime-update-details" class="code-block">Runtime update details unavailable.</pre>
       </div>
     </section>
 

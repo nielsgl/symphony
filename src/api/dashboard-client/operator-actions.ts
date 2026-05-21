@@ -152,6 +152,45 @@ export async function requestDrainSafeShutdown() {
   }
 }
 
+function describeRuntimeUpdateResult(payload: any) {
+  const reason = payload && payload.reason_code ? ' (' + payload.reason_code + ')' : '';
+  const action = payload && payload.recommended_action ? ' Next: ' + payload.recommended_action.replace(/_/g, ' ') + '.' : '';
+  const restart = payload && payload.restart && Array.isArray(payload.restart.command)
+    ? ' Restart command: ' + payload.restart.command.join(' ')
+    : '';
+  return (payload && payload.status ? String(payload.status).replace(/_/g, ' ') : 'runtime update response') + reason + '.' + action + restart;
+}
+
+function setRuntimeUpdateStatus(message: string, isError: boolean) {
+  if (elements.runtimeUpdateStatus) {
+    elements.runtimeUpdateStatus.textContent = message;
+    elements.runtimeUpdateStatus.className = isError ? 'status-error' : 'status-ok';
+  }
+  setRefreshStatus(message, isError);
+}
+
+export async function prepareRuntimeUpdate() {
+  try {
+    const payload = await fetchJson('/api/v1/runtime-update/prepare', buildDrainControlRequest(null));
+    setRuntimeUpdateStatus('Runtime update prepare: ' + describeRuntimeUpdateResult(payload), !payload.success);
+    await loadStateViaPoll();
+  } catch (error) {
+    setRuntimeUpdateStatus('Runtime update prepare failed: ' + String(error), true);
+    await loadStateViaPoll();
+  }
+}
+
+export async function applyRuntimeUpdate() {
+  try {
+    const payload = await fetchJson('/api/v1/runtime-update/apply', buildDrainControlRequest(null));
+    setRuntimeUpdateStatus('Runtime update apply: ' + describeRuntimeUpdateResult(payload), !payload.success);
+    await loadStateViaPoll();
+  } catch (error) {
+    setRuntimeUpdateStatus('Runtime update apply failed: ' + String(error), true);
+    await loadStateViaPoll();
+  }
+}
+
 export async function resumeBlockedIssue(issueIdentifier: any, resumeOverrideReason?: any) {
     try {
       const reasonNote = window.prompt('Reason note for resuming this blocked issue', '');

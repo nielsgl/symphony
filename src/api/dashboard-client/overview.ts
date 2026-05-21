@@ -92,11 +92,80 @@ export function renderOverview(payload: any) {
       blockerDetail ? 'Quiescence blockers: ' + blockerDetail : ''
     ].filter(Boolean).join(' • ');
     renderRuntimeIdentityWarning(payload.runtime_identity || null);
+    renderRuntimeUpdate(payload.runtime_update || null, payload);
     renderDrainModeWorkflow(payload);
     renderRetryStatusSummary(payload);
 
     const rateLimits = payload.rate_limits;
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+  }
+
+function formatRuntimeUpdateLabel(value: any) {
+    return String(value || 'unknown').replace(/_/g, ' ');
+  }
+
+function updateRuntimeUpdateButtons(readiness: any, payload: any) {
+    const quiescence = payload && payload.quiescence ? payload.quiescence : { safe_to_shutdown: false };
+    const prepareDisabled = !readiness || !readiness.attention_required || readiness.recommended_action !== 'prepare_update';
+    const applyDisabled = !readiness || !quiescence.safe_to_shutdown || readiness.refusal_reasons && readiness.refusal_reasons.length > 0;
+    [
+      elements.runtimeUpdatePrepareButton,
+      elements.runtimeUpdatePreparePanelButton
+    ].filter(Boolean).forEach(function (button: any) {
+      button.disabled = prepareDisabled;
+    });
+    [
+      elements.runtimeUpdateApplyButton,
+      elements.runtimeUpdateApplyPanelButton
+    ].filter(Boolean).forEach(function (button: any) {
+      button.disabled = applyDisabled;
+    });
+  }
+
+export function renderRuntimeUpdate(readiness: any, payload: any) {
+    if (!elements.runtimeUpdatePanel || !elements.runtimeUpdateState || !elements.runtimeUpdateDetails) {
+      return;
+    }
+    updateRuntimeUpdateButtons(readiness, payload);
+    if (!readiness) {
+      if (elements.runtimeUpdateBanner) {
+        elements.runtimeUpdateBanner.classList.add('hidden');
+      }
+      elements.runtimeUpdateState.textContent = 'Runtime update readiness unavailable';
+      elements.runtimeUpdateRecommendation.textContent = 'The local runtime update detector is not configured.';
+      elements.runtimeUpdateDetails.textContent = 'Runtime update details unavailable.';
+      return;
+    }
+
+    const local = readiness.local_checkout || {};
+    const remote = readiness.fetched_remote || {};
+    const counts = readiness.ahead_behind || {};
+    const fetch = readiness.last_fetch || {};
+    const summaryParts = [
+      'state ' + formatRuntimeUpdateLabel(readiness.state),
+      'branch ' + (local.branch || 'unknown') + ' -> ' + (remote.remote || 'remote') + '/' + (remote.base_ref || 'unknown'),
+      'ahead ' + (counts.ahead === null || counts.ahead === undefined ? 'unknown' : counts.ahead),
+      'behind ' + (counts.behind === null || counts.behind === undefined ? 'unknown' : counts.behind),
+      'fetch ' + (fetch.result || 'unknown')
+    ];
+
+    if (readiness.attention_required) {
+      elements.runtimeUpdateBanner.classList.remove('hidden');
+      elements.runtimeUpdateTitle.textContent =
+        readiness.state === 'runtime_stale' ? 'Runtime restart required' : 'Runtime update available';
+      elements.runtimeUpdateSummary.textContent = summaryParts.join(' • ');
+    } else {
+      elements.runtimeUpdateBanner.classList.add('hidden');
+      elements.runtimeUpdateSummary.textContent = '';
+    }
+
+    elements.runtimeUpdateState.textContent = formatRuntimeUpdateLabel(readiness.state);
+    elements.runtimeUpdateRecommendation.textContent = [
+      'Recommended action: ' + formatRuntimeUpdateLabel(readiness.recommended_action),
+      readiness.drain_required ? 'Drain Mode is required before applying.' : 'Drain Mode is not required.',
+      readiness.refusal_reasons && readiness.refusal_reasons.length ? 'Refusal: ' + readiness.refusal_reasons.join(', ') : ''
+    ].filter(Boolean).join(' ');
+    elements.runtimeUpdateDetails.textContent = formatCanonicalJsonBlock('Runtime Update JSON', readiness);
   }
 
 export function renderDrainModeWorkflow(payload: any) {
