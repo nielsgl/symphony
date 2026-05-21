@@ -500,6 +500,31 @@ export async function resumeBlockedIssue(
     };
   }
   const preState = context.hooks.describeIssueRuntimeState(blocked.issue_id);
+  if (context.state.drain_mode.active) {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
+      action: resume_metadata ? 'submit_input' : 'resume',
+      requested_at_ms: context.nowMs(),
+      result: 'rejected',
+      result_code: 'drain_mode_active',
+      message: 'Drain Mode is active; resume is held until drain exits',
+      actor: operator_context?.actor ?? null,
+      reason_note: reasonNote,
+      pre_state: preState,
+      post_state: context.hooks.describeIssueRuntimeState(blocked.issue_id)
+    });
+    context.hooks.recordRuntimeEvent({
+      event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
+      severity: 'info',
+      issue_identifier: blocked.issue_identifier,
+      detail: 'blocked issue resume held during drain mode'
+    });
+    context.notifyObservers?.();
+    return {
+      ok: false,
+      code: 'drain_mode_active',
+      message: 'Drain Mode is active; resume is held until drain exits'
+    };
+  }
 
   let refreshedIssues: Issue[];
   try {
@@ -909,6 +934,32 @@ export async function submitBlockedIssueInput(
       });
       return { ok: false, code: 'input_submission_invalid', message: 'Answer text is required for this input request' };
     }
+  }
+
+  if (context.state.drain_mode.active) {
+    context.hooks.recordOperatorAction(blocked.issue_id, {
+      action: 'submit_input',
+      requested_at_ms: context.nowMs(),
+      result: 'rejected',
+      result_code: 'drain_mode_active',
+      message: 'Drain Mode is active; input submission is held until drain exits',
+      actor: operatorContext.actor,
+      reason_note: operatorContext.reason_note,
+      pre_state: preState,
+      post_state: context.hooks.describeIssueRuntimeState(blocked.issue_id)
+    });
+    context.hooks.recordRuntimeEvent({
+      event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
+      severity: 'info',
+      issue_identifier: blocked.issue_identifier,
+      detail: 'blocked input submission held during drain mode'
+    });
+    context.notifyObservers?.();
+    return {
+      ok: false,
+      code: 'drain_mode_active',
+      message: 'Drain Mode is active; input submission is held until drain exits'
+    };
   }
 
   const nativeAttempt = await submitBlockedIssueInputNative(context, blocked, params);

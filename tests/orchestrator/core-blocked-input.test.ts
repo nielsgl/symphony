@@ -758,6 +758,45 @@ describe('OrchestratorCore blocked input', () => {
     expect(harness.spawned.map((entry) => entry.issue_id)).toContain('i-resume');
   });
 
+  it('holds blocked resume during Drain Mode without consuming blocked state', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-drain-resume', identifier: 'ABC-DRAIN-RESUME' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-drain-resume',
+      'abnormal',
+      'tool requestUserInput could not be auto-answered (turn_input_required)'
+    );
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-drain-resume')).toBe(true);
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-drain-resume', identifier: 'ABC-DRAIN-RESUME', state: 'In Progress' })
+    ]);
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-DRAIN-RESUME', null, null, {
+      actor: 'operator@example.test',
+      reason_note: 'input request answered'
+    });
+
+    expect(resumed).toEqual({
+      ok: false,
+      code: 'drain_mode_active',
+      message: 'Drain Mode is active; resume is held until drain exits'
+    });
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-drain-resume')).toBe(true);
+    expect(snapshot.claimed.has('i-drain-resume')).toBe(true);
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-drain-resume']);
+    expect(snapshot.operator_actions?.get('i-drain-resume')).toEqual([
+      expect.objectContaining({
+        action: 'resume',
+        result: 'rejected',
+        result_code: 'drain_mode_active'
+      })
+    ]);
+  });
+
   it('allows resume without override when real progress signals changed', async () => {
     let commit = 'sha-old';
     const harness = createHarness({
@@ -1414,6 +1453,47 @@ describe('OrchestratorCore blocked input', () => {
     });
     const resumedSpawn = harness.spawned.find((entry) => entry.issue_id === 'i-native' && entry.attempt === 2);
     expect(resumedSpawn?.resume_context ?? null).toBeNull();
+  });
+
+  it('holds native blocked input submission during Drain Mode without applying or consuming blocked state', async () => {
+    const nativeSubmit = vi.fn(async () => ({ applied: true as const, code: 'native_applied' as const }));
+    const harness = createHarness({
+      submitBlockedIssueInputNative: nativeSubmit
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-native-drain', identifier: 'ABC-NATIVE-DRAIN' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-native-drain',
+      'abnormal',
+      'turn_input_required:{"detail":"operator input required","request_id":"req-native-drain","prompt_text":"Continue?","questions":[{"id":"q1","prompt":"Continue?","options":[{"label":"Yes"},{"label":"No"}]}]}'
+    );
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+
+    const result = await harness.orchestrator.submitBlockedIssueInput({
+      issue_identifier: 'ABC-NATIVE-DRAIN',
+      request_id: 'req-native-drain',
+      actor: 'operator@example.test',
+      reason_note: 'continue with selected answer',
+      answer: { question_id: 'q1', option_label: 'Yes' }
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'drain_mode_active',
+      message: 'Drain Mode is active; input submission is held until drain exits'
+    });
+    expect(nativeSubmit).not.toHaveBeenCalled();
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-native-drain')).toBe(true);
+    expect(snapshot.blocked_inputs.get('i-native-drain')?.pending_input?.request_id).toBe('req-native-drain');
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-native-drain']);
+    expect(snapshot.operator_actions?.get('i-native-drain')).toEqual([
+      expect.objectContaining({
+        action: 'submit_input',
+        result: 'rejected',
+        result_code: 'drain_mode_active'
+      })
+    ]);
   });
 
   it('quarantines late worker events for blocked issues awaiting operator action', async () => {
