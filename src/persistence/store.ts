@@ -157,7 +157,7 @@ export class SqlitePersistenceStore {
       context: this.context,
       db: this.db,
       nowMs: this.nowMs,
-      identityProjectionStore: this.identityProjectionStore,
+      identityAccess: this.identityProjectionStore,
       schemaHealthStore: this.schemaHealthStore,
       migrationFailureForTest: this.migrationFailureForTest
     });

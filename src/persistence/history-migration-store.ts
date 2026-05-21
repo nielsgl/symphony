@@ -1,5 +1,4 @@
 import { redactUnknown } from '../security/redaction';
-import type { IdentityProjectionStore } from './identity-projection-store';
 import {
   createHistoryRetentionPruneRecordTable,
   createProjectExecutionHistoryTables,
@@ -15,11 +14,20 @@ interface HistoryMigration {
   apply(context: HistoryMigrationContext): void;
 }
 
+export interface HistoryMigrationIdentityAccess {
+  ensureIssueRunIdentityColumn(): void;
+  ensureIssueRunIdentityKeyColumns(): void;
+  createHistoryIdentityProjectionTable(): void;
+  backfillExistingHistoryIdentities(): void;
+  normalizeExistingProjectIdentityKeys(): void;
+  ensureProjectScopedTicketIdentityTable(): void;
+}
+
 export interface HistoryMigrationStoreDependencies {
   context: PersistenceStoreContext;
   db: PersistenceDatabase;
   nowMs: () => number;
-  identityProjectionStore: IdentityProjectionStore;
+  identityAccess: HistoryMigrationIdentityAccess;
   schemaHealthStore: SchemaHealthStore;
   migrationFailureForTest?: string;
 }
@@ -27,7 +35,7 @@ export interface HistoryMigrationStoreDependencies {
 interface HistoryMigrationContext {
   context: PersistenceStoreContext;
   db: PersistenceDatabase;
-  identityProjectionStore: IdentityProjectionStore;
+  identity: HistoryMigrationIdentityAccess;
   recordHistoryHealthMetadata: (status: 'healthy' | 'degraded', reasonCode: string | null, detail: string | null) => void;
 }
 
@@ -39,7 +47,7 @@ export class HistoryMigrationStore {
   private readonly context: PersistenceStoreContext;
   private readonly db: PersistenceDatabase;
   private readonly nowMs: () => number;
-  private readonly identityProjectionStore: IdentityProjectionStore;
+  private readonly identityAccess: HistoryMigrationIdentityAccess;
   private readonly schemaHealthStore: SchemaHealthStore;
   private readonly migrationFailureForTest: string | undefined;
 
@@ -47,7 +55,7 @@ export class HistoryMigrationStore {
     this.context = dependencies.context;
     this.db = dependencies.db;
     this.nowMs = dependencies.nowMs;
-    this.identityProjectionStore = dependencies.identityProjectionStore;
+    this.identityAccess = dependencies.identityAccess;
     this.schemaHealthStore = dependencies.schemaHealthStore;
     this.migrationFailureForTest = dependencies.migrationFailureForTest;
   }
@@ -58,7 +66,7 @@ export class HistoryMigrationStore {
     const migrationContext: HistoryMigrationContext = {
       context: this.context,
       db: this.db,
-      identityProjectionStore: this.identityProjectionStore,
+      identity: this.identityAccess,
       recordHistoryHealthMetadata: (status, reasonCode, detail) =>
         this.schemaHealthStore.recordHistoryHealthMetadata(status, reasonCode, detail)
     };
@@ -158,7 +166,7 @@ function historyMigrations(): HistoryMigration[] {
       name: 'project_execution_history_v1',
       apply: (context) => {
         ensureRunDiagnosticColumns(context.db);
-        context.identityProjectionStore.ensureIssueRunIdentityColumn();
+        context.identity.ensureIssueRunIdentityColumn();
         ensureRunEventDiagnosticColumns(context.db);
         createProjectExecutionHistoryTables(context.context);
       }
@@ -167,7 +175,7 @@ function historyMigrations(): HistoryMigration[] {
       version: 2,
       name: 'ticket_orchestration_ledger_v1',
       apply: (context) => {
-        context.identityProjectionStore.ensureIssueRunIdentityKeyColumns();
+        context.identity.ensureIssueRunIdentityKeyColumns();
         createTicketOrchestrationLedgerTables(context.db, context.recordHistoryHealthMetadata);
       }
     },
@@ -182,8 +190,8 @@ function historyMigrations(): HistoryMigration[] {
       version: 4,
       name: 'existing_run_history_identity_backfill_v1',
       apply: (context) => {
-        context.identityProjectionStore.createHistoryIdentityProjectionTable();
-        context.identityProjectionStore.backfillExistingHistoryIdentities();
+        context.identity.createHistoryIdentityProjectionTable();
+        context.identity.backfillExistingHistoryIdentities();
       }
     },
     {
@@ -211,14 +219,14 @@ function historyMigrations(): HistoryMigration[] {
       version: 8,
       name: 'stable_project_identity_key_v1',
       apply: (context) => {
-        context.identityProjectionStore.normalizeExistingProjectIdentityKeys();
+        context.identity.normalizeExistingProjectIdentityKeys();
       }
     },
     {
       version: 9,
       name: 'project_scoped_ticket_identity_v1',
       apply: (context) => {
-        context.identityProjectionStore.ensureProjectScopedTicketIdentityTable();
+        context.identity.ensureProjectScopedTicketIdentityTable();
       }
     }
   ];
