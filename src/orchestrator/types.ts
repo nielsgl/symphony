@@ -651,6 +651,8 @@ export interface OrchestratorState {
     last_error: string | null;
     dispatch_backpressure?: DispatchBackpressureState;
   };
+  drain_mode: DrainModeState;
+  quiescence: DrainQuiescenceState;
   throughput: {
     current_tps: number;
     avg_tps_60s: number;
@@ -696,6 +698,40 @@ export interface DispatchBackpressureState {
   source: DispatchBackpressureSource | null;
   observed_at_ms: number | null;
   retry_delay_ms: number;
+}
+
+export type DrainQuiescenceBlockerCategory =
+  | 'active_worker'
+  | 'live_codex_app_server_process'
+  | 'pending_retry'
+  | 'in_flight_tracker_write'
+  | 'persistence_history_write'
+  | 'unknown_degraded_blocker_source_health';
+
+export type DrainQuiescenceStateName = 'safe' | 'blocked';
+
+export interface DrainModeState {
+  active: boolean;
+  entered_at_ms: number | null;
+  updated_at_ms: number | null;
+  reason: string | null;
+}
+
+export interface DrainQuiescenceBlocker {
+  category: DrainQuiescenceBlockerCategory;
+  count: number;
+  detail: string;
+  issue_identifiers: string[];
+}
+
+export type DrainQuiescenceBlockerCounts = Record<DrainQuiescenceBlockerCategory, number>;
+
+export interface DrainQuiescenceState {
+  safe_to_shutdown: boolean;
+  state: DrainQuiescenceStateName;
+  updated_at_ms: number;
+  blockers: DrainQuiescenceBlocker[];
+  blocker_counts: DrainQuiescenceBlockerCounts;
 }
 
 export interface SpawnWorkerResultSuccess {

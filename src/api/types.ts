@@ -392,6 +392,8 @@ export interface ApiCodexSessionTranscriptScanBudget {
 
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
+  drain_mode: ApiDrainModeProjection;
+  quiescence: ApiDrainQuiescenceProjection;
   counts: {
     running: number;
     retrying: number;
@@ -780,6 +782,43 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     requested_model?: string | null;
     effective_model?: string | null;
   }>;
+}
+
+export interface ApiDrainModeProjection {
+  active: boolean;
+  entered_at: string | null;
+  entered_at_ms: number | null;
+  updated_at: string | null;
+  updated_at_ms: number | null;
+  reason: string | null;
+}
+
+export interface ApiDrainQuiescenceProjection {
+  safe_to_shutdown: boolean;
+  state: 'safe' | 'blocked';
+  updated_at: string;
+  updated_at_ms: number;
+  blockers: Array<{
+    category:
+      | 'active_worker'
+      | 'live_codex_app_server_process'
+      | 'pending_retry'
+      | 'in_flight_tracker_write'
+      | 'persistence_history_write'
+      | 'unknown_degraded_blocker_source_health';
+    count: number;
+    detail: string;
+    issue_identifiers: string[];
+  }>;
+  blocker_counts: Record<
+    | 'active_worker'
+    | 'live_codex_app_server_process'
+    | 'pending_retry'
+    | 'in_flight_tracker_write'
+    | 'persistence_history_write'
+    | 'unknown_degraded_blocker_source_health',
+    number
+  >;
 }
 
 export type ApiStateErrorCode = 'snapshot_timeout' | 'snapshot_unavailable';
@@ -1296,6 +1335,8 @@ export interface LocalApiServerOptions {
 }
 
 export interface ApiDiagnosticsResponse {
+  drain_mode: ApiDrainModeProjection;
+  quiescence: ApiDrainQuiescenceProjection;
   active_profile: SecurityProfile;
   persistence: PersistenceHealth;
   logging: {

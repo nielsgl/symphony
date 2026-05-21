@@ -119,6 +119,10 @@ import type {
   BudgetRuntimeProjection,
   CircuitBreakerEntry,
   DispatchBackpressureState,
+  DrainModeState,
+  DrainQuiescenceBlocker,
+  DrainQuiescenceBlockerCounts,
+  DrainQuiescenceState,
   MissingToolOutputRecoveryState,
   OperatorActionRecord,
   OrchestratorOptions,
@@ -143,6 +147,30 @@ import type {
 } from './types';
 
 const DEFAULT_INACTIVE_WORKER_PID_TTL_MS = 60 * 60 * 1000;
+
+const emptyDrainModeState = (): DrainModeState => ({
+  active: false,
+  entered_at_ms: null,
+  updated_at_ms: null,
+  reason: null
+});
+
+const emptyDrainBlockerCounts = (): DrainQuiescenceBlockerCounts => ({
+  active_worker: 0,
+  live_codex_app_server_process: 0,
+  pending_retry: 0,
+  in_flight_tracker_write: 0,
+  persistence_history_write: 0,
+  unknown_degraded_blocker_source_health: 0
+});
+
+const emptyQuiescenceState = (updatedAtMs: number): DrainQuiescenceState => ({
+  safe_to_shutdown: true,
+  state: 'safe',
+  updated_at_ms: updatedAtMs,
+  blockers: [],
+  blocker_counts: emptyDrainBlockerCounts()
+});
 
 interface ScheduleRetryParams {
   issue_id: string;
@@ -292,6 +320,8 @@ export class OrchestratorCore {
         last_error: null,
         dispatch_backpressure: emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config))
       },
+      drain_mode: emptyDrainModeState(),
+      quiescence: emptyQuiescenceState(this.nowMs()),
       throughput: {
         current_tps: 0,
         avg_tps_60s: 0,
@@ -306,7 +336,131 @@ export class OrchestratorCore {
     this.serializedOperation = Promise.resolve();
   }
 
+  enterDrainMode(params: { reason?: string | null } = {}): DrainModeState {
+    const nowMs = this.nowMs();
+    this.state.drain_mode = {
+      active: true,
+      entered_at_ms: this.state.drain_mode.active ? this.state.drain_mode.entered_at_ms : nowMs,
+      updated_at_ms: nowMs,
+      reason: params.reason ?? null
+    };
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.runtime.drainEntered,
+      severity: 'warn',
+      detail: this.state.drain_mode.reason ?? 'drain mode entered'
+    });
+    this.refreshQuiescenceState();
+    this.ports.notifyObservers?.();
+    return { ...this.state.drain_mode };
+  }
+
+  exitDrainMode(params: { reason?: string | null } = {}): DrainModeState {
+    const nowMs = this.nowMs();
+    this.state.drain_mode = {
+      active: false,
+      entered_at_ms: null,
+      updated_at_ms: nowMs,
+      reason: params.reason ?? null
+    };
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.runtime.drainExited,
+      severity: 'info',
+      detail: this.state.drain_mode.reason ?? 'drain mode exited'
+    });
+    this.refreshQuiescenceState();
+    this.ports.notifyObservers?.();
+    return { ...this.state.drain_mode };
+  }
+
+  readDrainMode(): DrainModeState {
+    return { ...this.state.drain_mode };
+  }
+
+  private refreshQuiescenceState(): DrainQuiescenceState {
+    const blockers: DrainQuiescenceBlocker[] = [];
+    const counts = emptyDrainBlockerCounts();
+    const runningEntries = Array.from(this.state.running.values());
+    const runningIssueIdentifiers = runningEntries.map((entry) => entry.identifier);
+    if (runningEntries.length > 0) {
+      counts.active_worker = runningEntries.length;
+      blockers.push({
+        category: 'active_worker',
+        count: runningEntries.length,
+        detail:
+          runningEntries.length === 1
+            ? `${runningIssueIdentifiers[0]} is still running`
+            : `${runningEntries.length} workers are still running`,
+        issue_identifiers: runningIssueIdentifiers
+      });
+    }
+
+    const liveCodexEntries = runningEntries.filter((entry) => Boolean(entry.codex_app_server_pid));
+    if (liveCodexEntries.length > 0) {
+      counts.live_codex_app_server_process = liveCodexEntries.length;
+      blockers.push({
+        category: 'live_codex_app_server_process',
+        count: liveCodexEntries.length,
+        detail:
+          liveCodexEntries.length === 1
+            ? `${liveCodexEntries[0].identifier} has a live Codex app-server process`
+            : `${liveCodexEntries.length} live Codex app-server processes are attached to active workers`,
+        issue_identifiers: liveCodexEntries.map((entry) => entry.identifier)
+      });
+    }
+
+    const retryEntries = Array.from(this.state.retry_attempts.values());
+    if (retryEntries.length > 0) {
+      counts.pending_retry = retryEntries.length;
+      blockers.push({
+        category: 'pending_retry',
+        count: retryEntries.length,
+        detail:
+          retryEntries.length === 1
+            ? `${retryEntries[0].identifier} has a pending retry`
+            : `${retryEntries.length} retry attempts are pending`,
+        issue_identifiers: retryEntries.map((entry) => entry.identifier)
+      });
+    }
+
+    if (this.state.health.dispatch_validation === 'failed') {
+      counts.unknown_degraded_blocker_source_health = 1;
+      blockers.push({
+        category: 'unknown_degraded_blocker_source_health',
+        count: 1,
+        detail: this.state.health.last_error ?? 'dispatch validation health is degraded',
+        issue_identifiers: []
+      });
+    }
+
+    const safeToShutdown = blockers.length === 0;
+    const next: DrainQuiescenceState = {
+      safe_to_shutdown: safeToShutdown,
+      state: safeToShutdown ? 'safe' : 'blocked',
+      updated_at_ms: this.nowMs(),
+      blockers,
+      blocker_counts: counts
+    };
+    const previousSignature = JSON.stringify({
+      safe_to_shutdown: this.state.quiescence.safe_to_shutdown,
+      blocker_counts: this.state.quiescence.blocker_counts
+    });
+    const nextSignature = JSON.stringify({
+      safe_to_shutdown: next.safe_to_shutdown,
+      blocker_counts: next.blocker_counts
+    });
+    this.state.quiescence = next;
+    if (this.state.drain_mode.active && previousSignature !== nextSignature) {
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.runtime.quiescenceChanged,
+        severity: next.safe_to_shutdown ? 'info' : 'warn',
+        detail: next.safe_to_shutdown ? 'runtime is safe to shutdown' : `runtime has ${blockers.length} quiescence blocker categories`
+      });
+    }
+    return next;
+  }
+
   getStateSnapshot(options: StateSnapshotOptions = {}): OrchestratorState {
+    this.refreshQuiescenceState();
     const snapshotOptions: Required<StateSnapshotOptions> = {
       includeTranscriptToolCallDiagnostics: options.includeTranscriptToolCallDiagnostics ?? true
     };
@@ -381,6 +535,15 @@ export class OrchestratorCore {
         dispatch_backpressure: cloneDispatchBackpressureState(
           this.state.health.dispatch_backpressure ?? emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config))
         )
+      },
+      drain_mode: { ...this.state.drain_mode },
+      quiescence: {
+        ...this.state.quiescence,
+        blockers: this.state.quiescence.blockers.map((blocker) => ({
+          ...blocker,
+          issue_identifiers: [...blocker.issue_identifiers]
+        })),
+        blocker_counts: { ...this.state.quiescence.blocker_counts }
       },
       throughput: this.throughputTracker.snapshot(this.nowMs()),
       recent_runtime_events: this.state.recent_runtime_events.map((event) => ({ ...event }))
@@ -1220,7 +1383,27 @@ export class OrchestratorCore {
   }
 
   async onRetryTimer(issue_id: string): Promise<void> {
-    await this.runSerializedOperation(() => coordinateRetryTimer(this.retryTimerCoordinatorContext(), issue_id));
+    await this.runSerializedOperation(async () => {
+      if (this.state.drain_mode.active) {
+        const retryEntry = this.state.retry_attempts.get(issue_id);
+        if (retryEntry) {
+          this.ports.cancelRetryTimer(retryEntry.timer_handle);
+          retryEntry.timer_handle = null;
+          retryEntry.due_at_ms = this.nowMs();
+          this.recordRuntimeEvent({
+            event: CANONICAL_EVENT.runtime.drainEntered,
+            severity: 'info',
+            issue_identifier: retryEntry.identifier,
+            detail: 'retry dispatch held during drain mode'
+          });
+          this.refreshQuiescenceState();
+          this.ports.notifyObservers?.();
+        }
+        return;
+      }
+      await coordinateRetryTimer(this.retryTimerCoordinatorContext(), issue_id);
+      this.refreshQuiescenceState();
+    });
   }
 
   private async upsertCircuitBreaker(entry: CircuitBreakerEntry): Promise<void> {
@@ -1475,6 +1658,7 @@ export class OrchestratorCore {
         stop_reason_code: params.stop_reason_code ?? null
       }
     });
+    this.refreshQuiescenceState();
   }
 
   private workspaceAttemptResidueResumeContext(retryEntry: RetryEntry): string | null {

@@ -145,7 +145,10 @@ export const CANONICAL_EVENT = {
     httpDisabled: 'runtime.http.disabled',
     started: 'runtime.started',
     stopped: 'runtime.stopped',
-    guardrailAckRequired: 'runtime.guardrail.ack.required'
+    guardrailAckRequired: 'runtime.guardrail.ack.required',
+    drainEntered: 'runtime.drain.entered',
+    drainExited: 'runtime.drain.exited',
+    quiescenceChanged: 'runtime.quiescence.changed'
   },
   api: {
     serverListening: 'api.server.listening',

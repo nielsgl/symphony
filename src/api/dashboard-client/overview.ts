@@ -30,7 +30,13 @@ export function computeDisplayRuntimeSeconds(payload: any) {
 
 export function renderOverview(payload: any) {
     const splitUnavailable = payload.codex_totals && payload.codex_totals.token_split_status === 'aggregate_only';
+    const quiescence = payload.quiescence || { safe_to_shutdown: true, blocker_counts: {}, blockers: [] };
+    const drainBlockerCount = Object.values(quiescence.blocker_counts || {}).reduce(function (total: number, value: any) {
+      return total + (Number(value) || 0);
+    }, 0);
     elements.kpiGrid.replaceChildren(
+      createMetricCard('Safe To Shutdown', quiescence.safe_to_shutdown ? 'Yes' : 'No'),
+      createMetricCard('Drain Blockers', formatNumber(drainBlockerCount)),
       createMetricCard('Running', formatNumber(payload.counts.running)),
       createMetricCard('Retrying', formatNumber(payload.counts.retrying)),
       createMetricCard('Blocked', formatNumber(payload.counts.blocked)),
@@ -48,8 +54,21 @@ export function renderOverview(payload: any) {
 
     const failed = payload.health.dispatch_validation === 'failed';
     elements.healthMessage.className = failed ? 'health health-failed' : 'health health-ok';
-    elements.healthMessage.textContent = 'Dispatch validation: ' + payload.health.dispatch_validation;
-    elements.lastError.textContent = payload.health.last_error ? 'Last error: ' + payload.health.last_error : '';
+    const drainMode = payload.drain_mode || { active: false };
+    const drainStatus = drainMode.active
+      ? 'Drain Mode: active, ' + (quiescence.safe_to_shutdown ? 'restart safe' : 'restart blocked')
+      : 'Drain Mode: inactive';
+    elements.healthMessage.textContent = 'Dispatch validation: ' + payload.health.dispatch_validation + ' • ' + drainStatus;
+    const blockerDetail =
+      quiescence.blockers && quiescence.blockers.length
+        ? quiescence.blockers.map(function (blocker: any) {
+            return blocker.detail;
+          }).join(' • ')
+        : '';
+    elements.lastError.textContent = [
+      payload.health.last_error ? 'Last error: ' + payload.health.last_error : '',
+      blockerDetail ? 'Quiescence blockers: ' + blockerDetail : ''
+    ].filter(Boolean).join(' • ');
     renderRetryStatusSummary(payload);
 
     const rateLimits = payload.rate_limits;
