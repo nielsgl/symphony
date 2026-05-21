@@ -262,6 +262,44 @@ describe('LocalApiServer state API', () => {
     }));
   });
 
+  it('refuses guided runtime update apply before Drain Mode is active', async () => {
+    const applyUpdate = vi.fn();
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      runtimeUpdateSource: {
+        readUpdateReadiness: () => null,
+        prepareUpdate: vi.fn(),
+        applyUpdate
+      },
+      nowMs: () => Date.parse('2026-05-21T10:02:00.000Z')
+    } as any);
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/runtime-update/apply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const payload = (await response.json()) as any;
+
+    expect(response.status).toBe(409);
+    expect(applyUpdate).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      success: false,
+      status: 'refused',
+      reason_code: REASON_CODES.runtimeUpdateDrainModeRequired,
+      recommended_action: 'prepare_update',
+      quiescence: expect.objectContaining({ safe_to_shutdown: true })
+    });
+  });
+
   it('serves runtime build identity metadata on GET /api/v1/state and diagnostics', async () => {
     const state = makeState({
       runtime_identity: {

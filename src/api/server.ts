@@ -1143,6 +1143,34 @@ export class LocalApiServer {
                 throw new LocalApiError('runtime_update_unavailable', 'Runtime update source is not configured', 503);
               }
               const { state, quiescence } = this.readDrainQuiescenceProjection();
+              if (!state.drain_mode.active) {
+                const payload = {
+                  success: false,
+                  status: 'refused',
+                  step: 'apply',
+                  reason_code: REASON_CODES.runtimeUpdateDrainModeRequired,
+                  recommended_action: 'prepare_update',
+                  idempotent_replay: false,
+                  quiescence,
+                  blockers: [],
+                  readiness: this.runtimeUpdateSource.readUpdateReadiness(),
+                  message: 'Runtime update apply refused because Drain Mode is not active.'
+                };
+                this.broadcastStateSnapshot('runtime_update_apply_refused');
+                this.recordDrainAuditEvent({
+                  event_type: 'update-pull-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: REASON_CODES.runtimeUpdateDrainModeRequired,
+                  state_context: { drain_mode_active: false },
+                  blocker_summaries: [],
+                  occurred_at: new Date(this.nowMs()).toISOString(),
+                  observed_at: new Date(this.nowMs()).toISOString()
+                });
+                sendJson(response, 409, payload);
+                return;
+              }
               if (!quiescence.safe_to_shutdown) {
                 const blockers = this.projectDrainControlBlockers(state, quiescence);
                 const payload = {

@@ -102,6 +102,7 @@ export const REASON_CODES = {
   projectHistoryPayloadTruncated: 'project_history_payload_truncated',
   liveTokenFallbackNotOnHotPath: 'live_token_fallback_not_on_hot_path',
   stateProjectionUnavailable: 'state_projection_unavailable',
+  runtimeUpdateDrainModeRequired: 'runtime_update_drain_mode_required',
   runtimeUpdateQuiescenceRequired: 'runtime_update_quiescence_required',
   runtimeUpdateRepositoryUnavailable: 'runtime_update_repository_unavailable',
   runtimeUpdateRestartWrapperUnavailable: 'runtime_update_restart_wrapper_unavailable',
@@ -910,6 +911,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Runtime update is waiting for quiescence',
     detail: 'The guided runtime update refused to apply because blockers still make restart unsafe.',
     expected_transition: 'Apply can be retried after quiescence reports safe_to_shutdown'
+  },
+  [REASON_CODES.runtimeUpdateDrainModeRequired]: {
+    reason_code: REASON_CODES.runtimeUpdateDrainModeRequired,
+    classification: 'stalled_waiting',
+    actionability: 'required',
+    recommended_actions: ['Prepare the guided runtime update so Drain Mode stops new dispatch first'],
+    label: 'Runtime Update Drain Mode Required',
+    headline: 'Runtime update is waiting for Drain Mode',
+    detail: 'The guided runtime update refused to apply because Drain Mode is not active.',
+    expected_transition: 'Apply can be retried after Prepare update enters Drain Mode and quiescence is safe'
   },
   [REASON_CODES.runtimeUpdateRepositoryUnavailable]: {
     reason_code: REASON_CODES.runtimeUpdateRepositoryUnavailable,
