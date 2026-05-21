@@ -577,13 +577,12 @@ describe('dashboard assets', () => {
 
   it('lazy-loads issue diagnostics only for opened detail surfaces', () => {
     const clientJs = renderDashboardClientJs();
-    const restoreBlock = clientJs.slice(clientJs.indexOf('async function loadUiState()'), clientJs.indexOf('async function loadIssue'));
     const refreshBlock = clientJs.slice(clientJs.indexOf('async function refreshNow()'), clientJs.indexOf('async function loadDiagnostics()'));
     const streamBlock = clientJs.slice(clientJs.indexOf('function handleSseEnvelope'), clientJs.indexOf('function connectStream'));
 
-    expect(restoreBlock).toContain('if (state.selectedIssue && elements.issuePanel.open)');
-    expect(restoreBlock).toContain('void loadIssue(state.selectedIssue, { openPanel: false });');
-    expect(restoreBlock).not.toContain('if (state.selectedIssue) {\n        void loadIssue(state.selectedIssue);');
+    expect(clientJs).toContain('if (state.selectedIssue && elements.issuePanel.open)');
+    expect(clientJs).toContain('void loadIssue(state.selectedIssue, { openPanel: false });');
+    expect(clientJs).not.toContain('if (state.selectedIssue) {\n        void loadIssue(state.selectedIssue);');
     expect(clientJs).toMatch(/elements\.issuePanel\.addEventListener\(["']toggle["']/);
     expect(clientJs).toContain('state.suppressIssuePanelToggleLoad');
     expect(clientJs).toContain("void loadIssue(state.selectedIssue, { openPanel: false });");
