@@ -596,6 +596,10 @@ export async function persistExecutionGraphWorkerEvent(params: {
 } & PersistenceFailureContext): Promise<void> {
   const { issueId, runningEntry, workerEvent, turnAlreadyObserved, persistence, logger, persistedPhaseSpanKeys } = params;
   if (!persistence || !runningEntry.issue_run_id || !runningEntry.attempt_id) {
+    const skippedTurnId = workerEvent.turn_id ?? runningEntry.turn_id;
+    if (skippedTurnId) {
+      clearPendingExecutionGraphWorkerTurn(runningEntry, skippedTurnId);
+    }
     return;
   }
 
@@ -753,7 +757,7 @@ export function queuePersistExecutionGraphWorkerEvent(params: {
   workerEvent: WorkerObservabilityEvent;
   turnAlreadyObserved: boolean;
   persistedPhaseSpanKeys: WeakMap<RunningEntry, Set<string>>;
-} & PersistenceFailureContext): void {
+} & PersistenceFailureContext): Promise<void> {
   const previous = params.queues.get(params.runningEntry) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(() => persistExecutionGraphWorkerEvent(params));
   params.queues.set(params.runningEntry, next);
@@ -764,6 +768,7 @@ export function queuePersistExecutionGraphWorkerEvent(params: {
       }
     })
     .catch(() => undefined);
+  return next;
 }
 
 export async function persistTicketEvidenceReferenceForThread(params: {

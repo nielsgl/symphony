@@ -9,7 +9,7 @@ import type {
 import type { StructuredLogger } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { PhaseMarker, PhaseMarkerName } from '../observability';
-import type { ExecutionGraphEntityStatus, HistoryPayloadClass, RunTerminalStatus } from '../persistence';
+import type { ExecutionGraphEntityStatus, HistoryPayloadClass, PersistenceHealth, RunTerminalStatus } from '../persistence';
 import type { ControlPlaneHealthSummary, ControlPlaneHealthState } from '../api/control-plane-health';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
@@ -651,6 +651,8 @@ export interface OrchestratorState {
     last_error: string | null;
     dispatch_backpressure?: DispatchBackpressureState;
   };
+  drain_mode: DrainModeState;
+  quiescence: DrainQuiescenceState;
   throughput: {
     current_tps: number;
     avg_tps_60s: number;
@@ -698,6 +700,40 @@ export interface DispatchBackpressureState {
   retry_delay_ms: number;
 }
 
+export type DrainQuiescenceBlockerCategory =
+  | 'active_worker'
+  | 'live_codex_app_server_process'
+  | 'pending_retry'
+  | 'in_flight_tracker_write'
+  | 'persistence_history_write'
+  | 'unknown_degraded_blocker_source_health';
+
+export type DrainQuiescenceStateName = 'safe' | 'blocked';
+
+export interface DrainModeState {
+  active: boolean;
+  entered_at_ms: number | null;
+  updated_at_ms: number | null;
+  reason: string | null;
+}
+
+export interface DrainQuiescenceBlocker {
+  category: DrainQuiescenceBlockerCategory;
+  count: number;
+  detail: string;
+  issue_identifiers: string[];
+}
+
+export type DrainQuiescenceBlockerCounts = Record<DrainQuiescenceBlockerCategory, number>;
+
+export interface DrainQuiescenceState {
+  safe_to_shutdown: boolean;
+  state: DrainQuiescenceStateName;
+  updated_at_ms: number;
+  blockers: DrainQuiescenceBlocker[];
+  blocker_counts: DrainQuiescenceBlockerCounts;
+}
+
 export interface SpawnWorkerResultSuccess {
   ok: true;
   worker_handle: unknown;
@@ -737,6 +773,7 @@ export interface OrchestratorPorts {
   dispatchPreflight: () => DispatchPreflightResult;
   getControlPlaneHealth?: () => ControlPlaneHealthSummary | null;
   getHostLoad?: () => HostLoadSnapshot | null;
+  getPersistenceHealth?: () => PersistenceHealth;
   spawnWorker: (params: {
     issue: Issue;
     attempt: number | null;

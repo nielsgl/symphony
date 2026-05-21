@@ -21,6 +21,8 @@ import {
   resolveTokenTelemetryQuality
 } from './runtime-visibility';
 import type {
+  ApiDrainModeProjection,
+  ApiDrainQuiescenceProjection,
   ApiIssueResponse,
   ApiIssueRuntimeDiagnosticsResponse,
   ApiStateResponse
@@ -35,6 +37,31 @@ export class SnapshotService {
 
   constructor(options: SnapshotServiceOptions = {}) {
     this.nowMs = options.nowMs ?? (() => Date.now());
+  }
+
+  projectDrainMode(state: OrchestratorState): ApiDrainModeProjection {
+    return {
+      active: state.drain_mode.active,
+      entered_at: state.drain_mode.entered_at_ms === null ? null : asIsoDate(state.drain_mode.entered_at_ms),
+      entered_at_ms: state.drain_mode.entered_at_ms,
+      updated_at: state.drain_mode.updated_at_ms === null ? null : asIsoDate(state.drain_mode.updated_at_ms),
+      updated_at_ms: state.drain_mode.updated_at_ms,
+      reason: state.drain_mode.reason
+    };
+  }
+
+  projectQuiescence(state: OrchestratorState): ApiDrainQuiescenceProjection {
+    return {
+      safe_to_shutdown: state.quiescence.safe_to_shutdown,
+      state: state.quiescence.state,
+      updated_at: asIsoDate(state.quiescence.updated_at_ms),
+      updated_at_ms: state.quiescence.updated_at_ms,
+      blockers: state.quiescence.blockers.map((blocker) => ({
+        ...blocker,
+        issue_identifiers: [...blocker.issue_identifiers]
+      })),
+      blocker_counts: { ...state.quiescence.blocker_counts }
+    };
   }
 
   projectState(state: OrchestratorState): ApiStateResponse {
@@ -225,6 +252,8 @@ export class SnapshotService {
       generated_at: asIsoDate(nowMs),
       ...freshness,
       ...createApiDegradedDiagnostics(null, []),
+      drain_mode: this.projectDrainMode(state),
+      quiescence: this.projectQuiescence(state),
       counts: {
         running: running.length,
         retrying: retrying.length,

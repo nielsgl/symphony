@@ -206,6 +206,257 @@ describe('OrchestratorCore dispatch and backpressure', () => {
     ).toBe(true);
   });
 
+  it('blocks startup, interval, manual refresh, duplicate dispatch, and retry dispatch while Drain Mode is active', async () => {
+    const firstIssue = makeIssue({ id: 'i-drain-running', identifier: 'ABC-DRAIN-RUN' });
+    const intervalIssue = makeIssue({ id: 'i-drain-interval', identifier: 'ABC-DRAIN-INTERVAL' });
+    const startupIssue = makeIssue({ id: 'i-drain-startup', identifier: 'ABC-DRAIN-STARTUP' });
+    const manualIssue = makeIssue({ id: 'i-drain-manual', identifier: 'ABC-DRAIN-MANUAL' });
+    const retryIssue = makeIssue({ id: 'i-drain-retry', identifier: 'ABC-DRAIN-RETRY' });
+    const harness = createHarness({ configOverrides: { max_concurrent_agents: 4 } });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([firstIssue]);
+    await harness.orchestrator.tick('interval');
+    const runningBeforeDrain = harness.orchestrator.getStateSnapshot().running.get(firstIssue.id);
+    expect(runningBeforeDrain).toBeDefined();
+
+    ((harness.orchestrator as unknown as { state: OrchestratorState }).state.running.get(firstIssue.id) as any).codex_app_server_pid =
+      '4242';
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([startupIssue]);
+    await harness.orchestrator.tick('startup');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([intervalIssue]);
+    await harness.orchestrator.tick('interval');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([manualIssue]);
+    await harness.orchestrator.tick('manual_refresh');
+
+    await (harness.orchestrator as any).scheduleRetry({
+      issue_id: retryIssue.id,
+      identifier: retryIssue.identifier,
+      attempt: 1,
+      delay_type: 'failure',
+      error: 'retry while draining',
+      worker_host: null,
+      workspace_path: null,
+      provisioner_type: null,
+      branch_name: null,
+      repo_root: null,
+      workspace_exists: false,
+      workspace_git_status: null,
+      workspace_provisioned: false,
+      workspace_is_git_worktree: false,
+      stop_reason_code: 'test_retry',
+      stop_reason_detail: 'retry while draining',
+      issue_snapshot: retryIssue
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([retryIssue]);
+    await harness.scheduled.get(retryIssue.id)?.callback();
+
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual([firstIssue.id]);
+    expect(harness.tracker.fetch_candidate_issues).toHaveBeenCalledTimes(4);
+    const snapshot = harness.orchestrator.getStateSnapshot() as any;
+    expect(snapshot.retry_attempts.has(retryIssue.id)).toBe(true);
+    expect(snapshot.drain_mode).toMatchObject({
+      active: true,
+      reason: 'safe runtime restart'
+    });
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(false);
+    expect(snapshot.quiescence.blocker_counts).toMatchObject({
+      active_worker: 1,
+      live_codex_app_server_process: 1,
+      pending_retry: 1
+    });
+    expect(harness.terminated).toEqual([]);
+    expect(snapshot.recent_runtime_events.map((event: any) => event.event)).toContain('runtime.drain.dispatch_skipped');
+    expect(snapshot.recent_runtime_events.map((event: any) => event.event)).toContain('runtime.drain.retry_held');
+    expect(snapshot.recent_runtime_events.map((event: any) => event.event)).toContain('runtime.quiescence.changed');
+  });
+
+  it('supports reading and exiting Drain Mode so dispatch can resume after restart safety work is complete', async () => {
+    const harness = createHarness();
+
+    expect((harness.orchestrator as any).readDrainMode()).toMatchObject({
+      active: false,
+      entered_at_ms: null
+    });
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'maintenance window' });
+    expect((harness.orchestrator as any).readDrainMode()).toMatchObject({
+      active: true,
+      reason: 'maintenance window'
+    });
+
+    (harness.orchestrator as any).exitDrainMode({ reason: 'restart complete' });
+    expect((harness.orchestrator as any).readDrainMode()).toMatchObject({
+      active: false,
+      entered_at_ms: null,
+      reason: 'restart complete'
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-after-drain', identifier: 'ABC-AFTER-DRAIN' })]);
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-after-drain']);
+    expect(harness.orchestrator.getStateSnapshot().recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.exited');
+  });
+
+  it('gates the low-level dispatch primitive so resume and handoff dispatch hooks cannot start workers during drain', async () => {
+    const harness = createHarness();
+    const issue = makeIssue({ id: 'i-direct-drain', identifier: 'ABC-DIRECT-DRAIN' });
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    await (harness.orchestrator as any).dispatchIssue(issue, null);
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned).toEqual([]);
+    expect(snapshot.running.has(issue.id)).toBe(false);
+    expect(snapshot.claimed.has(issue.id)).toBe(false);
+    expect(snapshot.recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.dispatch_skipped');
+  });
+
+  it('keeps shutdown blocked while queued non-turn execution-history writes are still flushing', async () => {
+    let releasePhaseSpan!: () => void;
+    const phaseSpanGate = new Promise<void>((resolve) => {
+      releasePhaseSpan = resolve;
+    });
+    const harness = createHarness({
+      persistence: {
+        startRun: async () => 'run-drain-history',
+        appendIssueRun: async () => 'issue-run-drain-history',
+        appendAttempt: async () => 'attempt-drain-history',
+        appendThread: async (params) => String(params.thread_id),
+        appendTurn: async (params) => String(params.turn_id),
+        appendPhaseSpan: async () => {
+          await phaseSpanGate;
+          return 'phase-drain-history';
+        },
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async () => undefined
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-history-drain', identifier: 'ABC-HISTORY-DRAIN' })]);
+    await harness.orchestrator.tick('interval');
+    const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
+    const runningEntry = runtimeState.running.get('i-history-drain');
+    expect(runningEntry).toBeDefined();
+    runningEntry!.issue_run_id = 'issue-run-drain-history';
+    runningEntry!.attempt_id = 'attempt-drain-history';
+
+    harness.orchestrator.onWorkerEvent('i-history-drain', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat',
+      thread_id: 'thread-history-drain',
+      turn_id: 'turn-history-drain',
+      session_id: 'session-history-drain'
+    });
+    await vi.waitFor(() => {
+      const running = harness.orchestrator.getStateSnapshot().running.get('i-history-drain');
+      expect(running?.pending_persisted_turn_ids).toEqual([]);
+    });
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    const pendingSnapshot = harness.orchestrator.getStateSnapshot();
+    expect(pendingSnapshot.quiescence.safe_to_shutdown).toBe(false);
+    expect(pendingSnapshot.quiescence.blocker_counts.persistence_history_write).toBeGreaterThanOrEqual(1);
+
+    releasePhaseSpan();
+    await vi.waitFor(() => {
+      expect(harness.orchestrator.getStateSnapshot().quiescence.blocker_counts.persistence_history_write).toBe(0);
+    });
+  });
+
+  it('computes persistence/history health blockers from the real quiescence source', () => {
+    const harness = createHarness({
+      getPersistenceHealth: () => ({
+        enabled: true,
+        db_path: '/tmp/symphony.db',
+        retention_days: 14,
+        run_count: 1,
+        last_pruned_at: null,
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: false,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 4,
+          applied_version: 3,
+          status: 'degraded',
+          degraded_reason_code: 'migration_failed',
+          degraded_detail: 'history migration failed',
+          updated_at: new Date('2026-05-21T12:00:00.000Z').toISOString(),
+          migrations: []
+        },
+        recent_write_failures: [
+          {
+            operation: 'append_state_transition',
+            reason_code: 'write_failed',
+            detail: 'database is locked',
+            recorded_at: new Date('2026-05-21T12:00:00.000Z').toISOString()
+          }
+        ]
+      })
+    });
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    const snapshot = harness.orchestrator.getStateSnapshot();
+
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(false);
+    expect(snapshot.quiescence.blocker_counts.persistence_history_write).toBe(1);
+    expect(snapshot.quiescence.blockers).toContainEqual(
+      expect.objectContaining({
+        category: 'persistence_history_write',
+        count: 1,
+        detail: 'history migration failed'
+      })
+    );
+  });
+
+  it('computes in-flight tracker write blockers while tracker mutations are pending', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-cancel-drain', identifier: 'ABC-CANCEL-DRAIN' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-cancel-drain',
+      'abnormal',
+      'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
+    );
+
+    let resolveTrackerWrite!: () => void;
+    harness.tracker.update_issue_state.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveTrackerWrite = resolve;
+        })
+    );
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    const cancelPromise = harness.orchestrator.cancelBlockedIssue('ABC-CANCEL-DRAIN', 'operator_cancel_return_to_backlog', {
+      actor: 'operator@example.test',
+      reason_note: 'operator_cancel_return_to_backlog',
+      confirmed: true
+    });
+    await Promise.resolve();
+
+    const pendingSnapshot = harness.orchestrator.getStateSnapshot();
+    expect(pendingSnapshot.quiescence.safe_to_shutdown).toBe(false);
+    expect(pendingSnapshot.quiescence.blocker_counts.in_flight_tracker_write).toBe(1);
+    expect(pendingSnapshot.quiescence.blockers).toContainEqual(
+      expect.objectContaining({
+        category: 'in_flight_tracker_write',
+        count: 1
+      })
+    );
+
+    resolveTrackerWrite();
+    await cancelPromise;
+
+    const settledSnapshot = harness.orchestrator.getStateSnapshot();
+    expect(settledSnapshot.quiescence.blocker_counts.in_flight_tracker_write).toBe(0);
+  });
+
   it('releases pre-spawn claim after spawn failure so a later eligible tick retries', async () => {
     const issue = makeIssue({ id: 'i-spawn-release', identifier: 'ABC-SPAWN-RELEASE' });
     const harness = createHarness({

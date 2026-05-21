@@ -23,6 +23,7 @@ import { SqlitePersistenceStore } from '../../src/persistence/store';
 import { toWorkerEvent } from '../../src/runtime';
 import type { Issue, TrackerAdapter } from '../../src/tracker/types';
 import type { ControlPlaneHealthSummary } from '../../src/api/control-plane-health';
+import type { PersistenceHealth } from '../../src/persistence';
 
 export function makeIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -192,6 +193,7 @@ export function createHarness(options: {
   persistence?: OrchestratorPersistencePort;
   getControlPlaneHealth?: OrchestratorPorts['getControlPlaneHealth'];
   getHostLoad?: OrchestratorPorts['getHostLoad'];
+  getPersistenceHealth?: () => PersistenceHealth;
 } = {}): Harness {
   const tracker = makeTracker();
   const now = { value: 1_000_000 };
@@ -244,6 +246,7 @@ export function createHarness(options: {
       dispatchPreflight: () => ({ dispatch_allowed: true }),
       getControlPlaneHealth: options.getControlPlaneHealth,
       getHostLoad: options.getHostLoad,
+      getPersistenceHealth: options.getPersistenceHealth,
       spawnWorker,
       recoverMissingToolOutput: options.recoverMissingToolOutput,
       terminateWorker:

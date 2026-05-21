@@ -102,6 +102,7 @@ export class LocalApiServer {
   private readonly snapshotSource: LocalApiServerOptions['snapshotSource'];
   private readonly refreshCoalescer: RefreshCoalescer;
   private readonly diagnosticsSource?: LocalApiServerOptions['diagnosticsSource'];
+  private readonly drainControlSource?: LocalApiServerOptions['drainControlSource'];
   private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
   private readonly issueControlSource?: LocalApiServerOptions['issueControlSource'];
   private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
@@ -127,6 +128,7 @@ export class LocalApiServer {
     this.snapshotService = new SnapshotService({ nowMs: options.nowMs });
     this.snapshotSource = options.snapshotSource;
     this.diagnosticsSource = options.diagnosticsSource;
+    this.drainControlSource = options.drainControlSource;
     this.workflowControlSource = options.workflowControlSource;
     this.issueControlSource = options.issueControlSource;
     this.dashboardConfig = options.dashboardConfig ?? {
@@ -527,6 +529,17 @@ export class LocalApiServer {
     });
   }
 
+  private projectDrainControlState(drainMode: ReturnType<NonNullable<LocalApiServerOptions['drainControlSource']>['readDrainMode']>) {
+    return {
+      active: drainMode.active,
+      entered_at: drainMode.entered_at_ms === null ? null : new Date(drainMode.entered_at_ms).toISOString(),
+      entered_at_ms: drainMode.entered_at_ms,
+      updated_at: drainMode.updated_at_ms === null ? null : new Date(drainMode.updated_at_ms).toISOString(),
+      updated_at_ms: drainMode.updated_at_ms,
+      reason: drainMode.reason
+    };
+  }
+
   private buildDiagnosticsPayload(): TimedDiagnosticsPayload {
     return buildDiagnosticsPayload({
       diagnosticsSource: this.diagnosticsSource,
@@ -708,6 +721,62 @@ export class LocalApiServer {
                 accepted: payload
               });
               sendJson(response, 202, payload);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/drain-mode$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response) => {
+              if (!this.drainControlSource) {
+                throw new LocalApiError('drain_control_unavailable', 'Drain Mode control source is not configured', 503);
+              }
+              sendJson(response, 200, {
+                drain_mode: this.projectDrainControlState(this.drainControlSource.readDrainMode())
+              });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/drain-mode\/enter$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response) => {
+              if (!this.drainControlSource) {
+                throw new LocalApiError('drain_control_unavailable', 'Drain Mode control source is not configured', 503);
+              }
+              const parsed = await readOptionalJsonObject(request, 'invalid_drain_control_submit');
+              const reason = typeof parsed.reason === 'string' ? parsed.reason : null;
+              const drainMode = this.drainControlSource.enterDrainMode({ reason });
+              this.broadcastStateSnapshot('drain_mode_entered');
+              sendJson(response, 202, {
+                drain_mode: this.projectDrainControlState(drainMode)
+              });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/drain-mode\/exit$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response) => {
+              if (!this.drainControlSource) {
+                throw new LocalApiError('drain_control_unavailable', 'Drain Mode control source is not configured', 503);
+              }
+              const parsed = await readOptionalJsonObject(request, 'invalid_drain_control_submit');
+              const reason = typeof parsed.reason === 'string' ? parsed.reason : null;
+              const drainMode = this.drainControlSource.exitDrainMode({ reason });
+              this.broadcastStateSnapshot('drain_mode_exited');
+              sendJson(response, 202, {
+                drain_mode: this.projectDrainControlState(drainMode)
+              });
             }
           }
         ]
