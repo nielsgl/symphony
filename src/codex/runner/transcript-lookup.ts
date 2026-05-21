@@ -54,6 +54,29 @@ interface TranscriptCandidateLookupResult {
   expiresAtMs: number;
 }
 
+export interface TranscriptLookupOptions {
+  nowMs?: () => number;
+  cacheTtlMs?: number;
+  maxCandidateFiles?: number;
+  maxFilenameDiscoveryFiles?: number;
+  maxDiscoveryFiles?: number;
+  maxProbeBytes?: number;
+  maxFileAgeMs?: number;
+  maxWallClockMs?: number;
+  maxDepth?: number;
+}
+
+interface TranscriptLookupLimits {
+  cacheTtlMs: number;
+  maxCandidateFiles: number;
+  maxFilenameDiscoveryFiles: number;
+  maxDiscoveryFiles: number;
+  maxProbeBytes: number;
+  maxFileAgeMs: number;
+  maxWallClockMs: number;
+  maxDepth: number;
+}
+
 export function serializeTranscriptLookupMetadata(lookup: TranscriptCandidateLookupResult): CodexTranscriptLookupMetadata {
   return {
     source: lookup.stats.source,
@@ -129,6 +152,8 @@ function distanceToTimeRangeMs(activeStartedAtMs: number, range: { startMs: numb
 
 export class TranscriptLookup {
   private readonly codexHome: string;
+  private readonly nowMs: () => number;
+  private readonly limits: TranscriptLookupLimits;
   private readonly transcriptOffsets = new Map<string, number>();
   private readonly transcriptTails = new Map<string, string>();
   private transcriptCandidateCache: TranscriptCandidateCache | null = null;
@@ -143,8 +168,20 @@ export class TranscriptLookup {
   private static readonly TRANSCRIPT_MAX_WALL_CLOCK_MS = 50;
   private static readonly TRANSCRIPT_MAX_DEPTH = 5;
 
-  constructor(codexHome: string) {
+  constructor(codexHome: string, options: TranscriptLookupOptions = {}) {
     this.codexHome = codexHome;
+    this.nowMs = options.nowMs ?? (() => Date.now());
+    this.limits = {
+      cacheTtlMs: options.cacheTtlMs ?? TranscriptLookup.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS,
+      maxCandidateFiles: options.maxCandidateFiles ?? TranscriptLookup.TRANSCRIPT_MAX_CANDIDATE_FILES,
+      maxFilenameDiscoveryFiles:
+        options.maxFilenameDiscoveryFiles ?? TranscriptLookup.TRANSCRIPT_MAX_FILENAME_DISCOVERY_FILES,
+      maxDiscoveryFiles: options.maxDiscoveryFiles ?? TranscriptLookup.TRANSCRIPT_MAX_DISCOVERY_FILES,
+      maxProbeBytes: options.maxProbeBytes ?? TranscriptLookup.TRANSCRIPT_MAX_PROBE_BYTES,
+      maxFileAgeMs: options.maxFileAgeMs ?? TranscriptLookup.TRANSCRIPT_MAX_FILE_AGE_MS,
+      maxWallClockMs: options.maxWallClockMs ?? TranscriptLookup.TRANSCRIPT_MAX_WALL_CLOCK_MS,
+      maxDepth: options.maxDepth ?? TranscriptLookup.TRANSCRIPT_MAX_DEPTH
+    };
   }
 
   consumeTerminalEvidence(
@@ -215,7 +252,7 @@ export class TranscriptLookup {
         }
 
         const payload = asRecord(record.payload) ?? record;
-        onRecord(payload, normalizeTimestampMs(record.timestamp) ?? Date.now());
+        onRecord(payload, normalizeTimestampMs(record.timestamp) ?? this.nowMs());
         const terminalEvidence = this.readTranscriptTerminalEvidence(record, transcriptPath, context, emit);
         if (terminalEvidence) {
           return { terminal: terminalEvidence, observedProgress, lookup };
@@ -228,11 +265,11 @@ export class TranscriptLookup {
 
   private findCandidateTranscriptPaths(context: TurnEventContext): TranscriptCandidateLookupResult {
     const identityKey = this.transcriptCandidateIdentityKey(context);
-    const nowMs = Date.now();
+    const nowMs = this.nowMs();
     if (
       this.transcriptCandidateCache &&
       this.transcriptCandidateCache.identityKey === identityKey &&
-      nowMs - this.transcriptCandidateCache.refreshedAtMs < TranscriptLookup.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS &&
+      nowMs - this.transcriptCandidateCache.refreshedAtMs < this.limits.cacheTtlMs &&
       this.isTranscriptCandidateCacheFresh()
     ) {
       const cachedStats = this.transcriptCandidateCache.stats;
@@ -245,7 +282,7 @@ export class TranscriptLookup {
           reasonCodes: [...cachedStats.reasonCodes]
         },
         refreshedAtMs: this.transcriptCandidateCache.refreshedAtMs,
-        expiresAtMs: this.transcriptCandidateCache.refreshedAtMs + TranscriptLookup.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS
+        expiresAtMs: this.transcriptCandidateCache.refreshedAtMs + this.limits.cacheTtlMs
       };
     }
 
@@ -253,7 +290,7 @@ export class TranscriptLookup {
       this.transcriptPathMayMatch(transcriptPath, context)
     );
     if (indexedPaths.length > 0) {
-      const limitedPaths = indexedPaths.slice(0, TranscriptLookup.TRANSCRIPT_MAX_CANDIDATE_FILES);
+      const limitedPaths = indexedPaths.slice(0, this.limits.maxCandidateFiles);
       const stats: TranscriptCandidateLookupStats = {
         source: 'indexed',
         candidateCount: limitedPaths.length,
@@ -305,11 +342,11 @@ export class TranscriptLookup {
     }
 
     const candidates: string[] = [];
-    const deadlineAtMs = Date.now() + TranscriptLookup.TRANSCRIPT_MAX_WALL_CLOCK_MS;
+    const deadlineAtMs = this.nowMs() + this.limits.maxWallClockMs;
     const reasonCodes = new Set<string>();
     let filesConsidered = 0;
     let filesParsed = 0;
-    let remainingProbeBytes = TranscriptLookup.TRANSCRIPT_MAX_PROBE_BYTES;
+    let remainingProbeBytes = this.limits.maxProbeBytes;
     let foundFallbackContentMatch = false;
     const stack: Array<{ directory: string; depth: number }> = [{ directory: sessionsRoot, depth: 0 }];
     const scannedDirectoryMtimes = new Map<string, number>();
@@ -317,10 +354,10 @@ export class TranscriptLookup {
     while (
       stack.length > 0 &&
       !foundFallbackContentMatch &&
-      candidates.length < TranscriptLookup.TRANSCRIPT_MAX_CANDIDATE_FILES &&
-      filesConsidered < TranscriptLookup.TRANSCRIPT_MAX_DISCOVERY_FILES
+      candidates.length < this.limits.maxCandidateFiles &&
+      filesConsidered < this.limits.maxDiscoveryFiles
     ) {
-      if (Date.now() > deadlineAtMs) {
+      if (this.nowMs() > deadlineAtMs) {
         reasonCodes.add('transcript_discovery_wall_clock_budget_exhausted');
         break;
       }
@@ -349,13 +386,13 @@ export class TranscriptLookup {
       }
       const nextDirectories: Array<{ directory: string; depth: number }> = [];
       for (const entry of entries) {
-        if (Date.now() > deadlineAtMs) {
+        if (this.nowMs() > deadlineAtMs) {
           reasonCodes.add('transcript_discovery_wall_clock_budget_exhausted');
           break;
         }
         const entryPath = path.join(current.directory, entry.name);
         if (entry.isDirectory()) {
-          if (current.depth < TranscriptLookup.TRANSCRIPT_MAX_DEPTH) {
+          if (current.depth < this.limits.maxDepth) {
             nextDirectories.push({
               directory: entryPath,
               depth: current.depth + 1
@@ -366,14 +403,14 @@ export class TranscriptLookup {
         if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
           continue;
         }
-        if (filesConsidered >= TranscriptLookup.TRANSCRIPT_MAX_DISCOVERY_FILES) {
+        if (filesConsidered >= this.limits.maxDiscoveryFiles) {
           reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
           break;
         }
         filesConsidered += 1;
         if (this.transcriptPathMayMatch(entryPath, context)) {
           candidates.push(entryPath);
-          if (candidates.length >= TranscriptLookup.TRANSCRIPT_MAX_CANDIDATE_FILES) {
+          if (candidates.length >= this.limits.maxCandidateFiles) {
             reasonCodes.add('transcript_candidate_file_budget_exhausted');
             break;
           }
@@ -386,7 +423,7 @@ export class TranscriptLookup {
         } catch {
           continue;
         }
-        if (nowMs - fileStat.mtimeMs > TranscriptLookup.TRANSCRIPT_MAX_FILE_AGE_MS) {
+        if (nowMs - fileStat.mtimeMs > this.limits.maxFileAgeMs) {
           reasonCodes.add('transcript_discovery_age_budget_skipped');
           continue;
         }
@@ -408,7 +445,7 @@ export class TranscriptLookup {
         if (probe.matched) {
           candidates.push(entryPath);
           foundFallbackContentMatch = true;
-          if (candidates.length >= TranscriptLookup.TRANSCRIPT_MAX_CANDIDATE_FILES) {
+          if (candidates.length >= this.limits.maxCandidateFiles) {
             reasonCodes.add('transcript_candidate_file_budget_exhausted');
           }
           break;
@@ -419,10 +456,10 @@ export class TranscriptLookup {
       }
     }
 
-    if (candidates.length >= TranscriptLookup.TRANSCRIPT_MAX_CANDIDATE_FILES) {
+    if (candidates.length >= this.limits.maxCandidateFiles) {
       reasonCodes.add('transcript_candidate_file_budget_exhausted');
     }
-    if (filesConsidered >= TranscriptLookup.TRANSCRIPT_MAX_DISCOVERY_FILES) {
+    if (filesConsidered >= this.limits.maxDiscoveryFiles) {
       reasonCodes.add('transcript_discovery_file_count_budget_exhausted');
     }
 
@@ -436,7 +473,7 @@ export class TranscriptLookup {
         candidateCount: candidates.length,
         filesConsidered,
         filesParsed,
-        bytesRead: TranscriptLookup.TRANSCRIPT_MAX_PROBE_BYTES - remainingProbeBytes,
+        bytesRead: this.limits.maxProbeBytes - remainingProbeBytes,
         exhausted,
         reasonCodes: [...reasonCodes].sort()
       },
@@ -465,7 +502,7 @@ export class TranscriptLookup {
       paths: [...paths],
       stats,
       refreshedAtMs,
-      expiresAtMs: refreshedAtMs + TranscriptLookup.TRANSCRIPT_CANDIDATE_CACHE_TTL_MS
+      expiresAtMs: refreshedAtMs + this.limits.cacheTtlMs
     };
   }
 
@@ -510,7 +547,7 @@ export class TranscriptLookup {
     const paths: string[] = [];
     const reasonCodes = new Set<string>();
     const scannedDirectoryMtimes = new Map<string, number>();
-    const deadlineAtMs = Date.now() + TranscriptLookup.TRANSCRIPT_MAX_WALL_CLOCK_MS;
+    const deadlineAtMs = this.nowMs() + this.limits.maxWallClockMs;
     let filesConsidered = 0;
     const stack = this.likelyTranscriptSessionDirectories(sessionsRoot, context.turn_started_at_ms).map((directory) => ({
       directory,
@@ -519,10 +556,10 @@ export class TranscriptLookup {
 
     while (
       stack.length > 0 &&
-      paths.length < TranscriptLookup.TRANSCRIPT_MAX_CANDIDATE_FILES &&
-      filesConsidered < TranscriptLookup.TRANSCRIPT_MAX_FILENAME_DISCOVERY_FILES
+      paths.length < this.limits.maxCandidateFiles &&
+      filesConsidered < this.limits.maxFilenameDiscoveryFiles
     ) {
-      if (Date.now() > deadlineAtMs) {
+      if (this.nowMs() > deadlineAtMs) {
         reasonCodes.add('transcript_filename_discovery_wall_clock_budget_exhausted');
         break;
       }
@@ -553,13 +590,13 @@ export class TranscriptLookup {
 
       const nextDirectories: Array<{ directory: string; depth: number }> = [];
       for (const entry of entries) {
-        if (Date.now() > deadlineAtMs) {
+        if (this.nowMs() > deadlineAtMs) {
           reasonCodes.add('transcript_filename_discovery_wall_clock_budget_exhausted');
           break;
         }
         const entryPath = path.join(current.directory, entry.name);
         if (entry.isDirectory()) {
-          if (current.depth < TranscriptLookup.TRANSCRIPT_MAX_DEPTH) {
+          if (current.depth < this.limits.maxDepth) {
             nextDirectories.push({
               directory: entryPath,
               depth: current.depth + 1
@@ -573,12 +610,12 @@ export class TranscriptLookup {
         filesConsidered += 1;
         if (this.transcriptPathMayMatch(entryPath, context)) {
           paths.push(entryPath);
-          if (paths.length >= TranscriptLookup.TRANSCRIPT_MAX_CANDIDATE_FILES) {
+          if (paths.length >= this.limits.maxCandidateFiles) {
             reasonCodes.add('transcript_candidate_file_budget_exhausted');
             break;
           }
         }
-        if (filesConsidered >= TranscriptLookup.TRANSCRIPT_MAX_FILENAME_DISCOVERY_FILES) {
+        if (filesConsidered >= this.limits.maxFilenameDiscoveryFiles) {
           reasonCodes.add('transcript_filename_discovery_file_count_budget_exhausted');
           break;
         }
@@ -788,7 +825,7 @@ export class TranscriptLookup {
       reasonCodes.push('transcript_probe_file_byte_budget_exhausted');
     }
     for (const line of content.split(/\r?\n/)) {
-      if (Date.now() > budget.deadlineAtMs) {
+      if (this.nowMs() > budget.deadlineAtMs) {
         reasonCodes.push('transcript_discovery_wall_clock_budget_exhausted');
         return {
           matched: false,

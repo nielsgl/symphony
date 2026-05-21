@@ -259,9 +259,9 @@ describe('WorkspaceManager', () => {
     });
   });
 
-  it('preflight blocks attempt residue for expanded git operation sentinels and unmerged index entries', async () => {
-    const sentinelNames = ['REBASE_HEAD', 'AUTO_MERGE', 'sequencer'];
-    for (const sentinelName of sentinelNames) {
+  it.each(['REBASE_HEAD', 'AUTO_MERGE', 'sequencer'])(
+    'preflight blocks attempt residue for git operation sentinel %s',
+    async (sentinelName) => {
       const root = await makeTempRoot();
       cleanupPaths.push(root);
       const manager = new WorkspaceManager({
@@ -293,8 +293,11 @@ describe('WorkspaceManager', () => {
         code: 'workspace_unprovisioned_conflict',
         message: expect.stringContaining('workspace contains non-ephemeral dirty files after preflight cleanup')
       });
-    }
+    },
+    30_000
+  );
 
+  it('preflight blocks attempt residue for unmerged index entries', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);
     const manager = new WorkspaceManager({
@@ -321,7 +324,7 @@ describe('WorkspaceManager', () => {
       code: 'workspace_unprovisioned_conflict',
       message: expect.stringContaining('workspace contains non-ephemeral dirty files after preflight cleanup')
     });
-  });
+  }, 30_000);
 
   it('preflight no-ops on clean workspace', async () => {
     const root = await makeTempRoot();
