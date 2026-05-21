@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildProjectHistoryConsumerSummaryResponse, buildProjectHistoryHealth } from '../../src/api/project-history';
+import {
+  buildProjectHistoryConsumerSummaryResponse,
+  buildProjectHistoryHealth,
+  buildProjectHistoryListResponse,
+  buildProjectHistoryTicketDetailResponse
+} from '../../src/api/project-history';
 import type { DurableIdentity, TicketTimelineRecord } from '../../src/persistence';
 
 function identity(overrides: Partial<DurableIdentity['ticket']> = {}): DurableIdentity {
@@ -178,6 +183,7 @@ function timeline(overrides: Partial<TicketTimelineRecord> = {}): TicketTimeline
     ],
     ticket_references: [],
     operator_actions: [],
+    drain_audit_events: [],
     blocked_input_events: [],
     app_server_events: [
       {
@@ -244,6 +250,48 @@ describe('Project History consumer summary', () => {
     });
     expect(summary.app_server_lite).toMatchObject({ status: 'present' });
     expect(summary.evidence_references[0]).toMatchObject({ evidence_kind: 'validation', uri: 'file://validation.txt' });
+  });
+
+  it('projects drain audit events in project lists and ticket timelines', () => {
+    const drainEvent = {
+      drain_audit_event_id: 'drain-audit-1',
+      project_key: 'project-main',
+      ticket_key: 'ticket-abc-1',
+      issue_run_id: 'issue-run-1',
+      attempt_id: 'attempt-1',
+      thread_id: 'thread-1',
+      turn_id: null,
+      event_type: 'wait-timed-out' as const,
+      actor: 'operator',
+      source: 'api',
+      result: 'rejected' as const,
+      result_code: 'timeout',
+      reason_note: null,
+      state_context: { safe_to_shutdown: false },
+      blocker_summaries: [{ category: 'active_worker', count: 1, issue_identifiers: ['ABC-1'] }],
+      occurred_at: '2026-04-10T10:26:00.000Z',
+      observed_at: '2026-04-10T10:26:00.000Z',
+      observation_hash: 'drain-hash',
+      duplicate_count: 1,
+      last_observed_at: '2026-04-10T10:26:00.000Z'
+    };
+    const ticketTimeline = timeline({ drain_audit_events: [drainEvent] });
+
+    const list = buildProjectHistoryListResponse({
+      projectKey: 'project-main',
+      timelines: [ticketTimeline],
+      drainAuditEvents: [drainEvent],
+      page: { limit: 50, offset: 0, has_more: false, total: 1 }
+    });
+    const detail = buildProjectHistoryTicketDetailResponse(ticketTimeline);
+
+    expect(list.drain_audit_events).toEqual([drainEvent]);
+    expect(list.tickets[0].summary.drain_audit_event_count).toBe(1);
+    expect(list.tickets[0].facts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ fact: 'drain_audit_events', status: 'present' })])
+    );
+    expect(detail.drain_audit_events).toEqual([drainEvent]);
+    expect(detail.latest_observed_at).toBe('2026-04-10T10:30:00.000Z');
   });
 
   it('marks repeated attempts and returns newest attempts first', () => {

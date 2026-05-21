@@ -261,6 +261,48 @@ export function createProjectExecutionHistoryTables(context: PersistenceStoreCon
       FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
       FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT
     );
+    CREATE TABLE IF NOT EXISTS history_drain_audit_event (
+      drain_audit_event_id TEXT PRIMARY KEY,
+      project_key TEXT NOT NULL,
+      ticket_key TEXT,
+      issue_run_id TEXT,
+      attempt_id TEXT,
+      thread_id TEXT,
+      turn_id TEXT,
+      event_type TEXT NOT NULL CHECK (event_type IN (
+        'drain-entered',
+        'drain-exited',
+        'quiescence-reached',
+        'wait-started',
+        'wait-timed-out',
+        'safe-shutdown-allowed',
+        'safe-shutdown-refused'
+      )),
+      actor TEXT,
+      source TEXT NOT NULL,
+      result TEXT NOT NULL CHECK (result IN ('accepted', 'rejected', 'failed', 'observed')),
+      result_code TEXT NOT NULL,
+      reason_note TEXT,
+      state_context TEXT,
+      blocker_summaries TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      observation_hash TEXT NOT NULL,
+      duplicate_count INTEGER NOT NULL DEFAULT 1,
+      last_observed_at TEXT NOT NULL,
+      FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT,
+      FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+      FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+      FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+      FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT,
+      UNIQUE (project_key, event_type, observation_hash)
+    );
+    CREATE INDEX IF NOT EXISTS history_drain_audit_event_project_idx
+      ON history_drain_audit_event(project_key, occurred_at DESC, drain_audit_event_id DESC);
+    CREATE INDEX IF NOT EXISTS history_drain_audit_event_ticket_idx
+      ON history_drain_audit_event(project_key, ticket_key, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS history_drain_audit_event_issue_run_idx
+      ON history_drain_audit_event(issue_run_id);
     CREATE TABLE IF NOT EXISTS history_retention_metadata (
       singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
       retention_days INTEGER NOT NULL,

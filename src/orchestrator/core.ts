@@ -368,6 +368,7 @@ export class OrchestratorCore {
 
   enterDrainMode(params: { reason?: string | null } = {}): DrainModeState {
     const nowMs = this.nowMs();
+    const occurredAt = new Date(nowMs).toISOString();
     this.state.drain_mode = {
       active: true,
       entered_at_ms: this.state.drain_mode.active ? this.state.drain_mode.entered_at_ms : nowMs,
@@ -380,12 +381,23 @@ export class OrchestratorCore {
       detail: this.state.drain_mode.reason ?? 'drain mode entered'
     });
     this.refreshQuiescenceState();
+    this.recordDrainAuditHistory({
+      event_type: 'drain-entered',
+      result: 'accepted',
+      result_code: 'drain_mode_entered',
+      reason_note: params.reason ?? null,
+      state_context: this.drainAuditStateContext(),
+      blocker_summaries: this.drainAuditBlockerSummaries(this.state.quiescence.blockers),
+      occurred_at: occurredAt,
+      observed_at: occurredAt
+    });
     this.ports.notifyObservers?.();
     return { ...this.state.drain_mode };
   }
 
   exitDrainMode(params: { reason?: string | null } = {}): DrainModeState {
     const nowMs = this.nowMs();
+    const occurredAt = new Date(nowMs).toISOString();
     this.state.drain_mode = {
       active: false,
       entered_at_ms: null,
@@ -398,6 +410,16 @@ export class OrchestratorCore {
       detail: this.state.drain_mode.reason ?? 'drain mode exited'
     });
     this.refreshQuiescenceState();
+    this.recordDrainAuditHistory({
+      event_type: 'drain-exited',
+      result: 'accepted',
+      result_code: 'drain_mode_exited',
+      reason_note: params.reason ?? null,
+      state_context: this.drainAuditStateContext(),
+      blocker_summaries: this.drainAuditBlockerSummaries(this.state.quiescence.blockers),
+      occurred_at: occurredAt,
+      observed_at: occurredAt
+    });
     this.ports.notifyObservers?.();
     return { ...this.state.drain_mode };
   }
@@ -575,6 +597,18 @@ export class OrchestratorCore {
         severity: next.safe_to_shutdown ? 'info' : 'warn',
         detail: next.safe_to_shutdown ? 'runtime is safe to shutdown' : `runtime has ${blockers.length} quiescence blocker categories`
       });
+      if (next.safe_to_shutdown) {
+        const occurredAt = new Date(next.updated_at_ms).toISOString();
+        this.recordDrainAuditHistory({
+          event_type: 'quiescence-reached',
+          result: 'observed',
+          result_code: 'quiescent',
+          state_context: this.drainAuditStateContext(),
+          blocker_summaries: [],
+          occurred_at: occurredAt,
+          observed_at: occurredAt
+        });
+      }
     }
     return next;
   }
@@ -1066,6 +1100,57 @@ export class OrchestratorCore {
 
   private async recordHistoryWriteFailure(operation: string, reasonCode: string, error: unknown): Promise<void> {
     await recordHistoryWriteFailureHelper(this.persistence, operation, reasonCode, error);
+  }
+
+  private drainAuditStateContext(): Record<string, unknown> {
+    return {
+      drain_active: this.state.drain_mode.active,
+      safe_to_shutdown: this.state.quiescence.safe_to_shutdown,
+      quiescence_state: this.state.quiescence.state,
+      blocker_counts: this.state.quiescence.blocker_counts
+    };
+  }
+
+  private drainAuditBlockerSummaries(blockers: DrainQuiescenceBlocker[]): Array<{
+    category: string;
+    count: number;
+    issue_identifiers: string[];
+    detail: string | null;
+  }> {
+    return blockers.map((blocker) => ({
+      category: blocker.category,
+      count: blocker.count,
+      issue_identifiers: blocker.issue_identifiers,
+      detail: blocker.detail
+    }));
+  }
+
+  private recordDrainAuditHistory(params: {
+    event_type:
+      | 'drain-entered'
+      | 'drain-exited'
+      | 'quiescence-reached'
+      | 'wait-started'
+      | 'wait-timed-out'
+      | 'safe-shutdown-allowed'
+      | 'safe-shutdown-refused';
+    result: 'accepted' | 'rejected' | 'failed' | 'observed';
+    result_code: string;
+    reason_note?: string | null;
+    state_context: Record<string, unknown>;
+    blocker_summaries: Array<{ category: string; count: number; issue_identifiers: string[]; detail: string | null }>;
+    occurred_at: string;
+    observed_at: string;
+  }): void {
+    void this.persistence
+      ?.appendDrainAuditHistory?.({
+        ...params,
+        actor: 'operator',
+        source: 'orchestrator'
+      })
+      .catch((error) => {
+        void this.recordHistoryWriteFailure('appendDrainAuditHistory', params.result_code, error);
+      });
   }
 
   private normalStopForWorkerCompletion(

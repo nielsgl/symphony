@@ -106,6 +106,7 @@ export class LocalApiServer {
   private readonly refreshCoalescer: RefreshCoalescer;
   private readonly diagnosticsSource?: LocalApiServerOptions['diagnosticsSource'];
   private readonly drainControlSource?: LocalApiServerOptions['drainControlSource'];
+  private readonly drainAuditSink?: LocalApiServerOptions['drainAuditSink'];
   private readonly shutdownSource?: LocalApiServerOptions['shutdownSource'];
   private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
   private readonly issueControlSource?: LocalApiServerOptions['issueControlSource'];
@@ -134,6 +135,7 @@ export class LocalApiServer {
     this.snapshotSource = options.snapshotSource;
     this.diagnosticsSource = options.diagnosticsSource;
     this.drainControlSource = options.drainControlSource;
+    this.drainAuditSink = options.drainAuditSink;
     this.shutdownSource = options.shutdownSource;
     this.workflowControlSource = options.workflowControlSource;
     this.issueControlSource = options.issueControlSource;
@@ -594,6 +596,27 @@ export class LocalApiServer {
     });
   }
 
+  private drainAuditBlockerSummaries(blockers: ApiDrainControlBlocker[]): NonNullable<Parameters<NonNullable<LocalApiServerOptions['drainAuditSink']>['appendDrainAuditHistory']>[0]['blocker_summaries']> {
+    return blockers.map((blocker) => ({
+      category: blocker.category,
+      count: blocker.count,
+      issue_identifiers: blocker.issue_identifiers,
+      run_identifiers: blocker.run_identifiers,
+      detail: blocker.reason
+    }));
+  }
+
+  private recordDrainAuditEvent(
+    params: Parameters<NonNullable<LocalApiServerOptions['drainAuditSink']>['appendDrainAuditHistory']>[0]
+  ): void {
+    if (!this.drainAuditSink) {
+      return;
+    }
+    void this.drainAuditSink.appendDrainAuditHistory(params).catch((error) => {
+      void this.drainAuditSink?.recordHistoryWriteFailure?.('appendDrainAuditHistory', params.result_code, error);
+    });
+  }
+
   private parseDrainControlTimeoutMs(parsed: Record<string, unknown>, requestUrl: URL): number {
     const raw = parsed.timeout_ms ?? requestUrl.searchParams.get('timeout_ms');
     if (raw === undefined || raw === null || raw === '') {
@@ -608,7 +631,20 @@ export class LocalApiServer {
 
   private async waitForDrainQuiescence(timeoutMs: number): Promise<ApiDrainWaitResponse> {
     const startedAtMonotonicMs = performance.now();
+    const startedAtMs = this.nowMs();
+    const startedAt = new Date(startedAtMs).toISOString();
     this.broadcastStateSnapshot('drain_wait_started');
+    this.recordDrainAuditEvent({
+      event_type: 'wait-started',
+      actor: 'operator',
+      source: 'api',
+      result: 'observed',
+      result_code: 'drain_wait_started',
+      state_context: { timeout_ms: timeoutMs },
+      blocker_summaries: [],
+      occurred_at: startedAt,
+      observed_at: startedAt
+    });
 
     let latest = this.readDrainQuiescenceProjection();
     while (!latest.quiescence.safe_to_shutdown) {
@@ -624,6 +660,17 @@ export class LocalApiServer {
           blockers: this.projectDrainControlBlockers(latest.state, latest.quiescence)
         };
         this.broadcastStateSnapshot('drain_wait_timeout');
+        this.recordDrainAuditEvent({
+          event_type: 'wait-timed-out',
+          actor: 'operator',
+          source: 'api',
+          result: 'rejected',
+          result_code: 'timeout',
+          state_context: { waited_ms: response.waited_ms, timeout_ms: timeoutMs, safe_to_shutdown: false },
+          blocker_summaries: this.drainAuditBlockerSummaries(response.blockers),
+          occurred_at: new Date(this.nowMs()).toISOString(),
+          observed_at: new Date(this.nowMs()).toISOString()
+        });
         return response;
       }
 
@@ -641,6 +688,17 @@ export class LocalApiServer {
       blockers: []
     };
     this.broadcastStateSnapshot('drain_wait_succeeded');
+    this.recordDrainAuditEvent({
+      event_type: 'quiescence-reached',
+      actor: 'operator',
+      source: 'api',
+      result: 'accepted',
+      result_code: 'quiescent',
+      state_context: { waited_ms: response.waited_ms, timeout_ms: timeoutMs, safe_to_shutdown: true },
+      blocker_summaries: [],
+      occurred_at: new Date(this.nowMs()).toISOString(),
+      observed_at: new Date(this.nowMs()).toISOString()
+    });
     return response;
   }
 
@@ -976,6 +1034,17 @@ export class LocalApiServer {
               if (!quiescence.safe_to_shutdown && !override) {
                 const payload = this.buildBlockedShutdownResponse(state, quiescence, false);
                 this.broadcastStateSnapshot('drain_shutdown_blocked');
+                this.recordDrainAuditEvent({
+                  event_type: 'safe-shutdown-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: payload.reason,
+                  state_context: { mode: payload.mode, safe_to_shutdown: false },
+                  blocker_summaries: this.drainAuditBlockerSummaries(payload.blockers),
+                  occurred_at: payload.requested_at,
+                  observed_at: payload.requested_at
+                });
                 sendJson(response, 409, payload);
                 return;
               }
@@ -983,6 +1052,17 @@ export class LocalApiServer {
               const payload = this.buildAcceptedShutdownResponse(quiescence, override);
               this.shutdownOutcome = payload;
               this.broadcastStateSnapshot(override ? 'drain_shutdown_override_requested' : 'drain_shutdown_requested');
+              this.recordDrainAuditEvent({
+                event_type: 'safe-shutdown-allowed',
+                actor: 'operator',
+                source: 'api',
+                result: 'accepted',
+                result_code: payload.reason,
+                state_context: { mode: payload.mode, safe_to_shutdown: quiescence.safe_to_shutdown },
+                blocker_summaries: this.drainAuditBlockerSummaries(payload.blockers),
+                occurred_at: payload.requested_at,
+                observed_at: payload.requested_at
+              });
               sendJson(response, 202, payload);
               this.scheduleSafeShutdown();
             }
@@ -1191,10 +1271,12 @@ export class LocalApiServer {
               const offset = parseNonNegativeInteger(requestUrl.searchParams.get('offset'));
               const page = this.diagnosticsSource.listProjectTicketSummaries(projectKey, { limit, offset });
               const persistenceHealth = this.diagnosticsSource.getPersistenceHealth();
+              const drainAuditPage = this.diagnosticsSource.listProjectDrainAuditEvents?.(projectKey, { limit: 8, offset: 0 });
 
               sendJson(response, 200, buildProjectHistoryListResponse({
                 projectKey,
                 summaries: page.items,
+                drainAuditEvents: drainAuditPage?.items ?? [],
                 page: {
                   limit: page.limit,
                   offset: page.offset,

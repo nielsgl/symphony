@@ -55,8 +55,8 @@ describe('SqlitePersistenceStore migrations', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 9,
-      applied_version: 9,
+      target_version: 10,
+      applied_version: 10,
       status: 'healthy',
       degraded_reason_code: null
     });
@@ -69,7 +69,8 @@ describe('SqlitePersistenceStore migrations', () => {
       expect.objectContaining({ version: 6, name: 'operational_history_facts_v1', status: 'applied' }),
       expect.objectContaining({ version: 7, name: 'history_retention_prune_evidence_v1', status: 'applied' }),
       expect.objectContaining({ version: 8, name: 'stable_project_identity_key_v1', status: 'applied' }),
-      expect.objectContaining({ version: 9, name: 'project_scoped_ticket_identity_v1', status: 'applied' })
+      expect.objectContaining({ version: 9, name: 'project_scoped_ticket_identity_v1', status: 'applied' }),
+      expect.objectContaining({ version: 10, name: 'drain_audit_history_v1', status: 'applied' })
     ]);
   });
 
@@ -80,14 +81,14 @@ describe('SqlitePersistenceStore migrations', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(9);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(10);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 10, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
       expect.objectContaining({ version: 2, status: 'applied' }),
@@ -97,7 +98,8 @@ describe('SqlitePersistenceStore migrations', () => {
       expect.objectContaining({ version: 6, status: 'applied' }),
       expect.objectContaining({ version: 7, status: 'applied' }),
       expect.objectContaining({ version: 8, status: 'applied' }),
-      expect.objectContaining({ version: 9, status: 'applied' })
+      expect.objectContaining({ version: 9, status: 'applied' }),
+      expect.objectContaining({ version: 10, status: 'applied' })
     ]);
   });
 
@@ -166,7 +168,7 @@ describe('SqlitePersistenceStore migrations', () => {
            VALUES (?, ?, 'linear', 'present', 'symphony', NULL, ?, ?, '2026-04-11T11:00:00.000Z', '2026-04-11T11:00:00.000Z')`
         )
         .run(projectB.ticket.key, projectB.project.key, projectB.ticket.remote_issue_id, projectB.ticket.human_issue_identifier);
-      dbA.prepare("DELETE FROM history_schema_migrations WHERE schema_name = 'project_execution_history' AND version = 9").run();
+      dbA.prepare("DELETE FROM history_schema_migrations WHERE schema_name = 'project_execution_history' AND version IN (9, 10)").run();
       dbA
         .prepare(
           `UPDATE history_schema_state
@@ -180,7 +182,7 @@ describe('SqlitePersistenceStore migrations', () => {
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
     stores.push(storeB);
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 10, status: 'healthy' });
     expect(storeB.listProjectTicketIdentities(projectA.project.key).items).toEqual([projectA]);
     expect(storeB.listProjectTicketIdentities(projectB.project.key).items).toEqual([projectB]);
     expect(storeB.reconstructTicketTimeline(projectA).issue_runs.map((run) => run.issue_run_id)).toEqual(['legacy-project-a-run']);
@@ -316,7 +318,7 @@ describe('SqlitePersistenceStore migrations', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 10, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
       expect.arrayContaining([
         'history_token_model_fact',

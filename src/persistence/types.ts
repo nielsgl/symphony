@@ -210,6 +210,47 @@ export interface OperatorActionHistoryRecord {
   last_observed_at: string;
 }
 
+export type DrainAuditEventType =
+  | 'drain-entered'
+  | 'drain-exited'
+  | 'quiescence-reached'
+  | 'wait-started'
+  | 'wait-timed-out'
+  | 'safe-shutdown-allowed'
+  | 'safe-shutdown-refused';
+
+export interface DrainAuditBlockerSummary {
+  category: string;
+  count: number;
+  issue_identifiers?: string[];
+  run_identifiers?: string[];
+  thread_identifiers?: string[];
+  detail?: string | null;
+}
+
+export interface DrainAuditEventRecord {
+  drain_audit_event_id: string;
+  project_key: string;
+  ticket_key: string | null;
+  issue_run_id: string | null;
+  attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  event_type: DrainAuditEventType;
+  actor: string | null;
+  source: string;
+  result: 'accepted' | 'rejected' | 'failed' | 'observed';
+  result_code: string;
+  reason_note: string | null;
+  state_context: Record<string, unknown> | null;
+  blocker_summaries: DrainAuditBlockerSummary[];
+  occurred_at: string;
+  observed_at: string;
+  observation_hash: string;
+  duplicate_count: number;
+  last_observed_at: string;
+}
+
 export interface BlockedInputEventRecord {
   blocked_input_event_id: string;
   project_key: string | null;
@@ -342,6 +383,7 @@ export interface TicketTimelineRecord {
   tracker_snapshots: TrackerTicketSnapshotRecord[];
   ticket_references: TicketReferenceRecord[];
   operator_actions: OperatorActionHistoryRecord[];
+  drain_audit_events: DrainAuditEventRecord[];
   blocked_input_events: BlockedInputEventRecord[];
   app_server_events: AppServerEventLedgerExcerpt[];
   token_model_facts: TokenModelFactRecord[];
@@ -388,6 +430,7 @@ export interface ProjectHistoryTicketSummaryProjection {
     tracker_snapshot_count: number;
     ticket_reference_count: number;
     operator_action_count: number;
+    drain_audit_event_count: number;
     blocked_input_event_count: number;
     app_server_event_count: number;
     token_model_fact_count: number;

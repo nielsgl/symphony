@@ -5,6 +5,8 @@ import type {
   AppServerEventLedgerRecord,
   AttemptRecord,
   BlockedInputEventRecord,
+  DrainAuditBlockerSummary,
+  DrainAuditEventRecord,
   DurableIdentity,
   IssueRunRecord,
   OperatorActionHistoryRecord,
@@ -52,6 +54,25 @@ function parseJsonArray(value: string): unknown[] {
 
 function parseStringArray(value: string): string[] {
   return parseJsonArray(value).filter((entry): entry is string => typeof entry === 'string');
+}
+
+function parseDrainAuditBlockers(value: string): DrainAuditBlockerSummary[] {
+  return parseJsonArray(value)
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    .map((entry) => ({
+      category: typeof entry.category === 'string' ? entry.category : 'unknown',
+      count: typeof entry.count === 'number' && Number.isFinite(entry.count) ? entry.count : 0,
+      issue_identifiers: Array.isArray(entry.issue_identifiers)
+        ? entry.issue_identifiers.filter((item): item is string => typeof item === 'string')
+        : [],
+      run_identifiers: Array.isArray(entry.run_identifiers)
+        ? entry.run_identifiers.filter((item): item is string => typeof item === 'string')
+        : [],
+      thread_identifiers: Array.isArray(entry.thread_identifiers)
+        ? entry.thread_identifiers.filter((item): item is string => typeof item === 'string')
+        : [],
+      detail: typeof entry.detail === 'string' ? entry.detail : null
+    }));
 }
 
 function parseHistoryPayloadTruncation(value: string): AppServerEventLedgerRecord['truncation'] {
@@ -167,6 +188,36 @@ export class ProjectHistoryReader {
     return parseDurableIdentity(row?.identity ?? null);
   }
 
+  listProjectDrainAuditEvents(
+    projectKey: string,
+    options: { limit?: number; offset?: number } = {}
+  ): { items: DrainAuditEventRecord[]; limit: number; offset: number; has_more: boolean; total: number } {
+    const limit = normalizeBoundedLimit(options.limit, 50, 100);
+    const offset = normalizeOffset(options.offset);
+    const totalRow = this.db
+      .prepare('SELECT COUNT(*) AS count FROM history_drain_audit_event WHERE project_key = ?')
+      .get(projectKey) as { count: number };
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM history_drain_audit_event
+         WHERE project_key = ?
+         ORDER BY occurred_at DESC, drain_audit_event_id DESC
+         LIMIT ? OFFSET ?`
+      )
+      .all(projectKey, limit, offset) as Array<Omit<DrainAuditEventRecord, 'state_context' | 'blocker_summaries'> & {
+      state_context: string | null;
+      blocker_summaries: string;
+    }>;
+    const items = rows.map((row) => this.projectDrainAuditRow(row));
+    return {
+      items,
+      limit,
+      offset,
+      has_more: offset + items.length < totalRow.count,
+      total: totalRow.count
+    };
+  }
+
   reconstructTicketTimeline(identity: DurableIdentity): TicketTimelineRecord {
     const issueRunRows = this.db
       .prepare(
@@ -195,6 +246,7 @@ export class ProjectHistoryReader {
         tracker_snapshots: [],
         ticket_references: [],
         operator_actions: [],
+        drain_audit_events: [],
         blocked_input_events: [],
         app_server_events: [],
         token_model_facts: []
@@ -277,6 +329,23 @@ export class ProjectHistoryReader {
        ORDER BY requested_at ASC, operator_action_id ASC`,
       issueRunIds
     );
+    const drainAuditRows = this.db
+      .prepare(
+        `SELECT * FROM history_drain_audit_event
+         WHERE project_key = ?
+          AND (
+            ticket_key = ?
+            OR issue_run_id IN (${sqlPlaceholders(issueRunIds)})
+            OR blocker_summaries LIKE ?
+          )
+         ORDER BY occurred_at ASC, drain_audit_event_id ASC`
+      )
+      .all(identity.project.key, identity.ticket.key, ...issueRunIds, `%"${identity.ticket.human_issue_identifier}"%`) as Array<
+      Omit<DrainAuditEventRecord, 'state_context' | 'blocker_summaries'> & {
+        state_context: string | null;
+        blocker_summaries: string;
+      }
+    >;
     const blockedInputEventRows = this.selectByIssueRunIds<
       Omit<BlockedInputEventRecord, 'pending_input' | 'state_context'> & {
         pending_input: string | null;
@@ -337,6 +406,7 @@ export class ProjectHistoryReader {
         ...row,
         state_context: parseNullableJsonObject(row.state_context)
       })),
+      drain_audit_events: drainAuditRows.map((row) => this.projectDrainAuditRow(row)),
       blocked_input_events: blockedInputEventRows.map((row) => ({
         ...row,
         pending_input: parseNullableJsonObject(row.pending_input),
@@ -375,6 +445,7 @@ export class ProjectHistoryReader {
       latestOutcome?.recorded_at ?? null,
       latestTrackerSnapshot?.last_observed_at ?? null,
       latestTransition?.transitioned_at ?? null,
+      this.latestDrainAuditObservedAt(issueRunIds),
       this.latestAppServerObservedAt(issueRunIds)
     ]);
 
@@ -482,6 +553,20 @@ export class ProjectHistoryReader {
     return row?.observed_at ?? null;
   }
 
+  private latestDrainAuditObservedAt(issueRunIds: string[]): string | null {
+    if (issueRunIds.length === 0) {
+      return null;
+    }
+    const row = this.db
+      .prepare(
+        `SELECT MAX(observed_at) AS observed_at
+         FROM history_drain_audit_event
+         WHERE issue_run_id IN (${sqlPlaceholders(issueRunIds)})`
+      )
+      .get(...issueRunIds) as { observed_at: string | null } | undefined;
+    return row?.observed_at ?? null;
+  }
+
   private summaryCounts(issueRunIds: string[]): ProjectHistoryTicketSummaryProjection['summary'] {
     const count = (table: string, where: string = ''): number => {
       if (issueRunIds.length === 0) {
@@ -521,6 +606,7 @@ export class ProjectHistoryReader {
       operator_action_count: count('history_operator_action'),
       blocked_input_event_count: count('history_blocked_input_event'),
       app_server_event_count: count('history_app_server_event'),
+      drain_audit_event_count: count('history_drain_audit_event'),
       token_model_fact_count: tokenRow.count,
       total_tokens: tokenRow.total_tokens
     };
@@ -672,5 +758,18 @@ export class ProjectHistoryReader {
 
   private selectByIssueRunIds<T>(sql: string, issueRunIds: string[]): T[] {
     return this.db.prepare(sql).all(...issueRunIds) as T[];
+  }
+
+  private projectDrainAuditRow(
+    row: Omit<DrainAuditEventRecord, 'state_context' | 'blocker_summaries'> & {
+      state_context: string | null;
+      blocker_summaries: string;
+    }
+  ): DrainAuditEventRecord {
+    return {
+      ...row,
+      state_context: parseNullableJsonObject(row.state_context),
+      blocker_summaries: parseDrainAuditBlockers(row.blocker_summaries)
+    };
   }
 }

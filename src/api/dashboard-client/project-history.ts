@@ -321,7 +321,13 @@ export function renderProjectHistoryDetail() {
 
     const grid = document.createElement('div');
     grid.className = 'project-history-detail-grid';
+    const drainAuditEvents = Array.isArray(state.projectHistory.listPayload && state.projectHistory.listPayload.drain_audit_events)
+      ? state.projectHistory.listPayload.drain_audit_events
+      : [];
     grid.append(
+      createProjectHistorySection('Drain Audit Events', drainAuditEvents, function (item: any) {
+        return item.event_type + ' • ' + item.result_code + ' • ' + (item.actor || item.source || 'unknown') + ' • ' + formatDate(item.occurred_at);
+      }),
       createProjectHistorySection('Attempts', detail.attempts, function (item: any) {
         return 'Attempt ' + item.attempt_number + ' • ' + item.status + ' • ' + formatDate(item.started_at) + ' - ' + formatDate(item.ended_at);
       }),
@@ -348,6 +354,14 @@ export function renderProjectHistoryDetail() {
       }),
       createProjectHistorySection('Tracker And PR Facts', [].concat(detail.tracker_facts || [], detail.pr_and_reference_facts || [], detail.operator_facts || []), function (item: any) {
         return (item.tracker_status || item.reference_kind || item.action || 'fact') + ' • ' + (item.label || item.result || item.state || item.tracker_status || 'n/a') + ' • ' + formatDate(item.last_observed_at || item.observed_at || item.requested_at);
+      }),
+      createProjectHistorySection('Ticket Drain Audit Events', detail.drain_audit_events, function (item: any) {
+        const blockers = Array.isArray(item.blocker_summaries) && item.blocker_summaries.length
+          ? ' • blockers ' + item.blocker_summaries.map(function (blocker: any) {
+              return blocker.category + ':' + blocker.count;
+            }).join(', ')
+          : '';
+        return item.event_type + ' • ' + item.result + ' • ' + item.result_code + ' • ' + formatDate(item.occurred_at) + blockers;
       }),
       createProjectHistorySection('App Server Lite Excerpts', detail.app_server_lite_summaries, function (item: any) {
         return item.source_event_name + ' • ' + item.detail_status + ' • ' + (item.summary || item.redacted_excerpt || item.unavailable_reason_code || 'no excerpt');

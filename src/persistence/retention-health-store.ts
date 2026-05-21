@@ -117,6 +117,7 @@ export class RetentionHealthStore {
                 'history_tracker_ticket_snapshot',
                 'history_ticket_reference',
                 'history_operator_action',
+                'history_drain_audit_event',
                 'history_blocked_input_event',
                 'state_transition',
                 'tool_span',
@@ -352,6 +353,7 @@ export class RetentionHealthStore {
     this.db.prepare('DELETE FROM history_tracker_ticket_snapshot WHERE issue_run_id = ?').run(issueRunId);
     this.db.prepare('DELETE FROM history_ticket_reference WHERE issue_run_id = ?').run(issueRunId);
     this.db.prepare('DELETE FROM history_operator_action WHERE issue_run_id = ?').run(issueRunId);
+    this.db.prepare('DELETE FROM history_drain_audit_event WHERE issue_run_id = ?').run(issueRunId);
     this.db.prepare('DELETE FROM history_blocked_input_event WHERE issue_run_id = ?').run(issueRunId);
     this.db.prepare('DELETE FROM state_transition WHERE issue_run_id = ?').run(issueRunId);
     this.db
