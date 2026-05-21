@@ -7,6 +7,7 @@ import { loadIssue } from './issue-detail';
 import { renderRuntimeEvents } from './runtime';
 import { loadStoppedRunRecovery } from './stopped-runs';
 import { loadProjectHistory } from './project-history';
+import { enterDrainMode, exitDrainMode, requestDrainSafeShutdown, waitForDrainQuiescence } from './operator-actions';
 
 export function wireEvents() {
     elements.refreshButton.addEventListener('click', function () {
@@ -20,6 +21,30 @@ export function wireEvents() {
     if (elements.stoppedRunRecoveryLoad) {
       elements.stoppedRunRecoveryLoad.addEventListener('click', function () {
         void loadStoppedRunRecovery();
+      });
+    }
+
+    if (elements.drainEnterButton) {
+      elements.drainEnterButton.addEventListener('click', function () {
+        void enterDrainMode();
+      });
+    }
+
+    if (elements.drainExitButton) {
+      elements.drainExitButton.addEventListener('click', function () {
+        void exitDrainMode();
+      });
+    }
+
+    if (elements.drainWaitButton) {
+      elements.drainWaitButton.addEventListener('click', function () {
+        void waitForDrainQuiescence();
+      });
+    }
+
+    if (elements.drainShutdownButton) {
+      elements.drainShutdownButton.addEventListener('click', function () {
+        void requestDrainSafeShutdown();
       });
     }
 

@@ -1,4 +1,5 @@
 import { fetchJson, loadStateViaPoll, setRefreshStatus } from './connection';
+import { elements } from './dom';
 import { loadIssue } from './issue-detail';
 import { state } from './state';
 
@@ -40,6 +41,115 @@ export function buildBlockedInputRequest(pending: any, reasonNote: any, answer: 
       answer: answer
     })
   };
+}
+
+export function buildDrainControlRequest(reason?: any, extra: Record<string, unknown> = {}) {
+  const body = { ...extra } as Record<string, unknown>;
+  if (reason) {
+    body.reason = reason;
+  }
+  return {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  };
+}
+
+function describeDrainControlBlockers(payload: any) {
+  const blockers = Array.isArray(payload && payload.blockers)
+    ? payload.blockers
+    : payload && payload.quiescence && Array.isArray(payload.quiescence.blockers)
+      ? payload.quiescence.blockers
+      : [];
+  return blockers
+    .map(function (blocker: any) {
+      return blocker.reason || blocker.detail || blocker.category || null;
+    })
+    .filter(Boolean)
+    .join('; ');
+}
+
+function setDrainControlStatus(message: string, isError: boolean) {
+  if (elements.drainControlStatus) {
+    elements.drainControlStatus.textContent = message;
+    elements.drainControlStatus.className = isError ? 'status-error' : 'status-ok';
+  }
+  setRefreshStatus(message, isError);
+}
+
+async function postDrainControl(url: string, init: any) {
+  const response = await fetch(url, init);
+  const payload = await response.json();
+  return { response, payload };
+}
+
+export async function enterDrainMode() {
+  try {
+    const reason = window.prompt('Reason for entering Drain Mode', 'safe runtime restart');
+    if (!reason) {
+      setDrainControlStatus('Drain Mode entry skipped: reason is required', true);
+      return;
+    }
+    await fetchJson('/api/v1/drain-mode/enter', buildDrainControlRequest(reason));
+    setDrainControlStatus('Drain Mode entry requested', false);
+    await loadStateViaPoll();
+  } catch (error) {
+    setDrainControlStatus('Drain Mode entry failed: ' + String(error), true);
+  }
+}
+
+export async function exitDrainMode() {
+  try {
+    const reason = window.prompt('Reason for exiting Drain Mode', 'restart complete');
+    if (!reason) {
+      setDrainControlStatus('Drain Mode exit skipped: reason is required', true);
+      return;
+    }
+    await fetchJson('/api/v1/drain-mode/exit', buildDrainControlRequest(reason));
+    setDrainControlStatus('Drain Mode exit requested', false);
+    await loadStateViaPoll();
+  } catch (error) {
+    setDrainControlStatus('Drain Mode exit failed: ' + String(error), true);
+  }
+}
+
+export async function waitForDrainQuiescence() {
+  try {
+    const { payload } = await postDrainControl('/api/v1/drain-mode/wait', buildDrainControlRequest(null, { timeout_ms: 30000 }));
+    if (payload && payload.success) {
+      setDrainControlStatus('Drain wait complete: shutdown/restart is safe', false);
+    } else {
+      setDrainControlStatus(
+        'Drain wait timed out: ' + (describeDrainControlBlockers(payload) || 'blockers are still present') + '. No forced cancel was requested.',
+        true
+      );
+    }
+    await loadStateViaPoll();
+  } catch (error) {
+    const message = String(error);
+    setDrainControlStatus('Drain wait timed out: ' + message + '. No forced cancel was requested.', true);
+    await loadStateViaPoll();
+  }
+}
+
+export async function requestDrainSafeShutdown() {
+  try {
+    if (!window.confirm('Request safe shutdown now?')) {
+      setDrainControlStatus('Safe shutdown skipped: confirmation declined', true);
+      return;
+    }
+    const { payload } = await postDrainControl('/api/v1/drain-mode/shutdown', buildDrainControlRequest(null, { override: false }));
+    setDrainControlStatus(
+      payload && payload.success
+        ? 'Safe shutdown requested'
+        : 'Safe shutdown blocked: ' + (describeDrainControlBlockers(payload) || 'blockers are still present'),
+      !(payload && payload.success)
+    );
+    await loadStateViaPoll();
+  } catch (error) {
+    setDrainControlStatus('Safe shutdown failed: ' + String(error) + '. No forced cancel was requested.', true);
+    await loadStateViaPoll();
+  }
 }
 
 export async function resumeBlockedIssue(issueIdentifier: any, resumeOverrideReason?: any) {
