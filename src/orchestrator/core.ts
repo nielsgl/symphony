@@ -1,4 +1,5 @@
-import type { Issue } from '../tracker';
+import type { Issue, TrackerAdapter } from '../tracker';
+import type { PersistenceHealth } from '../persistence';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
@@ -268,12 +269,14 @@ export class OrchestratorCore {
   private readonly persistence?: OrchestratorOptions['persistence'];
   private readonly phaseSettings: PhaseMarkerSettings;
   private readonly throughputTracker: ThroughputTracker;
+  private readonly tracker: TrackerAdapter;
 
   private readonly state: OrchestratorState;
   private readonly executionGraphPersistenceQueues = new WeakMap<RunningEntry, Promise<void>>();
   private readonly persistedPhaseSpanKeys = new WeakMap<RunningEntry, Set<string>>();
   private hostRoundRobinIndex: number;
   private serializedOperation: Promise<void>;
+  private inFlightTrackerWrites = 0;
 
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
@@ -284,6 +287,7 @@ export class OrchestratorCore {
     this.config.worker_opaque_activity_hard_timeout_ms = this.config.worker_opaque_activity_hard_timeout_ms ?? 1_800_000;
     this.config.inactive_worker_pid_ttl_ms = this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS;
     this.ports = options.ports;
+    this.tracker = this.createTrackedTracker(options.ports.tracker);
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.logger = options.logger;
     this.persistence = options.persistence;
@@ -334,6 +338,28 @@ export class OrchestratorCore {
     this.hostRoundRobinIndex = 0;
     this.throughputTracker = new ThroughputTracker();
     this.serializedOperation = Promise.resolve();
+  }
+
+  private createTrackedTracker(tracker: TrackerAdapter): TrackerAdapter {
+    return {
+      fetch_candidate_issues: () => tracker.fetch_candidate_issues(),
+      fetch_issues_by_states: (stateNames) => tracker.fetch_issues_by_states(stateNames),
+      fetch_issue_states_by_ids: (issueIds) => tracker.fetch_issue_states_by_ids(issueIds),
+      create_comment: (issueId, body) => this.trackTrackerWrite(() => tracker.create_comment(issueId, body)),
+      update_issue_state: (issueId, stateName) => this.trackTrackerWrite(() => tracker.update_issue_state(issueId, stateName))
+    };
+  }
+
+  private async trackTrackerWrite<T>(operation: () => Promise<T>): Promise<T> {
+    this.inFlightTrackerWrites += 1;
+    this.refreshQuiescenceState();
+    try {
+      return await operation();
+    } finally {
+      this.inFlightTrackerWrites = Math.max(0, this.inFlightTrackerWrites - 1);
+      this.refreshQuiescenceState();
+      this.ports.notifyObservers?.();
+    }
   }
 
   enterDrainMode(params: { reason?: string | null } = {}): DrainModeState {
@@ -422,6 +448,45 @@ export class OrchestratorCore {
       });
     }
 
+    if (this.inFlightTrackerWrites > 0) {
+      counts.in_flight_tracker_write = this.inFlightTrackerWrites;
+      blockers.push({
+        category: 'in_flight_tracker_write',
+        count: this.inFlightTrackerWrites,
+        detail:
+          this.inFlightTrackerWrites === 1
+            ? '1 tracker write is still in flight'
+            : `${this.inFlightTrackerWrites} tracker writes are still in flight`,
+        issue_identifiers: []
+      });
+    }
+
+    const pendingHistoryWriteCount = runningEntries.reduce(
+      (total, entry) => total + (entry.pending_persisted_turn_ids?.length ?? 0),
+      0
+    );
+    const persistenceHealth = this.readPersistenceHealth();
+    const persistenceHealthBlocker = this.describePersistenceHealthBlocker(persistenceHealth);
+    const persistenceBlockerCount = pendingHistoryWriteCount + (persistenceHealthBlocker ? 1 : 0);
+    if (persistenceBlockerCount > 0) {
+      counts.persistence_history_write = persistenceBlockerCount;
+      blockers.push({
+        category: 'persistence_history_write',
+        count: persistenceBlockerCount,
+        detail: [
+          pendingHistoryWriteCount > 0
+            ? `${pendingHistoryWriteCount} execution-history write${pendingHistoryWriteCount === 1 ? '' : 's'} pending flush`
+            : null,
+          persistenceHealthBlocker
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join('; '),
+        issue_identifiers: runningEntries
+          .filter((entry) => (entry.pending_persisted_turn_ids?.length ?? 0) > 0)
+          .map((entry) => entry.identifier)
+      });
+    }
+
     if (this.state.health.dispatch_validation === 'failed') {
       counts.unknown_degraded_blocker_source_health = 1;
       blockers.push({
@@ -457,6 +522,52 @@ export class OrchestratorCore {
       });
     }
     return next;
+  }
+
+  private readPersistenceHealth(): PersistenceHealth | null {
+    if (!this.ports.getPersistenceHealth) {
+      return null;
+    }
+    try {
+      return this.ports.getPersistenceHealth();
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: 'failed to read persistence health for drain quiescence',
+        context: {
+          error: error instanceof Error ? error.message : 'unknown'
+        }
+      });
+      return {
+        enabled: true,
+        db_path: null,
+        retention_days: 0,
+        run_count: 0,
+        last_pruned_at: null,
+        last_prune_failure_at: null,
+        last_prune_failure_reason: 'persistence_health_unavailable',
+        last_prune_failure_detail: error instanceof Error ? error.message : 'unknown',
+        integrity_ok: false
+      };
+    }
+  }
+
+  private describePersistenceHealthBlocker(health: PersistenceHealth | null): string | null {
+    if (!health || !health.enabled) {
+      return null;
+    }
+    if (!health.integrity_ok) {
+      return health.history_schema?.degraded_detail ?? health.last_prune_failure_detail ?? 'persistence integrity is degraded';
+    }
+    if (health.history_schema?.status === 'degraded') {
+      return health.history_schema.degraded_detail ?? health.history_schema.degraded_reason_code ?? 'history schema is degraded';
+    }
+    if (health.recent_write_failures?.length) {
+      const latest = health.recent_write_failures[0];
+      return `recent history write failure: ${latest.operation} (${latest.reason_code})`;
+    }
+    return null;
   }
 
   getStateSnapshot(options: StateSnapshotOptions = {}): OrchestratorState {
@@ -671,7 +782,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       dispatchPreflight: () => this.ports.dispatchPreflight(),
       spawnWorker: (params) => this.ports.spawnWorker(params),
       cancelRetryTimer: (timerHandle) => this.ports.cancelRetryTimer(timerHandle),
@@ -711,7 +822,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       runningWait: this.runningWaitCoordinatorContext(),
       logger: this.logger,
       nowMs: () => this.nowMs(),
@@ -769,7 +880,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       terminateWorker: (params) => this.ports.terminateWorker(params),
       logger: this.logger,
       nowMs: () => this.nowMs(),
@@ -1360,7 +1471,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       cancelRetryTimer: (timerHandle) => this.ports.cancelRetryTimer(timerHandle),
       getControlPlaneHealth: this.ports.getControlPlaneHealth
         ? () => this.ports.getControlPlaneHealth!()
@@ -1428,7 +1539,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       cancelRetryTimer: (timerHandle) => this.ports.cancelRetryTimer(timerHandle),
       submitBlockedIssueInputNative: this.ports.submitBlockedIssueInputNative
         ? (params) => this.ports.submitBlockedIssueInputNative!(params)

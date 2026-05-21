@@ -299,6 +299,96 @@ describe('OrchestratorCore dispatch and backpressure', () => {
     expect(harness.orchestrator.getStateSnapshot().recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.exited');
   });
 
+  it('computes persistence/history health blockers from the real quiescence source', () => {
+    const harness = createHarness({
+      getPersistenceHealth: () => ({
+        enabled: true,
+        db_path: '/tmp/symphony.db',
+        retention_days: 14,
+        run_count: 1,
+        last_pruned_at: null,
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: false,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 4,
+          applied_version: 3,
+          status: 'degraded',
+          degraded_reason_code: 'migration_failed',
+          degraded_detail: 'history migration failed',
+          updated_at: new Date('2026-05-21T12:00:00.000Z').toISOString(),
+          migrations: []
+        },
+        recent_write_failures: [
+          {
+            operation: 'append_state_transition',
+            reason_code: 'write_failed',
+            detail: 'database is locked',
+            recorded_at: new Date('2026-05-21T12:00:00.000Z').toISOString()
+          }
+        ]
+      })
+    });
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    const snapshot = harness.orchestrator.getStateSnapshot();
+
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(false);
+    expect(snapshot.quiescence.blocker_counts.persistence_history_write).toBe(1);
+    expect(snapshot.quiescence.blockers).toContainEqual(
+      expect.objectContaining({
+        category: 'persistence_history_write',
+        count: 1,
+        detail: 'history migration failed'
+      })
+    );
+  });
+
+  it('computes in-flight tracker write blockers while tracker mutations are pending', async () => {
+    const harness = createHarness();
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-cancel-drain', identifier: 'ABC-CANCEL-DRAIN' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-cancel-drain',
+      'abnormal',
+      'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace conflict","conflict_files":[],"resolution_hints":["Resolve and resume."]}'
+    );
+
+    let resolveTrackerWrite!: () => void;
+    harness.tracker.update_issue_state.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveTrackerWrite = resolve;
+        })
+    );
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    const cancelPromise = harness.orchestrator.cancelBlockedIssue('ABC-CANCEL-DRAIN', 'operator_cancel_return_to_backlog', {
+      actor: 'operator@example.test',
+      reason_note: 'operator_cancel_return_to_backlog',
+      confirmed: true
+    });
+    await Promise.resolve();
+
+    const pendingSnapshot = harness.orchestrator.getStateSnapshot();
+    expect(pendingSnapshot.quiescence.safe_to_shutdown).toBe(false);
+    expect(pendingSnapshot.quiescence.blocker_counts.in_flight_tracker_write).toBe(1);
+    expect(pendingSnapshot.quiescence.blockers).toContainEqual(
+      expect.objectContaining({
+        category: 'in_flight_tracker_write',
+        count: 1
+      })
+    );
+
+    resolveTrackerWrite();
+    await cancelPromise;
+
+    const settledSnapshot = harness.orchestrator.getStateSnapshot();
+    expect(settledSnapshot.quiescence.blocker_counts.in_flight_tracker_write).toBe(0);
+  });
+
   it('releases pre-spawn claim after spawn failure so a later eligible tick retries', async () => {
     const issue = makeIssue({ id: 'i-spawn-release', identifier: 'ABC-SPAWN-RELEASE' });
     const harness = createHarness({

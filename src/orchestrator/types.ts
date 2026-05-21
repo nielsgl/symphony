@@ -9,7 +9,7 @@ import type {
 import type { StructuredLogger } from '../observability';
 import { REASON_CODES } from '../observability/reason-codes';
 import type { PhaseMarker, PhaseMarkerName } from '../observability';
-import type { ExecutionGraphEntityStatus, HistoryPayloadClass, RunTerminalStatus } from '../persistence';
+import type { ExecutionGraphEntityStatus, HistoryPayloadClass, PersistenceHealth, RunTerminalStatus } from '../persistence';
 import type { ControlPlaneHealthSummary, ControlPlaneHealthState } from '../api/control-plane-health';
 
 export type TickReason = 'startup' | 'interval' | 'manual_refresh' | 'retry_timer';
@@ -773,6 +773,7 @@ export interface OrchestratorPorts {
   dispatchPreflight: () => DispatchPreflightResult;
   getControlPlaneHealth?: () => ControlPlaneHealthSummary | null;
   getHostLoad?: () => HostLoadSnapshot | null;
+  getPersistenceHealth?: () => PersistenceHealth;
   spawnWorker: (params: {
     issue: Issue;
     attempt: number | null;

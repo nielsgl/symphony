@@ -918,6 +918,20 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       tracker: trackerProxy,
       dispatchPreflight,
       getControlPlaneHealth: () => controlPlaneHealth.summarize(nowMs()),
+      getPersistenceHealth: () =>
+        persistenceStore
+          ? persistenceStore.health()
+          : {
+              enabled: false,
+              db_path: null,
+              retention_days: effectiveConfig.persistence.retention_days,
+              run_count: 0,
+              last_pruned_at: null,
+              last_prune_failure_at: null,
+              last_prune_failure_reason: null,
+              last_prune_failure_detail: null,
+              integrity_ok: true
+            },
       spawnWorker: ({ issue, attempt, worker_host, resume_context, recover_workspace_attempt_residue }) =>
         bridge.spawnWorker({ issue, attempt, worker_host, resume_context, recover_workspace_attempt_residue }),
       recoverMissingToolOutput: (params) => bridge.recoverMissingToolOutput(params),
