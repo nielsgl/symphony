@@ -8,7 +8,7 @@ import type {
   CompleteAttemptRowParams,
   CompleteIssueRunRowParams
 } from './execution-graph-writer';
-import { type IdentityProjectionStore, parseDurableIdentity, serializeDurableIdentity } from './identity-projection-store';
+import { parseDurableIdentity, serializeDurableIdentity } from './identity-projection-store';
 import type { PersistenceDatabase } from './store-context';
 import type {
   AppServerEventLedgerRecord,
@@ -28,11 +28,18 @@ export interface RunHistoryExecutionGraphWriter {
   completeAttemptRow(params: CompleteAttemptRowParams): void;
 }
 
+export interface RunHistoryIdentityProjection {
+  upsertHistoryIdentity(identity: DurableIdentity): void;
+  recordIdentityProjection(record: Omit<HistoryIdentityProjectionRecord, 'updated_at'>): void;
+  lookupIssueRunIdForRun(runId: string): string | null;
+  readHistoryIdentityProjection(statement: { get(...args: unknown[]): unknown } | null, sourceId: string): HistoryIdentityProjectionRecord | null;
+}
+
 export interface RunHistoryStoreDependencies {
   db: PersistenceDatabase;
   nowMs: () => number;
   transaction: <T>(fn: () => T) => T;
-  identityProjectionStore: IdentityProjectionStore;
+  identityProjection: RunHistoryIdentityProjection;
   executionGraphWriter: RunHistoryExecutionGraphWriter;
 }
 
@@ -73,26 +80,26 @@ export class RunHistoryStore {
   private readonly db: PersistenceDatabase;
   private readonly nowMs: () => number;
   private readonly transaction: <T>(fn: () => T) => T;
-  private readonly identityProjectionStore: IdentityProjectionStore;
+  private readonly identityProjection: RunHistoryIdentityProjection;
   private readonly executionGraphWriter: RunHistoryExecutionGraphWriter;
 
   constructor(dependencies: RunHistoryStoreDependencies) {
     this.db = dependencies.db;
     this.nowMs = dependencies.nowMs;
     this.transaction = dependencies.transaction;
-    this.identityProjectionStore = dependencies.identityProjectionStore;
+    this.identityProjection = dependencies.identityProjection;
     this.executionGraphWriter = dependencies.executionGraphWriter;
   }
 
   startRun(params: { issue_id: string; issue_identifier: string; identity: DurableIdentity; started_at?: string }): string {
     const runId = randomUUID();
-    this.identityProjectionStore.upsertHistoryIdentity(params.identity);
+    this.identityProjection.upsertHistoryIdentity(params.identity);
     this.db
       .prepare(
         'INSERT INTO runs (run_id, issue_id, issue_identifier, identity, started_at, ended_at, terminal_status, error_code) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)'
       )
       .run(runId, params.issue_id, params.issue_identifier, serializeDurableIdentity(params.identity), params.started_at ?? asIso(this.nowMs()));
-    this.identityProjectionStore.recordIdentityProjection({
+    this.identityProjection.recordIdentityProjection({
       source_table: 'runs',
       source_id: runId,
       run_id: runId,
@@ -134,7 +141,7 @@ export class RunHistoryStore {
         reason_code: params.reason_code,
         reason_detail: params.reason_detail
       });
-      this.identityProjectionStore.recordIdentityProjection({
+      this.identityProjection.recordIdentityProjection({
         source_table: 'runs',
         source_id: runId,
         run_id: runId,
@@ -165,7 +172,7 @@ export class RunHistoryStore {
         reason_code: params.reason_code,
         reason_detail: params.reason_detail
       });
-      this.identityProjectionStore.recordIdentityProjection({
+      this.identityProjection.recordIdentityProjection({
         source_table: 'runs',
         source_id: runId,
         run_id: runId,
@@ -272,7 +279,7 @@ export class RunHistoryStore {
           params.run_id
         );
 
-      const issueRunId = params.issue_run_id ?? this.identityProjectionStore.lookupIssueRunIdForRun(params.run_id);
+      const issueRunId = params.issue_run_id ?? this.identityProjection.lookupIssueRunIdForRun(params.run_id);
       if (!issueRunId) {
         return;
       }
@@ -356,7 +363,7 @@ export class RunHistoryStore {
 
     return rows.map((row) => {
       const sessions = sessionStmt.all(row.run_id) as Array<{ session_id: string }>;
-      const identityProjection = this.identityProjectionStore.readHistoryIdentityProjection(
+      const identityProjection = this.identityProjection.readHistoryIdentityProjection(
         identityProjectionStmt as { get(...args: unknown[]): unknown } | null,
         row.run_id
       );

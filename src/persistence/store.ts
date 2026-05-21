@@ -22,7 +22,7 @@ import {
 import { buildHistoryPayloadDetails } from './history-payload-policy';
 import { IdentityProjectionStore, parseDurableIdentity } from './identity-projection-store';
 import { ProjectHistoryReader } from './project-history-reader';
-import { RunHistoryStore } from './run-history-store';
+import { RunHistoryStore, type RunHistoryIdentityProjection } from './run-history-store';
 import {
   createBasePersistenceSchema,
   createHistoryRetentionPruneRecordTable,
@@ -159,11 +159,18 @@ export class SqlitePersistenceStore {
       recordIdentityProjection: (record) => this.identityProjectionStore.recordIdentityProjection(record),
       readIssueRunIdentity: (issueRunId) => this.identityProjectionStore.readIssueRunIdentity(issueRunId)
     });
+    const runHistoryIdentityProjection: RunHistoryIdentityProjection = {
+      upsertHistoryIdentity: (identity) => this.identityProjectionStore.upsertHistoryIdentity(identity),
+      recordIdentityProjection: (record) => this.identityProjectionStore.recordIdentityProjection(record),
+      lookupIssueRunIdForRun: (runId) => this.identityProjectionStore.lookupIssueRunIdForRun(runId),
+      readHistoryIdentityProjection: (statement, sourceId) =>
+        this.identityProjectionStore.readHistoryIdentityProjection(statement, sourceId)
+    };
     this.runHistoryStore = new RunHistoryStore({
       db: this.db,
       nowMs: this.nowMs,
       transaction: (fn) => this.transaction(fn),
-      identityProjectionStore: this.identityProjectionStore,
+      identityProjection: runHistoryIdentityProjection,
       executionGraphWriter: this.executionGraphWriter
     });
     this.projectHistoryReader = new ProjectHistoryReader({
