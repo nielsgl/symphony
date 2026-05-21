@@ -1,5 +1,12 @@
-export function renderStoppedRunsSource(): string {
-  return `  function recoveryStatusLabel(status) {
+import { elements } from './dom';
+import { state } from './state';
+import { fetchJson, setRefreshStatus } from './connection';
+import { getActionRequiredLabel, formatDate } from './formatting';
+import { createActionButton, copyText } from './issue-detail';
+import { renderOverview } from './overview';
+import { resumeBlockedIssue } from './operator-actions';
+
+export function recoveryStatusLabel(status: any) {
     switch (status) {
       case 'resume_available':
         return 'Resume available';
@@ -15,7 +22,7 @@ export function renderStoppedRunsSource(): string {
     }
   }
 
-  function renderStoppedRunRecovery(payload) {
+export function renderStoppedRunRecovery(payload: any) {
     if (!state.stoppedRunRecoveryLoaded) {
       const empty = document.createElement('p');
       empty.className = 'muted';
@@ -25,7 +32,7 @@ export function renderStoppedRunsSource(): string {
     }
 
     const acknowledged = new Set(JSON.parse(window.localStorage.getItem('symphony.stoppedRunAcknowledged') || '[]'));
-    const entries = (payload.stopped_runs || []).filter(function (entry) {
+    const entries = (payload.stopped_runs || []).filter(function (entry: any) {
       return !acknowledged.has(entry.run_id);
     });
     if (!entries.length) {
@@ -36,7 +43,7 @@ export function renderStoppedRunsSource(): string {
       return;
     }
 
-    const cards = entries.map((entry) => {
+    const cards = entries.map((entry: any) => {
       const card = document.createElement('article');
       card.className = 'recovery-card' + (entry.capability_mismatch ? ' recovery-card-warning' : '');
 
@@ -51,7 +58,7 @@ export function renderStoppedRunsSource(): string {
 
       const meta = document.createElement('dl');
       meta.className = 'recovery-grid';
-      const addMeta = function (label, value) {
+      const addMeta = function (label: any, value: any) {
         const group = document.createElement('div');
         const term = document.createElement('dt');
         term.textContent = label;
@@ -122,7 +129,7 @@ export function renderStoppedRunsSource(): string {
     elements.stoppedRunRecoveryList.replaceChildren(...cards);
   }
 
-  function normalizeStoppedRunRecoveryPayload(recovery) {
+export function normalizeStoppedRunRecoveryPayload(recovery: any) {
     return {
       stopped_runs: recovery && Array.isArray(recovery.stopped_runs) ? recovery.stopped_runs : [],
       counts: {
@@ -134,7 +141,7 @@ export function renderStoppedRunsSource(): string {
     };
   }
 
-  function mergeStoppedRunRecoveryPayload(payload, recoveryPayload) {
+export function mergeStoppedRunRecoveryPayload(payload: any, recoveryPayload: any) {
     return {
       ...payload,
       stopped_runs: recoveryPayload.stopped_runs || [],
@@ -145,7 +152,7 @@ export function renderStoppedRunsSource(): string {
     };
   }
 
-  async function loadStoppedRunRecovery() {
+export async function loadStoppedRunRecovery() {
     if (state.stoppedRunRecoveryLoading) {
       return;
     }
@@ -175,6 +182,3 @@ export function renderStoppedRunsSource(): string {
       }
     }
   }
-
-`;
-}

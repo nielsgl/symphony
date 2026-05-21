@@ -1,5 +1,5 @@
-import { ACTION_REQUIRED_REASON_LABELS } from '../../dashboard-view-model';
-import type { DashboardClientConfig } from '../types';
+import { ACTION_REQUIRED_REASON_LABELS } from '../dashboard-view-model';
+import type { DashboardClientConfig } from '../dashboard-assets/types';
 
 export interface DashboardClientConstants {
   safeConfig: {
@@ -8,15 +8,12 @@ export interface DashboardClientConstants {
     render_interval_ms: number;
     phase_stale_warn_ms: number;
   };
-  actionRequiredReasonLabels: string;
-  operatorTransitionRules: string;
+  actionRequiredReasonLabels: Record<string, string>;
+  operatorTransitionRules: {
+    detailMap: Record<string, string>;
+    eventMap: Record<string, string>;
+  };
 }
-
-export const DEFAULT_DASHBOARD_CLIENT_CONFIG: DashboardClientConfig = {
-  dashboard_enabled: true,
-  refresh_ms: 4000,
-  render_interval_ms: 1000
-};
 
 export function resolveDashboardClientConstants(config: DashboardClientConfig): DashboardClientConstants {
   const safeConfig = {
@@ -25,8 +22,7 @@ export function resolveDashboardClientConstants(config: DashboardClientConfig): 
     render_interval_ms: Math.max(250, Number(config.render_interval_ms) || 1000),
     phase_stale_warn_ms: Math.max(1000, Number(config.phase_stale_warn_ms) || 45000)
   };
-  const actionRequiredReasonLabels = JSON.stringify(ACTION_REQUIRED_REASON_LABELS);
-  const operatorTransitionRules = JSON.stringify({
+  const operatorTransitionRules = {
     detailMap: {
       'completion gate blocked redispatch because no progress signal was detected': 'completion_gate_blocked',
       'pr is open but scope is incomplete and no progress signal was detected': 'completion_gate_blocked',
@@ -41,7 +37,7 @@ export function resolveDashboardClientConstants(config: DashboardClientConfig): 
       'orchestrator.redispatch.circuit_breaker_opened': 'circuit_breaker_opened',
       'orchestration.blocked_input.resumed': 'resume_accepted'
     }
-  });
+  };
 
-  return { safeConfig, actionRequiredReasonLabels, operatorTransitionRules };
+  return { safeConfig, actionRequiredReasonLabels: ACTION_REQUIRED_REASON_LABELS, operatorTransitionRules };
 }

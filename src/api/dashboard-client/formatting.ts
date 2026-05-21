@@ -1,12 +1,13 @@
-export function renderFormattingSource(): string {
-  return `  function formatNumber(value) {
+import { ACTION_REQUIRED_CODES } from './config';
+
+export function formatNumber(value: any) {
     if (!Number.isFinite(value)) {
       return '0';
     }
     return value.toLocaleString('en-US');
   }
 
-  function localTimeZoneLabel() {
+export function localTimeZoneLabel() {
     try {
       return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
     } catch (_error) {
@@ -14,14 +15,14 @@ export function renderFormattingSource(): string {
     }
   }
 
-  function formatUtcIso(timestampMs) {
+export function formatUtcIso(timestampMs: any) {
     if (!Number.isFinite(timestampMs)) {
       return 'n/a';
     }
     return new Date(timestampMs).toISOString();
   }
 
-  function formatDate(value) {
+export function formatDate(value: any) {
     if (!value) {
       return 'n/a';
     }
@@ -38,11 +39,11 @@ export function renderFormattingSource(): string {
     return local + ' [' + localTimeZoneLabel() + '] (UTC ' + formatUtcIso(parsed) + ')';
   }
 
-  function formatCanonicalJsonBlock(label, payload) {
+export function formatCanonicalJsonBlock(label: any, payload: any) {
     return label + ' (canonical UTC ISO values preserved)\\n' + JSON.stringify(payload, null, 2);
   }
 
-  function formatDurationFromIso(iso) {
+export function formatDurationFromIso(iso: any) {
     const parsed = Date.parse(iso || '');
     if (!Number.isFinite(parsed)) {
       return 'n/a';
@@ -53,14 +54,14 @@ export function renderFormattingSource(): string {
     return minutes + 'm ' + remain + 's';
   }
 
-  function formatDurationFromEpochMs(epochMs) {
+export function formatDurationFromEpochMs(epochMs: any) {
     if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) {
       return 'n/a';
     }
     return formatDurationFromMs(epochMs);
   }
 
-  function getTurnControlLabel(state) {
+export function getTurnControlLabel(state: any) {
     switch (state) {
       case 'agent_turn':
         return 'Agent Turn';
@@ -75,7 +76,7 @@ export function renderFormattingSource(): string {
     }
   }
 
-  function getProgressSignalLabel(state) {
+export function getProgressSignalLabel(state: any) {
     switch (state) {
       case 'advancing':
         return 'Advancing';
@@ -90,14 +91,14 @@ export function renderFormattingSource(): string {
     }
   }
 
-  function getRetryStateLabel(entry) {
+export function getRetryStateLabel(entry: any) {
     if (entry && entry.due_state === 'overdue') {
       return 'Retry Overdue';
     }
     return 'Retry Scheduled';
   }
 
-  function getTokenConfidenceLabel(confidence) {
+export function getTokenConfidenceLabel(confidence: any) {
     switch (confidence) {
       case 'observed_live':
         return 'Live';
@@ -109,7 +110,7 @@ export function renderFormattingSource(): string {
         return 'Unknown';
     }
   }
-  function formatDurationFromMs(timestampMs) {
+export function formatDurationFromMs(timestampMs: any) {
     if (!Number.isFinite(timestampMs)) {
       return 'n/a';
     }
@@ -119,7 +120,7 @@ export function renderFormattingSource(): string {
     return minutes + 'm ' + remain + 's';
   }
 
-  function formatElapsedMs(durationMs) {
+export function formatElapsedMs(durationMs: any) {
     if (!Number.isFinite(durationMs)) {
       return 'n/a';
     }
@@ -129,88 +130,11 @@ export function renderFormattingSource(): string {
     return minutes + 'm ' + remain + 's';
   }
 
-  function getConnectionLabel(mode) {
-    switch (mode) {
-      case 'streaming':
-        return 'Streaming';
-      case 'polling':
-        return 'Polling';
-      case 'connecting':
-        return 'Connecting';
-      default:
-        return 'Offline';
-    }
-  }
-
-  function getConnectionClass(mode) {
-    switch (mode) {
-      case 'streaming':
-        return 'badge badge-live';
-      case 'polling':
-        return 'badge badge-polling';
-      case 'connecting':
-        return 'badge badge-connecting';
-      default:
-        return 'badge badge-offline';
-    }
-  }
-
-  function describeStreamFallback() {
-    if (state.streamConnected && !state.streamSnapshotHealthy) {
-      return 'SSE connected; waiting for first state_snapshot';
-    }
-    if (state.streamFallbackReason === 'error') {
-      return 'SSE disconnected after stream error; polling fallback live';
-    }
-    if (state.streamFallbackReason === 'connecting') {
-      return 'SSE connecting; polling fallback live';
-    }
-    return 'SSE disconnected; polling fallback live';
-  }
-
-  function setConnectionStatus(mode, detail) {
-    state.connection = mode;
-    elements.connectionBadge.textContent = getConnectionLabel(mode);
-    elements.connectionBadge.className = getConnectionClass(mode);
-    elements.connectionDetail.textContent = detail;
-  }
-
-  function setLastUpdated(value) {
-    const generatedAtMs = state.payload && typeof state.payload.snapshot_generated_at_ms === 'number'
-      ? state.payload.snapshot_generated_at_ms
-      : Date.parse(value || '');
-    const ageText = Number.isFinite(generatedAtMs) ? ' • age ' + formatDurationFromEpochMs(generatedAtMs) : '';
-    const freshness = state.payload && state.payload.snapshot_freshness_state ? ' • ' + state.payload.snapshot_freshness_state : '';
-    elements.lastUpdated.textContent = 'Last update: ' + formatDate(value) + ageText + freshness;
-  }
-
-  function setRefreshStatus(message, isError) {
-    elements.refreshStatus.textContent = message;
-    elements.refreshStatus.className = isError ? 'status-error' : 'status-ok';
-  }
-
-  function isStreamHealthy() {
-    return state.streamConnected && state.streamSnapshotHealthy;
-  }
-
-  function clearPollTimer() {
-    clearTimeout(state.pollTimer);
-    state.pollTimer = null;
-  }
-
-  function schedulePollingFallback() {
-    clearPollTimer();
-    if (isStreamHealthy()) {
-      return;
-    }
-    state.pollTimer = setTimeout(loadStateViaPoll, state.pollDelayMs);
-  }
-
-  function getActionRequiredLabel(code) {
+export function getActionRequiredLabel(code: any) {
     return ACTION_REQUIRED_CODES[code] || code || 'unknown';
   }
 
-  function createBlockedRootCauseBlock(entry) {
+export function createBlockedRootCauseBlock(entry: any) {
     if (!entry || !entry.root_cause) {
       return null;
     }
@@ -247,11 +171,11 @@ export function renderFormattingSource(): string {
     return block;
   }
 
-  function isActionRequiredCode(code) {
+export function isActionRequiredCode(code: any) {
     return Boolean(code && ACTION_REQUIRED_CODES[code]);
   }
 
-  function formatBudgetStatusLabel(status) {
+export function formatBudgetStatusLabel(status: any) {
     switch (status) {
       case 'warning':
         return 'Warning';
@@ -266,7 +190,7 @@ export function renderFormattingSource(): string {
     }
   }
 
-  function budgetStatusClass(status) {
+export function budgetStatusClass(status: any) {
     if (status === 'hard_limited') {
       return 'failed';
     }
@@ -276,7 +200,7 @@ export function renderFormattingSource(): string {
     return 'success';
   }
 
-  function createBudgetBlock(entry) {
+export function createBudgetBlock(entry: any) {
     const container = document.createElement('div');
     container.className = 'budget-summary';
     const status = entry && entry.budget_status ? entry.budget_status : null;
@@ -320,7 +244,7 @@ export function renderFormattingSource(): string {
     return container;
   }
 
-  function formatBudgetSummary(entry) {
+export function formatBudgetSummary(entry: any) {
     const status = entry && entry.budget_status ? entry.budget_status : null;
     const parts = ['Budget: ' + formatBudgetStatusLabel(status)];
     if (status === 'telemetry_unavailable') {
@@ -342,7 +266,42 @@ export function renderFormattingSource(): string {
     return parts.join(' • ');
   }
 
-  function formatApiError(payload, fallbackMessage) {
+export function formatTokenDimension(value: any, unavailableLabel: any) {
+    return typeof value === 'number' ? formatNumber(value) : unavailableLabel;
+  }
+
+export function formatOverviewTokenValue(payload: any, field: any, splitUnavailable: any) {
+    const codexTotals = payload && payload.codex_totals;
+    if (!codexTotals) {
+      return 'Unavailable';
+    }
+    if (splitUnavailable && field !== 'total_tokens' && field !== 'model_context_window') {
+      return 'Split unavailable';
+    }
+    return formatTokenDimension(codexTotals[field], '0');
+  }
+
+export function formatTokenBreakdown(tokens: any, telemetrySource: any) {
+    if (tokens && tokens.token_split_status === 'aggregate_only') {
+      return 'Split unavailable' + (telemetrySource ? ' • ' + telemetrySource : '');
+    }
+    const parts = [
+      'In ' + formatNumber(tokens.input_tokens),
+      'Out ' + formatNumber(tokens.output_tokens)
+    ];
+    if (typeof tokens.cached_input_tokens === 'number') {
+      parts.push('Cached ' + formatNumber(tokens.cached_input_tokens));
+    }
+    if (typeof tokens.reasoning_output_tokens === 'number') {
+      parts.push('Reasoning ' + formatNumber(tokens.reasoning_output_tokens));
+    }
+    if (typeof tokens.model_context_window === 'number') {
+      parts.push('Context ' + formatNumber(tokens.model_context_window));
+    }
+    return parts.join(' / ') + (telemetrySource ? ' • ' + telemetrySource : '');
+  }
+
+export function formatApiError(payload: any, fallbackMessage: any) {
     if (!payload || !payload.error) {
       return fallbackMessage;
     }
@@ -354,6 +313,3 @@ export function renderFormattingSource(): string {
     }
     return fallbackMessage;
   }
-
-`;
-}

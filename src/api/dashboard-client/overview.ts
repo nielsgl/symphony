@@ -1,5 +1,10 @@
-export function renderOverviewSource(): string {
-  return `  function createMetricCard(label, value) {
+import { OPERATOR_TRANSITION_RULES } from './config';
+import { elements } from './dom';
+import { state } from './state';
+import { formatCanonicalJsonBlock, formatDate, formatElapsedMs, formatNumber, getActionRequiredLabel, isActionRequiredCode, formatOverviewTokenValue } from './formatting';
+import { renderRunning, renderRetry, renderBlocked } from './issues';
+
+export function createMetricCard(label: any, value: any) {
     const card = document.createElement('article');
     card.className = 'kpi-card';
     const title = document.createElement('h3');
@@ -10,42 +15,7 @@ export function renderOverviewSource(): string {
     return card;
   }
 
-  function formatTokenDimension(value, unavailableLabel) {
-    return typeof value === 'number' ? formatNumber(value) : unavailableLabel;
-  }
-
-  function formatOverviewTokenValue(payload, field, splitUnavailable) {
-    const codexTotals = payload && payload.codex_totals;
-    if (!codexTotals) {
-      return 'Unavailable';
-    }
-    if (splitUnavailable && field !== 'total_tokens' && field !== 'model_context_window') {
-      return 'Split unavailable';
-    }
-    return formatTokenDimension(codexTotals[field], '0');
-  }
-
-  function formatTokenBreakdown(tokens, telemetrySource) {
-    if (tokens && tokens.token_split_status === 'aggregate_only') {
-      return 'Split unavailable' + (telemetrySource ? ' • ' + telemetrySource : '');
-    }
-    const parts = [
-      'In ' + formatNumber(tokens.input_tokens),
-      'Out ' + formatNumber(tokens.output_tokens)
-    ];
-    if (typeof tokens.cached_input_tokens === 'number') {
-      parts.push('Cached ' + formatNumber(tokens.cached_input_tokens));
-    }
-    if (typeof tokens.reasoning_output_tokens === 'number') {
-      parts.push('Reasoning ' + formatNumber(tokens.reasoning_output_tokens));
-    }
-    if (typeof tokens.model_context_window === 'number') {
-      parts.push('Context ' + formatNumber(tokens.model_context_window));
-    }
-    return parts.join(' / ') + (telemetrySource ? ' • ' + telemetrySource : '');
-  }
-
-  function computeDisplayRuntimeSeconds(payload) {
+export function computeDisplayRuntimeSeconds(payload: any) {
     if (!payload || !payload.codex_totals) {
       return 0;
     }
@@ -58,7 +28,7 @@ export function renderOverviewSource(): string {
     return base + elapsed;
   }
 
-  function renderOverview(payload) {
+export function renderOverview(payload: any) {
     const splitUnavailable = payload.codex_totals && payload.codex_totals.token_split_status === 'aggregate_only';
     elements.kpiGrid.replaceChildren(
       createMetricCard('Running', formatNumber(payload.counts.running)),
@@ -86,12 +56,12 @@ export function renderOverviewSource(): string {
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
   }
 
-  function renderRetryStatusSummary(payload) {
+export function renderRetryStatusSummary(payload: any) {
     const entries =
       payload.retry_status && Array.isArray(payload.retry_status.entries)
         ? payload.retry_status.entries
         : Array.isArray(payload.retrying)
-          ? payload.retrying.map(function (entry) {
+          ? payload.retrying.map(function (entry: any) {
               const cause = entry.retry_cause || {};
               return {
                 issue_identifier: entry.issue_identifier,
@@ -117,7 +87,7 @@ export function renderOverviewSource(): string {
 
     const header = document.createElement('div');
     header.className = 'retry-status-header';
-    const overdueCount = entries.filter(function (entry) {
+    const overdueCount = entries.filter(function (entry: any) {
       return entry.due_state === 'overdue';
     }).length;
     header.textContent =
@@ -127,7 +97,7 @@ export function renderOverviewSource(): string {
 
     const list = document.createElement('div');
     list.className = 'retry-status-list';
-    entries.slice(0, 4).forEach(function (entry) {
+    entries.slice(0, 4).forEach(function (entry: any) {
       const item = document.createElement('div');
       item.className = 'retry-status-item ' + (entry.due_state === 'overdue' ? 'overdue' : 'pending');
 
@@ -172,9 +142,9 @@ export function renderOverviewSource(): string {
     elements.retryStatusSummary.replaceChildren(header, list);
   }
 
-  function renderActionRequiredBanner(payload) {
+export function renderActionRequiredBanner(payload: any) {
     const blockedEntries = Array.isArray(payload && payload.blocked) ? payload.blocked : [];
-    const grouped = blockedEntries.reduce(function (acc, entry) {
+    const grouped: Record<string, number> = blockedEntries.reduce(function (acc: Record<string, number>, entry: any) {
       if (!isActionRequiredCode(entry.stop_reason_code)) {
         return acc;
       }
@@ -189,14 +159,14 @@ export function renderOverviewSource(): string {
       return;
     }
 
-    const total = groupedEntries.reduce(function (sum, entry) {
+    const total = groupedEntries.reduce(function (sum: any, entry: any) {
       const count = entry[1];
       return sum + count;
     }, 0);
     elements.actionRequiredBanner.classList.remove('hidden');
     elements.actionRequiredSummary.textContent = total + ' blocked run' + (total === 1 ? '' : 's') + ' need operator action.';
 
-    const groupNodes = groupedEntries.map(function (entry) {
+    const groupNodes = groupedEntries.map(function (entry: any) {
       const code = entry[0];
       const count = entry[1];
       const button = document.createElement('button');
@@ -219,7 +189,7 @@ export function renderOverviewSource(): string {
     elements.actionRequiredGroups.replaceChildren(...groupNodes);
   }
 
-  function renderApiDegradedBanner(payload) {
+export function renderApiDegradedBanner(payload: any) {
     if (!payload || !payload.api_degraded_mode) {
       elements.apiDegradedBanner.classList.add('hidden');
       elements.apiDegradedSummary.textContent = '';
@@ -231,5 +201,82 @@ export function renderOverviewSource(): string {
       (payload.api_degraded_reason_code || 'unknown') + ' • fallback routes: ' + routes;
   }
 
-`;
-}
+export function describeTransition(transition: any) {
+    switch (transition) {
+      case 'completion_gate_blocked':
+        return { label: 'Completion Gate Blocked', result: 'failure', detail: 'No progress signal detected in redispatch window.' };
+      case 'circuit_breaker_opened':
+        return { label: 'Circuit Breaker Opened', result: 'failure', detail: 'Respawn threshold reached; operator intervention required.' };
+      case 'resume_accepted':
+        return { label: 'Resume Accepted', result: 'success', detail: 'Resume request accepted and redispatch restarted.' };
+      case 'resume_rejected':
+        return { label: 'Resume Rejected', result: 'failure', detail: 'Resume request rejected; resolve blocking condition first.' };
+      case 'cancel_accepted':
+        return { label: 'Cancel Accepted', result: 'success', detail: 'Issue returned to backlog.' };
+      case 'cancel_rejected':
+        return { label: 'Cancel Rejected', result: 'failure', detail: 'Cancel request rejected; tracker state unchanged.' };
+      default:
+        return null;
+    }
+  }
+
+export function deriveOperatorTransitionRows(issueId: any, payload: any) {
+    const rows: any[] = [];
+    const seen = new Set();
+    function addRow(at: any, transition: any, detail: any) {
+      const key = transition + ':' + String(at || 'n/a') + ':' + String(detail || '');
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      const descriptor = describeTransition(transition);
+      if (!descriptor) {
+        return;
+      }
+      rows.push({
+        at: at || 'n/a',
+        issue_identifier: issueId,
+        label: descriptor.label,
+        result: descriptor.result,
+        detail: detail && detail.trim ? (detail.trim() ? detail : descriptor.detail) : descriptor.detail
+      });
+    }
+
+    const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
+    for (const marker of timeline) {
+      const normalized = String(marker && marker.detail ? marker.detail : '').trim().toLowerCase();
+      const transition = OPERATOR_TRANSITION_RULES.detailMap[normalized];
+      if (transition) {
+        addRow(marker.at, transition, marker.detail || null);
+      }
+    }
+    const events = Array.isArray(payload.recent_events) ? payload.recent_events : [];
+    for (const entry of events) {
+      const transitionByEvent = OPERATOR_TRANSITION_RULES.eventMap[String(entry && entry.event ? entry.event : '')];
+      if (transitionByEvent) {
+        addRow(entry.at, transitionByEvent, entry.message || null);
+      }
+      const normalizedMessage = String(entry && entry.message ? entry.message : '').trim().toLowerCase();
+      const transitionByMessage = OPERATOR_TRANSITION_RULES.detailMap[normalizedMessage];
+      if (transitionByMessage) {
+        addRow(entry.at, transitionByMessage, entry.message || null);
+      }
+    }
+    if (payload.blocked && (payload.blocked.stop_reason_code === '${REASON_CODES.operatorNoProgressRedispatchBlocked}' || payload.blocked.stop_reason_code === '${REASON_CODES.awaitingHumanReviewScopeIncomplete}')) {
+      addRow('n/a', 'completion_gate_blocked', payload.blocked.stop_reason_detail || null);
+    }
+    return rows.sort(function (a: any, b: any) {
+      const atA = Date.parse(a.at);
+      const atB = Date.parse(b.at);
+      if (Number.isFinite(atA) && Number.isFinite(atB)) {
+        return atA - atB;
+      }
+      if (Number.isFinite(atA)) {
+        return -1;
+      }
+      if (Number.isFinite(atB)) {
+        return 1;
+      }
+      return a.label.localeCompare(b.label);
+    });
+  }

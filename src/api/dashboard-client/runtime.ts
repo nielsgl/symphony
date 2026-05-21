@@ -1,87 +1,11 @@
-import { REASON_CODES } from '../../../observability/reason-codes';
+import { elements } from './dom';
+import { state } from './state';
+import { formatCanonicalJsonBlock, formatDate } from './formatting';
+import { renderOverview } from './overview';
+import { renderRunning, renderRetry, renderBlocked } from './issues';
+import { renderStoppedRunRecovery } from './stopped-runs';
 
-export function renderRuntimeSource(): string {
-  return `  function describeTransition(transition) {
-    switch (transition) {
-      case 'completion_gate_blocked':
-        return { label: 'Completion Gate Blocked', result: 'failure', detail: 'No progress signal detected in redispatch window.' };
-      case 'circuit_breaker_opened':
-        return { label: 'Circuit Breaker Opened', result: 'failure', detail: 'Respawn threshold reached; operator intervention required.' };
-      case 'resume_accepted':
-        return { label: 'Resume Accepted', result: 'success', detail: 'Resume request accepted and redispatch restarted.' };
-      case 'resume_rejected':
-        return { label: 'Resume Rejected', result: 'failure', detail: 'Resume request rejected; resolve blocking condition first.' };
-      case 'cancel_accepted':
-        return { label: 'Cancel Accepted', result: 'success', detail: 'Issue returned to backlog.' };
-      case 'cancel_rejected':
-        return { label: 'Cancel Rejected', result: 'failure', detail: 'Cancel request rejected; tracker state unchanged.' };
-      default:
-        return null;
-    }
-  }
-
-  function deriveOperatorTransitionRows(issueId, payload) {
-    const rows = [];
-    const seen = new Set();
-    function addRow(at, transition, detail) {
-      const key = transition + ':' + String(at || 'n/a') + ':' + String(detail || '');
-      if (seen.has(key)) {
-        return;
-      }
-      seen.add(key);
-      const descriptor = describeTransition(transition);
-      if (!descriptor) {
-        return;
-      }
-      rows.push({
-        at: at || 'n/a',
-        issue_identifier: issueId,
-        label: descriptor.label,
-        result: descriptor.result,
-        detail: detail && detail.trim ? (detail.trim() ? detail : descriptor.detail) : descriptor.detail
-      });
-    }
-
-    const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
-    for (const marker of timeline) {
-      const normalized = String(marker && marker.detail ? marker.detail : '').trim().toLowerCase();
-      const transition = OPERATOR_TRANSITION_RULES.detailMap[normalized];
-      if (transition) {
-        addRow(marker.at, transition, marker.detail || null);
-      }
-    }
-    const events = Array.isArray(payload.recent_events) ? payload.recent_events : [];
-    for (const entry of events) {
-      const transitionByEvent = OPERATOR_TRANSITION_RULES.eventMap[String(entry && entry.event ? entry.event : '')];
-      if (transitionByEvent) {
-        addRow(entry.at, transitionByEvent, entry.message || null);
-      }
-      const normalizedMessage = String(entry && entry.message ? entry.message : '').trim().toLowerCase();
-      const transitionByMessage = OPERATOR_TRANSITION_RULES.detailMap[normalizedMessage];
-      if (transitionByMessage) {
-        addRow(entry.at, transitionByMessage, entry.message || null);
-      }
-    }
-    if (payload.blocked && (payload.blocked.stop_reason_code === '${REASON_CODES.operatorNoProgressRedispatchBlocked}' || payload.blocked.stop_reason_code === '${REASON_CODES.awaitingHumanReviewScopeIncomplete}')) {
-      addRow('n/a', 'completion_gate_blocked', payload.blocked.stop_reason_detail || null);
-    }
-    return rows.sort(function (a, b) {
-      const atA = Date.parse(a.at);
-      const atB = Date.parse(b.at);
-      if (Number.isFinite(atA) && Number.isFinite(atB)) {
-        return atA - atB;
-      }
-      if (Number.isFinite(atA)) {
-        return -1;
-      }
-      if (Number.isFinite(atB)) {
-        return 1;
-      }
-      return a.label.localeCompare(b.label);
-    });
-  }
-
-  function renderThroughput(payload) {
+export function renderThroughput(payload: any) {
     if (!payload || !payload.throughput) {
       elements.throughputOutput.textContent = 'No throughput samples yet.';
       return;
@@ -102,7 +26,7 @@ export function renderRuntimeSource(): string {
     );
   }
 
-  function renderRuntimeResolution(runtimeResolution) {
+export function renderRuntimeResolution(runtimeResolution: any) {
     if (!runtimeResolution) {
       elements.runtimeResolutionOutput.textContent = 'Runtime resolution unavailable.';
       return;
@@ -111,9 +35,9 @@ export function renderRuntimeSource(): string {
     elements.runtimeResolutionOutput.textContent = formatCanonicalJsonBlock('Runtime Resolution JSON', runtimeResolution);
   }
 
-  function renderRuntimeEvents(payload) {
+export function renderRuntimeEvents(payload: any) {
     const events = Array.isArray(payload && payload.recent_runtime_events) ? payload.recent_runtime_events : [];
-    const filtered = events.filter(function (entry) {
+    const filtered = events.filter(function (entry: any) {
       if (state.filter.eventFeedSeverity === 'all') {
         return true;
       }
@@ -128,7 +52,7 @@ export function renderRuntimeSource(): string {
       return;
     }
 
-    const nodes = filtered.map(function (entry) {
+    const nodes = filtered.map(function (entry: any) {
       const item = document.createElement('li');
       const title = document.createElement('strong');
       title.textContent = '[' + (entry.severity || 'info') + '] ' + (entry.event || 'unknown');
@@ -144,7 +68,7 @@ export function renderRuntimeSource(): string {
     elements.runtimeEventsList.replaceChildren(...nodes);
   }
 
-  function renderSnapshotError(errorPayload) {
+export function renderSnapshotError(errorPayload: any) {
     elements.snapshotErrorPanel.classList.remove('hidden');
     elements.snapshotErrorMessage.textContent =
       (errorPayload && errorPayload.code ? String(errorPayload.code) + ': ' : '') +
@@ -192,10 +116,7 @@ export function renderRuntimeSource(): string {
     renderRuntimeEvents(state.lastGoodPayload);
   }
 
-  function clearSnapshotError() {
+export function clearSnapshotError() {
     elements.snapshotErrorPanel.classList.add('hidden');
     elements.snapshotErrorMessage.textContent = 'Snapshot unavailable.';
   }
-
-`;
-}

@@ -1,5 +1,12 @@
-export function renderIssuesSource(): string {
-  return `  function rowMatchesFilter(entry) {
+import { DASHBOARD_CONFIG } from './config';
+import { elements } from './dom';
+import { state } from './state';
+import { setRefreshStatus } from './connection';
+import { createActionButton, copyText, formatDiagnosticSummary, formatInputDecisionContext, getDiagnosticSummary, createOperatorHintBadge, createProvisioningBadge, createStateBadge, loadIssue } from './issue-detail';
+import { cancelBlockedIssue, resumeBlockedIssue, runOperatorAction, submitBlockedInput } from './operator-actions';
+import { createBlockedRootCauseBlock, createBudgetBlock, formatDate, formatDurationFromIso, formatDurationFromMs, formatElapsedMs, formatNumber, formatTokenBreakdown, getActionRequiredLabel, getProgressSignalLabel, getRetryStateLabel, getTokenConfidenceLabel, getTurnControlLabel } from './formatting';
+
+export function rowMatchesFilter(entry: any) {
     if (state.filter.status === 'running' && entry.state.toLowerCase().includes('retry')) {
       return false;
     }
@@ -15,7 +22,7 @@ export function renderIssuesSource(): string {
     return entry.issue_identifier.toLowerCase().includes(state.filter.query.toLowerCase());
   }
 
-  function renderRunning(payload) {
+export function renderRunning(payload: any) {
     const rows = payload.running.filter(rowMatchesFilter);
     if (!rows.length) {
       const emptyRow = document.createElement('tr');
@@ -28,7 +35,7 @@ export function renderIssuesSource(): string {
       return;
     }
 
-    const nodes = rows.map((entry) => {
+    const nodes = rows.map((entry: any) => {
       const row = document.createElement('tr');
       row.setAttribute('data-issue', entry.issue_identifier);
       if (state.selectedIssue === entry.issue_identifier) {
@@ -39,7 +46,7 @@ export function renderIssuesSource(): string {
       const issueLink = document.createElement('a');
       issueLink.href = '#thread-detail-' + encodeURIComponent(entry.issue_identifier);
       issueLink.textContent = entry.issue_identifier;
-      issueLink.addEventListener('click', function (event) {
+      issueLink.addEventListener('click', function (event: any) {
         event.preventDefault();
         event.stopPropagation();
         elements.issueInput.value = entry.issue_identifier;
@@ -275,8 +282,8 @@ export function renderIssuesSource(): string {
     elements.runningRows.replaceChildren(...nodes);
   }
 
-  function renderRetry(payload) {
-    const rows = payload.retrying.filter(function (entry) {
+export function renderRetry(payload: any) {
+    const rows = payload.retrying.filter(function (entry: any) {
       if (state.filter.status === 'running' || state.filter.status === 'blocked') {
         return false;
       }
@@ -300,7 +307,7 @@ export function renderIssuesSource(): string {
       return;
     }
 
-    const nodes = rows.map((entry) => {
+    const nodes = rows.map((entry: any) => {
       const row = document.createElement('tr');
 
       const issueCell = document.createElement('td');
@@ -455,8 +462,8 @@ export function renderIssuesSource(): string {
     elements.retryRows.replaceChildren(...nodes);
   }
 
-  function renderBlocked(payload) {
-    const rows = (payload.blocked || []).filter(function (entry) {
+export function renderBlocked(payload: any) {
+    const rows = (payload.blocked || []).filter(function (entry: any) {
       if (state.filter.status === 'running' || state.filter.status === 'retrying') {
         return false;
       }
@@ -483,7 +490,7 @@ export function renderIssuesSource(): string {
       return;
     }
 
-    const nodes = rows.map((entry) => {
+    const nodes = rows.map((entry: any) => {
       const row = document.createElement('tr');
 
       const issueCell = document.createElement('td');
@@ -673,6 +680,3 @@ export function renderIssuesSource(): string {
 
     elements.blockedRows.replaceChildren(...nodes);
   }
-
-`;
-}

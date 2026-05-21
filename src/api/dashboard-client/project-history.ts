@@ -1,9 +1,14 @@
-export function renderProjectHistorySource(): string {
-  return `  function factLabel(value) {
+import { elements } from './dom';
+import { state } from './state';
+import { fetchJson } from './connection';
+import { formatDate, formatNumber } from './formatting';
+import { createActionButton, createStateBadge } from './issue-detail';
+
+export function factLabel(value: any) {
     return String(value || 'unknown').replace(/_/g, ' ');
   }
 
-  function factClass(status) {
+export function factClass(status: any) {
     switch (status) {
       case 'present':
         return 'mini-badge mini-badge-good';
@@ -21,7 +26,7 @@ export function renderProjectHistorySource(): string {
     }
   }
 
-  function createFactBadge(fact) {
+export function createFactBadge(fact: any) {
     const badge = document.createElement('span');
     badge.className = factClass(fact && fact.status);
     badge.textContent = factLabel(fact && fact.status) + ': ' + factLabel(fact && fact.fact);
@@ -31,7 +36,7 @@ export function renderProjectHistorySource(): string {
     return badge;
   }
 
-  function createProjectHistoryEmptyRow(message) {
+export function createProjectHistoryEmptyRow(message: any) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
     cell.colSpan = 9;
@@ -41,7 +46,7 @@ export function renderProjectHistorySource(): string {
     return row;
   }
 
-  function projectKeyFromHistoryPayload(historyPayload) {
+export function projectKeyFromHistoryPayload(historyPayload: any) {
     const runs = historyPayload && Array.isArray(historyPayload.runs) ? historyPayload.runs : [];
     for (const run of runs) {
       if (run && run.identity && run.identity.project && run.identity.project.key) {
@@ -54,7 +59,7 @@ export function renderProjectHistorySource(): string {
     return '';
   }
 
-  function summarizeProjectHistoryReferences(row) {
+export function summarizeProjectHistoryReferences(row: any) {
     const summary = row && row.summary ? row.summary : {};
     return [
       'evidence ' + formatNumber(summary.evidence_reference_count || 0),
@@ -64,7 +69,7 @@ export function renderProjectHistorySource(): string {
     ].join(' • ');
   }
 
-  function summarizeProjectHistoryMetrics(row) {
+export function summarizeProjectHistoryMetrics(row: any) {
     const summary = row && row.summary ? row.summary : {};
     return [
       'attempts ' + formatNumber(summary.attempt_count || 0),
@@ -75,7 +80,7 @@ export function renderProjectHistorySource(): string {
     ].join(' • ');
   }
 
-  function summarizeProjectHistoryHealth(health) {
+export function summarizeProjectHistoryHealth(health: any) {
     if (!health || typeof health !== 'object') {
       return 'Health: unavailable';
     }
@@ -101,7 +106,7 @@ export function renderProjectHistorySource(): string {
     if (appServerLite.unavailable_event_count) {
       const reasons = Array.isArray(appServerLite.unavailable_reasons)
         ? appServerLite.unavailable_reasons
-            .map(function (reason) {
+            .map(function (reason: any) {
               return (reason.reason_code || 'unknown') + ' ' + formatNumber(reason.count || 0) + ' ' + (reason.classification || 'unknown');
             })
             .join(', ')
@@ -109,13 +114,13 @@ export function renderProjectHistorySource(): string {
       policyParts.push('payload unavailable ' + formatNumber(appServerLite.unavailable_event_count || 0) + ' (' + reasons + ')');
     }
     const diagnostics = Array.isArray(health.diagnostics) ? health.diagnostics : [];
-    const lifecyclePendingCount = diagnostics.filter(function (fact) {
+    const lifecyclePendingCount = diagnostics.filter(function (fact: any) {
       return fact && fact.status === 'lifecycle_pending';
     }).length;
-    const optionalUnavailableCount = diagnostics.filter(function (fact) {
+    const optionalUnavailableCount = diagnostics.filter(function (fact: any) {
       return fact && fact.status === 'optional_unavailable';
     }).length;
-    const degradedFactCount = diagnostics.filter(function (fact) {
+    const degradedFactCount = diagnostics.filter(function (fact: any) {
       return fact && (fact.status === 'missing' || fact.status === 'degraded' || fact.status === 'unavailable');
     }).length;
     if (lifecyclePendingCount || optionalUnavailableCount || degradedFactCount) {
@@ -145,7 +150,7 @@ export function renderProjectHistorySource(): string {
       .join(' • ');
   }
 
-  function renderProjectHistory() {
+export function renderProjectHistory() {
     const projectKey = state.projectHistory.projectKey || '';
     elements.projectHistoryProjectKey.value = projectKey;
     elements.projectHistoryLoad.disabled = !!state.projectHistory.loading;
@@ -200,7 +205,7 @@ export function renderProjectHistorySource(): string {
       return;
     }
 
-    const rows = tickets.map((entry) => {
+    const rows = tickets.map((entry: any) => {
       const row = document.createElement('tr');
       row.dataset.ticketKey = entry.ticket_identity && entry.ticket_identity.key ? entry.ticket_identity.key : '';
       const ticketCell = document.createElement('td');
@@ -267,7 +272,7 @@ export function renderProjectHistorySource(): string {
     renderProjectHistoryDetail();
   }
 
-  function createProjectHistorySection(title, items, renderItem) {
+export function createProjectHistorySection(title: any, items: any, renderItem: any) {
     const section = document.createElement('section');
     section.className = 'thread-detail-section';
     const heading = document.createElement('h3');
@@ -291,7 +296,7 @@ export function renderProjectHistorySource(): string {
     return section;
   }
 
-  function renderProjectHistoryDetail() {
+export function renderProjectHistoryDetail() {
     const detail = state.projectHistory.detailPayload;
     elements.projectHistoryDetail.replaceChildren();
     if (state.projectHistory.detailError) {
@@ -317,47 +322,47 @@ export function renderProjectHistorySource(): string {
     const grid = document.createElement('div');
     grid.className = 'project-history-detail-grid';
     grid.append(
-      createProjectHistorySection('Attempts', detail.attempts, function (item) {
+      createProjectHistorySection('Attempts', detail.attempts, function (item: any) {
         return 'Attempt ' + item.attempt_number + ' • ' + item.status + ' • ' + formatDate(item.started_at) + ' - ' + formatDate(item.ended_at);
       }),
-      createProjectHistorySection('Phases', detail.phases, function (item) {
+      createProjectHistorySection('Phases', detail.phases, function (item: any) {
         return item.phase + ' • ' + item.status + ' • ' + formatDate(item.started_at) + ' - ' + formatDate(item.ended_at) + (item.reason_code ? ' • ' + item.reason_code : '');
       }),
-      createProjectHistorySection('State Transitions', detail.state_transitions, function (item) {
+      createProjectHistorySection('State Transitions', detail.state_transitions, function (item: any) {
         return item.from_status + ' -> ' + item.to_status + ' • ' + formatDate(item.transitioned_at) + (item.reason_code ? ' • ' + item.reason_code : '');
       }),
-      createProjectHistorySection('Thread References', detail.thread_references, function (item) {
+      createProjectHistorySection('Thread References', detail.thread_references, function (item: any) {
         return item.thread_id + ' • attempt ' + item.attempt_id + ' • ' + item.status + ' • ' + formatDate(item.started_at);
       }),
-      createProjectHistorySection('Turn References', detail.turn_references, function (item) {
+      createProjectHistorySection('Turn References', detail.turn_references, function (item: any) {
         return item.turn_id + ' • thread ' + item.thread_id + ' • turn ' + item.turn_index + ' • ' + item.status;
       }),
-      createProjectHistorySection('Outcomes', detail.outcomes, function (item) {
+      createProjectHistorySection('Outcomes', detail.outcomes, function (item: any) {
         return item.outcome + ' • ' + (item.reason_code || 'no reason') + ' • ' + formatDate(item.recorded_at);
       }),
-      createProjectHistorySection('Blockers', detail.blockers, function (item) {
+      createProjectHistorySection('Blockers', detail.blockers, function (item: any) {
         return item.status + ' • ' + item.blocker_type + ' • ' + (item.reason_code || 'no reason') + ' • ' + (item.reason_detail || 'no detail');
       }),
-      createProjectHistorySection('Evidence', detail.evidence_references, function (item) {
+      createProjectHistorySection('Evidence', detail.evidence_references, function (item: any) {
         return item.evidence_kind + ' • ' + (item.title || item.uri || 'untitled') + ' • ' + formatDate(item.recorded_at);
       }),
-      createProjectHistorySection('Tracker And PR Facts', [].concat(detail.tracker_facts || [], detail.pr_and_reference_facts || [], detail.operator_facts || []), function (item) {
+      createProjectHistorySection('Tracker And PR Facts', [].concat(detail.tracker_facts || [], detail.pr_and_reference_facts || [], detail.operator_facts || []), function (item: any) {
         return (item.tracker_status || item.reference_kind || item.action || 'fact') + ' • ' + (item.label || item.result || item.state || item.tracker_status || 'n/a') + ' • ' + formatDate(item.last_observed_at || item.observed_at || item.requested_at);
       }),
-      createProjectHistorySection('App Server Lite Excerpts', detail.app_server_lite_summaries, function (item) {
+      createProjectHistorySection('App Server Lite Excerpts', detail.app_server_lite_summaries, function (item: any) {
         return item.source_event_name + ' • ' + item.detail_status + ' • ' + (item.summary || item.redacted_excerpt || item.unavailable_reason_code || 'no excerpt');
       }),
-      createProjectHistorySection('Token And Model Facts', detail.token_model_summaries, function (item) {
+      createProjectHistorySection('Token And Model Facts', detail.token_model_summaries, function (item: any) {
         return (item.effective_model || item.requested_model || 'model unknown') + ' • tokens ' + (item.total_tokens === null || item.total_tokens === undefined ? 'n/a' : formatNumber(item.total_tokens)) + ' • ' + (item.telemetry_confidence || 'confidence unknown');
       }),
-      createProjectHistorySection('Blocked Input Events', detail.blocked_input_events, function (item) {
+      createProjectHistorySection('Blocked Input Events', detail.blocked_input_events, function (item: any) {
         return (item.request_id || 'request') + ' • ' + (item.status || 'status unknown') + ' • ' + (item.reason_code || 'no reason');
       })
     );
     elements.projectHistoryDetail.append(heading, facts, grid);
   }
 
-  async function loadProjectHistory(projectKey) {
+export async function loadProjectHistory(projectKey?: any) {
     const requestedProjectKey = String(projectKey || elements.projectHistoryProjectKey.value || '').trim();
     if (!requestedProjectKey || state.projectHistory.loading) {
       renderProjectHistory();
@@ -386,7 +391,7 @@ export function renderProjectHistorySource(): string {
     }
   }
 
-  async function loadProjectHistoryDetail(ticketKey) {
+export async function loadProjectHistoryDetail(ticketKey: any) {
     const projectKey = state.projectHistory.projectKey;
     if (!projectKey || !ticketKey) {
       return;
@@ -406,6 +411,3 @@ export function renderProjectHistorySource(): string {
       renderProjectHistory();
     }
   }
-
-`;
-}

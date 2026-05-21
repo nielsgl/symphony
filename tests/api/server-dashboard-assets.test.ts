@@ -90,8 +90,8 @@ describe('LocalApiServer dashboard assets', () => {
     expect(scriptPayload).toContain('Why not blocked:');
     expect(scriptPayload).toContain('operator_action_required_workspace_conflict');
     expect(scriptPayload).toContain('Awaiting Human Review (Scope Incomplete)');
-    expect(scriptPayload).toContain('Blocked reason: \' + getActionRequiredLabel(payload.blocked.stop_reason_code)');
-    expect(scriptPayload).toContain('formatApiError(payload, \'Request failed\')');
+    expect(scriptPayload).toMatch(/Blocked reason: ["'] \+ getActionRequiredLabel\(payload\.blocked\.stop_reason_code\)/);
+    expect(scriptPayload).toMatch(/formatApiError\(payload, ["']Request failed["']\)/);
     expect(scriptPayload).toContain('setInterval(updateRuntimeClock, DASHBOARD_CONFIG.render_interval_ms)');
 
     const cssResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/styles.css`);

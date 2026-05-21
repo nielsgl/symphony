@@ -4,7 +4,9 @@
   "private": true,
   "description": "Symphony workflow config pipeline",
   "scripts": {
-    "build": "tsc --project tsconfig.json",
+    "build": "npm run build:dashboard-client && tsc --project tsconfig.json",
+    "build:dashboard-client": "node scripts/build-dashboard-client.js",
+    "check:dashboard-client": "node scripts/build-dashboard-client.js --check",
     "build:desktop:prepare": "npm run build && node scripts/build-desktop-backend-sidecar.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -27,7 +29,7 @@
     "check:spec-coverage": "node scripts/check-spec-coverage.js",
     "check:pr-governance": "node scripts/check-pr-governance.js",
     "check:upstream-parity": "node scripts/check-upstream-parity.js",
-    "check:meta": "node scripts/check-meta.js",
+    "check:meta": "node scripts/check-meta.js && npm run check:dashboard-client",
     "normalize:pr-body": "node scripts/normalize-pr-body.js",
     "stress:control-plane": "node scripts/stress-control-plane.js",
     "submit:pr-governed": "node scripts/submit-pr-with-governance.js",
@@ -51,6 +53,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.17",
     "@vitest/coverage-v8": "^4.1.5",
+    "esbuild": "^0.28.0",
     "pkg": "^5.8.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.5"

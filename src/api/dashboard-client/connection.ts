@@ -1,5 +1,92 @@
-export function renderConnectionSource(): string {
-  return `  function applyPayload(payload, source) {
+import { DASHBOARD_CONFIG } from './config';
+import { elements } from './dom';
+import { state } from './state';
+import { formatApiError, formatCanonicalJsonBlock, formatDate, formatDurationFromEpochMs, formatDurationFromIso } from './formatting';
+import { renderActionRequiredBanner, renderApiDegradedBanner, renderOverview } from './overview';
+import { renderThroughput, renderRuntimeEvents, renderRuntimeResolution, renderSnapshotError, clearSnapshotError } from './runtime';
+import { renderRunning, renderRetry, renderBlocked } from './issues';
+import { renderStoppedRunRecovery, mergeStoppedRunRecoveryPayload } from './stopped-runs';
+import { loadIssue } from './issue-detail';
+import { renderProjectHistory, loadProjectHistory, projectKeyFromHistoryPayload } from './project-history';
+
+export function getConnectionLabel(mode: any) {
+    switch (mode) {
+      case 'streaming':
+        return 'Streaming';
+      case 'polling':
+        return 'Polling';
+      case 'connecting':
+        return 'Connecting';
+      default:
+        return 'Offline';
+    }
+  }
+
+export function getConnectionClass(mode: any) {
+    switch (mode) {
+      case 'streaming':
+        return 'badge badge-live';
+      case 'polling':
+        return 'badge badge-polling';
+      case 'connecting':
+        return 'badge badge-connecting';
+      default:
+        return 'badge badge-offline';
+    }
+  }
+
+export function describeStreamFallback() {
+    if (state.streamConnected && !state.streamSnapshotHealthy) {
+      return 'SSE connected; waiting for first state_snapshot';
+    }
+    if (state.streamFallbackReason === 'error') {
+      return 'SSE disconnected after stream error; polling fallback live';
+    }
+    if (state.streamFallbackReason === 'connecting') {
+      return 'SSE connecting; polling fallback live';
+    }
+    return 'SSE disconnected; polling fallback live';
+  }
+
+export function setConnectionStatus(mode: any, detail: any) {
+    state.connection = mode;
+    elements.connectionBadge.textContent = getConnectionLabel(mode);
+    elements.connectionBadge.className = getConnectionClass(mode);
+    elements.connectionDetail.textContent = detail;
+  }
+
+export function setLastUpdated(value: any) {
+    const generatedAtMs = state.payload && typeof state.payload.snapshot_generated_at_ms === 'number'
+      ? state.payload.snapshot_generated_at_ms
+      : Date.parse(value || '');
+    const ageText = Number.isFinite(generatedAtMs) ? ' • age ' + formatDurationFromEpochMs(generatedAtMs) : '';
+    const freshness = state.payload && state.payload.snapshot_freshness_state ? ' • ' + state.payload.snapshot_freshness_state : '';
+    elements.lastUpdated.textContent = 'Last update: ' + formatDate(value) + ageText + freshness;
+  }
+
+export function setRefreshStatus(message: any, isError: any) {
+    elements.refreshStatus.textContent = message;
+    elements.refreshStatus.className = isError ? 'status-error' : 'status-ok';
+  }
+
+export function isStreamHealthy() {
+    return state.streamConnected && state.streamSnapshotHealthy;
+  }
+
+export function clearPollTimer() {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+
+export function schedulePollingFallback() {
+    clearPollTimer();
+    if (isStreamHealthy()) {
+      return;
+    }
+    state.pollTimer = setTimeout(loadStateViaPoll, state.pollDelayMs);
+  }
+
+export function applyPayload(payload: any, source: any) {
     if (payload && payload.error) {
       renderSnapshotError(payload.error);
       setLastUpdated(payload.generated_at || new Date().toISOString());
@@ -33,7 +120,7 @@ export function renderConnectionSource(): string {
     return true;
   }
 
-  function updateRuntimeClock() {
+export function updateRuntimeClock() {
     if (state.lastGoodPayload) {
       renderOverview(state.lastGoodPayload);
     }
@@ -44,7 +131,7 @@ export function renderConnectionSource(): string {
     }
   }
 
-  async function fetchJson(url, init) {
+export async function fetchJson(url: any, init?: any) {
     const response = await fetch(url, init);
     const payload = await response.json();
     if (!response.ok) {
@@ -53,7 +140,7 @@ export function renderConnectionSource(): string {
     return payload;
   }
 
-  async function loadStateViaPoll() {
+export async function loadStateViaPoll() {
     try {
       const payload = await fetchJson('/api/v1/state');
       const usablePayload = applyPayload(payload, 'poll');
@@ -74,7 +161,7 @@ export function renderConnectionSource(): string {
     }
   }
 
-  function scheduleStateSave() {
+export function scheduleStateSave() {
     if (!state.uiStateLoaded) {
       return;
     }
@@ -111,7 +198,7 @@ export function renderConnectionSource(): string {
     }, 250);
   }
 
-  async function loadUiState() {
+export async function loadUiState() {
     try {
       const response = await fetch('/api/v1/ui-state');
       if (!response.ok) {
@@ -156,11 +243,7 @@ export function renderConnectionSource(): string {
     }
   }
 
-`;
-}
-
-export function renderConnectionRuntimeSource(): string {
-  return `  async function refreshNow() {
+export async function refreshNow() {
     try {
       const payload = await fetchJson('/api/v1/refresh', { method: 'POST' });
       setRefreshStatus(payload.coalesced ? 'Refresh request coalesced' : 'Refresh queued', false);
@@ -170,7 +253,7 @@ export function renderConnectionRuntimeSource(): string {
     }
   }
 
-  async function loadDiagnostics() {
+export async function loadDiagnostics() {
     try {
       const diagnostics = await fetchJson('/api/v1/diagnostics');
       state.runtimeResolution = diagnostics.runtime_resolution || null;
@@ -200,7 +283,7 @@ export function renderConnectionRuntimeSource(): string {
         return;
       }
 
-      const nodes = runs.map((entry) => {
+      const nodes = runs.map((entry: any) => {
         const item = document.createElement('li');
         const title = document.createElement('strong');
         title.textContent = entry.issue_identifier + ' (' + (entry.terminal_status || 'active') + ')';
@@ -218,7 +301,7 @@ export function renderConnectionRuntimeSource(): string {
     }
   }
 
-  function handleSseEnvelope(envelope) {
+export function handleSseEnvelope(envelope: any) {
     if (!envelope || typeof envelope !== 'object') {
       return;
     }
@@ -244,7 +327,7 @@ export function renderConnectionRuntimeSource(): string {
     }
   }
 
-  function connectStream() {
+export function connectStream() {
     if (state.eventSource) {
       state.eventSource.close();
       state.eventSource = null;
@@ -265,7 +348,7 @@ export function renderConnectionRuntimeSource(): string {
       setConnectionStatus('connecting', 'SSE connected; waiting for first state_snapshot');
     };
 
-    function handleStreamMessage(event) {
+    function handleStreamMessage(event: any) {
       try {
         const envelope = JSON.parse(event.data);
         handleSseEnvelope(envelope);
@@ -290,6 +373,3 @@ export function renderConnectionRuntimeSource(): string {
       state.streamRetryMs = Math.min(state.streamRetryMs * 2, 15000);
     };
   }
-
-`;
-}
