@@ -828,6 +828,37 @@ export interface ApiDrainQuiescenceProjection {
   >;
 }
 
+export interface ApiDrainControlBlocker {
+  category: ApiDrainQuiescenceProjection['blockers'][number]['category'];
+  count: number;
+  issue_identifiers: string[];
+  run_identifiers: string[];
+  reason: string;
+}
+
+export interface ApiDrainWaitResponse {
+  success: boolean;
+  status: 'safe_to_shutdown' | 'timeout';
+  reason: 'quiescent' | 'timeout';
+  waited_ms: number;
+  timed_out: boolean;
+  quiescence: ApiDrainQuiescenceProjection;
+  blockers: ApiDrainControlBlocker[];
+}
+
+export interface ApiDrainShutdownResponse {
+  success: boolean;
+  status: 'shutdown_requested' | 'blocked';
+  mode: 'default' | 'override';
+  reason: 'quiescent' | 'operator_override' | 'blockers_present';
+  message: string;
+  requested_at: string;
+  requested_at_ms: number;
+  idempotent_replay: boolean;
+  quiescence: ApiDrainQuiescenceProjection;
+  blockers: ApiDrainControlBlocker[];
+}
+
 export type ApiStateErrorCode = 'snapshot_timeout' | 'snapshot_unavailable';
 
 export interface ApiStateErrorResponse {
@@ -1277,6 +1308,9 @@ export interface LocalApiServerOptions {
     readDrainMode: () => DrainModeState;
     enterDrainMode: (params?: { reason?: string | null }) => DrainModeState;
     exitDrainMode: (params?: { reason?: string | null }) => DrainModeState;
+  };
+  shutdownSource?: {
+    shutdown: () => Promise<void>;
   };
   workflowControlSource?: {
     switchWorkflowPath: (workflowPath: string) => Promise<{

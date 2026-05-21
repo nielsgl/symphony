@@ -1056,6 +1056,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
 
   const resolvedPort = options.port ?? effectiveConfig.server?.port;
   const resolvedHost = options.host ?? effectiveConfig.server?.host ?? '127.0.0.1';
+  let stopRuntime: (() => Promise<void>) | null = null;
   apiServer =
     resolvedPort === undefined
       ? null
@@ -1072,6 +1073,14 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             readDrainMode: () => orchestrator.readDrainMode(),
             enterDrainMode: (params) => orchestrator.enterDrainMode(params),
             exitDrainMode: (params) => orchestrator.exitDrainMode(params)
+          },
+          shutdownSource: {
+            shutdown: async () => {
+              if (!stopRuntime) {
+                throw new Error('runtime shutdown is not initialized');
+              }
+              await stopRuntime();
+            }
           },
           diagnosticsSource: {
             getActiveProfile: () => activeProfile,
@@ -1471,6 +1480,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       message: 'runtime environment stopped'
     });
   };
+  stopRuntime = stop;
 
   return {
     apiServer,
