@@ -11,6 +11,7 @@ import type {
   OrchestratorPersistencePort,
   OrchestratorPorts,
   OrchestratorState,
+  RuntimeBuildIdentityState,
   TranscriptToolCallDiagnostic,
   TranscriptToolCallLineage,
   WorkerTerminationResult
@@ -194,6 +195,7 @@ export function createHarness(options: {
   getControlPlaneHealth?: OrchestratorPorts['getControlPlaneHealth'];
   getHostLoad?: OrchestratorPorts['getHostLoad'];
   getPersistenceHealth?: () => PersistenceHealth;
+  resolveRuntimeIdentity?: OrchestratorPorts['resolveRuntimeIdentity'];
 } = {}): Harness {
   const tracker = makeTracker();
   const now = { value: 1_000_000 };
@@ -247,6 +249,7 @@ export function createHarness(options: {
       getControlPlaneHealth: options.getControlPlaneHealth,
       getHostLoad: options.getHostLoad,
       getPersistenceHealth: options.getPersistenceHealth,
+      resolveRuntimeIdentity: options.resolveRuntimeIdentity,
       spawnWorker,
       recoverMissingToolOutput: options.recoverMissingToolOutput,
       terminateWorker:
@@ -299,6 +302,7 @@ export type {
   OrchestratorPersistencePort,
   OrchestratorPorts,
   OrchestratorState,
+  RuntimeBuildIdentityState,
   StructuredLogger,
   TranscriptToolCallDiagnostic,
   TranscriptToolCallLineage

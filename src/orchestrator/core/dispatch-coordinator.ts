@@ -204,6 +204,7 @@ export async function coordinateDispatchTick(context: DispatchCoordinatorContext
   }
 
   const sortedCandidates = sortCandidatesForDispatch(candidates);
+  context.hooks.refreshQuiescenceState?.();
   const runtimeIdentityBlocker =
     state.runtime_identity?.status === 'stale' || state.runtime_identity?.status === 'unknown_current'
       ? state.runtime_identity.health_warning?.message

@@ -170,6 +170,7 @@ export interface BlockedInputCoordinatorHooks {
     tool_call_id?: string | null;
     tool_name?: string | null;
   }) => void;
+  refreshQuiescenceState?: () => void;
 }
 
 export interface BlockedInputCoordinatorContext {
@@ -500,6 +501,7 @@ export async function resumeBlockedIssue(
     };
   }
   const preState = context.hooks.describeIssueRuntimeState(blocked.issue_id);
+  context.hooks.refreshQuiescenceState?.();
   const runtimeIdentityBlocker =
     context.state.runtime_identity?.status === 'stale' || context.state.runtime_identity?.status === 'unknown_current'
       ? context.state.runtime_identity.health_warning?.message
@@ -942,6 +944,7 @@ export async function submitBlockedIssueInput(
     }
   }
 
+  context.hooks.refreshQuiescenceState?.();
   const runtimeIdentityBlocker =
     context.state.runtime_identity?.status === 'stale' || context.state.runtime_identity?.status === 'unknown_current'
       ? context.state.runtime_identity.health_warning?.message

@@ -1640,7 +1640,10 @@ export class OrchestratorCore {
         targetIdentifiersFromRuntimeState: (issueId, runtimeState) =>
           this.targetIdentifiersFromRuntimeState(issueId, runtimeState),
         recordOperatorAction: (issueId, action) => this.recordOperatorAction(issueId, action),
-        recordRuntimeEvent: (params) => this.recordRuntimeEvent(params)
+        recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+        refreshQuiescenceState: () => {
+          this.refreshQuiescenceState();
+        }
       }
     };
   }
