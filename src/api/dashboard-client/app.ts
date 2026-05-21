@@ -1,0 +1,3213 @@
+// This is the browser-authored dashboard client source.
+// The served /dashboard/client.js asset is generated from entry.ts by scripts/build-dashboard-client.js.
+// @ts-nocheck
+
+declare global {
+  var __SYMPHONY_DASHBOARD_CONFIG__: {
+    dashboard_enabled: boolean;
+    refresh_ms: number;
+    render_interval_ms: number;
+    phase_stale_warn_ms: number;
+  } | undefined;
+  var __SYMPHONY_ACTION_REQUIRED_CODES__: Record<string, string> | undefined;
+  var __SYMPHONY_OPERATOR_TRANSITION_RULES__: {
+    detailMap: Record<string, string>;
+    eventMap: Record<string, string>;
+  } | undefined;
+}
+
+export const DASHBOARD_CONFIG = globalThis.__SYMPHONY_DASHBOARD_CONFIG__ || {
+  dashboard_enabled: true,
+  refresh_ms: 4000,
+  render_interval_ms: 1000,
+  phase_stale_warn_ms: 45000
+};
+export const ACTION_REQUIRED_CODES = globalThis.__SYMPHONY_ACTION_REQUIRED_CODES__ || {};
+export const OPERATOR_TRANSITION_RULES = globalThis.__SYMPHONY_OPERATOR_TRANSITION_RULES__ || { detailMap: {}, eventMap: {} };
+
+export const state = {
+    payload: null,
+    lastGoodPayload: null,
+    selectedIssue: '',
+    connection: 'offline',
+    pollTimer: null,
+    runtimeTicker: null,
+    pollDelayMs: DASHBOARD_CONFIG.refresh_ms,
+    streamRetryMs: 1000,
+    streamConnected: false,
+    streamSnapshotHealthy: false,
+    streamStatus: 'connecting',
+    streamFallbackReason: 'connecting',
+    eventSource: null,
+    uiStateLoaded: false,
+    uiStateSaveTimer: null,
+    stoppedRunRecoveryLoaded: false,
+    stoppedRunRecoveryLoading: false,
+    stoppedRunRecoveryPayload: null,
+    projectHistory: {
+      projectKey: '',
+      loading: false,
+      detailLoadingTicketKey: null,
+      listPayload: null,
+      healthPayload: null,
+      detailPayload: null,
+      error: null,
+      detailError: null
+    },
+    filter: {
+      query: '',
+      status: 'all',
+      eventFeedSeverity: 'all',
+      blockedReason: 'all'
+    },
+    panels: {
+      throughputOpen: true,
+      runtimeEventsOpen: true
+    },
+    suppressIssuePanelToggleLoad: false,
+    runtimeResolution: null
+  };
+
+export let elements = {};
+
+export function resolveDashboardElements(doc = document) {
+  return {
+    connectionBadge: doc.getElementById('connection-badge'),
+    connectionDetail: doc.getElementById('connection-detail'),
+    lastUpdated: doc.getElementById('last-updated'),
+    refreshButton: doc.getElementById('refresh-button'),
+    refreshStatus: doc.getElementById('refresh-status'),
+    healthMessage: doc.getElementById('health-message'),
+    lastError: doc.getElementById('last-error'),
+    actionRequiredBanner: doc.getElementById('action-required-banner'),
+    actionRequiredTitle: doc.getElementById('action-required-title'),
+    actionRequiredSummary: doc.getElementById('action-required-summary'),
+    actionRequiredGroups: doc.getElementById('action-required-groups'),
+    apiDegradedBanner: doc.getElementById('api-degraded-banner'),
+    apiDegradedSummary: doc.getElementById('api-degraded-summary'),
+    snapshotErrorPanel: doc.getElementById('snapshot-error-panel'),
+    snapshotErrorMessage: doc.getElementById('snapshot-error-message'),
+    kpiGrid: doc.getElementById('kpi-grid'),
+    retryStatusSummary: doc.getElementById('retry-status-summary'),
+    rateLimits: doc.getElementById('rate-limits'),
+    throughputPanel: doc.getElementById('throughput-panel'),
+    throughputOutput: doc.getElementById('throughput-output'),
+    runtimeResolutionOutput: doc.getElementById('runtime-resolution-output'),
+    runningRows: doc.getElementById('running-rows'),
+    retryRows: doc.getElementById('retry-rows'),
+    blockedRows: doc.getElementById('blocked-rows'),
+    stoppedRunRecoveryList: doc.getElementById('stopped-run-recovery-list'),
+    stoppedRunRecoveryLoad: doc.getElementById('stopped-run-recovery-load'),
+    projectHistoryProjectKey: doc.getElementById('project-history-project-key'),
+    projectHistoryLoad: doc.getElementById('project-history-load'),
+    projectHistoryStatus: doc.getElementById('project-history-status'),
+    projectHistoryFacts: doc.getElementById('project-history-facts'),
+    projectHistoryRows: doc.getElementById('project-history-rows'),
+    projectHistoryDetail: doc.getElementById('project-history-detail'),
+    statusFilter: doc.getElementById('status-filter'),
+    runningFilter: doc.getElementById('running-filter'),
+    issuePanel: doc.getElementById('issue-panel'),
+    issueInput: doc.getElementById('issue-input'),
+    issueLoad: doc.getElementById('issue-load'),
+    issueOpenJson: doc.getElementById('issue-open-json'),
+    issueSummary: doc.getElementById('issue-summary'),
+    issueExplainerCard: doc.getElementById('issue-explainer-card'),
+    issueExplainerActionability: doc.getElementById('issue-explainer-actionability'),
+    issueExplainerHeadline: doc.getElementById('issue-explainer-headline'),
+    issueExplainerClassification: doc.getElementById('issue-explainer-classification'),
+    issueExplainerReason: doc.getElementById('issue-explainer-reason'),
+    issueExplainerAction: doc.getElementById('issue-explainer-action'),
+    issueExplainerTransition: doc.getElementById('issue-explainer-transition'),
+    issueExplainerVersion: doc.getElementById('issue-explainer-version'),
+    issueExplainerDetail: doc.getElementById('issue-explainer-detail'),
+    threadDetail: doc.getElementById('thread-detail'),
+    threadTimelineLanes: doc.getElementById('thread-timeline-lanes'),
+    threadBlockerCard: doc.getElementById('thread-blocker-card'),
+    threadCapabilityWarnings: doc.getElementById('thread-capability-warnings'),
+    threadRawEvents: doc.getElementById('thread-raw-events'),
+    issueOutput: doc.getElementById('issue-output'),
+    runtimeEventsPanel: doc.getElementById('runtime-events-panel'),
+    eventFeedFilter: doc.getElementById('event-feed-filter'),
+    runtimeEventsList: doc.getElementById('runtime-events-list'),
+    diagnosticsOutput: doc.getElementById('diagnostics-output'),
+    historyList: doc.getElementById('history-list')
+  };
+}
+
+
+export function formatNumber(value) {
+    if (!Number.isFinite(value)) {
+      return '0';
+    }
+    return value.toLocaleString('en-US');
+  }
+
+export function localTimeZoneLabel() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
+    } catch (_error) {
+      return 'local time';
+    }
+  }
+
+export function formatUtcIso(timestampMs) {
+    if (!Number.isFinite(timestampMs)) {
+      return 'n/a';
+    }
+    return new Date(timestampMs).toISOString();
+  }
+
+export function formatDate(value) {
+    if (!value) {
+      return 'n/a';
+    }
+    let parsed;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      parsed = value;
+    } else {
+      parsed = Date.parse(value);
+    }
+    if (!Number.isFinite(parsed)) {
+      return String(value);
+    }
+    const local = new Date(parsed).toLocaleString(undefined, { timeZoneName: 'short' });
+    return local + ' [' + localTimeZoneLabel() + '] (UTC ' + formatUtcIso(parsed) + ')';
+  }
+
+export function formatCanonicalJsonBlock(label, payload) {
+    return label + ' (canonical UTC ISO values preserved)\\n' + JSON.stringify(payload, null, 2);
+  }
+
+export function formatDurationFromIso(iso) {
+    const parsed = Date.parse(iso || '');
+    if (!Number.isFinite(parsed)) {
+      return 'n/a';
+    }
+    const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const remain = seconds % 60;
+    return minutes + 'm ' + remain + 's';
+  }
+
+export function formatDurationFromEpochMs(epochMs) {
+    if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) {
+      return 'n/a';
+    }
+    return formatDurationFromMs(epochMs);
+  }
+
+export function getTurnControlLabel(state) {
+    switch (state) {
+      case 'agent_turn':
+        return 'Agent Turn';
+      case 'operator_turn':
+        return 'Operator Turn';
+      case 'blocked_manual_resume':
+        return 'Manual Resume Required';
+      case 'automation_fault':
+        return 'Automation Fault';
+      default:
+        return 'Turn Unknown';
+    }
+  }
+
+export function getProgressSignalLabel(state) {
+    switch (state) {
+      case 'advancing':
+        return 'Advancing';
+      case 'heartbeat_only':
+        return 'Heartbeat Only';
+      case 'active_but_opaque':
+        return 'Active But Opaque';
+      case 'stalled_waiting':
+        return 'Stalled Waiting';
+      default:
+        return 'Progress Unknown';
+    }
+  }
+
+export function getRetryStateLabel(entry) {
+    if (entry && entry.due_state === 'overdue') {
+      return 'Retry Overdue';
+    }
+    return 'Retry Scheduled';
+  }
+
+export function getTokenConfidenceLabel(confidence) {
+    switch (confidence) {
+      case 'observed_live':
+        return 'Live';
+      case 'backfilled':
+        return 'Backfilled';
+      case 'missing':
+        return 'Missing';
+      default:
+        return 'Unknown';
+    }
+  }
+export function formatDurationFromMs(timestampMs) {
+    if (!Number.isFinite(timestampMs)) {
+      return 'n/a';
+    }
+    const seconds = Math.max(0, Math.floor((Date.now() - Number(timestampMs)) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const remain = seconds % 60;
+    return minutes + 'm ' + remain + 's';
+  }
+
+export function formatElapsedMs(durationMs) {
+    if (!Number.isFinite(durationMs)) {
+      return 'n/a';
+    }
+    const seconds = Math.max(0, Math.floor(Number(durationMs) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const remain = seconds % 60;
+    return minutes + 'm ' + remain + 's';
+  }
+
+export function getConnectionLabel(mode) {
+    switch (mode) {
+      case 'streaming':
+        return 'Streaming';
+      case 'polling':
+        return 'Polling';
+      case 'connecting':
+        return 'Connecting';
+      default:
+        return 'Offline';
+    }
+  }
+
+export function getConnectionClass(mode) {
+    switch (mode) {
+      case 'streaming':
+        return 'badge badge-live';
+      case 'polling':
+        return 'badge badge-polling';
+      case 'connecting':
+        return 'badge badge-connecting';
+      default:
+        return 'badge badge-offline';
+    }
+  }
+
+export function describeStreamFallback() {
+    if (state.streamConnected && !state.streamSnapshotHealthy) {
+      return 'SSE connected; waiting for first state_snapshot';
+    }
+    if (state.streamFallbackReason === 'error') {
+      return 'SSE disconnected after stream error; polling fallback live';
+    }
+    if (state.streamFallbackReason === 'connecting') {
+      return 'SSE connecting; polling fallback live';
+    }
+    return 'SSE disconnected; polling fallback live';
+  }
+
+export function setConnectionStatus(mode, detail) {
+    state.connection = mode;
+    elements.connectionBadge.textContent = getConnectionLabel(mode);
+    elements.connectionBadge.className = getConnectionClass(mode);
+    elements.connectionDetail.textContent = detail;
+  }
+
+export function setLastUpdated(value) {
+    const generatedAtMs = state.payload && typeof state.payload.snapshot_generated_at_ms === 'number'
+      ? state.payload.snapshot_generated_at_ms
+      : Date.parse(value || '');
+    const ageText = Number.isFinite(generatedAtMs) ? ' • age ' + formatDurationFromEpochMs(generatedAtMs) : '';
+    const freshness = state.payload && state.payload.snapshot_freshness_state ? ' • ' + state.payload.snapshot_freshness_state : '';
+    elements.lastUpdated.textContent = 'Last update: ' + formatDate(value) + ageText + freshness;
+  }
+
+export function setRefreshStatus(message, isError) {
+    elements.refreshStatus.textContent = message;
+    elements.refreshStatus.className = isError ? 'status-error' : 'status-ok';
+  }
+
+export function isStreamHealthy() {
+    return state.streamConnected && state.streamSnapshotHealthy;
+  }
+
+export function clearPollTimer() {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+
+export function schedulePollingFallback() {
+    clearPollTimer();
+    if (isStreamHealthy()) {
+      return;
+    }
+    state.pollTimer = setTimeout(loadStateViaPoll, state.pollDelayMs);
+  }
+
+export function getActionRequiredLabel(code) {
+    return ACTION_REQUIRED_CODES[code] || code || 'unknown';
+  }
+
+export function createBlockedRootCauseBlock(entry) {
+    if (!entry || !entry.root_cause) {
+      return null;
+    }
+    const block = document.createElement('div');
+    block.className = 'root-cause-block';
+    const label = document.createElement('div');
+    label.className = 'root-cause-label';
+    label.textContent = 'Root cause';
+    const summary = document.createElement('div');
+    summary.className = 'root-cause-summary';
+    const rootCauseSummary =
+      entry.root_cause.reason_code === 'worktree_dirty_repo'
+        ? 'Workspace provisioning failed: repo root has uncommitted or untracked files.'
+        : entry.root_cause.summary || entry.root_cause.detail || entry.root_cause.reason_code || 'n/a';
+    summary.textContent = rootCauseSummary;
+    block.append(label, summary);
+    if (entry.root_cause.detail) {
+      const detail = document.createElement('div');
+      detail.className = 'muted';
+      detail.textContent = 'Failed phase detail: ' + entry.root_cause.detail;
+      block.append(detail);
+    }
+    const remediationHint =
+      entry.root_cause.remediation_hint ||
+      (entry.root_cause.reason_code === 'worktree_dirty_repo'
+        ? 'Clean, commit, or ignore the dirty repo files, then requeue or resume.'
+        : null);
+    if (remediationHint) {
+      const remediation = document.createElement('div');
+      remediation.className = 'status-pill pending';
+      remediation.textContent = 'Remediation: ' + remediationHint;
+      block.append(remediation);
+    }
+    return block;
+  }
+
+export function isActionRequiredCode(code) {
+    return Boolean(code && ACTION_REQUIRED_CODES[code]);
+  }
+
+export function formatBudgetStatusLabel(status) {
+    switch (status) {
+      case 'warning':
+        return 'Warning';
+      case 'hard_limited':
+        return 'Hard limited';
+      case 'telemetry_unavailable':
+        return 'Telemetry unavailable';
+      case 'ok':
+        return 'Ok';
+      default:
+        return 'Not configured';
+    }
+  }
+
+export function budgetStatusClass(status) {
+    if (status === 'hard_limited') {
+      return 'failed';
+    }
+    if (status === 'warning' || status === 'telemetry_unavailable') {
+      return 'pending';
+    }
+    return 'success';
+  }
+
+export function createBudgetBlock(entry) {
+    const container = document.createElement('div');
+    container.className = 'budget-summary';
+    const status = entry && entry.budget_status ? entry.budget_status : null;
+    const statusPill = document.createElement('div');
+    statusPill.className = 'status-pill ' + budgetStatusClass(status);
+    statusPill.textContent = 'Budget: ' + formatBudgetStatusLabel(status);
+    container.append(statusPill);
+
+    const detail = document.createElement('div');
+    detail.className = 'muted';
+    if (status === 'telemetry_unavailable') {
+      detail.textContent = 'Budget usage unavailable; not counted as zero.';
+    } else if (typeof entry.budget_usage_tokens === 'number' || typeof entry.budget_limit_tokens === 'number') {
+      const usage = typeof entry.budget_usage_tokens === 'number' ? formatNumber(entry.budget_usage_tokens) : 'n/a';
+      const limit = typeof entry.budget_limit_tokens === 'number' ? formatNumber(entry.budget_limit_tokens) : 'n/a';
+      detail.textContent = usage + ' / ' + limit + ' tokens';
+    } else {
+      detail.textContent = 'No token budget configured.';
+    }
+    container.append(detail);
+
+    const metaParts = [];
+    if (typeof entry.budget_window_minutes === 'number') {
+      metaParts.push('Window ' + formatNumber(entry.budget_window_minutes) + 'm');
+    }
+    if (entry.budget_policy) {
+      metaParts.push('Policy ' + entry.budget_policy);
+    }
+    if (metaParts.length) {
+      const meta = document.createElement('div');
+      meta.className = 'muted';
+      meta.textContent = metaParts.join(' • ');
+      container.append(meta);
+    }
+    if (entry.budget_message) {
+      const message = document.createElement('div');
+      message.className = status === 'hard_limited' ? 'status-error' : 'muted';
+      message.textContent = 'Budget stopped continuation: ' + entry.budget_message;
+      container.append(message);
+    }
+    return container;
+  }
+
+export function formatBudgetSummary(entry) {
+    const status = entry && entry.budget_status ? entry.budget_status : null;
+    const parts = ['Budget: ' + formatBudgetStatusLabel(status)];
+    if (status === 'telemetry_unavailable') {
+      parts.push('usage unavailable');
+    } else if (entry && (typeof entry.budget_usage_tokens === 'number' || typeof entry.budget_limit_tokens === 'number')) {
+      const usage = typeof entry.budget_usage_tokens === 'number' ? formatNumber(entry.budget_usage_tokens) : 'n/a';
+      const limit = typeof entry.budget_limit_tokens === 'number' ? formatNumber(entry.budget_limit_tokens) : 'n/a';
+      parts.push(usage + ' / ' + limit + ' tokens');
+    }
+    if (entry && typeof entry.budget_window_minutes === 'number') {
+      parts.push('window ' + formatNumber(entry.budget_window_minutes) + 'm');
+    }
+    if (entry && entry.budget_policy) {
+      parts.push('policy ' + entry.budget_policy);
+    }
+    if (entry && entry.budget_message) {
+      parts.push(entry.budget_message);
+    }
+    return parts.join(' • ');
+  }
+
+export function formatApiError(payload, fallbackMessage) {
+    if (!payload || !payload.error) {
+      return fallbackMessage;
+    }
+    if (payload.error.code && payload.error.message) {
+      return payload.error.code + ': ' + payload.error.message;
+    }
+    if (payload.error.message) {
+      return String(payload.error.message);
+    }
+    return fallbackMessage;
+  }
+
+export function createMetricCard(label, value) {
+    const card = document.createElement('article');
+    card.className = 'kpi-card';
+    const title = document.createElement('h3');
+    title.textContent = label;
+    const number = document.createElement('p');
+    number.textContent = value;
+    card.append(title, number);
+    return card;
+  }
+
+export function formatTokenDimension(value, unavailableLabel) {
+    return typeof value === 'number' ? formatNumber(value) : unavailableLabel;
+  }
+
+export function formatOverviewTokenValue(payload, field, splitUnavailable) {
+    const codexTotals = payload && payload.codex_totals;
+    if (!codexTotals) {
+      return 'Unavailable';
+    }
+    if (splitUnavailable && field !== 'total_tokens' && field !== 'model_context_window') {
+      return 'Split unavailable';
+    }
+    return formatTokenDimension(codexTotals[field], '0');
+  }
+
+export function formatTokenBreakdown(tokens, telemetrySource) {
+    if (tokens && tokens.token_split_status === 'aggregate_only') {
+      return 'Split unavailable' + (telemetrySource ? ' • ' + telemetrySource : '');
+    }
+    const parts = [
+      'In ' + formatNumber(tokens.input_tokens),
+      'Out ' + formatNumber(tokens.output_tokens)
+    ];
+    if (typeof tokens.cached_input_tokens === 'number') {
+      parts.push('Cached ' + formatNumber(tokens.cached_input_tokens));
+    }
+    if (typeof tokens.reasoning_output_tokens === 'number') {
+      parts.push('Reasoning ' + formatNumber(tokens.reasoning_output_tokens));
+    }
+    if (typeof tokens.model_context_window === 'number') {
+      parts.push('Context ' + formatNumber(tokens.model_context_window));
+    }
+    return parts.join(' / ') + (telemetrySource ? ' • ' + telemetrySource : '');
+  }
+
+export function computeDisplayRuntimeSeconds(payload) {
+    if (!payload || !payload.codex_totals) {
+      return 0;
+    }
+    const base = Number(payload.codex_totals.seconds_running) || 0;
+    const generatedAtMs = Date.parse(payload.generated_at || '');
+    if (!Number.isFinite(generatedAtMs)) {
+      return base;
+    }
+    const elapsed = Math.max(0, Math.floor((Date.now() - generatedAtMs) / 1000));
+    return base + elapsed;
+  }
+
+export function renderOverview(payload) {
+    const splitUnavailable = payload.codex_totals && payload.codex_totals.token_split_status === 'aggregate_only';
+    elements.kpiGrid.replaceChildren(
+      createMetricCard('Running', formatNumber(payload.counts.running)),
+      createMetricCard('Retrying', formatNumber(payload.counts.retrying)),
+      createMetricCard('Blocked', formatNumber(payload.counts.blocked)),
+      createMetricCard('Stopped', formatNumber(payload.counts.stopped || 0)),
+      createMetricCard('Stalled Waiting', formatNumber(payload.counts.running_stalled_waiting_count || 0)),
+      createMetricCard('Awaiting Input', formatNumber(payload.counts.running_awaiting_input_count || 0)),
+      createMetricCard('Total Tokens', formatOverviewTokenValue(payload, 'total_tokens', splitUnavailable)),
+      createMetricCard('Input Tokens', formatOverviewTokenValue(payload, 'input_tokens', splitUnavailable)),
+      createMetricCard('Output Tokens', formatOverviewTokenValue(payload, 'output_tokens', splitUnavailable)),
+      createMetricCard('Cached Input Tokens', formatOverviewTokenValue(payload, 'cached_input_tokens', splitUnavailable)),
+      createMetricCard('Reasoning Output Tokens', formatOverviewTokenValue(payload, 'reasoning_output_tokens', splitUnavailable)),
+      createMetricCard('Max Context Window', formatOverviewTokenValue(payload, 'model_context_window', splitUnavailable)),
+      createMetricCard('Runtime Seconds', formatNumber(computeDisplayRuntimeSeconds(payload)))
+    );
+
+    const failed = payload.health.dispatch_validation === 'failed';
+    elements.healthMessage.className = failed ? 'health health-failed' : 'health health-ok';
+    elements.healthMessage.textContent = 'Dispatch validation: ' + payload.health.dispatch_validation;
+    elements.lastError.textContent = payload.health.last_error ? 'Last error: ' + payload.health.last_error : '';
+    renderRetryStatusSummary(payload);
+
+    const rateLimits = payload.rate_limits;
+    elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+  }
+
+export function renderRetryStatusSummary(payload) {
+    const entries =
+      payload.retry_status && Array.isArray(payload.retry_status.entries)
+        ? payload.retry_status.entries
+        : Array.isArray(payload.retrying)
+          ? payload.retrying.map(function (entry) {
+              const cause = entry.retry_cause || {};
+              return {
+                issue_identifier: entry.issue_identifier,
+                attempt: entry.attempt,
+                due_at: entry.due_at,
+                due_state: entry.due_state || 'pending',
+                overdue_ms: entry.overdue_ms || null,
+                retry_wait_ms: entry.retry_wait_ms || null,
+                reason_code: cause.reason_code || entry.stop_reason_code || null,
+                detail: cause.detail || entry.stop_reason_detail || entry.error || null,
+                operator_detail: cause.operator_detail || null,
+                headline: cause.headline || (entry.operator_explainer_hint && entry.operator_explainer_hint.headline) || 'Run is waiting to retry',
+                expected_transition: cause.expected_transition || null,
+                last_phase: cause.last_phase || entry.last_phase || null
+              };
+            })
+          : [];
+    if (!entries.length) {
+      elements.retryStatusSummary.classList.add('hidden');
+      elements.retryStatusSummary.replaceChildren();
+      return;
+    }
+
+    const header = document.createElement('div');
+    header.className = 'retry-status-header';
+    const overdueCount = entries.filter(function (entry) {
+      return entry.due_state === 'overdue';
+    }).length;
+    header.textContent =
+      overdueCount > 0
+        ? overdueCount + ' overdue ' + (overdueCount === 1 ? 'retry needs' : 'retries need') + ' attention'
+        : entries.length + ' retry' + (entries.length === 1 ? '' : 'ies') + ' scheduled';
+
+    const list = document.createElement('div');
+    list.className = 'retry-status-list';
+    entries.slice(0, 4).forEach(function (entry) {
+      const item = document.createElement('div');
+      item.className = 'retry-status-item ' + (entry.due_state === 'overdue' ? 'overdue' : 'pending');
+
+      const title = document.createElement('div');
+      title.className = 'retry-status-title';
+      const issue = document.createElement('strong');
+      issue.textContent = entry.issue_identifier || 'unknown issue';
+      const statePill = document.createElement('span');
+      statePill.className = 'status-pill ' + (entry.due_state === 'overdue' ? 'failed' : 'pending');
+      statePill.textContent =
+        entry.due_state === 'overdue'
+          ? 'Overdue ' + formatElapsedMs(entry.overdue_ms || 0)
+          : 'Retry due ' + formatDate(entry.due_at);
+      title.append(issue, statePill);
+
+      const reason = document.createElement('div');
+      reason.className = 'retry-status-reason';
+      reason.textContent =
+        (entry.reason_code || 'unknown_reason') +
+        ' - ' +
+        (entry.operator_detail || entry.detail || entry.headline || 'No retry detail available');
+
+      const meta = document.createElement('div');
+      meta.className = 'muted';
+      const parts = [];
+      if (entry.last_phase) {
+        parts.push('Last phase: ' + entry.last_phase);
+      }
+      if (entry.detail && entry.detail !== entry.operator_detail) {
+        parts.push(entry.detail);
+      }
+      if (entry.expected_transition) {
+        parts.push(entry.expected_transition);
+      }
+      meta.textContent = parts.join(' • ');
+
+      item.append(title, reason, meta);
+      list.append(item);
+    });
+
+    elements.retryStatusSummary.classList.remove('hidden');
+    elements.retryStatusSummary.replaceChildren(header, list);
+  }
+
+export function renderActionRequiredBanner(payload) {
+    const blockedEntries = Array.isArray(payload && payload.blocked) ? payload.blocked : [];
+    const grouped = blockedEntries.reduce(function (acc, entry) {
+      if (!isActionRequiredCode(entry.stop_reason_code)) {
+        return acc;
+      }
+      acc[entry.stop_reason_code] = (acc[entry.stop_reason_code] || 0) + 1;
+      return acc;
+    }, {});
+    const groupedEntries = Object.entries(grouped);
+    if (!groupedEntries.length) {
+      elements.actionRequiredBanner.classList.add('hidden');
+      elements.actionRequiredSummary.textContent = '';
+      elements.actionRequiredGroups.replaceChildren();
+      return;
+    }
+
+    const total = groupedEntries.reduce(function (sum, entry) {
+      const count = entry[1];
+      return sum + count;
+    }, 0);
+    elements.actionRequiredBanner.classList.remove('hidden');
+    elements.actionRequiredSummary.textContent = total + ' blocked run' + (total === 1 ? '' : 's') + ' need operator action.';
+
+    const groupNodes = groupedEntries.map(function (entry) {
+      const code = entry[0];
+      const count = entry[1];
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ghost-button reason-chip';
+      button.textContent = getActionRequiredLabel(code) + ' (' + count + ')';
+      button.title = 'Filter blocked rows for ' + getActionRequiredLabel(code);
+      button.addEventListener('click', function () {
+        state.filter.status = 'blocked';
+        state.filter.blockedReason = code;
+        elements.statusFilter.value = 'blocked';
+        if (state.payload) {
+          renderRunning(state.payload);
+          renderRetry(state.payload);
+          renderBlocked(state.payload);
+        }
+      });
+      return button;
+    });
+    elements.actionRequiredGroups.replaceChildren(...groupNodes);
+  }
+
+export function renderApiDegradedBanner(payload) {
+    if (!payload || !payload.api_degraded_mode) {
+      elements.apiDegradedBanner.classList.add('hidden');
+      elements.apiDegradedSummary.textContent = '';
+      return;
+    }
+    const routes = Array.isArray(payload.api_degraded_routes) ? payload.api_degraded_routes.join(', ') : 'n/a';
+    elements.apiDegradedBanner.classList.remove('hidden');
+    elements.apiDegradedSummary.textContent =
+      (payload.api_degraded_reason_code || 'unknown') + ' • fallback routes: ' + routes;
+  }
+
+export function describeTransition(transition) {
+    switch (transition) {
+      case 'completion_gate_blocked':
+        return { label: 'Completion Gate Blocked', result: 'failure', detail: 'No progress signal detected in redispatch window.' };
+      case 'circuit_breaker_opened':
+        return { label: 'Circuit Breaker Opened', result: 'failure', detail: 'Respawn threshold reached; operator intervention required.' };
+      case 'resume_accepted':
+        return { label: 'Resume Accepted', result: 'success', detail: 'Resume request accepted and redispatch restarted.' };
+      case 'resume_rejected':
+        return { label: 'Resume Rejected', result: 'failure', detail: 'Resume request rejected; resolve blocking condition first.' };
+      case 'cancel_accepted':
+        return { label: 'Cancel Accepted', result: 'success', detail: 'Issue returned to backlog.' };
+      case 'cancel_rejected':
+        return { label: 'Cancel Rejected', result: 'failure', detail: 'Cancel request rejected; tracker state unchanged.' };
+      default:
+        return null;
+    }
+  }
+
+export function deriveOperatorTransitionRows(issueId, payload) {
+    const rows = [];
+    const seen = new Set();
+    function addRow(at, transition, detail) {
+      const key = transition + ':' + String(at || 'n/a') + ':' + String(detail || '');
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      const descriptor = describeTransition(transition);
+      if (!descriptor) {
+        return;
+      }
+      rows.push({
+        at: at || 'n/a',
+        issue_identifier: issueId,
+        label: descriptor.label,
+        result: descriptor.result,
+        detail: detail && detail.trim ? (detail.trim() ? detail : descriptor.detail) : descriptor.detail
+      });
+    }
+
+    const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
+    for (const marker of timeline) {
+      const normalized = String(marker && marker.detail ? marker.detail : '').trim().toLowerCase();
+      const transition = OPERATOR_TRANSITION_RULES.detailMap[normalized];
+      if (transition) {
+        addRow(marker.at, transition, marker.detail || null);
+      }
+    }
+    const events = Array.isArray(payload.recent_events) ? payload.recent_events : [];
+    for (const entry of events) {
+      const transitionByEvent = OPERATOR_TRANSITION_RULES.eventMap[String(entry && entry.event ? entry.event : '')];
+      if (transitionByEvent) {
+        addRow(entry.at, transitionByEvent, entry.message || null);
+      }
+      const normalizedMessage = String(entry && entry.message ? entry.message : '').trim().toLowerCase();
+      const transitionByMessage = OPERATOR_TRANSITION_RULES.detailMap[normalizedMessage];
+      if (transitionByMessage) {
+        addRow(entry.at, transitionByMessage, entry.message || null);
+      }
+    }
+    if (payload.blocked && (payload.blocked.stop_reason_code === '${REASON_CODES.operatorNoProgressRedispatchBlocked}' || payload.blocked.stop_reason_code === '${REASON_CODES.awaitingHumanReviewScopeIncomplete}')) {
+      addRow('n/a', 'completion_gate_blocked', payload.blocked.stop_reason_detail || null);
+    }
+    return rows.sort(function (a, b) {
+      const atA = Date.parse(a.at);
+      const atB = Date.parse(b.at);
+      if (Number.isFinite(atA) && Number.isFinite(atB)) {
+        return atA - atB;
+      }
+      if (Number.isFinite(atA)) {
+        return -1;
+      }
+      if (Number.isFinite(atB)) {
+        return 1;
+      }
+      return a.label.localeCompare(b.label);
+    });
+  }
+
+export function renderThroughput(payload) {
+    if (!payload || !payload.throughput) {
+      elements.throughputOutput.textContent = 'No throughput samples yet.';
+      return;
+    }
+
+    const throughput = payload.throughput;
+    const sparkline = Array.isArray(throughput.sparkline_10m) ? throughput.sparkline_10m : [];
+    elements.throughputOutput.textContent = JSON.stringify(
+      {
+        current_tps: throughput.current_tps,
+        avg_tps_60s: throughput.avg_tps_60s,
+        sample_count: throughput.sample_count,
+        window_seconds: throughput.window_seconds,
+        sparkline_10m: sparkline
+      },
+      null,
+      2
+    );
+  }
+
+export function renderRuntimeResolution(runtimeResolution) {
+    if (!runtimeResolution) {
+      elements.runtimeResolutionOutput.textContent = 'Runtime resolution unavailable.';
+      return;
+    }
+
+    elements.runtimeResolutionOutput.textContent = formatCanonicalJsonBlock('Runtime Resolution JSON', runtimeResolution);
+  }
+
+export function renderRuntimeEvents(payload) {
+    const events = Array.isArray(payload && payload.recent_runtime_events) ? payload.recent_runtime_events : [];
+    const filtered = events.filter(function (entry) {
+      if (state.filter.eventFeedSeverity === 'all') {
+        return true;
+      }
+      return entry && entry.severity === state.filter.eventFeedSeverity;
+    });
+
+    if (!filtered.length) {
+      const empty = document.createElement('li');
+      empty.className = 'muted';
+      empty.textContent = 'No runtime events.';
+      elements.runtimeEventsList.replaceChildren(empty);
+      return;
+    }
+
+    const nodes = filtered.map(function (entry) {
+      const item = document.createElement('li');
+      const title = document.createElement('strong');
+      title.textContent = '[' + (entry.severity || 'info') + '] ' + (entry.event || 'unknown');
+      const meta = document.createElement('span');
+      const issue = entry.issue_identifier ? ' • issue ' + entry.issue_identifier : '';
+      const session = entry.session_id ? ' • session ' + entry.session_id : '';
+      const detail = entry.detail ? ' • ' + entry.detail : '';
+      meta.textContent = formatDate(entry.at) + issue + session + detail;
+      item.append(title, meta);
+      return item;
+    });
+
+    elements.runtimeEventsList.replaceChildren(...nodes);
+  }
+
+export function renderSnapshotError(errorPayload) {
+    elements.snapshotErrorPanel.classList.remove('hidden');
+    elements.snapshotErrorMessage.textContent =
+      (errorPayload && errorPayload.code ? String(errorPayload.code) + ': ' : '') +
+      (errorPayload && errorPayload.message ? String(errorPayload.message) : 'Snapshot unavailable.');
+    if (!state.lastGoodPayload) {
+      elements.kpiGrid.replaceChildren();
+      elements.rateLimits.textContent = 'n/a';
+      const emptyRunningRow = document.createElement('tr');
+      const runningCell = document.createElement('td');
+      runningCell.colSpan = 10;
+      runningCell.className = 'muted';
+      runningCell.textContent = 'No running issues while snapshot is unavailable.';
+      emptyRunningRow.appendChild(runningCell);
+      elements.runningRows.replaceChildren(emptyRunningRow);
+
+      const emptyRetryRow = document.createElement('tr');
+      const retryCell = document.createElement('td');
+      retryCell.colSpan = 10;
+      retryCell.className = 'muted';
+      retryCell.textContent = 'No retry data while snapshot is unavailable.';
+      emptyRetryRow.appendChild(retryCell);
+      elements.retryRows.replaceChildren(emptyRetryRow);
+
+      const emptyBlockedRow = document.createElement('tr');
+      const blockedCell = document.createElement('td');
+      blockedCell.colSpan = 8;
+      blockedCell.className = 'muted';
+      blockedCell.textContent = 'No blocked-input data while snapshot is unavailable.';
+      emptyBlockedRow.appendChild(blockedCell);
+      elements.blockedRows.replaceChildren(emptyBlockedRow);
+      const emptyStopped = document.createElement('p');
+      emptyStopped.className = 'muted';
+      emptyStopped.textContent = 'No stopped-run recovery data while snapshot is unavailable.';
+      elements.stoppedRunRecoveryList.replaceChildren(emptyStopped);
+      return;
+    }
+
+    // Keep stale-but-last-known-good data visible while snapshot fetch is degraded.
+    renderOverview(state.lastGoodPayload);
+    renderThroughput(state.lastGoodPayload);
+    renderRunning(state.lastGoodPayload);
+    renderRetry(state.lastGoodPayload);
+    renderBlocked(state.lastGoodPayload);
+    renderStoppedRunRecovery(state.lastGoodPayload);
+    renderRuntimeEvents(state.lastGoodPayload);
+  }
+
+export function clearSnapshotError() {
+    elements.snapshotErrorPanel.classList.add('hidden');
+    elements.snapshotErrorMessage.textContent = 'Snapshot unavailable.';
+  }
+
+export function createStateBadge(stateValue) {
+    const badge = document.createElement('span');
+    badge.className = 'state-badge';
+    const normalized = String(stateValue || '').toLowerCase();
+    if (normalized.includes('progress') || normalized.includes('running')) {
+      badge.classList.add('state-active');
+    } else if (normalized.includes('todo') || normalized.includes('backlog')) {
+      badge.classList.add('state-idle');
+    } else if (normalized.includes('done') || normalized.includes('closed')) {
+      badge.classList.add('state-terminal');
+    } else {
+      badge.classList.add('state-neutral');
+    }
+    badge.textContent = stateValue || 'unknown';
+    return badge;
+  }
+
+export function createProvisioningBadge(label, ok) {
+    const badge = document.createElement('span');
+    badge.className = 'mini-badge ' + (ok ? 'mini-badge-good' : 'mini-badge-bad');
+    badge.textContent = label + ': ' + (ok ? 'yes' : 'no');
+    return badge;
+  }
+
+export function normalizeActionability(value) {
+    const actionability = String(value || 'none');
+    return actionability === 'required' || actionability === 'recommended' ? actionability : 'none';
+  }
+
+export function createOperatorHintBadge(hint) {
+    if (!hint) {
+      return null;
+    }
+    const actionability = normalizeActionability(hint.actionability);
+    const badge = document.createElement('span');
+    badge.className = 'operator-hint actionability-' + actionability;
+    badge.textContent = String(hint.headline || hint.classification || 'Runtime diagnostics');
+    badge.title = 'Actionability: ' + actionability + ' • Classification: ' + String(hint.classification || 'unknown');
+    return badge;
+  }
+
+export function renderIssueExplainer(explainer) {
+    if (!explainer) {
+      elements.issueExplainerCard.classList.add('hidden');
+      return;
+    }
+    const actionability = normalizeActionability(explainer.actionability);
+    elements.issueExplainerCard.className = 'operator-explainer actionability-' + actionability;
+    elements.issueExplainerActionability.className = 'status-pill actionability-' + actionability;
+    elements.issueExplainerActionability.textContent = actionability;
+    elements.issueExplainerHeadline.textContent = explainer.headline || 'Runtime diagnostics unavailable';
+    elements.issueExplainerClassification.textContent = explainer.classification || 'unknown';
+    elements.issueExplainerReason.textContent =
+      (explainer.reason_code || 'n/a') + (explainer.reason_detail ? ' • ' + explainer.reason_detail : '');
+    elements.issueExplainerAction.textContent =
+      Array.isArray(explainer.recommended_actions) && explainer.recommended_actions.length
+        ? explainer.recommended_actions.join('; ')
+        : 'No operator action required';
+    elements.issueExplainerTransition.textContent = explainer.expected_transition || 'No automatic transition expected';
+    elements.issueExplainerVersion.textContent = explainer.version || 'unknown';
+    elements.issueExplainerDetail.textContent = explainer.detail || '';
+  }
+
+export function appendDefinitionValue(list, label, value) {
+    const wrapper = document.createElement('div');
+    const term = document.createElement('dt');
+    const definition = document.createElement('dd');
+    term.textContent = label;
+    definition.textContent = value === null || value === undefined || value === '' ? 'n/a' : String(value);
+    wrapper.append(term, definition);
+    list.append(wrapper);
+  }
+
+export function renderThreadBlockerCard(blocker) {
+    elements.threadBlockerCard.replaceChildren();
+    if (!blocker) {
+      appendDefinitionValue(elements.threadBlockerCard, 'classification', 'n/a');
+      appendDefinitionValue(elements.threadBlockerCard, 'reason_code', 'n/a');
+      appendDefinitionValue(elements.threadBlockerCard, 'reason_detail', 'n/a');
+      appendDefinitionValue(elements.threadBlockerCard, 'time_since_progress', 'n/a');
+      appendDefinitionValue(elements.threadBlockerCard, 'recommended_actions', 'No blocker actions reported.');
+      appendDefinitionValue(elements.threadBlockerCard, 'expected_auto_transition', 'n/a');
+      return;
+    }
+    appendDefinitionValue(elements.threadBlockerCard, 'classification', blocker.classification);
+    appendDefinitionValue(elements.threadBlockerCard, 'reason_code', blocker.reason_code);
+    appendDefinitionValue(elements.threadBlockerCard, 'reason_detail', blocker.reason_detail);
+    appendDefinitionValue(elements.threadBlockerCard, 'time_since_progress', blocker.time_since_progress);
+    if (blocker.missing_tool_output_recovery) {
+      const recovery = blocker.missing_tool_output_recovery;
+      appendDefinitionValue(elements.threadBlockerCard, 'recovery_headline', recovery.headline);
+      appendDefinitionValue(elements.threadBlockerCard, 'recovery_state', recovery.status);
+      appendDefinitionValue(elements.threadBlockerCard, 'recovery_next_action', recovery.next_action);
+      appendDefinitionValue(elements.threadBlockerCard, 'original_tool', recovery.original_tool_name);
+      appendDefinitionValue(elements.threadBlockerCard, 'original_call_id', recovery.original_call_id);
+      appendDefinitionValue(elements.threadBlockerCard, 'evidence_source', recovery.evidence_source);
+      appendDefinitionValue(elements.threadBlockerCard, 'elapsed_wait_ms', recovery.elapsed_wait_ms);
+      appendDefinitionValue(
+        elements.threadBlockerCard,
+        'active_ownership',
+        recovery.active_ownership
+          ? [
+              'issue ' + (recovery.active_ownership.issue_identifier || recovery.active_ownership.issue_id || 'n/a'),
+              'thread ' + (recovery.active_ownership.thread_id || 'n/a'),
+              'turn ' + (recovery.active_ownership.turn_id || 'n/a'),
+              'session ' + (recovery.active_ownership.session_id || 'n/a'),
+              'app_server_owned ' + String(Boolean(recovery.active_ownership.app_server_owned))
+            ].join(' | ')
+          : 'n/a'
+      );
+      appendDefinitionValue(
+        elements.threadBlockerCard,
+        'recovery_lineage',
+        [
+          'interrupt ' + ((recovery.interrupt_cancel_result && recovery.interrupt_cancel_result.status) || 'n/a'),
+          'replacement_thread ' + ((recovery.replacement_turn && recovery.replacement_turn.thread_id) || 'n/a'),
+          'replacement_turn ' + ((recovery.replacement_turn && recovery.replacement_turn.turn_id) || 'n/a'),
+          'prompt ' + ((recovery.guarded_prompt_dispatch && recovery.guarded_prompt_dispatch.status) || 'n/a'),
+          'outcome ' + ((recovery.final_outcome && recovery.final_outcome.result) || 'n/a')
+        ].join(' | ')
+      );
+    }
+    appendDefinitionValue(
+      elements.threadBlockerCard,
+      'recommended_actions',
+      Array.isArray(blocker.recommended_actions) ? blocker.recommended_actions.join('; ') : 'n/a'
+    );
+    appendDefinitionValue(elements.threadBlockerCard, 'expected_auto_transition', blocker.expected_auto_transition);
+  }
+
+export function spanLabel(span, kind) {
+    if (kind === 'phase') {
+      return span.phase || 'phase';
+    }
+    if (kind === 'tool') {
+      return span.tool_name || 'tool';
+    }
+    return span.reason_code || span.status || 'wait';
+  }
+
+export function renderTimelineLane(title, spans, kind) {
+    const lane = document.createElement('section');
+    lane.className = 'timeline-lane timeline-lane-' + kind;
+    const heading = document.createElement('h4');
+    heading.textContent = title;
+    lane.append(heading);
+    const safeSpans = Array.isArray(spans) ? spans : [];
+    if (!safeSpans.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No ' + title.toLowerCase() + ' spans.';
+      lane.append(empty);
+      return lane;
+    }
+    const list = document.createElement('ul');
+    for (const span of safeSpans) {
+      const item = document.createElement('li');
+      const label = document.createElement('strong');
+      const meta = document.createElement('span');
+      label.textContent = spanLabel(span, kind);
+      meta.textContent =
+        ' | started ' +
+        formatDate(span.started_at_ms) +
+        ' | ended ' +
+        (span.ended_at_ms === null || span.ended_at_ms === undefined ? 'open' : formatDate(span.ended_at_ms)) +
+        ' | duration ' +
+        (span.duration_ms === null || span.duration_ms === undefined ? 'open' : String(span.duration_ms)) +
+        ' | status ' +
+        (span.status || 'n/a') +
+        ' | reason ' +
+        (span.reason_code || 'n/a') +
+        ' | ' +
+        (span.reason_detail || 'n/a');
+      item.append(label, meta);
+      list.append(item);
+    }
+    lane.append(list);
+    return lane;
+  }
+
+export function renderThreadDiagnostics(diagnostics) {
+    if (!diagnostics) {
+      elements.threadDetail.classList.add('hidden');
+      elements.threadRawEvents.textContent = 'Detailed diagnostics are not loaded.';
+      return;
+    }
+    elements.threadDetail.classList.remove('hidden');
+    elements.threadTimelineLanes.replaceChildren(
+      renderTimelineLane('Phase', diagnostics.phase_spans, 'phase'),
+      renderTimelineLane('Tool', diagnostics.tool_spans, 'tool'),
+      renderTimelineLane('Wait', diagnostics.wait_spans, 'wait')
+    );
+    renderThreadBlockerCard(diagnostics.current_blocker || null);
+    const warnings = Array.isArray(diagnostics.capability_warnings) ? diagnostics.capability_warnings : [];
+    if (!warnings.length) {
+      elements.threadCapabilityWarnings.className = 'capability-warnings muted';
+      elements.threadCapabilityWarnings.textContent = 'No capability warnings.';
+    } else {
+      elements.threadCapabilityWarnings.className = 'capability-warnings';
+      const list = document.createElement('ul');
+      for (const warning of warnings) {
+        const item = document.createElement('li');
+        item.textContent =
+          (warning.reason_code || 'capability_warning') +
+          ' | source ' +
+          (warning.source_environment || 'n/a') +
+          ' | tool ' +
+          (warning.attempted_tool_name || 'n/a') +
+          ' | call ' +
+          (warning.call_id || 'n/a') +
+          ' | thread ' +
+          (warning.thread_id || 'n/a') +
+          ' | turn ' +
+          (warning.turn_id || 'n/a') +
+          ' | ' +
+          (warning.unsupported_capability_message || 'unsupported capability') +
+          ' | recovery ' +
+          (warning.recommended_recovery_action || 'n/a');
+        list.append(item);
+      }
+      elements.threadCapabilityWarnings.replaceChildren(list);
+    }
+    const events = Array.isArray(diagnostics.timeline) ? diagnostics.timeline : [];
+    elements.threadRawEvents.textContent = events.length
+      ? events
+          .map(function (event) {
+            return (
+              formatDate(event.at_ms) +
+              ' | ' +
+              event.event +
+              ' | thread ' +
+              (event.thread_id || 'n/a') +
+              ' | turn ' +
+              (event.turn_id || 'n/a') +
+              ' | session ' +
+              (event.session_id || 'n/a') +
+              ' | reason ' +
+              (event.reason_code || 'n/a') +
+              ' | ' +
+              (event.reason_detail || 'n/a')
+            );
+          })
+          .join('\\n')
+      : 'No raw event stream entries.';
+  }
+
+export function getDiagnosticSummary(entry) {
+    return entry && entry.transcript_tool_call_diagnostic_summary ? entry.transcript_tool_call_diagnostic_summary : null;
+  }
+
+export function formatDiagnosticSummary(summary) {
+    if (!summary) {
+      return 'Summary diagnostics: unavailable';
+    }
+    const parts = [];
+    parts.push(summary.detailed_diagnostics_available ? 'detail available' : 'summary only');
+    parts.push(formatNumber(summary.total_count || 0) + ' transcript records');
+    if (summary.active_missing_tool_output && summary.active_missing_tool_output.active) {
+      parts.push('missing output ' + (summary.active_missing_tool_output.tool_name || summary.active_missing_tool_output.call_id || 'active'));
+    }
+    if (summary.recovery && summary.recovery.active) {
+      parts.push('recovery ' + (summary.recovery.status || 'active'));
+    }
+    if (summary.newest_observed_at) {
+      parts.push('newest ' + formatDate(summary.newest_observed_at));
+    }
+    return 'Summary diagnostics: ' + parts.join(' | ');
+  }
+
+export function formatInputDecisionContext(detail) {
+    if (!detail) {
+      return null;
+    }
+    if (detail.includes('input_required_unanswerable')) {
+      return 'Input handling: unanswerable schema (manual resume required)';
+    }
+    if (detail.includes('non_interactive_fallback')) {
+      return 'Input handling: non-interactive fallback answer';
+    }
+    if (detail.includes('approval_option_permissive')) {
+      return 'Input handling: permissive approval option selected';
+    }
+    if (detail.includes('approval_option_exact')) {
+      return 'Input handling: exact approval option selected';
+    }
+    return null;
+  }
+
+export function createActionButton(text, className, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = text;
+    button.addEventListener('click', function (event) {
+      event.stopPropagation();
+      onClick();
+    });
+    return button;
+  }
+
+export async function copyText(value) {
+    if (!value) {
+      setRefreshStatus('No value to copy', true);
+      return;
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const helper = document.createElement('textarea');
+        helper.value = value;
+        helper.setAttribute('readonly', 'readonly');
+        helper.style.position = 'absolute';
+        helper.style.left = '-9999px';
+        document.body.appendChild(helper);
+        helper.select();
+        document.execCommand('copy');
+        document.body.removeChild(helper);
+      }
+      setRefreshStatus('Copied: ' + value, false);
+    } catch (error) {
+      setRefreshStatus('Copy failed: ' + String(error), true);
+    }
+  }
+
+export function rowMatchesFilter(entry) {
+    if (state.filter.status === 'running' && entry.state.toLowerCase().includes('retry')) {
+      return false;
+    }
+    if (state.filter.status === 'retrying' && !entry.state.toLowerCase().includes('retry')) {
+      return false;
+    }
+    if (state.filter.status === 'blocked') {
+      return false;
+    }
+    if (!state.filter.query) {
+      return true;
+    }
+    return entry.issue_identifier.toLowerCase().includes(state.filter.query.toLowerCase());
+  }
+
+export function renderRunning(payload) {
+    const rows = payload.running.filter(rowMatchesFilter);
+    if (!rows.length) {
+      const emptyRow = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 14;
+      cell.className = 'muted';
+      cell.textContent = 'No running issues match current filters.';
+      emptyRow.appendChild(cell);
+      elements.runningRows.replaceChildren(emptyRow);
+      return;
+    }
+
+    const nodes = rows.map((entry) => {
+      const row = document.createElement('tr');
+      row.setAttribute('data-issue', entry.issue_identifier);
+      if (state.selectedIssue === entry.issue_identifier) {
+        row.classList.add('selected-row');
+      }
+
+      const issueCell = document.createElement('td');
+      const issueLink = document.createElement('a');
+      issueLink.href = '#thread-detail-' + encodeURIComponent(entry.issue_identifier);
+      issueLink.textContent = entry.issue_identifier;
+      issueLink.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        elements.issueInput.value = entry.issue_identifier;
+        void loadIssue(entry.issue_identifier);
+      });
+      issueCell.append(issueLink);
+
+      const stateCell = document.createElement('td');
+      stateCell.appendChild(createStateBadge(entry.state));
+      const stateFlags = document.createElement('div');
+      stateFlags.className = 'inline-badges';
+      const turnBadge = document.createElement('span');
+      turnBadge.className = 'status-pill ' + (entry.turn_control_state === 'operator_turn' ? 'failed' : 'pending');
+      turnBadge.textContent = getTurnControlLabel(entry.turn_control_state);
+      stateFlags.append(turnBadge);
+      const progressBadge = document.createElement('span');
+      progressBadge.className = 'status-pill ' + (entry.progress_signal_state === 'stalled_waiting' ? 'failed' : 'pending');
+      progressBadge.textContent = getProgressSignalLabel(entry.progress_signal_state);
+      stateFlags.append(progressBadge);
+      if (entry.awaiting_input) {
+        const awaitingBadge = document.createElement('span');
+        awaitingBadge.className = 'status-pill pending';
+        awaitingBadge.textContent = 'Awaiting Input';
+        stateFlags.append(awaitingBadge);
+      }
+      if (entry.stalled_waiting && entry.progress_signal_state !== 'stalled_waiting') {
+        const stalledBadge = document.createElement('span');
+        stalledBadge.className = 'status-pill failed';
+        stalledBadge.textContent = 'Stalled Waiting';
+        stateFlags.append(stalledBadge);
+      }
+      const runningHintBadge = createOperatorHintBadge(entry.operator_explainer_hint);
+      if (runningHintBadge && entry.operator_explainer_hint.actionability !== 'none') {
+        stateFlags.append(runningHintBadge);
+      }
+      if (stateFlags.children.length > 0) {
+        stateCell.append(stateFlags);
+      }
+
+      const sessionCell = document.createElement('td');
+      const sessionValue = document.createElement('div');
+      sessionValue.textContent = entry.session_id || 'n/a';
+      const sessionMeta = document.createElement('div');
+      sessionMeta.className = 'muted';
+      const sessionMetaParts = [];
+      if (entry.worker_host) {
+        sessionMetaParts.push('Host ' + entry.worker_host);
+      }
+      if (entry.workspace_path) {
+        sessionMetaParts.push(entry.workspace_path);
+      }
+      if (entry.provisioner_type) {
+        sessionMetaParts.push('Provisioner ' + entry.provisioner_type);
+      }
+      if (entry.branch_name) {
+        sessionMetaParts.push('Branch ' + entry.branch_name);
+      }
+      if (entry.workspace_git_status) {
+        sessionMetaParts.push('Git ' + entry.workspace_git_status);
+      }
+      sessionMeta.textContent = sessionMetaParts.length ? sessionMetaParts.join(' • ') : 'Host n/a';
+      sessionCell.append(sessionValue, sessionMeta);
+
+      const phaseCell = document.createElement('td');
+      const phaseLabel = document.createElement('div');
+      phaseLabel.textContent = entry.current_phase || 'n/a';
+      const phaseMeta = document.createElement('div');
+      phaseMeta.className = 'muted';
+      if (entry.current_phase_at) {
+        const phaseAgeMs = Date.now() - Date.parse(entry.current_phase_at);
+        const stale = Number.isFinite(phaseAgeMs) && phaseAgeMs > DASHBOARD_CONFIG.phase_stale_warn_ms;
+        phaseMeta.textContent = (entry.phase_elapsed_ms ? 'elapsed ' + Math.floor(entry.phase_elapsed_ms / 1000) + 's' : 'elapsed n/a') + ' • phase unchanged for ' + formatDurationFromIso(entry.current_phase_at) + (stale ? ' • No phase movement yet' : '');
+      } else {
+        phaseMeta.textContent = 'No phase movement yet';
+      }
+      const threadActivityMeta = document.createElement('div');
+      threadActivityMeta.className = 'muted';
+      const threadActivity = entry.codex_thread_activity || null;
+      if (threadActivity && threadActivity.updated_at) {
+        const threadStatus = threadActivity.thread_status ? ' • ' + threadActivity.thread_status : '';
+        threadActivityMeta.textContent = 'Codex thread active ' + formatDurationFromIso(threadActivity.updated_at) + ' ago' + threadStatus;
+      } else if (entry.thread_id) {
+        threadActivityMeta.textContent = 'Codex thread activity unavailable';
+      } else {
+        threadActivityMeta.textContent = 'Codex thread n/a';
+      }
+      phaseCell.append(phaseLabel, phaseMeta, threadActivityMeta);
+
+      const runtimeCell = document.createElement('td');
+      runtimeCell.className = 'runtime-cell';
+      runtimeCell.setAttribute('data-started-at', entry.started_at);
+      runtimeCell.textContent = formatDurationFromIso(entry.started_at);
+      if (entry.awaiting_input_since_ms) {
+        const awaitingTimer = document.createElement('div');
+        awaitingTimer.className = 'muted';
+        awaitingTimer.textContent = 'Awaiting input: ' + formatDurationFromMs(entry.awaiting_input_since_ms);
+        runtimeCell.append(awaitingTimer);
+      }
+      if (entry.stalled_waiting_since_ms) {
+        const stalledTimer = document.createElement('div');
+        stalledTimer.className = 'muted';
+        stalledTimer.textContent = 'Stalled waiting: ' + formatDurationFromMs(entry.stalled_waiting_since_ms);
+        runtimeCell.append(stalledTimer);
+      }
+      if (entry.not_blocked_explainer_text) {
+        const explainer = document.createElement('div');
+        explainer.className = 'muted';
+        explainer.textContent = 'Why not blocked: ' + entry.not_blocked_explainer_text;
+        runtimeCell.append(explainer);
+      }
+
+      const turnsCell = document.createElement('td');
+      turnsCell.textContent = formatNumber(entry.turn_count);
+
+      const tokensCell = document.createElement('td');
+      const tokenTotal = document.createElement('div');
+      const telemetryStatus = entry.token_telemetry_status || 'unavailable';
+      const telemetryConfidence = entry.token_telemetry_confidence || (telemetryStatus === 'available' ? 'observed_live' : 'missing');
+      if (telemetryStatus === 'pending') {
+        tokenTotal.textContent = 'Pending';
+      } else if (telemetryConfidence === 'missing') {
+        tokenTotal.textContent = 'Missing telemetry';
+      } else {
+        tokenTotal.textContent = 'Total: ' + formatNumber(entry.tokens.total_tokens);
+      }
+      const tokenDetail = document.createElement('div');
+      tokenDetail.className = 'muted';
+      if (telemetryStatus === 'available') {
+        tokenDetail.textContent = formatTokenBreakdown(entry.tokens, entry.token_telemetry_source);
+      } else {
+        tokenDetail.textContent = telemetryStatus === 'pending' ? 'Waiting for first usage payload' : 'No telemetry path detected';
+      }
+      const tokenBadge = document.createElement('span');
+      tokenBadge.className = 'mini-badge ' + (telemetryConfidence === 'missing' ? 'mini-badge-bad' : 'mini-badge-good');
+      tokenBadge.title = 'Token telemetry confidence/source quality';
+      tokenBadge.textContent = getTokenConfidenceLabel(telemetryConfidence);
+      tokensCell.append(tokenTotal, tokenBadge, tokenDetail);
+      tokensCell.append(createBudgetBlock(entry));
+
+      const blockerCell = document.createElement('td');
+      const blockerValue = document.createElement('div');
+      blockerValue.textContent = entry.current_blocker_class || 'n/a';
+      const diagnosticSummary = document.createElement('div');
+      diagnosticSummary.className = 'muted';
+      diagnosticSummary.textContent = formatDiagnosticSummary(getDiagnosticSummary(entry));
+      blockerCell.append(blockerValue, diagnosticSummary);
+
+      const timeSinceProgressCell = document.createElement('td');
+      timeSinceProgressCell.textContent =
+        typeof entry.time_since_progress === 'number'
+          ? String(entry.time_since_progress) + ' ms (' + formatElapsedMs(entry.time_since_progress) + ')'
+          : 'n/a';
+
+      const lastSuccessfulStepCell = document.createElement('td');
+      lastSuccessfulStepCell.textContent = entry.last_successful_step || 'n/a';
+
+      const eventCell = document.createElement('td');
+      eventCell.textContent = entry.last_event_summary || entry.last_event || 'n/a';
+
+      const messageCell = document.createElement('td');
+      messageCell.textContent = entry.last_message || 'n/a';
+
+      const lastEventAtCell = document.createElement('td');
+      lastEventAtCell.textContent = formatDate(entry.last_event_at);
+
+      const actionsCell = document.createElement('td');
+      actionsCell.className = 'action-cell';
+      const lastAction = Array.isArray(entry.operator_actions) && entry.operator_actions.length
+        ? entry.operator_actions[entry.operator_actions.length - 1]
+        : null;
+      if (lastAction) {
+        const actionOutcome = document.createElement('div');
+        actionOutcome.className = 'muted';
+        actionOutcome.textContent = 'Last action: ' + lastAction.action + ' ' + lastAction.result + (lastAction.result_code ? ' (' + lastAction.result_code + ')' : '');
+        actionsCell.append(actionOutcome);
+      }
+      const copySession = createActionButton('Copy Session', 'ghost-button', function () {
+        copyText(entry.session_id || '');
+      });
+      const copyThreadTurn = createActionButton('Copy Thread/Turn', 'ghost-button', function () {
+        if (entry.thread_id && entry.turn_id) {
+          copyText(entry.thread_id + '/' + entry.turn_id);
+          return;
+        }
+        setRefreshStatus('Thread/turn id unavailable', true);
+      });
+      const openJson = createActionButton('JSON', 'ghost-button', function () {
+        window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
+      });
+      const respondNow = createActionButton('Respond Now', 'ghost-button', function () {
+        elements.issueInput.value = entry.issue_identifier;
+        void loadIssue(entry.issue_identifier);
+      });
+      respondNow.disabled = !entry.awaiting_input;
+      const investigate = createActionButton('Inspect Diagnostics', 'ghost-button', function () {
+        elements.issueInput.value = entry.issue_identifier;
+        void loadIssue(entry.issue_identifier);
+      });
+      investigate.disabled = !entry.stalled_waiting;
+      const cancelTurn = createActionButton('Cancel Turn', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'cancel-turn', true);
+      });
+      const requeue = createActionButton('Requeue', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'requeue', true);
+      });
+      actionsCell.append(copySession, copyThreadTurn, respondNow, investigate, cancelTurn, requeue, openJson);
+
+      row.append(
+        issueCell,
+        stateCell,
+        sessionCell,
+        phaseCell,
+        runtimeCell,
+        turnsCell,
+        tokensCell,
+        blockerCell,
+        timeSinceProgressCell,
+        lastSuccessfulStepCell,
+        eventCell,
+        messageCell,
+        lastEventAtCell,
+        actionsCell
+      );
+
+      row.addEventListener('click', function () {
+        elements.issueInput.value = entry.issue_identifier;
+        void loadIssue(entry.issue_identifier);
+      });
+
+      return row;
+    });
+
+    elements.runningRows.replaceChildren(...nodes);
+  }
+
+export function renderRetry(payload) {
+    const rows = payload.retrying.filter(function (entry) {
+      if (state.filter.status === 'running' || state.filter.status === 'blocked') {
+        return false;
+      }
+      if (!state.filter.query) {
+        return true;
+      }
+      return entry.issue_identifier.toLowerCase().includes(state.filter.query.toLowerCase());
+    });
+
+    if (!rows.length) {
+      const emptyRow = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 10;
+      cell.className = 'muted';
+      cell.textContent =
+        state.filter.status === 'retrying'
+          ? 'No retrying issues match current filters.'
+          : 'No issues are waiting for retry.';
+      emptyRow.appendChild(cell);
+      elements.retryRows.replaceChildren(emptyRow);
+      return;
+    }
+
+    const nodes = rows.map((entry) => {
+      const row = document.createElement('tr');
+
+      const issueCell = document.createElement('td');
+      issueCell.textContent = entry.issue_identifier;
+
+      const attemptCell = document.createElement('td');
+      attemptCell.textContent = formatNumber(entry.attempt);
+
+      const dueAtCell = document.createElement('td');
+      const retryState = document.createElement('div');
+      retryState.className = 'status-pill pending';
+      retryState.textContent = getRetryStateLabel(entry);
+      const retryDue = document.createElement('div');
+      retryDue.className = 'muted';
+      retryDue.textContent = formatDate(entry.due_at);
+      dueAtCell.append(retryState, retryDue);
+
+      const errorCell = document.createElement('td');
+      errorCell.textContent = entry.error || 'n/a';
+
+      const hostCell = document.createElement('td');
+      hostCell.textContent = entry.worker_host || 'n/a';
+
+      const workspaceCell = document.createElement('td');
+      workspaceCell.textContent = entry.workspace_path || 'n/a';
+
+      const provisioningCell = document.createElement('td');
+      const provisioningType = document.createElement('div');
+      provisioningType.textContent = entry.provisioner_type || 'n/a';
+      const provisioningDetail = document.createElement('div');
+      provisioningDetail.className = 'muted';
+      const provisioningParts = [];
+      if (entry.branch_name) {
+        provisioningParts.push('Branch ' + entry.branch_name);
+      }
+      if (entry.workspace_git_status) {
+        provisioningParts.push('Git ' + entry.workspace_git_status);
+      }
+      if (entry.workspace_exists === false) {
+        provisioningParts.push('Missing workspace');
+      }
+      provisioningDetail.textContent = provisioningParts.length ? provisioningParts.join(' • ') : 'n/a';
+      const provisioningFlags = document.createElement('div');
+      provisioningFlags.className = 'inline-badges';
+      provisioningFlags.append(
+        createProvisioningBadge('Provisioned', Boolean(entry.workspace_provisioned)),
+        createProvisioningBadge('Git worktree', Boolean(entry.workspace_is_git_worktree))
+      );
+      provisioningCell.append(provisioningType, provisioningDetail, provisioningFlags);
+
+      const stopReasonCell = document.createElement('td');
+      const stopReasonCode = document.createElement('div');
+      stopReasonCode.textContent = entry.stop_reason_code || 'n/a';
+      const stopReasonDetail = document.createElement('div');
+      stopReasonDetail.className = 'muted';
+      stopReasonDetail.textContent = entry.stop_reason_detail || 'n/a';
+      stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      stopReasonCell.append(createBudgetBlock(entry));
+      const retryHintBadge = createOperatorHintBadge(entry.operator_explainer_hint);
+      if (retryHintBadge) {
+        stopReasonCell.append(retryHintBadge);
+      }
+      const lastPhaseLine = document.createElement('div');
+      lastPhaseLine.className = 'muted';
+      lastPhaseLine.textContent = 'Last phase: ' + (entry.last_phase || 'n/a') + (entry.last_phase_at ? ' @ ' + formatDate(entry.last_phase_at) : '');
+      stopReasonCell.append(lastPhaseLine);
+      if (entry.last_phase_detail) {
+        const lastPhaseDetailLine = document.createElement('div');
+        lastPhaseDetailLine.className = 'muted';
+        lastPhaseDetailLine.textContent = entry.last_phase_detail;
+        stopReasonCell.append(lastPhaseDetailLine);
+      }
+      const inputDecision = formatInputDecisionContext(entry.stop_reason_detail || '');
+      if (inputDecision) {
+        const decisionLine = document.createElement('div');
+        decisionLine.className = 'muted';
+        decisionLine.textContent = inputDecision;
+        stopReasonCell.append(decisionLine);
+      }
+      if (entry.last_input_submit) {
+        const submitModeLine = document.createElement('div');
+        submitModeLine.className = 'muted';
+        submitModeLine.textContent =
+          'Last submit: ' +
+          entry.last_input_submit.resume_mode +
+          ' (' +
+          entry.last_input_submit.resume_reason_code +
+          ') @ ' +
+          formatDate(entry.last_input_submit.submitted_at);
+        stopReasonCell.append(submitModeLine);
+        if (entry.last_input_submit.resume_mode === 'fallback') {
+          const fallbackBanner = document.createElement('div');
+          fallbackBanner.className = 'status-pill pending';
+          fallbackBanner.textContent = 'Native continuation unavailable; resumed via prompt context fallback.';
+          stopReasonCell.append(fallbackBanner);
+        }
+      }
+      if (entry.pending_input) {
+        const pending = entry.pending_input;
+        const requestLine = document.createElement('div');
+        requestLine.className = 'muted';
+        requestLine.textContent = 'Request: ' + (pending.request_id || 'n/a') + ' (' + (pending.input_schema_type || 'unknown') + ')';
+        stopReasonCell.append(requestLine);
+        if (pending.prompt_text) {
+          const promptLine = document.createElement('div');
+          promptLine.textContent = pending.prompt_text;
+          stopReasonCell.append(promptLine);
+        }
+      }
+
+      const previousSessionCell = document.createElement('td');
+      const previousSessionValue = document.createElement('div');
+      previousSessionValue.textContent = entry.previous_session_id || 'n/a';
+      const previousThreadValue = document.createElement('div');
+      previousThreadValue.className = 'muted';
+      previousThreadValue.textContent = entry.previous_thread_id ? 'Thread ' + entry.previous_thread_id : 'Thread n/a';
+      previousSessionCell.append(previousSessionValue, previousThreadValue);
+
+      const actionsCell = document.createElement('td');
+      const copyPreviousSession = createActionButton('Copy Prev Session', 'ghost-button', function () {
+        copyText(entry.previous_session_id || '');
+      });
+      const copyPreviousThread = createActionButton('Copy Prev Thread', 'ghost-button', function () {
+        copyText(entry.previous_thread_id || '');
+      });
+      const openJson = createActionButton('JSON', 'ghost-button', function () {
+        window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
+      });
+      const retryStep = createActionButton('Retry Step', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'retry-step', false);
+      });
+      const requeue = createActionButton('Requeue', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'requeue', false);
+      });
+      actionsCell.append(copyPreviousSession, copyPreviousThread, retryStep, requeue, openJson);
+
+      row.append(
+        issueCell,
+        attemptCell,
+        dueAtCell,
+        hostCell,
+        workspaceCell,
+        provisioningCell,
+        stopReasonCell,
+        previousSessionCell,
+        errorCell,
+        actionsCell
+      );
+      return row;
+    });
+
+    elements.retryRows.replaceChildren(...nodes);
+  }
+
+export function renderBlocked(payload) {
+    const rows = (payload.blocked || []).filter(function (entry) {
+      if (state.filter.status === 'running' || state.filter.status === 'retrying') {
+        return false;
+      }
+      if (state.filter.blockedReason !== 'all' && entry.stop_reason_code !== state.filter.blockedReason) {
+        return false;
+      }
+      if (!state.filter.query) {
+        return true;
+      }
+      return entry.issue_identifier.toLowerCase().includes(state.filter.query.toLowerCase());
+    });
+
+    if (!rows.length) {
+      const emptyRow = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 8;
+      cell.className = 'muted';
+      cell.textContent =
+        state.filter.status === 'blocked'
+          ? 'No blocked issues match current filters.'
+          : 'No issues are blocked on operator input.';
+      emptyRow.appendChild(cell);
+      elements.blockedRows.replaceChildren(emptyRow);
+      return;
+    }
+
+    const nodes = rows.map((entry) => {
+      const row = document.createElement('tr');
+
+      const issueCell = document.createElement('td');
+      issueCell.textContent = entry.issue_identifier;
+
+      const attemptCell = document.createElement('td');
+      attemptCell.textContent = formatNumber(entry.attempt);
+
+      const blockedAtCell = document.createElement('td');
+      blockedAtCell.textContent = formatDate(entry.blocked_at);
+
+      const hostCell = document.createElement('td');
+      hostCell.textContent = entry.worker_host || 'n/a';
+
+      const workspaceCell = document.createElement('td');
+      workspaceCell.textContent = entry.workspace_path || 'n/a';
+      const provisioningFlags = document.createElement('div');
+      provisioningFlags.className = 'inline-badges';
+      provisioningFlags.append(
+        createProvisioningBadge('Provisioned', Boolean(entry.workspace_provisioned)),
+        createProvisioningBadge('Git worktree', Boolean(entry.workspace_is_git_worktree))
+      );
+      workspaceCell.append(provisioningFlags);
+
+      const stopReasonCell = document.createElement('td');
+      const rootCauseBlock = createBlockedRootCauseBlock(entry);
+      if (rootCauseBlock) {
+        stopReasonCell.append(rootCauseBlock);
+      }
+      const stopReasonCode = document.createElement('div');
+      stopReasonCode.textContent =
+        rootCauseBlock
+          ? 'Current operator block: ' + (entry.current_operator_block?.reason_code || entry.stop_reason_code || 'n/a')
+          : entry.stop_reason_code || 'n/a';
+      const stopReasonDetail = document.createElement('div');
+      stopReasonDetail.className = 'muted';
+      stopReasonDetail.textContent =
+        rootCauseBlock
+          ? 'Current block detail: ' + (entry.current_operator_block?.detail || entry.stop_reason_detail || 'n/a')
+          : entry.stop_reason_detail || 'n/a';
+      stopReasonCell.append(stopReasonCode, stopReasonDetail);
+      stopReasonCell.append(createBudgetBlock(entry));
+      if (entry.stop_reason_code) {
+        const stateLabel = document.createElement('div');
+        stateLabel.className = 'status-pill failed';
+        stateLabel.textContent = getActionRequiredLabel(entry.stop_reason_code);
+        stopReasonCell.append(stateLabel);
+      }
+      const controlLine = document.createElement('div');
+      controlLine.className = 'inline-badges';
+      const turnBadge = document.createElement('span');
+      turnBadge.className = 'status-pill failed';
+      turnBadge.textContent = getTurnControlLabel(entry.turn_control_state);
+      const progressBadge = document.createElement('span');
+      progressBadge.className = 'status-pill failed';
+      progressBadge.textContent = getProgressSignalLabel(entry.progress_signal_state);
+      controlLine.append(turnBadge, progressBadge);
+      stopReasonCell.append(controlLine);
+      const blockedHintBadge = createOperatorHintBadge(entry.operator_explainer_hint);
+      if (blockedHintBadge) {
+        stopReasonCell.append(blockedHintBadge);
+      }
+      const lastPhaseLine = document.createElement('div');
+      lastPhaseLine.className = 'muted';
+      lastPhaseLine.textContent = 'Last phase: ' + (entry.last_phase || 'n/a') + (entry.last_phase_at ? ' @ ' + formatDate(entry.last_phase_at) : '');
+      stopReasonCell.append(lastPhaseLine);
+      if (entry.last_phase_detail) {
+        const lastPhaseDetailLine = document.createElement('div');
+        lastPhaseDetailLine.className = 'muted';
+        lastPhaseDetailLine.textContent = entry.last_phase_detail;
+        stopReasonCell.append(lastPhaseDetailLine);
+      }
+      const inputDecision = formatInputDecisionContext(entry.stop_reason_detail || '');
+      if (inputDecision) {
+        const decisionLine = document.createElement('div');
+        decisionLine.className = 'muted';
+        decisionLine.textContent = inputDecision;
+        stopReasonCell.append(decisionLine);
+      }
+      if (Array.isArray(entry.conflict_files) && entry.conflict_files.length) {
+        const conflictTitle = document.createElement('div');
+        conflictTitle.className = 'muted';
+        conflictTitle.textContent = 'Conflict files';
+        stopReasonCell.append(conflictTitle);
+        const conflictChips = document.createElement('div');
+        conflictChips.className = 'inline-badges';
+        for (const conflict of entry.conflict_files) {
+          const chip = document.createElement('span');
+          chip.className = 'mini-badge ' + (conflict.status === 'staged' ? 'mini-badge-good' : 'mini-badge-bad');
+          chip.textContent = conflict.path + ' (' + (conflict.status || 'unknown') + ')';
+          conflictChips.append(chip);
+        }
+        stopReasonCell.append(conflictChips);
+      }
+      if (Array.isArray(entry.required_actions) && entry.required_actions.length) {
+        const requiredActions = document.createElement('div');
+        requiredActions.className = 'muted';
+        requiredActions.textContent = 'Required actions: ' + entry.required_actions.join(', ');
+        stopReasonCell.append(requiredActions);
+      }
+      const countWindow = document.createElement('div');
+      countWindow.className = 'muted';
+      countWindow.textContent =
+        'Attempt window: ' +
+        formatNumber(entry.attempt_count_window) +
+        ' in ' +
+        formatNumber(entry.window_minutes) +
+        ' minute(s)';
+      stopReasonCell.append(countWindow);
+      const progressLine = document.createElement('div');
+      progressLine.className = 'muted';
+      progressLine.textContent =
+        'Last progress: ' +
+        (entry.last_known_commit_sha || 'n/a') +
+        ' @ ' +
+        (entry.last_progress_checkpoint_at ? formatDate(entry.last_progress_checkpoint_at) : 'n/a');
+      stopReasonCell.append(progressLine);
+
+      const previousSessionCell = document.createElement('td');
+      const previousSessionValue = document.createElement('div');
+      previousSessionValue.textContent = entry.previous_session_id || 'n/a';
+      const previousThreadValue = document.createElement('div');
+      previousThreadValue.className = 'muted';
+      previousThreadValue.textContent = entry.previous_thread_id ? 'Thread ' + entry.previous_thread_id : 'Thread n/a';
+      previousSessionCell.append(previousSessionValue, previousThreadValue);
+
+      const actionsCell = document.createElement('td');
+      const lastAction = Array.isArray(entry.operator_actions) && entry.operator_actions.length
+        ? entry.operator_actions[entry.operator_actions.length - 1]
+        : null;
+      if (lastAction) {
+        const actionOutcome = document.createElement('div');
+        actionOutcome.className = 'muted';
+        actionOutcome.textContent = 'Last action: ' + lastAction.action + ' ' + lastAction.result + (lastAction.result_code ? ' (' + lastAction.result_code + ')' : '');
+        actionsCell.append(actionOutcome);
+      }
+      const resumeButton = createActionButton('Mark Acceptance Complete + Resume', 'ghost-button', function () {
+        void resumeBlockedIssue(entry.issue_identifier);
+      });
+      const pushCommitResumeButton = createActionButton('Push Commit + Resume', 'ghost-button', function () {
+        void resumeBlockedIssue(entry.issue_identifier, 'operator_override_push_additional_commit');
+      });
+      const cancelToBacklogButton = createActionButton('Cancel to Backlog', 'ghost-button', function () {
+        void cancelBlockedIssue(entry.issue_identifier, 'operator_cancel_return_to_backlog');
+      });
+      const hasPendingInputRequest = Boolean(entry.pending_input && entry.pending_input.request_id);
+      let replyButton = null;
+      if (hasPendingInputRequest) {
+        replyButton = createActionButton('Reply', 'ghost-button', function () {
+          void submitBlockedInput(entry);
+        });
+      }
+      const copyPreviousSession = createActionButton('Copy Prev Session', 'ghost-button', function () {
+        copyText(entry.previous_session_id || '');
+      });
+      const copyWorkspace = createActionButton('Copy Workspace', 'ghost-button', function () {
+        copyText(entry.workspace_path || '');
+      });
+      const openJson = createActionButton('JSON', 'ghost-button', function () {
+        window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
+      });
+      const requeueButton = createActionButton('Requeue', 'ghost-button', function () {
+        void runOperatorAction(entry.issue_identifier, 'requeue', false);
+      });
+      if (replyButton) {
+        actionsCell.append(replyButton);
+      } else {
+        const manualResumeNote = document.createElement('div');
+        manualResumeNote.className = 'muted';
+        manualResumeNote.textContent = 'Manual resume required; no pending input request.';
+        actionsCell.append(manualResumeNote);
+      }
+      actionsCell.append(resumeButton, pushCommitResumeButton, cancelToBacklogButton, requeueButton, copyPreviousSession, copyWorkspace, openJson);
+
+      row.append(
+        issueCell,
+        attemptCell,
+        blockedAtCell,
+        hostCell,
+        workspaceCell,
+        stopReasonCell,
+        previousSessionCell,
+        actionsCell
+      );
+      return row;
+    });
+
+    elements.blockedRows.replaceChildren(...nodes);
+  }
+
+export function recoveryStatusLabel(status) {
+    switch (status) {
+      case 'resume_available':
+        return 'Resume available';
+      case 'active_issue_present':
+        return 'Active issue present';
+      case 'capability_mismatch':
+        return 'Capability mismatch';
+      case 'resume_unavailable':
+        return 'Resume unavailable';
+      case 'inspect_forensics':
+      default:
+        return 'Inspect forensics';
+    }
+  }
+
+export function renderStoppedRunRecovery(payload) {
+    if (!state.stoppedRunRecoveryLoaded) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'Stopped-run recovery detail loads on demand.';
+      elements.stoppedRunRecoveryList.replaceChildren(empty);
+      return;
+    }
+
+    const acknowledged = new Set(JSON.parse(window.localStorage.getItem('symphony.stoppedRunAcknowledged') || '[]'));
+    const entries = (payload.stopped_runs || []).filter(function (entry) {
+      return !acknowledged.has(entry.run_id);
+    });
+    if (!entries.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No recent stopped runs need recovery.';
+      elements.stoppedRunRecoveryList.replaceChildren(empty);
+      return;
+    }
+
+    const cards = entries.map((entry) => {
+      const card = document.createElement('article');
+      card.className = 'recovery-card' + (entry.capability_mismatch ? ' recovery-card-warning' : '');
+
+      const header = document.createElement('div');
+      header.className = 'recovery-card-head';
+      const title = document.createElement('h3');
+      title.textContent = entry.issue_identifier;
+      const status = document.createElement('span');
+      status.className = 'status-pill ' + (entry.resume_valid ? 'pending' : entry.capability_mismatch ? 'failed' : 'actionability-recommended');
+      status.textContent = recoveryStatusLabel(entry.recovery_status);
+      header.append(title, status);
+
+      const meta = document.createElement('dl');
+      meta.className = 'recovery-grid';
+      const addMeta = function (label, value) {
+        const group = document.createElement('div');
+        const term = document.createElement('dt');
+        term.textContent = label;
+        const description = document.createElement('dd');
+        description.textContent = value || 'n/a';
+        group.append(term, description);
+        meta.append(group);
+      };
+      addMeta('Run', entry.run_id);
+      addMeta('Thread', entry.thread_id);
+      addMeta('Session', entry.session_id);
+      addMeta('Turn', entry.turn_id);
+      addMeta('Last relevant', formatDate(entry.last_relevant_at));
+      addMeta('Terminal', entry.terminal_status + (entry.terminal_reason_code ? ' / ' + entry.terminal_reason_code : ''));
+      addMeta('Root cause', (entry.root_cause_status || 'unknown') + (entry.root_cause_reason_code ? ' / ' + getActionRequiredLabel(entry.root_cause_reason_code) : ''));
+      addMeta('Current recovery', recoveryStatusLabel(entry.recovery_status));
+
+      const detail = document.createElement('p');
+      detail.className = 'muted';
+      detail.textContent =
+        'Terminal detail: ' +
+        (entry.terminal_reason_detail || 'n/a') +
+        ' | Root-cause detail: ' +
+        (entry.root_cause_reason_detail || 'n/a');
+
+      const capability = document.createElement('p');
+      capability.className = entry.capability_mismatch ? 'capability-warning-text' : 'muted';
+      capability.textContent = entry.capability_mismatch && entry.capability_warning
+        ? 'Resume disabled: ' + entry.capability_warning.unsupported_capability_message + ' Recovery: ' + entry.capability_warning.recommended_recovery_action
+        : (entry.resume_disabled_reason || 'Resume is available from API recovery metadata.');
+
+      const actions = document.createElement('div');
+      actions.className = 'action-cell recovery-actions';
+      const inspect = createActionButton('Inspect Forensics', 'ghost-button', function () {
+        window.open(entry.actions.inspect_forensics_url, '_blank', 'noopener');
+      });
+      const inspectThread = createActionButton('Inspect Thread', 'ghost-button', function () {
+        if (entry.actions.inspect_thread_url) {
+          window.open(entry.actions.inspect_thread_url, '_blank', 'noopener');
+        }
+      });
+      inspectThread.disabled = !entry.actions.inspect_thread_url;
+      const copyThread = createActionButton('Copy Thread', 'ghost-button', function () {
+        copyText(entry.thread_id || '');
+      });
+      copyThread.disabled = !entry.actions.copy_thread_id_supported;
+      const copySession = createActionButton('Copy Session', 'ghost-button', function () {
+        copyText(entry.session_id || '');
+      });
+      copySession.disabled = !entry.actions.copy_session_id_supported;
+      const resume = createActionButton('Resume', 'ghost-button', function () {
+        if (entry.resume_valid) {
+          void resumeBlockedIssue(entry.issue_identifier);
+        }
+      });
+      resume.disabled = !entry.resume_valid;
+      const acknowledge = createActionButton('Acknowledge Cancellation', 'ghost-button', function () {
+        acknowledged.add(entry.run_id);
+        window.localStorage.setItem('symphony.stoppedRunAcknowledged', JSON.stringify(Array.from(acknowledged)));
+        renderStoppedRunRecovery(payload);
+      });
+      actions.append(inspect, inspectThread, copyThread, copySession, resume, acknowledge);
+
+      card.append(header, meta, detail, capability, actions);
+      return card;
+    });
+
+    elements.stoppedRunRecoveryList.replaceChildren(...cards);
+  }
+
+export function normalizeStoppedRunRecoveryPayload(recovery) {
+    return {
+      stopped_runs: recovery && Array.isArray(recovery.stopped_runs) ? recovery.stopped_runs : [],
+      counts: {
+        stopped:
+          recovery && recovery.counts && typeof recovery.counts.stopped === 'number'
+            ? recovery.counts.stopped
+            : 0
+      }
+    };
+  }
+
+export function mergeStoppedRunRecoveryPayload(payload, recoveryPayload) {
+    return {
+      ...payload,
+      stopped_runs: recoveryPayload.stopped_runs || [],
+      counts: {
+        ...payload.counts,
+        stopped: recoveryPayload.counts && typeof recoveryPayload.counts.stopped === 'number' ? recoveryPayload.counts.stopped : 0
+      }
+    };
+  }
+
+export async function loadStoppedRunRecovery() {
+    if (state.stoppedRunRecoveryLoading) {
+      return;
+    }
+    state.stoppedRunRecoveryLoading = true;
+    if (elements.stoppedRunRecoveryLoad) {
+      elements.stoppedRunRecoveryLoad.disabled = true;
+    }
+    try {
+      const recovery = await fetchJson('/api/v1/stopped-runs/recovery');
+      state.stoppedRunRecoveryLoaded = true;
+      state.stoppedRunRecoveryPayload = normalizeStoppedRunRecoveryPayload(recovery);
+      if (state.payload) {
+        state.payload = mergeStoppedRunRecoveryPayload(state.payload, state.stoppedRunRecoveryPayload);
+        state.lastGoodPayload = state.payload;
+        renderOverview(state.payload);
+        renderStoppedRunRecovery(state.payload);
+      } else {
+        renderStoppedRunRecovery(state.stoppedRunRecoveryPayload);
+      }
+      setRefreshStatus('Stopped-run recovery loaded', false);
+    } catch (error) {
+      setRefreshStatus('Stopped-run recovery load failed: ' + String(error), true);
+    } finally {
+      state.stoppedRunRecoveryLoading = false;
+      if (elements.stoppedRunRecoveryLoad) {
+        elements.stoppedRunRecoveryLoad.disabled = false;
+      }
+    }
+  }
+
+export function factLabel(value) {
+    return String(value || 'unknown').replace(/_/g, ' ');
+  }
+
+export function factClass(status) {
+    switch (status) {
+      case 'present':
+        return 'mini-badge mini-badge-good';
+      case 'lifecycle_pending':
+      case 'optional_unavailable':
+      case 'missing':
+        return 'mini-badge mini-badge-missing';
+      case 'redacted':
+      case 'truncated':
+        return 'mini-badge mini-badge-warning';
+      case 'degraded':
+      case 'unavailable':
+      default:
+        return 'mini-badge mini-badge-bad';
+    }
+  }
+
+export function createFactBadge(fact) {
+    const badge = document.createElement('span');
+    badge.className = factClass(fact && fact.status);
+    badge.textContent = factLabel(fact && fact.status) + ': ' + factLabel(fact && fact.fact);
+    if (fact && (fact.reason_code || fact.detail)) {
+      badge.title = [fact.reason_code, fact.detail].filter(Boolean).join(' | ');
+    }
+    return badge;
+  }
+
+export function createProjectHistoryEmptyRow(message) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 9;
+    cell.className = 'muted';
+    cell.textContent = message;
+    row.append(cell);
+    return row;
+  }
+
+export function projectKeyFromHistoryPayload(historyPayload) {
+    const runs = historyPayload && Array.isArray(historyPayload.runs) ? historyPayload.runs : [];
+    for (const run of runs) {
+      if (run && run.identity && run.identity.project && run.identity.project.key) {
+        return run.identity.project.key;
+      }
+      if (run && run.identity_projection && run.identity_projection.project_key) {
+        return run.identity_projection.project_key;
+      }
+    }
+    return '';
+  }
+
+export function summarizeProjectHistoryReferences(row) {
+    const summary = row && row.summary ? row.summary : {};
+    return [
+      'evidence ' + formatNumber(summary.evidence_reference_count || 0),
+      'tracker ' + formatNumber(summary.tracker_snapshot_count || 0),
+      'PR/ref ' + formatNumber(summary.ticket_reference_count || 0),
+      'operator ' + formatNumber(summary.operator_action_count || 0)
+    ].join(' • ');
+  }
+
+export function summarizeProjectHistoryMetrics(row) {
+    const summary = row && row.summary ? row.summary : {};
+    return [
+      'attempts ' + formatNumber(summary.attempt_count || 0),
+      'phases ' + formatNumber(summary.phase_count || 0),
+      'threads ' + formatNumber(summary.thread_count || 0),
+      'turns ' + formatNumber(summary.turn_count || 0),
+      'tokens ' + (summary.total_tokens === null || summary.total_tokens === undefined ? 'n/a' : formatNumber(summary.total_tokens))
+    ].join(' • ');
+  }
+
+export function summarizeProjectHistoryHealth(health) {
+    if (!health || typeof health !== 'object') {
+      return 'Health: unavailable';
+    }
+    const storage = health.storage || {};
+    const schema = health.schema || {};
+    const counts = health.counts || {};
+    const retention = health.retention || {};
+    const prune = retention.last_prune || {};
+    const writes = health.writes || {};
+    const projections = health.projections || {};
+    const appServerLite = health.app_server_lite || {};
+    const policyParts = [];
+    if (appServerLite.redacted_event_count || appServerLite.truncated_event_count || appServerLite.summary_only_event_count) {
+      policyParts.push(
+        'payload policy redacted ' +
+          formatNumber(appServerLite.redacted_event_count || 0) +
+          ' / truncated ' +
+          formatNumber(appServerLite.truncated_event_count || 0) +
+          ' / summary-only ' +
+          formatNumber(appServerLite.summary_only_event_count || 0)
+      );
+    }
+    if (appServerLite.unavailable_event_count) {
+      const reasons = Array.isArray(appServerLite.unavailable_reasons)
+        ? appServerLite.unavailable_reasons
+            .map(function (reason) {
+              return (reason.reason_code || 'unknown') + ' ' + formatNumber(reason.count || 0) + ' ' + (reason.classification || 'unknown');
+            })
+            .join(', ')
+        : 'reason unknown';
+      policyParts.push('payload unavailable ' + formatNumber(appServerLite.unavailable_event_count || 0) + ' (' + reasons + ')');
+    }
+    const diagnostics = Array.isArray(health.diagnostics) ? health.diagnostics : [];
+    const lifecyclePendingCount = diagnostics.filter(function (fact) {
+      return fact && fact.status === 'lifecycle_pending';
+    }).length;
+    const optionalUnavailableCount = diagnostics.filter(function (fact) {
+      return fact && fact.status === 'optional_unavailable';
+    }).length;
+    const degradedFactCount = diagnostics.filter(function (fact) {
+      return fact && (fact.status === 'missing' || fact.status === 'degraded' || fact.status === 'unavailable');
+    }).length;
+    if (lifecyclePendingCount || optionalUnavailableCount || degradedFactCount) {
+      policyParts.push(
+        'facts pending ' +
+          formatNumber(lifecyclePendingCount) +
+          ' / optional unavailable ' +
+          formatNumber(optionalUnavailableCount) +
+          ' / degraded ' +
+          formatNumber(degradedFactCount)
+      );
+    }
+    return [
+      'Health: ' + (health.status || 'unknown'),
+      'enabled ' + (health.enabled ? 'yes' : 'no'),
+      'storage ' + (storage.target || storage.type || 'n/a'),
+      'schema ' + (schema.status || 'unknown') + ' / integrity ' + (schema.integrity_ok ? 'ok' : 'degraded'),
+      'runs ' + formatNumber(counts.runs || 0),
+      'tickets ' + (counts.tickets === null || counts.tickets === undefined ? 'n/a' : formatNumber(counts.tickets)),
+      'retention ' + (retention.retention_days === null || retention.retention_days === undefined ? 'n/a' : formatNumber(retention.retention_days) + 'd'),
+      'prune ' + (prune.status || 'unknown'),
+      'writes ' + (writes.status || 'unknown'),
+      'projection ' + (projections.status || 'unknown'),
+      'app-server-lite ' + (appServerLite.status || 'unknown')
+    ]
+      .concat(policyParts)
+      .join(' • ');
+  }
+
+export function renderProjectHistory() {
+    const projectKey = state.projectHistory.projectKey || '';
+    elements.projectHistoryProjectKey.value = projectKey;
+    elements.projectHistoryLoad.disabled = !!state.projectHistory.loading;
+
+    if (state.projectHistory.loading) {
+      elements.projectHistoryStatus.textContent = 'Loading bounded ticket history for project ' + projectKey + '.';
+      elements.projectHistoryRows.replaceChildren(createProjectHistoryEmptyRow('Loading project history...'));
+      return;
+    }
+
+    if (state.projectHistory.error) {
+      elements.projectHistoryStatus.textContent =
+        'Project history unavailable: ' + state.projectHistory.error + ' • ' + summarizeProjectHistoryHealth(state.projectHistory.healthPayload);
+      const healthFacts =
+        state.projectHistory.healthPayload && Array.isArray(state.projectHistory.healthPayload.diagnostics)
+          ? state.projectHistory.healthPayload.diagnostics
+          : [];
+      elements.projectHistoryFacts.replaceChildren(...healthFacts.map(createFactBadge));
+      elements.projectHistoryRows.replaceChildren(createProjectHistoryEmptyRow('Project history unavailable.'));
+      elements.projectHistoryDetail.classList.add('hidden');
+      elements.projectHistoryDetail.replaceChildren();
+      return;
+    }
+
+    const payload = state.projectHistory.listPayload;
+    if (!payload) {
+      elements.projectHistoryStatus.textContent = projectKey
+        ? 'Project history is ready to load for project ' + projectKey + '.'
+        : 'No project key discovered from bounded run history yet.';
+      elements.projectHistoryFacts.replaceChildren();
+      elements.projectHistoryRows.replaceChildren(createProjectHistoryEmptyRow('Project history uses bounded ticket rows and loads detail on demand.'));
+      elements.projectHistoryDetail.classList.add('hidden');
+      elements.projectHistoryDetail.replaceChildren();
+      return;
+    }
+
+    const tickets = Array.isArray(payload.tickets) ? payload.tickets : [];
+    const page = payload.page || {};
+    elements.projectHistoryStatus.textContent =
+      'Showing ' +
+      formatNumber(tickets.length) +
+      ' of ' +
+      (page.total === null || page.total === undefined ? 'unknown' : formatNumber(page.total)) +
+      ' ticket rows' +
+      (page.has_more ? ' (bounded page; more rows available).' : '.') +
+      ' • ' +
+      summarizeProjectHistoryHealth(payload.health || state.projectHistory.healthPayload);
+    elements.projectHistoryFacts.replaceChildren(...(Array.isArray(payload.facts) ? payload.facts.map(createFactBadge) : []));
+
+    if (!tickets.length) {
+      elements.projectHistoryRows.replaceChildren(createProjectHistoryEmptyRow('No project ticket history available for this project.'));
+      return;
+    }
+
+    const rows = tickets.map((entry) => {
+      const row = document.createElement('tr');
+      row.dataset.ticketKey = entry.ticket_identity && entry.ticket_identity.key ? entry.ticket_identity.key : '';
+      const ticketCell = document.createElement('td');
+      const ticketTitle = document.createElement('strong');
+      ticketTitle.textContent = (entry.ticket_identity && entry.ticket_identity.human_issue_identifier) || row.dataset.ticketKey || 'unknown';
+      const ticketMeta = document.createElement('div');
+      ticketMeta.className = 'muted';
+      ticketMeta.textContent = row.dataset.ticketKey || 'ticket key unavailable';
+      ticketCell.append(ticketTitle, ticketMeta);
+
+      const stateCell = document.createElement('td');
+      stateCell.append(createStateBadge(entry.state || 'unknown'));
+      const statusMeta = document.createElement('div');
+      statusMeta.className = 'muted';
+      statusMeta.textContent = entry.current_status || entry.last_known_status || 'unknown';
+      stateCell.append(statusMeta);
+
+      const attemptCell = document.createElement('td');
+      const latestAttempt = entry.latest_attempt || {};
+      attemptCell.textContent = latestAttempt.attempt_number === null || latestAttempt.attempt_number === undefined
+        ? 'No attempt recorded'
+        : 'Attempt ' + latestAttempt.attempt_number + ' • ' + (latestAttempt.status || 'unknown');
+      const attemptMeta = document.createElement('div');
+      attemptMeta.className = 'muted';
+      attemptMeta.textContent = formatDate(latestAttempt.started_at) + (latestAttempt.ended_at ? ' - ' + formatDate(latestAttempt.ended_at) : '');
+      attemptCell.append(attemptMeta);
+
+      const outcomeCell = document.createElement('td');
+      outcomeCell.textContent = latestAttempt.outcome || 'No terminal outcome';
+      const outcomeMeta = document.createElement('div');
+      outcomeMeta.className = 'muted';
+      outcomeMeta.textContent = latestAttempt.outcome_reason_code || 'outcome fact missing or unavailable';
+      outcomeCell.append(outcomeMeta);
+
+      const refsCell = document.createElement('td');
+      refsCell.textContent = summarizeProjectHistoryReferences(entry);
+
+      const summaryCell = document.createElement('td');
+      summaryCell.textContent = summarizeProjectHistoryMetrics(entry);
+
+      const factsCell = document.createElement('td');
+      factsCell.className = 'project-history-facts-cell';
+      const factBadges = Array.isArray(entry.facts) ? entry.facts.map(createFactBadge) : [];
+      factsCell.replaceChildren(...factBadges);
+
+      const observedCell = document.createElement('td');
+      observedCell.textContent = formatDate(entry.latest_observed_at);
+
+      const actionsCell = document.createElement('td');
+      const detailButton = createActionButton(
+        state.projectHistory.detailLoadingTicketKey === row.dataset.ticketKey ? 'Loading...' : 'View Timeline',
+        'ghost-button',
+        function () {
+          void loadProjectHistoryDetail(row.dataset.ticketKey || '');
+        }
+      );
+      detailButton.disabled = !row.dataset.ticketKey || state.projectHistory.detailLoadingTicketKey === row.dataset.ticketKey;
+      actionsCell.append(detailButton);
+
+      row.append(ticketCell, stateCell, attemptCell, outcomeCell, refsCell, summaryCell, factsCell, observedCell, actionsCell);
+      return row;
+    });
+    elements.projectHistoryRows.replaceChildren(...rows);
+    renderProjectHistoryDetail();
+  }
+
+export function createProjectHistorySection(title, items, renderItem) {
+    const section = document.createElement('section');
+    section.className = 'thread-detail-section';
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    section.append(heading);
+    if (!Array.isArray(items) || !items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No ' + title.toLowerCase() + ' facts recorded.';
+      section.append(empty);
+      return section;
+    }
+    const list = document.createElement('ul');
+    list.className = 'project-history-timeline-list';
+    for (const item of items) {
+      const node = document.createElement('li');
+      node.textContent = renderItem(item);
+      list.append(node);
+    }
+    section.append(list);
+    return section;
+  }
+
+export function renderProjectHistoryDetail() {
+    const detail = state.projectHistory.detailPayload;
+    elements.projectHistoryDetail.replaceChildren();
+    if (state.projectHistory.detailError) {
+      elements.projectHistoryDetail.classList.remove('hidden');
+      const error = document.createElement('p');
+      error.className = 'status-error';
+      error.textContent = 'Ticket timeline unavailable: ' + state.projectHistory.detailError;
+      elements.projectHistoryDetail.append(error);
+      return;
+    }
+    if (!detail) {
+      elements.projectHistoryDetail.classList.add('hidden');
+      return;
+    }
+
+    elements.projectHistoryDetail.classList.remove('hidden');
+    const heading = document.createElement('h3');
+    heading.textContent = 'Ticket Timeline: ' + ((detail.ticket_identity && detail.ticket_identity.human_issue_identifier) || detail.ticket_identity.key);
+    const facts = document.createElement('div');
+    facts.className = 'inline-badges';
+    facts.replaceChildren(...(Array.isArray(detail.facts) ? detail.facts.map(createFactBadge) : []));
+
+    const grid = document.createElement('div');
+    grid.className = 'project-history-detail-grid';
+    grid.append(
+      createProjectHistorySection('Attempts', detail.attempts, function (item) {
+        return 'Attempt ' + item.attempt_number + ' • ' + item.status + ' • ' + formatDate(item.started_at) + ' - ' + formatDate(item.ended_at);
+      }),
+      createProjectHistorySection('Phases', detail.phases, function (item) {
+        return item.phase + ' • ' + item.status + ' • ' + formatDate(item.started_at) + ' - ' + formatDate(item.ended_at) + (item.reason_code ? ' • ' + item.reason_code : '');
+      }),
+      createProjectHistorySection('State Transitions', detail.state_transitions, function (item) {
+        return item.from_status + ' -> ' + item.to_status + ' • ' + formatDate(item.transitioned_at) + (item.reason_code ? ' • ' + item.reason_code : '');
+      }),
+      createProjectHistorySection('Thread References', detail.thread_references, function (item) {
+        return item.thread_id + ' • attempt ' + item.attempt_id + ' • ' + item.status + ' • ' + formatDate(item.started_at);
+      }),
+      createProjectHistorySection('Turn References', detail.turn_references, function (item) {
+        return item.turn_id + ' • thread ' + item.thread_id + ' • turn ' + item.turn_index + ' • ' + item.status;
+      }),
+      createProjectHistorySection('Outcomes', detail.outcomes, function (item) {
+        return item.outcome + ' • ' + (item.reason_code || 'no reason') + ' • ' + formatDate(item.recorded_at);
+      }),
+      createProjectHistorySection('Blockers', detail.blockers, function (item) {
+        return item.status + ' • ' + item.blocker_type + ' • ' + (item.reason_code || 'no reason') + ' • ' + (item.reason_detail || 'no detail');
+      }),
+      createProjectHistorySection('Evidence', detail.evidence_references, function (item) {
+        return item.evidence_kind + ' • ' + (item.title || item.uri || 'untitled') + ' • ' + formatDate(item.recorded_at);
+      }),
+      createProjectHistorySection('Tracker And PR Facts', [].concat(detail.tracker_facts || [], detail.pr_and_reference_facts || [], detail.operator_facts || []), function (item) {
+        return (item.tracker_status || item.reference_kind || item.action || 'fact') + ' • ' + (item.label || item.result || item.state || item.tracker_status || 'n/a') + ' • ' + formatDate(item.last_observed_at || item.observed_at || item.requested_at);
+      }),
+      createProjectHistorySection('App Server Lite Excerpts', detail.app_server_lite_summaries, function (item) {
+        return item.source_event_name + ' • ' + item.detail_status + ' • ' + (item.summary || item.redacted_excerpt || item.unavailable_reason_code || 'no excerpt');
+      }),
+      createProjectHistorySection('Token And Model Facts', detail.token_model_summaries, function (item) {
+        return (item.effective_model || item.requested_model || 'model unknown') + ' • tokens ' + (item.total_tokens === null || item.total_tokens === undefined ? 'n/a' : formatNumber(item.total_tokens)) + ' • ' + (item.telemetry_confidence || 'confidence unknown');
+      }),
+      createProjectHistorySection('Blocked Input Events', detail.blocked_input_events, function (item) {
+        return (item.request_id || 'request') + ' • ' + (item.status || 'status unknown') + ' • ' + (item.reason_code || 'no reason');
+      })
+    );
+    elements.projectHistoryDetail.append(heading, facts, grid);
+  }
+
+export async function loadProjectHistory(projectKey) {
+    const requestedProjectKey = String(projectKey || elements.projectHistoryProjectKey.value || '').trim();
+    if (!requestedProjectKey || state.projectHistory.loading) {
+      renderProjectHistory();
+      return;
+    }
+    state.projectHistory.projectKey = requestedProjectKey;
+    state.projectHistory.loading = true;
+    state.projectHistory.error = null;
+    renderProjectHistory();
+    try {
+      state.projectHistory.listPayload = await fetchJson('/api/v1/projects/' + encodeURIComponent(requestedProjectKey) + '/history/tickets?limit=50');
+      state.projectHistory.healthPayload = state.projectHistory.listPayload.health || null;
+      state.projectHistory.detailPayload = null;
+      state.projectHistory.detailError = null;
+    } catch (error) {
+      state.projectHistory.listPayload = null;
+      state.projectHistory.error = String(error);
+      try {
+        state.projectHistory.healthPayload = await fetchJson('/api/v1/projects/' + encodeURIComponent(requestedProjectKey) + '/history/health');
+      } catch {
+        state.projectHistory.healthPayload = null;
+      }
+    } finally {
+      state.projectHistory.loading = false;
+      renderProjectHistory();
+    }
+  }
+
+export async function loadProjectHistoryDetail(ticketKey) {
+    const projectKey = state.projectHistory.projectKey;
+    if (!projectKey || !ticketKey) {
+      return;
+    }
+    state.projectHistory.detailLoadingTicketKey = ticketKey;
+    state.projectHistory.detailError = null;
+    renderProjectHistory();
+    try {
+      state.projectHistory.detailPayload = await fetchJson(
+        '/api/v1/projects/' + encodeURIComponent(projectKey) + '/history/tickets/' + encodeURIComponent(ticketKey)
+      );
+    } catch (error) {
+      state.projectHistory.detailPayload = null;
+      state.projectHistory.detailError = String(error);
+    } finally {
+      state.projectHistory.detailLoadingTicketKey = null;
+      renderProjectHistory();
+    }
+  }
+
+export function applyPayload(payload, source) {
+    if (payload && payload.error) {
+      renderSnapshotError(payload.error);
+      setLastUpdated(payload.generated_at || new Date().toISOString());
+      return false;
+    }
+
+    clearSnapshotError();
+    if (state.stoppedRunRecoveryLoaded && state.stoppedRunRecoveryPayload) {
+      payload = mergeStoppedRunRecoveryPayload(payload, state.stoppedRunRecoveryPayload);
+    }
+    state.payload = payload;
+    state.lastGoodPayload = payload;
+    renderOverview(payload);
+    renderActionRequiredBanner(payload);
+    renderApiDegradedBanner(payload);
+    renderThroughput(payload);
+    renderRunning(payload);
+    renderRetry(payload);
+    renderBlocked(payload);
+    renderStoppedRunRecovery(payload);
+    renderRuntimeEvents(payload);
+    setLastUpdated(payload.generated_at || new Date().toISOString());
+    if (source === 'stream') {
+      state.streamSnapshotHealthy = true;
+      state.streamStatus = 'streaming';
+      state.streamFallbackReason = null;
+      setConnectionStatus('streaming', 'SSE streaming live state_snapshot updates');
+      state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
+      clearPollTimer();
+    }
+    return true;
+  }
+
+export function updateRuntimeClock() {
+    if (state.lastGoodPayload) {
+      renderOverview(state.lastGoodPayload);
+    }
+    const runtimeCells = document.querySelectorAll('.runtime-cell');
+    for (const runtimeCell of runtimeCells) {
+      const startedAt = runtimeCell.getAttribute('data-started-at');
+      runtimeCell.textContent = formatDurationFromIso(startedAt);
+    }
+  }
+
+export async function fetchJson(url, init) {
+    const response = await fetch(url, init);
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(formatApiError(payload, 'Request failed'));
+    }
+    return payload;
+  }
+
+export async function loadStateViaPoll() {
+    try {
+      const payload = await fetchJson('/api/v1/state');
+      const usablePayload = applyPayload(payload, 'poll');
+      if (isStreamHealthy()) {
+        setConnectionStatus('streaming', 'SSE streaming live state_snapshot updates');
+      } else if (usablePayload) {
+        setConnectionStatus('polling', describeStreamFallback());
+      } else {
+        setConnectionStatus('offline', 'Polling returned snapshot error');
+      }
+      state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
+    } catch (error) {
+      setConnectionStatus('offline', 'Polling failed');
+      setRefreshStatus('Polling failed: ' + String(error), true);
+      state.pollDelayMs = Math.min(state.pollDelayMs * 2, 30000);
+    } finally {
+      schedulePollingFallback();
+    }
+  }
+
+export function scheduleStateSave() {
+    if (!state.uiStateLoaded) {
+      return;
+    }
+
+    clearTimeout(state.uiStateSaveTimer);
+    state.uiStateSaveTimer = setTimeout(async function () {
+      try {
+        await fetch('/api/v1/ui-state', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            state: {
+              selected_issue: state.selectedIssue || null,
+              filters: {
+                status: state.filter.status,
+                query: state.filter.query
+              },
+              event_feed_filter: state.filter.eventFeedSeverity,
+              panels: {
+                throughput_open: !!elements.throughputPanel.open,
+                runtime_events_open: !!elements.runtimeEventsPanel.open
+              },
+              panel_state: {
+                issue_detail_open: !!elements.issuePanel.open
+              }
+            }
+          })
+        });
+      } catch {
+        // Keep UI responsive; persistence failures are non-fatal.
+      }
+    }, 250);
+  }
+
+export async function loadUiState() {
+    try {
+      const response = await fetch('/api/v1/ui-state');
+      if (!response.ok) {
+        state.uiStateLoaded = true;
+        return;
+      }
+      const payload = await response.json();
+      const restored = payload.state;
+      if (!restored) {
+        state.uiStateLoaded = true;
+        return;
+      }
+
+      state.selectedIssue = restored.selected_issue || '';
+      state.filter.query = restored.filters && restored.filters.query ? restored.filters.query : '';
+      state.filter.status = restored.filters && restored.filters.status ? restored.filters.status : 'all';
+      state.filter.eventFeedSeverity = restored.event_feed_filter || 'all';
+      state.panels.throughputOpen =
+        restored.panels && typeof restored.panels.throughput_open === 'boolean' ? restored.panels.throughput_open : true;
+      state.panels.runtimeEventsOpen =
+        restored.panels && typeof restored.panels.runtime_events_open === 'boolean'
+          ? restored.panels.runtime_events_open
+          : true;
+
+      elements.issueInput.value = state.selectedIssue;
+      elements.runningFilter.value = state.filter.query;
+      elements.statusFilter.value = state.filter.status;
+      elements.eventFeedFilter.value = state.filter.eventFeedSeverity;
+      elements.throughputPanel.open = state.panels.throughputOpen;
+      elements.runtimeEventsPanel.open = state.panels.runtimeEventsOpen;
+      if (restored.panel_state && typeof restored.panel_state.issue_detail_open === 'boolean') {
+        elements.issuePanel.open = restored.panel_state.issue_detail_open;
+      }
+
+      state.uiStateLoaded = true;
+
+      if (state.selectedIssue && elements.issuePanel.open) {
+        void loadIssue(state.selectedIssue, { openPanel: false });
+      }
+    } catch {
+      state.uiStateLoaded = true;
+    }
+  }
+
+
+
+export async function refreshNow() {
+    try {
+      const payload = await fetchJson('/api/v1/refresh', { method: 'POST' });
+      setRefreshStatus(payload.coalesced ? 'Refresh request coalesced' : 'Refresh queued', false);
+      await loadStateViaPoll();
+    } catch (error) {
+      setRefreshStatus('Refresh failed: ' + String(error), true);
+    }
+  }
+
+export async function loadDiagnostics() {
+    try {
+      const diagnostics = await fetchJson('/api/v1/diagnostics');
+      state.runtimeResolution = diagnostics.runtime_resolution || null;
+      elements.diagnosticsOutput.textContent = formatCanonicalJsonBlock('Diagnostics JSON', diagnostics);
+      renderRuntimeResolution(state.runtimeResolution);
+    } catch {
+      elements.diagnosticsOutput.textContent = 'Diagnostics unavailable.';
+      state.runtimeResolution = null;
+      renderRuntimeResolution(null);
+    }
+
+    try {
+      const historyPayload = await fetchJson('/api/v1/history?limit=8');
+      const discoveredProjectKey = projectKeyFromHistoryPayload(historyPayload);
+      if (discoveredProjectKey && !state.projectHistory.projectKey) {
+        state.projectHistory.projectKey = discoveredProjectKey;
+        void loadProjectHistory(discoveredProjectKey);
+      } else {
+        renderProjectHistory();
+      }
+      const runs = Array.isArray(historyPayload.runs) ? historyPayload.runs : [];
+      if (!runs.length) {
+        const empty = document.createElement('li');
+        empty.className = 'muted';
+        empty.textContent = 'No run history available.';
+        elements.historyList.replaceChildren(empty);
+        return;
+      }
+
+      const nodes = runs.map((entry) => {
+        const item = document.createElement('li');
+        const title = document.createElement('strong');
+        title.textContent = entry.issue_identifier + ' (' + (entry.terminal_status || 'active') + ')';
+        const meta = document.createElement('span');
+        meta.textContent = ' • started ' + formatDate(entry.started_at) + (entry.ended_at ? ' • ended ' + formatDate(entry.ended_at) : '');
+        item.append(title, meta);
+        return item;
+      });
+      elements.historyList.replaceChildren(...nodes);
+    } catch {
+      const empty = document.createElement('li');
+      empty.className = 'muted';
+      empty.textContent = 'History unavailable.';
+      elements.historyList.replaceChildren(empty);
+    }
+  }
+
+export function handleSseEnvelope(envelope) {
+    if (!envelope || typeof envelope !== 'object') {
+      return;
+    }
+
+    const type = envelope.type;
+    const payload = envelope.payload;
+
+    if (type === 'state_snapshot' && payload && payload.state) {
+      applyPayload(payload.state, 'stream');
+      return;
+    }
+
+    if (type === 'refresh_accepted' && payload && payload.accepted) {
+      setRefreshStatus(payload.accepted.coalesced ? 'Refresh request coalesced' : 'Refresh queued', false);
+      return;
+    }
+
+    if (type === 'runtime_health_changed' && payload && payload.health) {
+      const dispatch = payload.health.dispatch_validation || 'unknown';
+      const message = payload.health.last_error ? payload.health.last_error : 'health changed';
+      setRefreshStatus('Health changed: ' + dispatch + ' (' + message + ')', dispatch === 'failed');
+      return;
+    }
+  }
+
+export function connectStream() {
+    if (state.eventSource) {
+      state.eventSource.close();
+      state.eventSource = null;
+    }
+
+    const stream = new EventSource('/api/v1/events');
+    state.eventSource = stream;
+    state.streamStatus = 'connecting';
+    state.streamFallbackReason = 'connecting';
+    setConnectionStatus('connecting', 'SSE connecting; polling fallback active until first snapshot');
+
+    stream.onopen = function () {
+      state.streamConnected = true;
+      state.streamSnapshotHealthy = false;
+      state.streamStatus = 'connected_waiting_snapshot';
+      state.streamFallbackReason = 'waiting_first_snapshot';
+      state.streamRetryMs = 1000;
+      setConnectionStatus('connecting', 'SSE connected; waiting for first state_snapshot');
+    };
+
+    function handleStreamMessage(event) {
+      try {
+        const envelope = JSON.parse(event.data);
+        handleSseEnvelope(envelope);
+      } catch {
+        // Ignore malformed envelopes.
+      }
+    }
+
+    stream.onmessage = handleStreamMessage;
+    stream.addEventListener('symphony', handleStreamMessage);
+
+    stream.onerror = function () {
+      state.streamConnected = false;
+      state.streamSnapshotHealthy = false;
+      state.streamStatus = 'error';
+      state.streamFallbackReason = 'error';
+      setConnectionStatus('connecting', 'SSE disconnected after stream error; polling fallback active');
+      stream.close();
+      state.eventSource = null;
+      void loadStateViaPoll();
+      setTimeout(connectStream, state.streamRetryMs);
+      state.streamRetryMs = Math.min(state.streamRetryMs * 2, 15000);
+    };
+  }
+
+export async function loadIssue(identifier, options) {
+    const issueId = (identifier || '').trim();
+    if (!issueId) {
+      return;
+    }
+    const loadOptions = options || {};
+    if (loadOptions.openPanel !== false && !elements.issuePanel.open) {
+      state.suppressIssuePanelToggleLoad = true;
+      elements.issuePanel.open = true;
+      setTimeout(function () {
+        state.suppressIssuePanelToggleLoad = false;
+      }, 0);
+    }
+
+    try {
+      const payload = await fetchJson('/api/v1/' + encodeURIComponent(issueId));
+      let diagnostics = null;
+      let diagnosticsLoadFailed = false;
+      try {
+        diagnostics = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics');
+      } catch (_diagnosticsError) {
+        diagnosticsLoadFailed = true;
+        diagnostics = null;
+      }
+      state.selectedIssue = issueId;
+      elements.issueInput.value = issueId;
+      const summaryParts = [];
+      summaryParts.push('Status: ' + (payload.status || 'unknown'));
+      summaryParts.push('Snapshot: ' + (payload.snapshot_freshness_state || 'unknown') + ' age ' + formatNumber(payload.snapshot_age_ms) + 'ms');
+      if (payload.api_degraded_mode) {
+        summaryParts.push('API degraded: ' + (payload.api_degraded_reason_code || 'unknown'));
+      }
+      if (payload.workspace && payload.workspace.path) {
+        summaryParts.push('Workspace: ' + payload.workspace.path);
+      }
+      if (payload.retry && payload.retry.stop_reason_code) {
+        summaryParts.push('Stop reason: ' + payload.retry.stop_reason_code);
+      }
+      if (payload.blocked && payload.blocked.stop_reason_code) {
+        summaryParts.push('Blocked reason: ' + getActionRequiredLabel(payload.blocked.stop_reason_code));
+      }
+      if (payload.retry && payload.retry.previous_session_id) {
+        summaryParts.push('Previous session: ' + payload.retry.previous_session_id);
+      }
+      if (payload.blocked && payload.blocked.previous_session_id) {
+        summaryParts.push('Previous session: ' + payload.blocked.previous_session_id);
+      }
+      if (payload.running && payload.running.current_phase) {
+        summaryParts.push('Current phase: ' + payload.running.current_phase);
+      }
+      if (payload.running && payload.running.turn_control_state) {
+        summaryParts.push('Turn control: ' + getTurnControlLabel(payload.running.turn_control_state));
+        summaryParts.push('Progress: ' + getProgressSignalLabel(payload.running.progress_signal_state));
+      }
+      if (payload.running && payload.running.token_telemetry_confidence) {
+        summaryParts.push('Token quality: ' + getTokenConfidenceLabel(payload.running.token_telemetry_confidence));
+      }
+      if (payload.running && payload.running.not_blocked_explainer_text) {
+        summaryParts.push('Why not blocked: ' + payload.running.not_blocked_explainer_text);
+      }
+      if (payload.blocked && payload.blocked.turn_control_state) {
+        summaryParts.push('Turn control: ' + getTurnControlLabel(payload.blocked.turn_control_state));
+      }
+      if ((payload.retry && payload.retry.last_phase) || (payload.blocked && payload.blocked.last_phase)) {
+        summaryParts.push('Last phase before stop: ' + ((payload.retry && payload.retry.last_phase) || (payload.blocked && payload.blocked.last_phase)));
+      }
+      if (payload.operator_explainer) {
+        summaryParts.push('Actionability: ' + payload.operator_explainer.actionability);
+      }
+      const runningOrRetry = payload.running || payload.retry || payload.blocked;
+      if (runningOrRetry && runningOrRetry.provisioner_type) {
+        summaryParts.push('Provisioner: ' + runningOrRetry.provisioner_type);
+      }
+      if (runningOrRetry && runningOrRetry.branch_name) {
+        summaryParts.push('Branch: ' + runningOrRetry.branch_name);
+      }
+      if (runningOrRetry && runningOrRetry.workspace_git_status) {
+        summaryParts.push('Workspace git: ' + runningOrRetry.workspace_git_status);
+      }
+      if (runningOrRetry && typeof runningOrRetry.workspace_provisioned === 'boolean') {
+        summaryParts.push('Provisioned: ' + (runningOrRetry.workspace_provisioned ? 'yes' : 'no'));
+      }
+      if (runningOrRetry && typeof runningOrRetry.workspace_is_git_worktree === 'boolean') {
+        summaryParts.push('Git worktree: ' + (runningOrRetry.workspace_is_git_worktree ? 'yes' : 'no'));
+      }
+      if (runningOrRetry) {
+        summaryParts.push(formatBudgetSummary(runningOrRetry));
+        summaryParts.push(formatDiagnosticSummary(getDiagnosticSummary(runningOrRetry)));
+      }
+      summaryParts.push(
+        diagnostics
+          ? 'Detailed diagnostics: loaded'
+          : diagnosticsLoadFailed
+            ? 'Detailed diagnostics: unavailable'
+            : 'Detailed diagnostics: not loaded'
+      );
+      if (state.runtimeResolution && state.runtimeResolution.workspace_root) {
+        summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);
+      }
+      elements.issueSummary.textContent = summaryParts.join(' • ');
+      renderIssueExplainer(payload.operator_explainer || null);
+      renderThreadDiagnostics(diagnostics);
+      const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
+      const sessionConsole = payload.blocked && Array.isArray(payload.blocked.session_console) ? payload.blocked.session_console : [];
+      const timelineText = timeline.length
+        ? timeline.map(function (marker) {
+            return formatDate(marker.at) + ' | ' + marker.phase + ' | attempt ' + marker.attempt + ' | ' + (marker.detail || 'n/a') + ' | thread ' + (marker.thread_id || 'n/a') + ' | session ' + (marker.session_id || 'n/a');
+          }).join('\\n')
+        : 'No phase markers yet.';
+      const operatorTimelineRows = deriveOperatorTransitionRows(issueId, payload);
+      const operatorActions = Array.isArray(payload.operator_actions) ? payload.operator_actions : [];
+      const operatorActionText = operatorActions.length
+        ? operatorActions.map(function (entry) {
+            return formatDate(entry.requested_at_ms) + ' | ' + (entry.actor || 'operator') + ' | ' + entry.action + ' | ' + entry.result + ' | ' + (entry.result_code || 'n/a') + ' | ' + (entry.reason_note || 'no reason note') + ' | ' + (entry.message || 'n/a');
+          }).join('\\n')
+        : 'No operator action outcomes.';
+      const operatorTimelineText = operatorTimelineRows.length
+        ? operatorTimelineRows
+            .map(function (entry) {
+              return (
+                formatDate(entry.at) +
+                ' | ' +
+                entry.label +
+                ' | issue ' +
+                entry.issue_identifier +
+                ' | ' +
+                entry.result +
+                ' | ' +
+                entry.detail
+              );
+            })
+            .join('\\n')
+        : 'No operator transition entries.';
+      const sessionConsoleText = sessionConsole.length
+        ? sessionConsole.map(function (event) {
+            return formatDate(event.at) + ' | ' + event.event + ' | ' + (event.message || 'n/a');
+          }).join('\\n')
+        : 'No session console entries.';
+      const budgetText = runningOrRetry ? formatBudgetSummary(runningOrRetry) : 'Budget: not configured';
+      elements.issueOutput.textContent =
+        'Operator Transition Timeline\\n' +
+        operatorTimelineText +
+        '\\n\\nOperator Action Outcomes\\n' +
+        operatorActionText +
+        '\\n\\nExecution Timeline\\n' +
+        timelineText +
+        '\\n\\nSession Console\\n' +
+        sessionConsoleText +
+        '\\n\\nBudget\\n' +
+        budgetText +
+        '\\n\\nIssue JSON (canonical UTC ISO values preserved)\\n' +
+        JSON.stringify(payload, null, 2);
+      if (state.payload) {
+        renderRunning(state.payload);
+      }
+      scheduleStateSave();
+    } catch (error) {
+      elements.issueSummary.textContent = 'Issue detail degraded: fallback mode active.';
+      renderIssueExplainer(null);
+      renderThreadDiagnostics(null);
+      elements.issueOutput.textContent =
+        'Issue load failed: ' +
+        String(error) +
+        '\\n\\nFallback message\\nIssue detail payload is unavailable. Available actions remain resume, cancel, refresh, and JSON inspection when the state snapshot contains the issue.';
+    }
+  }
+
+export async function resumeBlockedIssue(issueIdentifier, resumeOverrideReason) {
+    try {
+      const reasonNote = window.prompt('Reason note for resuming this blocked issue', '');
+      if (!reasonNote) {
+        setRefreshStatus('Resume skipped: reason note is required', true);
+        return;
+      }
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/resume', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          resumeOverrideReason
+            ? { resume_override_reason: resumeOverrideReason, reason_note: reasonNote }
+            : { reason_note: reasonNote }
+        )
+      });
+      setRefreshStatus('Resume requested for ' + payload.issue_identifier, false);
+      await loadStateViaPoll();
+      if (state.selectedIssue === issueIdentifier) {
+        await loadIssue(issueIdentifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Resume failed: ' + String(error), true);
+    }
+  }
+
+export async function cancelBlockedIssue(issueIdentifier, cancelReason) {
+    try {
+      const reasonNote = window.prompt('Reason note for cancelling this blocked issue', cancelReason || '');
+      if (!reasonNote) {
+        setRefreshStatus('Cancel skipped: reason note is required', true);
+        return;
+      }
+      if (!window.confirm('Cancel this blocked issue to backlog?')) {
+        setRefreshStatus('Cancel skipped: confirmation declined', true);
+        return;
+      }
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/cancel', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cancel_reason: cancelReason || reasonNote, reason_note: reasonNote, confirmed: true })
+      });
+      setRefreshStatus('Cancel requested for ' + payload.issue_identifier + ' -> ' + payload.moved_to_state, false);
+      await loadStateViaPoll();
+      if (state.selectedIssue === issueIdentifier) {
+        await loadIssue(issueIdentifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Cancel failed: ' + String(error), true);
+    }
+  }
+
+export async function runOperatorAction(issueIdentifier, actionPath, destructive) {
+    try {
+      const reasonNote = window.prompt('Reason note for ' + actionPath.replace('-', ' '), '');
+      if (!reasonNote) {
+        setRefreshStatus('Action skipped: reason note is required', true);
+        return;
+      }
+      if (destructive && !window.confirm('Run destructive action "' + actionPath + '" for ' + issueIdentifier + '?')) {
+        setRefreshStatus('Action skipped: confirmation declined', true);
+        return;
+      }
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/' + actionPath, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason_note: reasonNote, confirmed: destructive ? true : undefined })
+      });
+      setRefreshStatus('Operator action requested for ' + (payload.issue_identifier || issueIdentifier), false);
+      await loadStateViaPoll();
+      if (state.selectedIssue === issueIdentifier) {
+        await loadIssue(issueIdentifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Operator action failed: ' + String(error), true);
+    }
+  }
+
+export async function submitBlockedInput(entry) {
+    try {
+      if (!entry.pending_input || !entry.pending_input.request_id) {
+        throw new Error('No pending input request payload');
+      }
+      const pending = entry.pending_input;
+      const firstQuestion = Array.isArray(pending.questions) && pending.questions.length ? pending.questions[0] : null;
+      const questionId = firstQuestion && firstQuestion.id ? firstQuestion.id : undefined;
+      let answer;
+      if (pending.input_schema_type === 'options' && firstQuestion && Array.isArray(firstQuestion.options) && firstQuestion.options.length) {
+        const labels = firstQuestion.options.map(function (option) { return option.label; });
+        const selected = window.prompt((pending.prompt_text || 'Select option') + '\\nOptions: ' + labels.join(', '), labels[0] || '');
+        answer = { question_id: questionId, option_label: selected || '' };
+      } else {
+        const text = window.prompt(pending.prompt_text || 'Enter response', '');
+        answer = { question_id: questionId, text: text || '' };
+      }
+      const reasonNote = window.prompt('Reason note for submitting this blocked input', '');
+      if (!reasonNote) {
+        setRefreshStatus('Input submit skipped: reason note is required', true);
+        return;
+      }
+      const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(entry.issue_identifier) + '/input', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          request_id: pending.request_id,
+          reason_note: reasonNote,
+          answer: answer
+        })
+      });
+      setRefreshStatus(
+        'Input submitted for ' +
+          payload.issue_identifier +
+          ' using ' +
+          (payload.resume_mode || 'unknown') +
+          ' mode (' +
+          (payload.resume_reason_code || 'n/a') +
+          ')',
+        false
+      );
+      await loadStateViaPoll();
+      if (state.selectedIssue === entry.issue_identifier) {
+        await loadIssue(entry.issue_identifier);
+      }
+    } catch (error) {
+      setRefreshStatus('Input submit failed: ' + String(error), true);
+    }
+  }
+
+
+
+export function wireEvents() {
+    elements.refreshButton.addEventListener('click', function () {
+      void refreshNow();
+    });
+
+    elements.issueLoad.addEventListener('click', function () {
+      void loadIssue(elements.issueInput.value);
+    });
+
+    if (elements.stoppedRunRecoveryLoad) {
+      elements.stoppedRunRecoveryLoad.addEventListener('click', function () {
+        void loadStoppedRunRecovery();
+      });
+    }
+
+    elements.projectHistoryLoad.addEventListener('click', function () {
+      void loadProjectHistory(elements.projectHistoryProjectKey.value);
+    });
+
+    elements.projectHistoryProjectKey.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        void loadProjectHistory(elements.projectHistoryProjectKey.value);
+      }
+    });
+
+    elements.issueInput.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        void loadIssue(elements.issueInput.value);
+      }
+    });
+
+    elements.issueOpenJson.addEventListener('click', function () {
+      const identifier = (elements.issueInput.value || state.selectedIssue || '').trim();
+      if (!identifier) {
+        setRefreshStatus('Provide an issue identifier first', true);
+        return;
+      }
+      window.open('/api/v1/' + encodeURIComponent(identifier), '_blank', 'noopener');
+    });
+
+    elements.runningFilter.addEventListener('input', function (event) {
+      state.filter.query = event.target && event.target.value ? event.target.value : '';
+      if (state.payload) {
+        renderRunning(state.payload);
+        renderRetry(state.payload);
+        renderBlocked(state.payload);
+      }
+      scheduleStateSave();
+    });
+
+    elements.statusFilter.addEventListener('change', function (event) {
+      state.filter.status = event.target && event.target.value ? event.target.value : 'all';
+      if (state.filter.status !== 'blocked') {
+        state.filter.blockedReason = 'all';
+      }
+      if (state.payload) {
+        renderRunning(state.payload);
+        renderRetry(state.payload);
+        renderBlocked(state.payload);
+      }
+      scheduleStateSave();
+    });
+
+    elements.eventFeedFilter.addEventListener('change', function (event) {
+      state.filter.eventFeedSeverity = event.target && event.target.value ? event.target.value : 'all';
+      if (state.payload) {
+        renderRuntimeEvents(state.payload);
+      }
+      scheduleStateSave();
+    });
+
+    elements.issuePanel.addEventListener('toggle', function () {
+      if (state.suppressIssuePanelToggleLoad) {
+        state.suppressIssuePanelToggleLoad = false;
+        scheduleStateSave();
+        return;
+      }
+      if (elements.issuePanel.open && state.selectedIssue) {
+        void loadIssue(state.selectedIssue, { openPanel: false });
+      }
+      scheduleStateSave();
+    });
+
+    elements.throughputPanel.addEventListener('toggle', function () {
+      state.panels.throughputOpen = !!elements.throughputPanel.open;
+      scheduleStateSave();
+    });
+
+    elements.runtimeEventsPanel.addEventListener('toggle', function () {
+      state.panels.runtimeEventsOpen = !!elements.runtimeEventsPanel.open;
+      scheduleStateSave();
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key === '/' && document.activeElement !== elements.runningFilter) {
+        event.preventDefault();
+        elements.runningFilter.focus();
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        void refreshNow();
+      }
+    });
+  }
+
+
+export function startDashboardClient() {
+  elements = resolveDashboardElements(document);
+  wireEvents();
+  void loadUiState();
+  void loadDiagnostics();
+  if (DASHBOARD_CONFIG.dashboard_enabled) {
+    void loadStateViaPoll();
+    connectStream();
+    state.runtimeTicker = setInterval(updateRuntimeClock, DASHBOARD_CONFIG.render_interval_ms);
+  } else {
+    setConnectionStatus('offline', 'Dashboard refresh disabled by configuration');
+    void loadStateViaPoll();
+  }
+}

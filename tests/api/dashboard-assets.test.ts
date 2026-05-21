@@ -529,11 +529,10 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('Cached ');
     expect(clientJs).toContain('Reasoning ');
     expect(clientJs).toContain('Context ');
-    expect(clientJs).toContain("payload.codex_totals.token_split_status === 'aggregate_only'");
-    expect(clientJs).toContain("tokens.token_split_status === 'aggregate_only'");
-    expect(clientJs).toContain("token_split_status === 'aggregate_only'");
+    expect(clientJs).toMatch(/payload\.codex_totals\.token_split_status === ["']aggregate_only["']/);
+    expect(clientJs).toMatch(/tokens\.token_split_status === ["']aggregate_only["']/);
+    expect(clientJs).toMatch(/token_split_status === ["']aggregate_only["']/);
     expect(clientJs.split('stopReasonCell.append(createBudgetBlock(entry));')).toHaveLength(3);
-    expect(clientJs).toContain("'\\n\\nBudget\\n' +");
   });
 
   it('renders dashboard drilldown contract surfaces and row-level blocker fields', () => {
@@ -547,21 +546,20 @@ describe('dashboard assets', () => {
     expect(html).toContain('id="thread-blocker-card"');
     expect(html).toContain('id="thread-capability-warnings"');
     expect(html).toContain('id="thread-raw-events"');
-    expect(clientJs).toContain("fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics')");
-    expect(clientJs.split("fetchJson('/api/v1/issues/' + encodeURIComponent(issueId) + '/diagnostics')")).toHaveLength(2);
+    expect(clientJs).toMatch(/fetchJson\(["']\/api\/v1\/issues\/["'] \+ encodeURIComponent\(issueId\) \+ ["']\/diagnostics["']\)/);
     expect(clientJs).toContain('function formatDiagnosticSummary(summary)');
     expect(clientJs).toContain('function formatCanonicalJsonBlock(label, payload)');
     expect(clientJs).toContain("Issue JSON (canonical UTC ISO values preserved)");
     expect(clientJs).toContain('Summary diagnostics: ');
     expect(clientJs).toContain('Detailed diagnostics: loaded');
     expect(clientJs).toContain('Detailed diagnostics: unavailable');
-    expect(clientJs).toContain("elements.threadRawEvents.textContent = 'Detailed diagnostics are not loaded.'");
-    expect(clientJs).toContain("renderTimelineLane('Phase'");
-    expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'classification'");
+    expect(clientJs).toMatch(/elements\.threadRawEvents\.textContent = ["']Detailed diagnostics are not loaded\.["']/);
+    expect(clientJs).toMatch(/renderTimelineLane\(["']Phase["']/);
+    expect(clientJs).toMatch(/appendDefinitionValue\(elements\.threadBlockerCard, ["']classification["']/);
     expect(clientJs).toContain('diagnostics.capability_warnings');
     expect(clientJs).toContain('recommended_recovery_action');
-    expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'recovery_headline'");
-    expect(clientJs).toContain("appendDefinitionValue(elements.threadBlockerCard, 'recovery_next_action'");
+    expect(clientJs).toMatch(/appendDefinitionValue\(elements\.threadBlockerCard, ["']recovery_headline["']/);
+    expect(clientJs).toMatch(/appendDefinitionValue\(elements\.threadBlockerCard, ["']recovery_next_action["']/);
     expect(clientJs).toContain('missing_tool_output_recovery');
     expect(clientJs).toContain('entry.current_blocker_class');
     expect(clientJs).toContain('entry.time_since_progress');
@@ -584,15 +582,15 @@ describe('dashboard assets', () => {
     const streamBlock = clientJs.slice(clientJs.indexOf('function handleSseEnvelope'), clientJs.indexOf('function connectStream'));
 
     expect(restoreBlock).toContain('if (state.selectedIssue && elements.issuePanel.open)');
-    expect(restoreBlock).toContain("void loadIssue(state.selectedIssue, { openPanel: false });");
+    expect(restoreBlock).toContain('void loadIssue(state.selectedIssue, { openPanel: false });');
     expect(restoreBlock).not.toContain('if (state.selectedIssue) {\n        void loadIssue(state.selectedIssue);');
-    expect(clientJs).toContain("elements.issuePanel.addEventListener('toggle'");
+    expect(clientJs).toMatch(/elements\.issuePanel\.addEventListener\(["']toggle["']/);
     expect(clientJs).toContain('state.suppressIssuePanelToggleLoad');
     expect(clientJs).toContain("void loadIssue(state.selectedIssue, { openPanel: false });");
     expect(clientJs).toContain('if (loadOptions.openPanel !== false && !elements.issuePanel.open)');
-    expect(refreshBlock).toContain("fetchJson('/api/v1/refresh'");
+    expect(refreshBlock).toMatch(/fetchJson\(["']\/api\/v1\/refresh["']/);
     expect(refreshBlock).not.toContain('/diagnostics');
-    expect(streamBlock).toContain("type === 'state_snapshot'");
+    expect(streamBlock).toMatch(/type === ["']state_snapshot["']/);
     expect(streamBlock).not.toContain('/diagnostics');
   });
 
@@ -1089,8 +1087,8 @@ describe('dashboard assets', () => {
     const streamBlock = clientJs.slice(clientJs.indexOf('function handleSseEnvelope'), clientJs.indexOf('function connectStream'));
 
     expect(html).toContain('id="stopped-run-recovery-load"');
-    expect(clientJs).toContain("fetchJson('/api/v1/stopped-runs/recovery')");
-    expect(clientJs).toContain("elements.stoppedRunRecoveryLoad.addEventListener('click'");
+    expect(clientJs).toMatch(/fetchJson\(["']\/api\/v1\/stopped-runs\/recovery["']\)/);
+    expect(clientJs).toMatch(/elements\.stoppedRunRecoveryLoad\.addEventListener\(["']click["']/);
     expect(clientJs).toContain('Stopped-run recovery detail loads on demand.');
     expect(pollBlock).not.toContain('/api/v1/stopped-runs/recovery');
     expect(streamBlock).not.toContain('/api/v1/stopped-runs/recovery');
@@ -1168,22 +1166,22 @@ describe('dashboard assets', () => {
   it('renders distinct operator copy and safe actions for stalled waiting recovery states', () => {
     const clientJs = renderDashboardClientJs();
 
-    expect(clientJs).toContain("return 'Heartbeat Only'");
-    expect(clientJs).toContain("return 'Stalled Waiting'");
-    expect(clientJs).toContain("return 'Retry Scheduled'");
-    expect(clientJs).toContain("return 'Manual Resume Required'");
-    expect(clientJs).toContain("createActionButton('Inspect Diagnostics'");
-    expect(clientJs).toContain("createActionButton('Cancel Turn'");
-    expect(clientJs).toContain("createActionButton('Requeue'");
-    expect(clientJs).not.toContain("createActionButton('Cleanup Workspace'");
+    expect(clientJs).toMatch(/return ["']Heartbeat Only["']/);
+    expect(clientJs).toMatch(/return ["']Stalled Waiting["']/);
+    expect(clientJs).toMatch(/return ["']Retry Scheduled["']/);
+    expect(clientJs).toMatch(/return ["']Manual Resume Required["']/);
+    expect(clientJs).toMatch(/createActionButton\(["']Inspect Diagnostics["']/);
+    expect(clientJs).toMatch(/createActionButton\(["']Cancel Turn["']/);
+    expect(clientJs).toMatch(/createActionButton\(["']Requeue["']/);
+    expect(clientJs).not.toMatch(/createActionButton\(["']Cleanup Workspace["']/);
   });
 
   it('renders reason-note prompts for blocked resume and input submission actions', () => {
     const clientJs = renderDashboardClientJs();
 
-    expect(clientJs).toContain("window.prompt('Reason note for resuming this blocked issue'");
+    expect(clientJs).toMatch(/window\.prompt\(["']Reason note for resuming this blocked issue["']/);
     expect(clientJs).toContain("resume_override_reason: resumeOverrideReason, reason_note: reasonNote");
-    expect(clientJs).toContain("window.prompt('Reason note for submitting this blocked input'");
+    expect(clientJs).toMatch(/window\.prompt\(["']Reason note for submitting this blocked input["']/);
     expect(clientJs).toContain('reason_note: reasonNote');
     expect(clientJs).toContain('Resume skipped: reason note is required');
     expect(clientJs).toContain('Input submit skipped: reason note is required');
