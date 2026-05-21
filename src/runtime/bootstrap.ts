@@ -23,7 +23,14 @@ import {
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
 import { SqlitePersistenceStore, buildDurableIdentity, type DurableIdentity } from '../persistence';
-import { LocalRunnerBridge, OrchestratorCore, type DispatchPreflightResult, type OrchestratorPorts } from '../orchestrator';
+import {
+  LocalRunnerBridge,
+  OrchestratorCore,
+  type DispatchPreflightResult,
+  type OrchestratorPorts,
+  type RuntimeBuildIdentityDetails,
+  type RuntimeBuildIdentityState
+} from '../orchestrator';
 import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
@@ -134,6 +141,116 @@ function resolveBranchHeadSha(repoRoot: string | null, branchName: string | null
   return null;
 }
 
+function resolveGitRoot(cwd: string): string | null {
+  const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8'
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const value = result.stdout.trim();
+  return value.length > 0 ? value : null;
+}
+
+function resolveHeadSha(repoRoot: string | null): string | null {
+  if (!repoRoot) {
+    return null;
+  }
+  const result = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8'
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const value = result.stdout.trim();
+  return value.length > 0 ? value : null;
+}
+
+function resolveCommitTimestampMs(repoRoot: string | null, commitSha: string | null): number | null {
+  if (!repoRoot || !commitSha) {
+    return null;
+  }
+  const result = spawnSync('git', ['show', '-s', '--format=%cI', commitSha], {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8'
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const parsed = Date.parse(result.stdout.trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveRepositoryBuildIdentity(repoRoot: string | null): RuntimeBuildIdentityDetails {
+  const commitSha = resolveHeadSha(repoRoot);
+  return {
+    identity: commitSha,
+    commit_sha: commitSha,
+    source_timestamp_ms: resolveCommitTimestampMs(repoRoot, commitSha)
+  };
+}
+
+function resolveRuntimeBuildIdentityState(params: {
+  processStartedAtMs: number;
+  repoRoot: string | null;
+  runningBuild: RuntimeBuildIdentityDetails;
+}): RuntimeBuildIdentityState {
+  const currentRepositoryBuild = resolveRepositoryBuildIdentity(params.repoRoot);
+  const currentBuild = {
+    ...currentRepositoryBuild,
+    status: currentRepositoryBuild.identity ? ('available' as const) : ('unknown' as const)
+  };
+  if (!currentBuild.identity) {
+    return {
+      process_started_at_ms: params.processStartedAtMs,
+      running_build: params.runningBuild,
+      current_build: currentBuild,
+      status: 'unknown_current',
+      health_warning: {
+        code: 'unknown_current_build_identity',
+        severity: 'degraded',
+        message: 'Current repository build identity is unavailable',
+        recommended_action: 'Validate the repository checkout and rerun build identity detection before dispatching new work.'
+      }
+    };
+  }
+
+  const staleByIdentity = Boolean(params.runningBuild.identity && params.runningBuild.identity !== currentBuild.identity);
+  const staleByTimestamp =
+    typeof params.runningBuild.source_timestamp_ms === 'number' &&
+    typeof currentBuild.source_timestamp_ms === 'number' &&
+    currentBuild.source_timestamp_ms > params.runningBuild.source_timestamp_ms;
+  if (staleByIdentity || staleByTimestamp) {
+    const runningLabel = params.runningBuild.identity ?? 'unknown';
+    const currentLabel = currentBuild.identity ?? 'unknown';
+    return {
+      process_started_at_ms: params.processStartedAtMs,
+      running_build: params.runningBuild,
+      current_build: currentBuild,
+      status: 'stale',
+      health_warning: {
+        code: 'stale_runtime_build',
+        severity: 'warning',
+        message: `Running runtime build ${runningLabel} is stale compared with ${currentLabel}`,
+        recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+      }
+    };
+  }
+
+  return {
+    process_started_at_ms: params.processStartedAtMs,
+    running_build: params.runningBuild,
+    current_build: currentBuild,
+    status: 'current',
+    health_warning: null
+  };
+}
+
 function extractChecklistCheckpoint(issueDescription: string | null): string | null {
   if (!issueDescription || issueDescription.trim().length === 0) {
     return null;
@@ -234,6 +351,18 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   let promptFallbackActive = workflowDefinition.prompt_template === DEFAULT_PROMPT_TEMPLATE;
   let effectiveConfig = configResolver.resolve(workflowDefinition, { workflowPath: currentWorkflowPath });
   let workflowDir = path.dirname(currentWorkflowPath);
+  const processStartedAtMs = nowMs();
+  const runtimeIdentityRepoRoot =
+    effectiveConfig.workspace.provisioner.repo_root ?? resolveGitRoot(workflowDir) ?? resolveGitRoot(process.cwd());
+  const initialRepositoryBuild = resolveRepositoryBuildIdentity(runtimeIdentityRepoRoot);
+  const runtimeBuildTimestampMs = process.env.SYMPHONY_RUNTIME_BUILD_TIMESTAMP
+    ? Date.parse(process.env.SYMPHONY_RUNTIME_BUILD_TIMESTAMP)
+    : null;
+  const runtimeBuildIdentity: RuntimeBuildIdentityDetails = {
+    identity: process.env.SYMPHONY_RUNTIME_BUILD_IDENTITY || process.env.SYMPHONY_RUNTIME_BUILD_SHA || initialRepositoryBuild.identity,
+    commit_sha: process.env.SYMPHONY_RUNTIME_BUILD_SHA || initialRepositoryBuild.commit_sha,
+    source_timestamp_ms: Number.isFinite(runtimeBuildTimestampMs) ? runtimeBuildTimestampMs : initialRepositoryBuild.source_timestamp_ms
+  };
   const loggingResolution = resolveRuntimeLogsRoot({
     cliLogsRoot: options.logsRoot,
     workflowLogsRoot: effectiveConfig.logging.root,
@@ -993,6 +1122,12 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         agent_review_handoff: params.previous_progress_signals?.agent_review_handoff ?? null,
         tracker_started_state: params.previous_progress_signals?.tracker_started_state ?? null
       }),
+      resolveRuntimeIdentity: () =>
+        resolveRuntimeBuildIdentityState({
+          processStartedAtMs,
+          repoRoot: runtimeIdentityRepoRoot,
+          runningBuild: runtimeBuildIdentity
+        }),
       notifyObservers: () => {
         apiServer?.notifyStateChanged('orchestrator_observer');
       }

@@ -69,10 +69,38 @@ export function renderOverview(payload: any) {
       payload.health.last_error ? 'Last error: ' + payload.health.last_error : '',
       blockerDetail ? 'Quiescence blockers: ' + blockerDetail : ''
     ].filter(Boolean).join(' • ');
+    renderRuntimeIdentityWarning(payload.runtime_identity || null);
     renderRetryStatusSummary(payload);
 
     const rateLimits = payload.rate_limits;
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+  }
+
+export function renderRuntimeIdentityWarning(runtimeIdentity: any) {
+    if (!elements.runtimeStaleBanner || !elements.runtimeStaleTitle || !elements.runtimeStaleSummary) {
+      return;
+    }
+    const warning = runtimeIdentity && runtimeIdentity.health_warning;
+    if (!warning) {
+      elements.runtimeStaleBanner.classList.add('hidden');
+      elements.runtimeStaleTitle.textContent = 'Runtime Build Warning';
+      elements.runtimeStaleSummary.textContent = '';
+      return;
+    }
+    elements.runtimeStaleBanner.classList.remove('hidden');
+    elements.runtimeStaleTitle.textContent =
+      warning.code === 'unknown_current_build_identity' ? 'Runtime build identity unknown' : 'Runtime build is stale';
+    const running = runtimeIdentity.running_build || {};
+    const current = runtimeIdentity.current_build || {};
+    const processStarted = runtimeIdentity.process_started_at || runtimeIdentity.process_started_at_ms || null;
+    const currentLabel = current.identity || current.commit_sha || 'unknown';
+    elements.runtimeStaleSummary.textContent = [
+      warning.message,
+      'Running build ' + (running.identity || running.commit_sha || 'unknown'),
+      currentLabel === 'unknown' ? 'Current build unknown' : 'Current build ' + currentLabel,
+      'Process started ' + formatDate(processStarted),
+      warning.recommended_action
+    ].join(' • ');
   }
 
 export function renderRetryStatusSummary(payload: any) {

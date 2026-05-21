@@ -37,6 +37,11 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     <div id="action-required-groups" class="inline-badges"></div>
   </section>
 
+  <section id="runtime-stale-banner" class="runtime-stale-banner hidden" role="region" aria-live="polite">
+    <strong id="runtime-stale-title">Runtime Build Warning</strong>
+    <span id="runtime-stale-summary"></span>
+  </section>
+
   <section id="api-degraded-banner" class="api-degraded-banner hidden" role="region" aria-live="polite">
     <strong>API Degraded</strong>
     <span id="api-degraded-summary"></span>

@@ -139,9 +139,12 @@ function makeApiDiagnostics(): ApiDiagnosticsResponse {
         pending_retry: 0,
         in_flight_tracker_write: 0,
         persistence_history_write: 0,
-        unknown_degraded_blocker_source_health: 0
+        unknown_degraded_blocker_source_health: 0,
+        stale_runtime: 0,
+        unknown_current_build_identity: 0
       }
     },
+    runtime_identity: null,
     active_profile: {
       name: 'balanced',
       approval_policy: 'on-request',

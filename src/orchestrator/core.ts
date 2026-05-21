@@ -162,7 +162,9 @@ const emptyDrainBlockerCounts = (): DrainQuiescenceBlockerCounts => ({
   pending_retry: 0,
   in_flight_tracker_write: 0,
   persistence_history_write: 0,
-  unknown_degraded_blocker_source_health: 0
+  unknown_degraded_blocker_source_health: 0,
+  stale_runtime: 0,
+  unknown_current_build_identity: 0
 });
 
 const emptyQuiescenceState = (updatedAtMs: number): DrainQuiescenceState => ({
@@ -327,6 +329,7 @@ export class OrchestratorCore {
       },
       drain_mode: emptyDrainModeState(),
       quiescence: emptyQuiescenceState(this.nowMs()),
+      runtime_identity: this.readRuntimeIdentity(),
       throughput: {
         current_tps: 0,
         avg_tps_60s: 0,
@@ -403,7 +406,38 @@ export class OrchestratorCore {
     return { ...this.state.drain_mode };
   }
 
+  private readRuntimeIdentity() {
+    if (!this.ports.resolveRuntimeIdentity) {
+      return null;
+    }
+    try {
+      return this.ports.resolveRuntimeIdentity();
+    } catch {
+      return null;
+    }
+  }
+
+  private refreshRuntimeIdentity(): void {
+    const nextIdentity = this.readRuntimeIdentity();
+    if (nextIdentity) {
+      this.state.runtime_identity = nextIdentity;
+    }
+  }
+
+  private runtimeIdentityDispatchBlockerDetail(): string | null {
+    this.refreshRuntimeIdentity();
+    const identity = this.state.runtime_identity;
+    if (!identity?.health_warning) {
+      return null;
+    }
+    if (identity.status === 'stale' || identity.status === 'unknown_current') {
+      return identity.health_warning.message;
+    }
+    return null;
+  }
+
   private refreshQuiescenceState(): DrainQuiescenceState {
+    this.refreshRuntimeIdentity();
     const blockers: DrainQuiescenceBlocker[] = [];
     const counts = emptyDrainBlockerCounts();
     const runningEntries = Array.from(this.state.running.values());
@@ -495,6 +529,25 @@ export class OrchestratorCore {
         category: 'unknown_degraded_blocker_source_health',
         count: 1,
         detail: this.state.health.last_error ?? 'dispatch validation health is degraded',
+        issue_identifiers: []
+      });
+    }
+
+    const runtimeIdentity = this.state.runtime_identity;
+    if (runtimeIdentity?.status === 'stale' && runtimeIdentity.health_warning) {
+      counts.stale_runtime = 1;
+      blockers.push({
+        category: 'stale_runtime',
+        count: 1,
+        detail: runtimeIdentity.health_warning.message,
+        issue_identifiers: []
+      });
+    } else if (runtimeIdentity?.status === 'unknown_current' && runtimeIdentity.health_warning) {
+      counts.unknown_current_build_identity = 1;
+      blockers.push({
+        category: 'unknown_current_build_identity',
+        count: 1,
+        detail: runtimeIdentity.health_warning.message,
         issue_identifiers: []
       });
     }
@@ -650,6 +703,15 @@ export class OrchestratorCore {
         )
       },
       drain_mode: { ...this.state.drain_mode },
+      runtime_identity: this.state.runtime_identity
+        ? {
+            process_started_at_ms: this.state.runtime_identity.process_started_at_ms,
+            running_build: { ...this.state.runtime_identity.running_build },
+            current_build: { ...this.state.runtime_identity.current_build },
+            status: this.state.runtime_identity.status,
+            health_warning: this.state.runtime_identity.health_warning ? { ...this.state.runtime_identity.health_warning } : null
+          }
+        : null,
       quiescence: {
         ...this.state.quiescence,
         blockers: this.state.quiescence.blockers.map((blocker) => ({
@@ -802,6 +864,9 @@ export class OrchestratorCore {
           this.delayDispatchForBackpressure(issue, attempt, backpressure),
         emitPhaseMarker: (issueId, marker) => this.emitPhaseMarker(issueId, marker),
         recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+        refreshQuiescenceState: () => {
+          this.refreshQuiescenceState();
+        },
         selectWorkerHost: () => this.selectWorkerHost(),
         persistPreSpawnExecutionGraphAttempt: (params) => this.persistPreSpawnExecutionGraphAttempt(params),
         scheduleRetry: (params) => this.scheduleRetry(params),
@@ -1506,7 +1571,8 @@ export class OrchestratorCore {
 
   async onRetryTimer(issue_id: string): Promise<void> {
     await this.runSerializedOperation(async () => {
-      if (this.state.drain_mode.active) {
+      const runtimeIdentityBlockerDetail = this.runtimeIdentityDispatchBlockerDetail();
+      if (this.state.drain_mode.active || runtimeIdentityBlockerDetail) {
         const retryEntry = this.state.retry_attempts.get(issue_id);
         if (retryEntry) {
           this.ports.cancelRetryTimer(retryEntry.timer_handle);
@@ -1516,7 +1582,7 @@ export class OrchestratorCore {
             event: CANONICAL_EVENT.runtime.drainRetryHeld,
             severity: 'info',
             issue_identifier: retryEntry.identifier,
-            detail: 'retry dispatch held during drain mode'
+            detail: runtimeIdentityBlockerDetail ?? 'retry dispatch held during drain mode'
           });
           this.refreshQuiescenceState();
           this.ports.notifyObservers?.();
@@ -1574,7 +1640,10 @@ export class OrchestratorCore {
         targetIdentifiersFromRuntimeState: (issueId, runtimeState) =>
           this.targetIdentifiersFromRuntimeState(issueId, runtimeState),
         recordOperatorAction: (issueId, action) => this.recordOperatorAction(issueId, action),
-        recordRuntimeEvent: (params) => this.recordRuntimeEvent(params)
+        recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
+        refreshQuiescenceState: () => {
+          this.refreshQuiescenceState();
+        }
       }
     };
   }
@@ -1641,12 +1710,13 @@ export class OrchestratorCore {
     resume_context: string | null = null,
     graphContext: DispatchGraphContext = {}
   ): Promise<void> {
-    if (this.state.drain_mode.active) {
+    const runtimeIdentityBlockerDetail = this.runtimeIdentityDispatchBlockerDetail();
+    if (this.state.drain_mode.active || runtimeIdentityBlockerDetail) {
       this.recordRuntimeEvent({
         event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
         severity: 'info',
         issue_identifier: issue.identifier,
-        detail: 'direct dispatch skipped during drain mode'
+        detail: runtimeIdentityBlockerDetail ?? 'direct dispatch skipped during drain mode'
       });
       this.refreshQuiescenceState();
       this.ports.notifyObservers?.();

@@ -25,11 +25,39 @@ import type {
   Issue,
   OrchestratorPersistencePort,
   OrchestratorPorts,
+  RuntimeBuildIdentityState,
   OrchestratorState,
   StructuredLogger,
   TranscriptToolCallDiagnostic,
   TranscriptToolCallLineage
 } from './core-test-harness';
+
+function makeRuntimeIdentity(status: 'current' | 'stale'): RuntimeBuildIdentityState {
+  const stale = status === 'stale';
+  return {
+    process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+    running_build: {
+      identity: 'runtime-old',
+      commit_sha: 'runtime-old',
+      source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+    },
+    current_build: {
+      identity: stale ? 'current-new' : 'runtime-old',
+      commit_sha: stale ? 'current-new' : 'runtime-old',
+      source_timestamp_ms: Date.parse(stale ? '2026-05-21T09:30:00.000Z' : '2026-05-21T08:55:00.000Z'),
+      status: 'available'
+    },
+    status,
+    health_warning: stale
+      ? {
+          code: 'stale_runtime_build',
+          severity: 'warning',
+          message: 'Running runtime build runtime-old is stale compared with current-new',
+          recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+        }
+      : null
+  };
+}
 
 describe('OrchestratorCore dispatch and backpressure', () => {
   it('summary snapshots omit raw transcript diagnostic clone work for high-volume active entries', async () => {
@@ -311,6 +339,67 @@ describe('OrchestratorCore dispatch and backpressure', () => {
     expect(harness.spawned).toEqual([]);
     expect(snapshot.running.has(issue.id)).toBe(false);
     expect(snapshot.claimed.has(issue.id)).toBe(false);
+    expect(snapshot.recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.dispatch_skipped');
+  });
+
+  it('blocks new dispatch through the drain/quiescence gate when runtime build identity is stale', async () => {
+    const harness = createHarness();
+    const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
+    runtimeState.runtime_identity = {
+      process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+      running_build: {
+        identity: 'runtime-old',
+        commit_sha: 'runtime-old',
+        source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+      },
+      current_build: {
+        identity: 'current-new',
+        commit_sha: 'current-new',
+        source_timestamp_ms: Date.parse('2026-05-21T09:30:00.000Z'),
+        status: 'available'
+      },
+      status: 'stale',
+      health_warning: {
+        code: 'stale_runtime_build',
+        severity: 'warning',
+        message: 'Running runtime build runtime-old is stale compared with current-new',
+        recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+      }
+    } as any;
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stale-runtime', identifier: 'ABC-STALE' })]);
+
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned).toEqual([]);
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(false);
+    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(snapshot.quiescence.blockers).toContainEqual({
+      category: 'stale_runtime',
+      count: 1,
+      detail: 'Running runtime build runtime-old is stale compared with current-new',
+      issue_identifiers: []
+    });
+    expect(snapshot.recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.dispatch_skipped');
+  });
+
+  it('refreshes runtime identity before scheduled dispatch so stale-after-startup builds cannot spawn new work', async () => {
+    let runtimeIdentity = makeRuntimeIdentity('current');
+    const harness = createHarness({
+      resolveRuntimeIdentity: () => runtimeIdentity
+    });
+    runtimeIdentity = makeRuntimeIdentity('stale');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-after-startup', identifier: 'ABC-STALE-AFTER-STARTUP' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned).toEqual([]);
+    expect(snapshot.running.has('i-stale-after-startup')).toBe(false);
+    expect(snapshot.runtime_identity?.status).toBe('stale');
+    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(1);
     expect(snapshot.recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.dispatch_skipped');
   });
 

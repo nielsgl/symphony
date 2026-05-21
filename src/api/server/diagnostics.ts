@@ -74,14 +74,18 @@ export function buildDiagnosticsPayload(options: {
       pending_retry: 0,
       in_flight_tracker_write: 0,
       persistence_history_write: 0,
-      unknown_degraded_blocker_source_health: 0
+      unknown_degraded_blocker_source_health: 0,
+      stale_runtime: 0,
+      unknown_current_build_identity: 0
     }
   };
+  let runtimeIdentity: ApiDiagnosticsResponse['runtime_identity'] = null;
   let projectionDurationMs: number | null = null;
   let enrichmentDurationMs: number | null = null;
   try {
     const snapshot = options.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
     const projected = options.snapshotService.projectState(snapshot);
+    runtimeIdentity = projected.runtime_identity;
     drainMode = options.snapshotService.projectDrainMode(snapshot);
     quiescence = options.snapshotService.projectQuiescence(snapshot);
     projectionDurationMs = options.nowMs() - projectionStartedAtMs;
@@ -112,6 +116,7 @@ export function buildDiagnosticsPayload(options: {
   const runtimeResolution = options.diagnosticsSource.getRuntimeResolution();
 
   const payload: ApiDiagnosticsResponse = {
+    runtime_identity: runtimeIdentity,
     drain_mode: drainMode,
     quiescence,
     active_profile: options.diagnosticsSource.getActiveProfile(),

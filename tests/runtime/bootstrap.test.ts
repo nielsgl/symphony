@@ -288,11 +288,35 @@ describe('createRuntimeEnvironment', () => {
     const payload = (await response.json()) as {
       counts: { running: number; retrying: number };
       health: { dispatch_validation: 'ok' | 'failed'; last_error: string | null };
+      runtime_identity: {
+        process_started_at_ms: number;
+        process_started_at: string;
+        running_build: { identity: string | null; commit_sha: string | null; source_timestamp_ms: number | null };
+        current_build: { identity: string | null; commit_sha: string | null; source_timestamp_ms: number | null; status: string };
+        status: string;
+        health_warning: { code: string; recommended_action: string } | null;
+      } | null;
     };
 
     expect(response.status).toBe(200);
     expect(payload.counts.running).toBe(0);
     expect(payload.health.dispatch_validation).toBe('ok');
+    expect(payload.runtime_identity).toMatchObject({
+      process_started_at: expect.any(String),
+      process_started_at_ms: expect.any(Number),
+      running_build: {
+        identity: expect.any(String),
+        commit_sha: expect.any(String)
+      },
+      current_build: {
+        identity: expect.any(String),
+        commit_sha: expect.any(String),
+        status: 'available'
+      },
+      status: 'current',
+      health_warning: null
+    });
+    expect(payload.runtime_identity?.process_started_at_ms).toBeGreaterThan(0);
     expect(tracker.fetch_candidate_issues).toHaveBeenCalled();
   });
 

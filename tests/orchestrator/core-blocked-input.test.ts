@@ -27,10 +27,38 @@ import type {
   OrchestratorPersistencePort,
   OrchestratorPorts,
   OrchestratorState,
+  RuntimeBuildIdentityState,
   StructuredLogger,
   TranscriptToolCallDiagnostic,
   TranscriptToolCallLineage
 } from './core-test-harness';
+
+function makeRuntimeIdentity(status: 'current' | 'stale'): RuntimeBuildIdentityState {
+  const stale = status === 'stale';
+  return {
+    process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+    running_build: {
+      identity: 'runtime-old',
+      commit_sha: 'runtime-old',
+      source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+    },
+    current_build: {
+      identity: stale ? 'current-new' : 'runtime-old',
+      commit_sha: stale ? 'current-new' : 'runtime-old',
+      source_timestamp_ms: Date.parse(stale ? '2026-05-21T09:30:00.000Z' : '2026-05-21T08:55:00.000Z'),
+      status: 'available'
+    },
+    status,
+    health_warning: stale
+      ? {
+          code: 'stale_runtime_build',
+          severity: 'warning',
+          message: 'Running runtime build runtime-old is stale compared with current-new',
+          recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+        }
+      : null
+  };
+}
 
 describe('OrchestratorCore blocked input', () => {
   it('surfaces pre-session ownership conflicts and filters stale operator action state from fresh runs', async () => {
@@ -797,6 +825,50 @@ describe('OrchestratorCore blocked input', () => {
     ]);
   });
 
+  it('refreshes runtime identity before blocked resume so stale-after-startup builds do not consume blocked state', async () => {
+    let runtimeIdentity = makeRuntimeIdentity('current');
+    const harness = createHarness({
+      resolveRuntimeIdentity: () => runtimeIdentity
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-stale-resume', identifier: 'ABC-STALE-RESUME' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-stale-resume',
+      'abnormal',
+      'tool requestUserInput could not be auto-answered (turn_input_required)'
+    );
+    expect(harness.orchestrator.getStateSnapshot().blocked_inputs.has('i-stale-resume')).toBe(true);
+
+    runtimeIdentity = makeRuntimeIdentity('stale');
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-stale-resume', identifier: 'ABC-STALE-RESUME', state: 'In Progress' })
+    ]);
+
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-STALE-RESUME', null, null, {
+      actor: 'operator@example.test',
+      reason_note: 'input request answered'
+    });
+
+    expect(resumed).toEqual({
+      ok: false,
+      code: 'runtime_identity_dispatch_blocked',
+      message: 'Running runtime build runtime-old is stale compared with current-new'
+    });
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-stale-resume')).toBe(true);
+    expect(snapshot.claimed.has('i-stale-resume')).toBe(true);
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-stale-resume']);
+    expect(snapshot.runtime_identity?.status).toBe('stale');
+    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(snapshot.operator_actions?.get('i-stale-resume')).toEqual([
+      expect.objectContaining({
+        action: 'resume',
+        result: 'rejected',
+        result_code: 'runtime_identity_dispatch_blocked'
+      })
+    ]);
+  });
+
   it('allows resume without override when real progress signals changed', async () => {
     let commit = 'sha-old';
     const harness = createHarness({
@@ -1492,6 +1564,51 @@ describe('OrchestratorCore blocked input', () => {
         action: 'submit_input',
         result: 'rejected',
         result_code: 'drain_mode_active'
+      })
+    ]);
+  });
+
+  it('refreshes runtime identity before native blocked input so stale-after-startup builds do not apply input', async () => {
+    let runtimeIdentity = makeRuntimeIdentity('current');
+    const nativeSubmit = vi.fn(async () => ({ applied: true as const, code: 'native_applied' as const }));
+    const harness = createHarness({
+      resolveRuntimeIdentity: () => runtimeIdentity,
+      submitBlockedIssueInputNative: nativeSubmit
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-native-stale', identifier: 'ABC-NATIVE-STALE' })]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(
+      'i-native-stale',
+      'abnormal',
+      'turn_input_required:{"detail":"operator input required","request_id":"req-native-stale","prompt_text":"Continue?","questions":[{"id":"q1","prompt":"Continue?","options":[{"label":"Yes"},{"label":"No"}]}]}'
+    );
+
+    runtimeIdentity = makeRuntimeIdentity('stale');
+    const result = await harness.orchestrator.submitBlockedIssueInput({
+      issue_identifier: 'ABC-NATIVE-STALE',
+      request_id: 'req-native-stale',
+      actor: 'operator@example.test',
+      reason_note: 'continue with selected answer',
+      answer: { question_id: 'q1', option_label: 'Yes' }
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'runtime_identity_dispatch_blocked',
+      message: 'Running runtime build runtime-old is stale compared with current-new'
+    });
+    expect(nativeSubmit).not.toHaveBeenCalled();
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(snapshot.blocked_inputs.has('i-native-stale')).toBe(true);
+    expect(snapshot.blocked_inputs.get('i-native-stale')?.pending_input?.request_id).toBe('req-native-stale');
+    expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-native-stale']);
+    expect(snapshot.runtime_identity?.status).toBe('stale');
+    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(snapshot.operator_actions?.get('i-native-stale')).toEqual([
+      expect.objectContaining({
+        action: 'submit_input',
+        result: 'rejected',
+        result_code: 'runtime_identity_dispatch_blocked'
       })
     ]);
   });

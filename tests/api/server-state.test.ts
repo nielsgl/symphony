@@ -39,6 +39,69 @@ closeServerAfterEach(
 );
 
 describe('LocalApiServer state API', () => {
+  it('serves runtime build identity metadata on GET /api/v1/state and diagnostics', async () => {
+    const state = makeState({
+      runtime_identity: {
+        process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+        running_build: {
+          identity: 'runtime-sha',
+          commit_sha: 'runtime-sha',
+          source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+        },
+        current_build: {
+          identity: 'runtime-sha',
+          commit_sha: 'runtime-sha',
+          source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z'),
+          status: 'available'
+        },
+        status: 'current',
+        health_warning: null
+      }
+    } as any);
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource(),
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as any;
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as any;
+
+    expect(stateResponse.status).toBe(200);
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(statePayload.runtime_identity).toMatchObject({
+      process_started_at: '2026-05-21T09:00:00.000Z',
+      process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+      running_build: {
+        identity: 'runtime-sha',
+        commit_sha: 'runtime-sha',
+        source_timestamp: '2026-05-21T08:55:00.000Z',
+        source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+      },
+      current_build: {
+        identity: 'runtime-sha',
+        commit_sha: 'runtime-sha',
+        source_timestamp: '2026-05-21T08:55:00.000Z',
+        source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z'),
+        status: 'available'
+      },
+      status: 'current',
+      health_warning: null
+    });
+    expect(diagnosticsPayload.runtime_identity).toEqual(statePayload.runtime_identity);
+  });
+
   it('[SPEC-13.7-1][SPEC-17.6-1] serves GET /api/v1/state with required baseline fields', async () => {
     const state = makeState({
       running: new Map([
@@ -190,7 +253,9 @@ describe('LocalApiServer state API', () => {
           pending_retry: 1,
           in_flight_tracker_write: 0,
           persistence_history_write: 0,
-          unknown_degraded_blocker_source_health: 0
+          unknown_degraded_blocker_source_health: 0,
+          stale_runtime: 0,
+          unknown_current_build_identity: 0
         }
       }
     } as any);
@@ -235,6 +300,167 @@ describe('LocalApiServer state API', () => {
       detail: 'ABC-1 is still running',
       issue_identifiers: ['ABC-1']
     });
+  });
+
+  it('reports stale runtime identity through state, diagnostics, and quiescence blockers', async () => {
+    const state = makeState({
+      runtime_identity: {
+        process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+        running_build: {
+          identity: 'runtime-old',
+          commit_sha: 'runtime-old',
+          source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+        },
+        current_build: {
+          identity: 'current-new',
+          commit_sha: 'current-new',
+          source_timestamp_ms: Date.parse('2026-05-21T09:30:00.000Z'),
+          status: 'available'
+        },
+        status: 'stale',
+        health_warning: {
+          code: 'stale_runtime_build',
+          severity: 'warning',
+          message: 'Running runtime build runtime-old is stale compared with current-new',
+          recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+        }
+      },
+      quiescence: {
+        safe_to_shutdown: false,
+        state: 'blocked',
+        updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        blockers: [
+          {
+            category: 'stale_runtime',
+            count: 1,
+            detail: 'Running runtime build runtime-old is stale compared with current-new',
+            issue_identifiers: []
+          }
+        ],
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0,
+          stale_runtime: 1,
+          unknown_current_build_identity: 0
+        }
+      }
+    } as any);
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource(),
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as any;
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as any;
+
+    expect(stateResponse.status).toBe(200);
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(statePayload.runtime_identity.status).toBe('stale');
+    expect(statePayload.runtime_identity.health_warning).toMatchObject({
+      code: 'stale_runtime_build',
+      recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+    });
+    expect(statePayload.quiescence.safe_to_shutdown).toBe(false);
+    expect(statePayload.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(statePayload.quiescence.blockers).toContainEqual({
+      category: 'stale_runtime',
+      count: 1,
+      detail: 'Running runtime build runtime-old is stale compared with current-new',
+      issue_identifiers: []
+    });
+    expect(diagnosticsPayload.runtime_identity).toEqual(statePayload.runtime_identity);
+    expect(diagnosticsPayload.quiescence.blocker_counts.stale_runtime).toBe(1);
+  });
+
+  it('reports unknown current build identity as degraded but not stale', async () => {
+    const state = makeState({
+      runtime_identity: {
+        process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+        running_build: {
+          identity: 'runtime-sha',
+          commit_sha: 'runtime-sha',
+          source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+        },
+        current_build: {
+          identity: null,
+          commit_sha: null,
+          source_timestamp_ms: null,
+          status: 'unknown'
+        },
+        status: 'unknown_current',
+        health_warning: {
+          code: 'unknown_current_build_identity',
+          severity: 'degraded',
+          message: 'Current repository build identity is unavailable',
+          recommended_action: 'Validate the repository checkout and rerun build identity detection before dispatching new work.'
+        }
+      },
+      quiescence: {
+        safe_to_shutdown: false,
+        state: 'blocked',
+        updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        blockers: [
+          {
+            category: 'unknown_current_build_identity',
+            count: 1,
+            detail: 'Current repository build identity is unavailable',
+            issue_identifiers: []
+          }
+        ],
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0,
+          stale_runtime: 0,
+          unknown_current_build_identity: 1
+        }
+      }
+    } as any);
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const payload = (await response.json()) as any;
+
+    expect(response.status).toBe(200);
+    expect(payload.runtime_identity.status).toBe('unknown_current');
+    expect(payload.runtime_identity.status).not.toBe('stale');
+    expect(payload.runtime_identity.health_warning).toMatchObject({
+      code: 'unknown_current_build_identity',
+      severity: 'degraded'
+    });
+    expect(payload.quiescence.blocker_counts.unknown_current_build_identity).toBe(1);
+    expect(payload.quiescence.blocker_counts.stale_runtime).toBe(0);
   });
 
   it('lets operators enter, read, and exit Drain Mode through the API control surface', async () => {
