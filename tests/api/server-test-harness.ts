@@ -343,6 +343,26 @@ export function makeState(overrides: Partial<OrchestratorState> = {}): Orchestra
       dispatch_validation: 'ok',
       last_error: null
     },
+    drain_mode: {
+      active: false,
+      entered_at_ms: null,
+      updated_at_ms: null,
+      reason: null
+    },
+    quiescence: {
+      safe_to_shutdown: true,
+      state: 'safe',
+      updated_at_ms: Date.parse('2026-04-10T10:00:00.000Z'),
+      blockers: [],
+      blocker_counts: {
+        active_worker: 0,
+        live_codex_app_server_process: 0,
+        pending_retry: 0,
+        in_flight_tracker_write: 0,
+        persistence_history_write: 0,
+        unknown_degraded_blocker_source_health: 0
+      }
+    },
     throughput: {
       current_tps: 0,
       avg_tps_60s: 0,

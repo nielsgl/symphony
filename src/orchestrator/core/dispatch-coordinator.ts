@@ -203,6 +203,16 @@ export async function coordinateDispatchTick(context: DispatchCoordinatorContext
   }
 
   const sortedCandidates = sortCandidatesForDispatch(candidates);
+  if (state.drain_mode.active) {
+    context.hooks.recordRuntimeEvent({
+      event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
+      severity: 'info',
+      detail: `dispatch skipped during drain mode: ${reason}`
+    });
+    context.notifyObservers?.();
+    return;
+  }
+
   const githubLinkingMode = context.config.github_linking_mode ?? 'off';
   let missingGithubLinkCount = 0;
 

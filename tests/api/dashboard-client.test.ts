@@ -589,6 +589,49 @@ describe('dashboard browser client modules', () => {
     ]);
   });
 
+  it('renders Drain Mode and quiescence status prominently in the overview', () => {
+    renderOverview(
+      snapshotPayload({
+        drain_mode: {
+          active: true,
+          entered_at: '2026-05-21T09:59:00.000Z',
+          entered_at_ms: Date.parse('2026-05-21T09:59:00.000Z'),
+          updated_at: '2026-05-21T10:00:00.000Z',
+          updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          reason: 'safe runtime restart'
+        },
+        quiescence: {
+          safe_to_shutdown: false,
+          state: 'blocked',
+          updated_at: '2026-05-21T10:00:00.000Z',
+          updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          blocker_counts: {
+            active_worker: 1,
+            live_codex_app_server_process: 1,
+            pending_retry: 1,
+            in_flight_tracker_write: 0,
+            persistence_history_write: 0,
+            unknown_degraded_blocker_source_health: 0
+          },
+          blockers: [
+            {
+              category: 'active_worker',
+              count: 1,
+              detail: 'ABC-1 is still running',
+              issue_identifiers: ['ABC-1']
+            }
+          ]
+        }
+      })
+    );
+
+    expect(elements.healthMessage.textContent).toContain('Drain Mode: active');
+    expect(elements.healthMessage.textContent).toContain('restart blocked');
+    expect(collectText(elements.kpiGrid)).toContain('Safe To Shutdown No');
+    expect(collectText(elements.kpiGrid)).toContain('Drain Blockers 3');
+    expect(elements.lastError.textContent).toContain('ABC-1 is still running');
+  });
+
   it('handles refresh, diagnostics, UI state load/save, and SSE snapshot/error envelopes directly', async () => {
     vi.useFakeTimers();
     const fetchMock = vi

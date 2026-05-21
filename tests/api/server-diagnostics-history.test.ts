@@ -442,6 +442,70 @@ describe('LocalApiServer diagnostics and history', () => {
     });
   });
 
+  it('serves drain mode and quiescence state on GET /api/v1/diagnostics', async () => {
+    const state = makeState({
+      drain_mode: {
+        active: true,
+        entered_at_ms: Date.parse('2026-04-10T10:00:30.000Z'),
+        updated_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+        reason: 'operator requested restart'
+      },
+      quiescence: {
+        safe_to_shutdown: false,
+        state: 'blocked',
+        updated_at_ms: Date.parse('2026-04-10T10:01:00.000Z'),
+        blockers: [
+          {
+            category: 'persistence_history_write',
+            count: 1,
+            detail: 'history write health is degraded',
+            issue_identifiers: []
+          }
+        ],
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 1,
+          unknown_degraded_blocker_source_health: 0
+        }
+      }
+    } as any);
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource(),
+      nowMs: () => Date.parse('2026-04-10T10:03:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as any;
+
+    expect(response.status).toBe(200);
+    expect(payload.drain_mode).toMatchObject({
+      active: true,
+      entered_at: '2026-04-10T10:00:30.000Z',
+      updated_at: '2026-04-10T10:01:00.000Z',
+      reason: 'operator requested restart'
+    });
+    expect(payload.quiescence).toMatchObject({
+      safe_to_shutdown: false,
+      state: 'blocked',
+      blocker_counts: {
+        persistence_history_write: 1
+      }
+    });
+  });
+
   it('serves bounded project history ticket rows and detail timelines', async () => {
     const completedIdentity = makeProjectHistoryIdentity();
     const activeIdentity = makeProjectHistoryIdentity({

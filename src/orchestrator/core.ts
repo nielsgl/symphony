@@ -1,4 +1,5 @@
-import type { Issue } from '../tracker';
+import type { Issue, TrackerAdapter } from '../tracker';
+import type { PersistenceHealth } from '../persistence';
 import type { StructuredLogger } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import { REASON_CODES } from '../observability/reason-codes';
@@ -119,6 +120,10 @@ import type {
   BudgetRuntimeProjection,
   CircuitBreakerEntry,
   DispatchBackpressureState,
+  DrainModeState,
+  DrainQuiescenceBlocker,
+  DrainQuiescenceBlockerCounts,
+  DrainQuiescenceState,
   MissingToolOutputRecoveryState,
   OperatorActionRecord,
   OrchestratorOptions,
@@ -143,6 +148,30 @@ import type {
 } from './types';
 
 const DEFAULT_INACTIVE_WORKER_PID_TTL_MS = 60 * 60 * 1000;
+
+const emptyDrainModeState = (): DrainModeState => ({
+  active: false,
+  entered_at_ms: null,
+  updated_at_ms: null,
+  reason: null
+});
+
+const emptyDrainBlockerCounts = (): DrainQuiescenceBlockerCounts => ({
+  active_worker: 0,
+  live_codex_app_server_process: 0,
+  pending_retry: 0,
+  in_flight_tracker_write: 0,
+  persistence_history_write: 0,
+  unknown_degraded_blocker_source_health: 0
+});
+
+const emptyQuiescenceState = (updatedAtMs: number): DrainQuiescenceState => ({
+  safe_to_shutdown: true,
+  state: 'safe',
+  updated_at_ms: updatedAtMs,
+  blockers: [],
+  blocker_counts: emptyDrainBlockerCounts()
+});
 
 interface ScheduleRetryParams {
   issue_id: string;
@@ -240,12 +269,15 @@ export class OrchestratorCore {
   private readonly persistence?: OrchestratorOptions['persistence'];
   private readonly phaseSettings: PhaseMarkerSettings;
   private readonly throughputTracker: ThroughputTracker;
+  private readonly tracker: TrackerAdapter;
 
   private readonly state: OrchestratorState;
   private readonly executionGraphPersistenceQueues = new WeakMap<RunningEntry, Promise<void>>();
   private readonly persistedPhaseSpanKeys = new WeakMap<RunningEntry, Set<string>>();
   private hostRoundRobinIndex: number;
   private serializedOperation: Promise<void>;
+  private inFlightTrackerWrites = 0;
+  private pendingExecutionGraphPersistenceWrites = 0;
 
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
@@ -256,6 +288,7 @@ export class OrchestratorCore {
     this.config.worker_opaque_activity_hard_timeout_ms = this.config.worker_opaque_activity_hard_timeout_ms ?? 1_800_000;
     this.config.inactive_worker_pid_ttl_ms = this.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS;
     this.ports = options.ports;
+    this.tracker = this.createTrackedTracker(options.ports.tracker);
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.logger = options.logger;
     this.persistence = options.persistence;
@@ -292,6 +325,8 @@ export class OrchestratorCore {
         last_error: null,
         dispatch_backpressure: emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config))
       },
+      drain_mode: emptyDrainModeState(),
+      quiescence: emptyQuiescenceState(this.nowMs()),
       throughput: {
         current_tps: 0,
         avg_tps_60s: 0,
@@ -306,7 +341,239 @@ export class OrchestratorCore {
     this.serializedOperation = Promise.resolve();
   }
 
+  private createTrackedTracker(tracker: TrackerAdapter): TrackerAdapter {
+    return {
+      fetch_candidate_issues: () => tracker.fetch_candidate_issues(),
+      fetch_issues_by_states: (stateNames) => tracker.fetch_issues_by_states(stateNames),
+      fetch_issue_states_by_ids: (issueIds) => tracker.fetch_issue_states_by_ids(issueIds),
+      create_comment: (issueId, body) => this.trackTrackerWrite(() => tracker.create_comment(issueId, body)),
+      update_issue_state: (issueId, stateName) => this.trackTrackerWrite(() => tracker.update_issue_state(issueId, stateName))
+    };
+  }
+
+  private async trackTrackerWrite<T>(operation: () => Promise<T>): Promise<T> {
+    this.inFlightTrackerWrites += 1;
+    this.refreshQuiescenceState();
+    try {
+      return await operation();
+    } finally {
+      this.inFlightTrackerWrites = Math.max(0, this.inFlightTrackerWrites - 1);
+      this.refreshQuiescenceState();
+      this.ports.notifyObservers?.();
+    }
+  }
+
+  enterDrainMode(params: { reason?: string | null } = {}): DrainModeState {
+    const nowMs = this.nowMs();
+    this.state.drain_mode = {
+      active: true,
+      entered_at_ms: this.state.drain_mode.active ? this.state.drain_mode.entered_at_ms : nowMs,
+      updated_at_ms: nowMs,
+      reason: params.reason ?? null
+    };
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.runtime.drainEntered,
+      severity: 'warn',
+      detail: this.state.drain_mode.reason ?? 'drain mode entered'
+    });
+    this.refreshQuiescenceState();
+    this.ports.notifyObservers?.();
+    return { ...this.state.drain_mode };
+  }
+
+  exitDrainMode(params: { reason?: string | null } = {}): DrainModeState {
+    const nowMs = this.nowMs();
+    this.state.drain_mode = {
+      active: false,
+      entered_at_ms: null,
+      updated_at_ms: nowMs,
+      reason: params.reason ?? null
+    };
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.runtime.drainExited,
+      severity: 'info',
+      detail: this.state.drain_mode.reason ?? 'drain mode exited'
+    });
+    this.refreshQuiescenceState();
+    this.ports.notifyObservers?.();
+    return { ...this.state.drain_mode };
+  }
+
+  readDrainMode(): DrainModeState {
+    return { ...this.state.drain_mode };
+  }
+
+  private refreshQuiescenceState(): DrainQuiescenceState {
+    const blockers: DrainQuiescenceBlocker[] = [];
+    const counts = emptyDrainBlockerCounts();
+    const runningEntries = Array.from(this.state.running.values());
+    const runningIssueIdentifiers = runningEntries.map((entry) => entry.identifier);
+    if (runningEntries.length > 0) {
+      counts.active_worker = runningEntries.length;
+      blockers.push({
+        category: 'active_worker',
+        count: runningEntries.length,
+        detail:
+          runningEntries.length === 1
+            ? `${runningIssueIdentifiers[0]} is still running`
+            : `${runningEntries.length} workers are still running`,
+        issue_identifiers: runningIssueIdentifiers
+      });
+    }
+
+    const liveCodexEntries = runningEntries.filter((entry) => Boolean(entry.codex_app_server_pid));
+    if (liveCodexEntries.length > 0) {
+      counts.live_codex_app_server_process = liveCodexEntries.length;
+      blockers.push({
+        category: 'live_codex_app_server_process',
+        count: liveCodexEntries.length,
+        detail:
+          liveCodexEntries.length === 1
+            ? `${liveCodexEntries[0].identifier} has a live Codex app-server process`
+            : `${liveCodexEntries.length} live Codex app-server processes are attached to active workers`,
+        issue_identifiers: liveCodexEntries.map((entry) => entry.identifier)
+      });
+    }
+
+    const retryEntries = Array.from(this.state.retry_attempts.values());
+    if (retryEntries.length > 0) {
+      counts.pending_retry = retryEntries.length;
+      blockers.push({
+        category: 'pending_retry',
+        count: retryEntries.length,
+        detail:
+          retryEntries.length === 1
+            ? `${retryEntries[0].identifier} has a pending retry`
+            : `${retryEntries.length} retry attempts are pending`,
+        issue_identifiers: retryEntries.map((entry) => entry.identifier)
+      });
+    }
+
+    if (this.inFlightTrackerWrites > 0) {
+      counts.in_flight_tracker_write = this.inFlightTrackerWrites;
+      blockers.push({
+        category: 'in_flight_tracker_write',
+        count: this.inFlightTrackerWrites,
+        detail:
+          this.inFlightTrackerWrites === 1
+            ? '1 tracker write is still in flight'
+            : `${this.inFlightTrackerWrites} tracker writes are still in flight`,
+        issue_identifiers: []
+      });
+    }
+
+    const pendingTurnHistoryWriteCount = runningEntries.reduce(
+      (total, entry) => total + (entry.pending_persisted_turn_ids?.length ?? 0),
+      0
+    );
+    const pendingHistoryWriteCount = pendingTurnHistoryWriteCount + this.pendingExecutionGraphPersistenceWrites;
+    const persistenceHealth = this.readPersistenceHealth();
+    const persistenceHealthBlocker = this.describePersistenceHealthBlocker(persistenceHealth);
+    const persistenceBlockerCount = pendingHistoryWriteCount + (persistenceHealthBlocker ? 1 : 0);
+    if (persistenceBlockerCount > 0) {
+      counts.persistence_history_write = persistenceBlockerCount;
+      blockers.push({
+        category: 'persistence_history_write',
+        count: persistenceBlockerCount,
+        detail: [
+          pendingHistoryWriteCount > 0
+            ? `${pendingHistoryWriteCount} execution-history write${pendingHistoryWriteCount === 1 ? '' : 's'} pending flush`
+            : null,
+          persistenceHealthBlocker
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join('; '),
+        issue_identifiers: runningEntries
+          .filter((entry) => (entry.pending_persisted_turn_ids?.length ?? 0) > 0)
+          .map((entry) => entry.identifier)
+      });
+    }
+
+    if (this.state.health.dispatch_validation === 'failed') {
+      counts.unknown_degraded_blocker_source_health = 1;
+      blockers.push({
+        category: 'unknown_degraded_blocker_source_health',
+        count: 1,
+        detail: this.state.health.last_error ?? 'dispatch validation health is degraded',
+        issue_identifiers: []
+      });
+    }
+
+    const safeToShutdown = blockers.length === 0;
+    const next: DrainQuiescenceState = {
+      safe_to_shutdown: safeToShutdown,
+      state: safeToShutdown ? 'safe' : 'blocked',
+      updated_at_ms: this.nowMs(),
+      blockers,
+      blocker_counts: counts
+    };
+    const previousSignature = JSON.stringify({
+      safe_to_shutdown: this.state.quiescence.safe_to_shutdown,
+      blocker_counts: this.state.quiescence.blocker_counts
+    });
+    const nextSignature = JSON.stringify({
+      safe_to_shutdown: next.safe_to_shutdown,
+      blocker_counts: next.blocker_counts
+    });
+    this.state.quiescence = next;
+    if (this.state.drain_mode.active && previousSignature !== nextSignature) {
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.runtime.quiescenceChanged,
+        severity: next.safe_to_shutdown ? 'info' : 'warn',
+        detail: next.safe_to_shutdown ? 'runtime is safe to shutdown' : `runtime has ${blockers.length} quiescence blocker categories`
+      });
+    }
+    return next;
+  }
+
+  private readPersistenceHealth(): PersistenceHealth | null {
+    if (!this.ports.getPersistenceHealth) {
+      return null;
+    }
+    try {
+      return this.ports.getPersistenceHealth();
+    } catch (error) {
+      this.logger?.log({
+        level: 'warn',
+        event: CANONICAL_EVENT.persistence.recordEventFailed,
+        message: 'failed to read persistence health for drain quiescence',
+        context: {
+          error: error instanceof Error ? error.message : 'unknown'
+        }
+      });
+      return {
+        enabled: true,
+        db_path: null,
+        retention_days: 0,
+        run_count: 0,
+        last_pruned_at: null,
+        last_prune_failure_at: null,
+        last_prune_failure_reason: 'persistence_health_unavailable',
+        last_prune_failure_detail: error instanceof Error ? error.message : 'unknown',
+        integrity_ok: false
+      };
+    }
+  }
+
+  private describePersistenceHealthBlocker(health: PersistenceHealth | null): string | null {
+    if (!health || !health.enabled) {
+      return null;
+    }
+    if (!health.integrity_ok) {
+      return health.history_schema?.degraded_detail ?? health.last_prune_failure_detail ?? 'persistence integrity is degraded';
+    }
+    if (health.history_schema?.status === 'degraded') {
+      return health.history_schema.degraded_detail ?? health.history_schema.degraded_reason_code ?? 'history schema is degraded';
+    }
+    if (health.recent_write_failures?.length) {
+      const latest = health.recent_write_failures[0];
+      return `recent history write failure: ${latest.operation} (${latest.reason_code})`;
+    }
+    return null;
+  }
+
   getStateSnapshot(options: StateSnapshotOptions = {}): OrchestratorState {
+    this.refreshQuiescenceState();
     const snapshotOptions: Required<StateSnapshotOptions> = {
       includeTranscriptToolCallDiagnostics: options.includeTranscriptToolCallDiagnostics ?? true
     };
@@ -381,6 +648,15 @@ export class OrchestratorCore {
         dispatch_backpressure: cloneDispatchBackpressureState(
           this.state.health.dispatch_backpressure ?? emptyDispatchBackpressureState(getBackpressureRetryDelayMs(this.config))
         )
+      },
+      drain_mode: { ...this.state.drain_mode },
+      quiescence: {
+        ...this.state.quiescence,
+        blockers: this.state.quiescence.blockers.map((blocker) => ({
+          ...blocker,
+          issue_identifiers: [...blocker.issue_identifiers]
+        })),
+        blocker_counts: { ...this.state.quiescence.blocker_counts }
       },
       throughput: this.throughputTracker.snapshot(this.nowMs()),
       recent_runtime_events: this.state.recent_runtime_events.map((event) => ({ ...event }))
@@ -508,7 +784,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       dispatchPreflight: () => this.ports.dispatchPreflight(),
       spawnWorker: (params) => this.ports.spawnWorker(params),
       cancelRetryTimer: (timerHandle) => this.ports.cancelRetryTimer(timerHandle),
@@ -548,7 +824,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       runningWait: this.runningWaitCoordinatorContext(),
       logger: this.logger,
       nowMs: () => this.nowMs(),
@@ -606,7 +882,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       terminateWorker: (params) => this.ports.terminateWorker(params),
       logger: this.logger,
       nowMs: () => this.nowMs(),
@@ -701,7 +977,9 @@ export class OrchestratorCore {
     workerEvent: WorkerObservabilityEvent,
     turnAlreadyObserved: boolean
   ): void {
-    queuePersistExecutionGraphWorkerEventHelper({
+    this.pendingExecutionGraphPersistenceWrites += 1;
+    this.refreshQuiescenceState();
+    const queued = queuePersistExecutionGraphWorkerEventHelper({
       queues: this.executionGraphPersistenceQueues,
       issueId,
       runningEntry,
@@ -712,6 +990,13 @@ export class OrchestratorCore {
       logger: this.logger,
       recordHistoryWriteFailure: (operation, reasonCode, error) => this.recordHistoryWriteFailure(operation, reasonCode, error)
     });
+    void queued
+      .finally(() => {
+        this.pendingExecutionGraphPersistenceWrites = Math.max(0, this.pendingExecutionGraphPersistenceWrites - 1);
+        this.refreshQuiescenceState();
+        this.ports.notifyObservers?.();
+      })
+      .catch(() => undefined);
   }
 
   private async recordHistoryWriteFailure(operation: string, reasonCode: string, error: unknown): Promise<void> {
@@ -1197,7 +1482,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       cancelRetryTimer: (timerHandle) => this.ports.cancelRetryTimer(timerHandle),
       getControlPlaneHealth: this.ports.getControlPlaneHealth
         ? () => this.ports.getControlPlaneHealth!()
@@ -1220,7 +1505,27 @@ export class OrchestratorCore {
   }
 
   async onRetryTimer(issue_id: string): Promise<void> {
-    await this.runSerializedOperation(() => coordinateRetryTimer(this.retryTimerCoordinatorContext(), issue_id));
+    await this.runSerializedOperation(async () => {
+      if (this.state.drain_mode.active) {
+        const retryEntry = this.state.retry_attempts.get(issue_id);
+        if (retryEntry) {
+          this.ports.cancelRetryTimer(retryEntry.timer_handle);
+          retryEntry.timer_handle = null;
+          retryEntry.due_at_ms = this.nowMs();
+          this.recordRuntimeEvent({
+            event: CANONICAL_EVENT.runtime.drainRetryHeld,
+            severity: 'info',
+            issue_identifier: retryEntry.identifier,
+            detail: 'retry dispatch held during drain mode'
+          });
+          this.refreshQuiescenceState();
+          this.ports.notifyObservers?.();
+        }
+        return;
+      }
+      await coordinateRetryTimer(this.retryTimerCoordinatorContext(), issue_id);
+      this.refreshQuiescenceState();
+    });
   }
 
   private async upsertCircuitBreaker(entry: CircuitBreakerEntry): Promise<void> {
@@ -1245,7 +1550,7 @@ export class OrchestratorCore {
     return {
       state: this.state,
       config: this.config,
-      tracker: this.ports.tracker,
+      tracker: this.tracker,
       cancelRetryTimer: (timerHandle) => this.ports.cancelRetryTimer(timerHandle),
       submitBlockedIssueInputNative: this.ports.submitBlockedIssueInputNative
         ? (params) => this.ports.submitBlockedIssueInputNative!(params)
@@ -1336,6 +1641,17 @@ export class OrchestratorCore {
     resume_context: string | null = null,
     graphContext: DispatchGraphContext = {}
   ): Promise<void> {
+    if (this.state.drain_mode.active) {
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
+        severity: 'info',
+        issue_identifier: issue.identifier,
+        detail: 'direct dispatch skipped during drain mode'
+      });
+      this.refreshQuiescenceState();
+      this.ports.notifyObservers?.();
+      return;
+    }
     await coordinateDispatchIssue(this.dispatchCoordinatorContext(), issue, attempt, resume_context, graphContext);
   }
 
@@ -1475,6 +1791,7 @@ export class OrchestratorCore {
         stop_reason_code: params.stop_reason_code ?? null
       }
     });
+    this.refreshQuiescenceState();
   }
 
   private workspaceAttemptResidueResumeContext(retryEntry: RetryEntry): string | null {
