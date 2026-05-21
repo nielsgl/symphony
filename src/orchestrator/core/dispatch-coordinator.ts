@@ -205,7 +205,7 @@ export async function coordinateDispatchTick(context: DispatchCoordinatorContext
   const sortedCandidates = sortCandidatesForDispatch(candidates);
   if (state.drain_mode.active) {
     context.hooks.recordRuntimeEvent({
-      event: CANONICAL_EVENT.runtime.drainEntered,
+      event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
       severity: 'info',
       detail: `dispatch skipped during drain mode: ${reason}`
     });

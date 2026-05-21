@@ -277,6 +277,7 @@ export class OrchestratorCore {
   private hostRoundRobinIndex: number;
   private serializedOperation: Promise<void>;
   private inFlightTrackerWrites = 0;
+  private pendingExecutionGraphPersistenceWrites = 0;
 
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
@@ -461,10 +462,11 @@ export class OrchestratorCore {
       });
     }
 
-    const pendingHistoryWriteCount = runningEntries.reduce(
+    const pendingTurnHistoryWriteCount = runningEntries.reduce(
       (total, entry) => total + (entry.pending_persisted_turn_ids?.length ?? 0),
       0
     );
+    const pendingHistoryWriteCount = pendingTurnHistoryWriteCount + this.pendingExecutionGraphPersistenceWrites;
     const persistenceHealth = this.readPersistenceHealth();
     const persistenceHealthBlocker = this.describePersistenceHealthBlocker(persistenceHealth);
     const persistenceBlockerCount = pendingHistoryWriteCount + (persistenceHealthBlocker ? 1 : 0);
@@ -975,7 +977,9 @@ export class OrchestratorCore {
     workerEvent: WorkerObservabilityEvent,
     turnAlreadyObserved: boolean
   ): void {
-    queuePersistExecutionGraphWorkerEventHelper({
+    this.pendingExecutionGraphPersistenceWrites += 1;
+    this.refreshQuiescenceState();
+    const queued = queuePersistExecutionGraphWorkerEventHelper({
       queues: this.executionGraphPersistenceQueues,
       issueId,
       runningEntry,
@@ -986,6 +990,13 @@ export class OrchestratorCore {
       logger: this.logger,
       recordHistoryWriteFailure: (operation, reasonCode, error) => this.recordHistoryWriteFailure(operation, reasonCode, error)
     });
+    void queued
+      .finally(() => {
+        this.pendingExecutionGraphPersistenceWrites = Math.max(0, this.pendingExecutionGraphPersistenceWrites - 1);
+        this.refreshQuiescenceState();
+        this.ports.notifyObservers?.();
+      })
+      .catch(() => undefined);
   }
 
   private async recordHistoryWriteFailure(operation: string, reasonCode: string, error: unknown): Promise<void> {
@@ -1502,7 +1513,7 @@ export class OrchestratorCore {
           retryEntry.timer_handle = null;
           retryEntry.due_at_ms = this.nowMs();
           this.recordRuntimeEvent({
-            event: CANONICAL_EVENT.runtime.drainEntered,
+            event: CANONICAL_EVENT.runtime.drainRetryHeld,
             severity: 'info',
             issue_identifier: retryEntry.identifier,
             detail: 'retry dispatch held during drain mode'
@@ -1630,6 +1641,17 @@ export class OrchestratorCore {
     resume_context: string | null = null,
     graphContext: DispatchGraphContext = {}
   ): Promise<void> {
+    if (this.state.drain_mode.active) {
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
+        severity: 'info',
+        issue_identifier: issue.identifier,
+        detail: 'direct dispatch skipped during drain mode'
+      });
+      this.refreshQuiescenceState();
+      this.ports.notifyObservers?.();
+      return;
+    }
     await coordinateDispatchIssue(this.dispatchCoordinatorContext(), issue, attempt, resume_context, graphContext);
   }
 

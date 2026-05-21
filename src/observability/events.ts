@@ -148,6 +148,8 @@ export const CANONICAL_EVENT = {
     guardrailAckRequired: 'runtime.guardrail.ack.required',
     drainEntered: 'runtime.drain.entered',
     drainExited: 'runtime.drain.exited',
+    drainDispatchSkipped: 'runtime.drain.dispatch_skipped',
+    drainRetryHeld: 'runtime.drain.retry_held',
     quiescenceChanged: 'runtime.quiescence.changed'
   },
   api: {

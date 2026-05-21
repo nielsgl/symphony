@@ -267,7 +267,8 @@ describe('OrchestratorCore dispatch and backpressure', () => {
       pending_retry: 1
     });
     expect(harness.terminated).toEqual([]);
-    expect(snapshot.recent_runtime_events.map((event: any) => event.event)).toContain('runtime.drain.entered');
+    expect(snapshot.recent_runtime_events.map((event: any) => event.event)).toContain('runtime.drain.dispatch_skipped');
+    expect(snapshot.recent_runtime_events.map((event: any) => event.event)).toContain('runtime.drain.retry_held');
     expect(snapshot.recent_runtime_events.map((event: any) => event.event)).toContain('runtime.quiescence.changed');
   });
 
@@ -297,6 +298,73 @@ describe('OrchestratorCore dispatch and backpressure', () => {
 
     expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-after-drain']);
     expect(harness.orchestrator.getStateSnapshot().recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.exited');
+  });
+
+  it('gates the low-level dispatch primitive so resume and handoff dispatch hooks cannot start workers during drain', async () => {
+    const harness = createHarness();
+    const issue = makeIssue({ id: 'i-direct-drain', identifier: 'ABC-DIRECT-DRAIN' });
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    await (harness.orchestrator as any).dispatchIssue(issue, null);
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned).toEqual([]);
+    expect(snapshot.running.has(issue.id)).toBe(false);
+    expect(snapshot.claimed.has(issue.id)).toBe(false);
+    expect(snapshot.recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.dispatch_skipped');
+  });
+
+  it('keeps shutdown blocked while queued non-turn execution-history writes are still flushing', async () => {
+    let releasePhaseSpan!: () => void;
+    const phaseSpanGate = new Promise<void>((resolve) => {
+      releasePhaseSpan = resolve;
+    });
+    const harness = createHarness({
+      persistence: {
+        startRun: async () => 'run-drain-history',
+        appendIssueRun: async () => 'issue-run-drain-history',
+        appendAttempt: async () => 'attempt-drain-history',
+        appendThread: async (params) => String(params.thread_id),
+        appendTurn: async (params) => String(params.turn_id),
+        appendPhaseSpan: async () => {
+          await phaseSpanGate;
+          return 'phase-drain-history';
+        },
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async () => undefined
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-history-drain', identifier: 'ABC-HISTORY-DRAIN' })]);
+    await harness.orchestrator.tick('interval');
+    const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
+    const runningEntry = runtimeState.running.get('i-history-drain');
+    expect(runningEntry).toBeDefined();
+    runningEntry!.issue_run_id = 'issue-run-drain-history';
+    runningEntry!.attempt_id = 'attempt-drain-history';
+
+    harness.orchestrator.onWorkerEvent('i-history-drain', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'waiting heartbeat',
+      thread_id: 'thread-history-drain',
+      turn_id: 'turn-history-drain',
+      session_id: 'session-history-drain'
+    });
+    await vi.waitFor(() => {
+      const running = harness.orchestrator.getStateSnapshot().running.get('i-history-drain');
+      expect(running?.pending_persisted_turn_ids).toEqual([]);
+    });
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    const pendingSnapshot = harness.orchestrator.getStateSnapshot();
+    expect(pendingSnapshot.quiescence.safe_to_shutdown).toBe(false);
+    expect(pendingSnapshot.quiescence.blocker_counts.persistence_history_write).toBeGreaterThanOrEqual(1);
+
+    releasePhaseSpan();
+    await vi.waitFor(() => {
+      expect(harness.orchestrator.getStateSnapshot().quiescence.blocker_counts.persistence_history_write).toBe(0);
+    });
   });
 
   it('computes persistence/history health blockers from the real quiescence source', () => {

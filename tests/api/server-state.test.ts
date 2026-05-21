@@ -237,6 +237,78 @@ describe('LocalApiServer state API', () => {
     });
   });
 
+  it('lets operators enter, read, and exit Drain Mode through the API control surface', async () => {
+    const readDrainMode = vi
+      .fn()
+      .mockReturnValueOnce({
+        active: false,
+        entered_at_ms: null,
+        updated_at_ms: null,
+        reason: null
+      })
+      .mockReturnValueOnce({
+        active: true,
+        entered_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        reason: 'operator restart'
+      })
+      .mockReturnValueOnce({
+        active: false,
+        entered_at_ms: null,
+        updated_at_ms: Date.parse('2026-04-10T10:05:00.000Z'),
+        reason: 'restart complete'
+      });
+    const enterDrainMode = vi.fn(() => readDrainMode());
+    const exitDrainMode = vi.fn(() => readDrainMode());
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      drainControlSource: {
+        readDrainMode,
+        enterDrainMode,
+        exitDrainMode
+      },
+      nowMs: () => Date.parse('2026-04-10T10:03:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const initial = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode`);
+    const enter = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/enter`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'operator restart' })
+    });
+    const exit = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/exit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restart complete' })
+    });
+
+    expect(initial.status).toBe(200);
+    expect((await initial.json()).drain_mode).toMatchObject({ active: false });
+    expect(enter.status).toBe(202);
+    expect((await enter.json()).drain_mode).toMatchObject({
+      active: true,
+      reason: 'operator restart',
+      entered_at: '2026-04-10T10:04:00.000Z'
+    });
+    expect(exit.status).toBe(202);
+    expect((await exit.json()).drain_mode).toMatchObject({
+      active: false,
+      reason: 'restart complete',
+      updated_at: '2026-04-10T10:05:00.000Z'
+    });
+    expect(enterDrainMode).toHaveBeenCalledWith({ reason: 'operator restart' });
+    expect(exitDrainMode).toHaveBeenCalledWith({ reason: 'restart complete' });
+  });
+
   it('serves GET /api/v1/state with bounded transcript diagnostic summaries instead of raw records', async () => {
     const state = makeState({
       running: new Map([

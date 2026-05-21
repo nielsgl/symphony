@@ -1068,6 +1068,11 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           refreshSource: {
             tick: (reason) => orchestrator.tick(reason)
           },
+          drainControlSource: {
+            readDrainMode: () => orchestrator.readDrainMode(),
+            enterDrainMode: (params) => orchestrator.enterDrainMode(params),
+            exitDrainMode: (params) => orchestrator.exitDrainMode(params)
+          },
           diagnosticsSource: {
             getActiveProfile: () => activeProfile,
             getPersistenceHealth: () =>

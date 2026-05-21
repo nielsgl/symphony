@@ -1,4 +1,11 @@
-import type { OrchestratorState, StateSnapshotOptions, TickReason, ToolCallEvidenceSource, ToolCallCompletionStatus } from '../orchestrator';
+import type {
+  DrainModeState,
+  OrchestratorState,
+  StateSnapshotOptions,
+  TickReason,
+  ToolCallEvidenceSource,
+  ToolCallCompletionStatus
+} from '../orchestrator';
 import type { CodexModelRerouteEvidence, CodexProtocolWarningEvidence } from '../codex';
 import type { CodexAppServerThreadActivitySource } from '../codex/app-server-protocol';
 import type { OperatorExplainer, OperatorExplainerHint, PhaseMarkerName } from '../observability';
@@ -1266,6 +1273,11 @@ export interface LocalApiServerOptions {
   snapshotSource: RuntimeSnapshotSource;
   refreshSource: RefreshTickSource;
   diagnosticsSource?: DiagnosticsSource;
+  drainControlSource?: {
+    readDrainMode: () => DrainModeState;
+    enterDrainMode: (params?: { reason?: string | null }) => DrainModeState;
+    exitDrainMode: (params?: { reason?: string | null }) => DrainModeState;
+  };
   workflowControlSource?: {
     switchWorkflowPath: (workflowPath: string) => Promise<{
       workflow_path: string;
