@@ -405,6 +405,7 @@ export interface ApiCodexSessionTranscriptScanBudget {
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
   runtime_identity: ApiRuntimeBuildIdentityProjection | null;
+  runtime_update: ApiRuntimeUpdateReadiness | null;
   drain_mode: ApiDrainModeProjection;
   quiescence: ApiDrainQuiescenceProjection;
   counts: {
@@ -829,6 +830,103 @@ export interface ApiRuntimeBuildIdentityProjection {
     message: string;
     recommended_action: string;
   } | null;
+}
+
+export type ApiRuntimeUpdateState =
+  | 'no_remote_configured'
+  | 'fetch_unavailable'
+  | 'remote_update_available'
+  | 'local_checkout_behind'
+  | 'runtime_stale'
+  | 'source_changed_build_not_updated'
+  | 'build_current'
+  | 'dirty_worktree'
+  | 'branch_mismatch'
+  | 'non_fast_forward_required'
+  | 'unknown';
+
+export type ApiRuntimeUpdateRecommendedAction =
+  | 'none'
+  | 'retry_fetch'
+  | 'prepare_update'
+  | 'wait_for_quiescence'
+  | 'apply_update'
+  | 'manual_restart'
+  | 'inspect_worktree'
+  | 'resolve_branch'
+  | 'resolve_history'
+  | 'rebuild'
+  | 'inspect_status';
+
+export interface ApiRuntimeUpdateReadiness {
+  state: ApiRuntimeUpdateState;
+  attention_required: boolean;
+  drain_required: boolean;
+  running_runtime_identity: ApiRuntimeBuildIdentityProjection | null;
+  local_checkout: {
+    branch: string | null;
+    commit_sha: string | null;
+    dirty: boolean | null;
+    detached: boolean;
+  };
+  fetched_remote: {
+    remote: string | null;
+    base_ref: string | null;
+    commit_sha: string | null;
+  };
+  ahead_behind: {
+    ahead: number | null;
+    behind: number | null;
+  };
+  last_fetch: {
+    attempted_at: string | null;
+    completed_at: string | null;
+    result: 'not_attempted' | 'succeeded' | 'failed' | 'timeout' | 'skipped';
+    reason_code: string | null;
+  };
+  build_status: 'unknown' | 'runtime_stale' | 'source_changed_build_not_updated' | 'current';
+  recommended_action: ApiRuntimeUpdateRecommendedAction;
+  refusal_reasons: string[];
+}
+
+export interface ApiRuntimeUpdateActionResponse {
+  success: boolean;
+  status:
+    | 'draining'
+    | 'waiting_for_quiescence'
+    | 'applying'
+    | 'ready_to_restart'
+    | 'manual_restart_required'
+    | 'completed'
+    | 'failed'
+    | 'refused'
+    | 'timeout';
+  step: 'prepare' | 'apply' | 'fetch' | 'pull' | 'install' | 'build' | 'restart' | 'manual_restart';
+  reason_code?: string | null;
+  recommended_action: ApiRuntimeUpdateRecommendedAction;
+  idempotent_replay: boolean;
+  drain_mode?: ApiDrainModeProjection;
+  quiescence?: ApiDrainQuiescenceProjection;
+  blockers?: ApiDrainControlBlocker[];
+  readiness?: ApiRuntimeUpdateReadiness | null;
+  command_results?: Array<{
+    step: 'fetch' | 'pull' | 'install' | 'build';
+    command: string[];
+    cwd: string;
+    status: 'succeeded' | 'failed' | 'timeout' | 'skipped';
+    exit_code: number | null;
+    duration_ms: number;
+    stdout_excerpt: string;
+    stderr_excerpt: string;
+    reason_code: string | null;
+  }>;
+  restart?: {
+    mode: 'manual' | 'wrapper';
+    status: 'manual_restart_required' | 'restarting' | 'completed' | 'failed' | 'unavailable';
+    command: string[];
+    reason_code: string | null;
+  } | null;
+  message?: string | null;
 }
 
 export interface ApiDrainQuiescenceProjection {
@@ -1354,7 +1452,31 @@ export interface LocalApiServerOptions {
         | 'wait-timed-out'
         | 'quiescence-reached'
         | 'safe-shutdown-allowed'
-        | 'safe-shutdown-refused';
+        | 'safe-shutdown-refused'
+        | 'update-detected'
+        | 'update-prepare-requested'
+        | 'update-drain-entered'
+        | 'update-quiescence-reached'
+        | 'update-fetch-started'
+        | 'update-fetch-succeeded'
+        | 'update-fetch-failed'
+        | 'update-pull-started'
+        | 'update-pull-succeeded'
+        | 'update-pull-failed'
+        | 'update-pull-refused'
+        | 'update-install-started'
+        | 'update-install-succeeded'
+        | 'update-install-failed'
+        | 'update-install-skipped'
+        | 'update-build-started'
+        | 'update-build-succeeded'
+        | 'update-build-failed'
+        | 'update-build-skipped'
+        | 'update-restart-ready'
+        | 'update-restart-started'
+        | 'update-restart-completed'
+        | 'update-restart-failed'
+        | 'update-manual-restart-required';
       actor?: string | null;
       source: string;
       result: 'accepted' | 'rejected' | 'failed' | 'observed';
@@ -1376,6 +1498,11 @@ export interface LocalApiServerOptions {
   };
   shutdownSource?: {
     shutdown: () => Promise<void>;
+  };
+  runtimeUpdateSource?: {
+    readUpdateReadiness: () => ApiRuntimeUpdateReadiness | null;
+    prepareUpdate: (params: { drain_mode: ApiDrainModeProjection }) => Promise<ApiRuntimeUpdateActionResponse>;
+    applyUpdate: (params: { quiescence: ApiDrainQuiescenceProjection }) => Promise<ApiRuntimeUpdateActionResponse>;
   };
   workflowControlSource?: {
     switchWorkflowPath: (workflowPath: string) => Promise<{
@@ -1447,6 +1574,7 @@ export interface LocalApiServerOptions {
 
 export interface ApiDiagnosticsResponse {
   runtime_identity: ApiRuntimeBuildIdentityProjection | null;
+  runtime_update: ApiRuntimeUpdateReadiness | null;
   drain_mode: ApiDrainModeProjection;
   quiescence: ApiDrainQuiescenceProjection;
   active_profile: SecurityProfile;

@@ -119,6 +119,7 @@ function makeLineage(overrides: {
 
 function makeApiDiagnostics(): ApiDiagnosticsResponse {
   return {
+    runtime_update: null,
     drain_mode: {
       active: false,
       entered_at: null,

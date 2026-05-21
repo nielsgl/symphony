@@ -40,6 +40,228 @@ closeServerAfterEach(
 );
 
 describe('LocalApiServer state API', () => {
+  it('serves runtime update readiness on state and diagnostics without mutating the repository', async () => {
+    const state = makeState({
+      runtime_identity: {
+        process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+        running_build: {
+          identity: 'runtime-old',
+          commit_sha: 'runtime-old',
+          source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+        },
+        current_build: {
+          identity: 'checkout-old',
+          commit_sha: 'checkout-old',
+          source_timestamp_ms: Date.parse('2026-05-21T08:56:00.000Z'),
+          status: 'available'
+        },
+        status: 'stale',
+        health_warning: null
+      }
+    } as any);
+    const readiness = {
+      state: 'remote_update_available',
+      attention_required: true,
+      drain_required: true,
+      running_runtime_identity: state.runtime_identity,
+      local_checkout: {
+        branch: 'main',
+        commit_sha: 'checkout-old',
+        dirty: false,
+        detached: false
+      },
+      fetched_remote: {
+        remote: 'origin',
+        base_ref: 'main',
+        commit_sha: 'remote-new'
+      },
+      ahead_behind: {
+        ahead: 0,
+        behind: 2
+      },
+      last_fetch: {
+        attempted_at: null,
+        completed_at: null,
+        result: 'not_attempted',
+        reason_code: null
+      },
+      build_status: 'runtime_stale',
+      recommended_action: 'prepare_update',
+      refusal_reasons: []
+    };
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      diagnosticsSource: makeDiagnosticsSource(),
+      runtimeUpdateSource: {
+        readUpdateReadiness: () => readiness as any,
+        prepareUpdate: vi.fn(),
+        applyUpdate: vi.fn()
+      },
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z')
+    } as any);
+
+    await server.listen();
+    const address = server.address();
+
+    const stateResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const statePayload = (await stateResponse.json()) as any;
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as any;
+
+    expect(stateResponse.status).toBe(200);
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(statePayload.runtime_update).toMatchObject({
+      state: 'remote_update_available',
+      attention_required: true,
+      drain_required: true,
+      recommended_action: 'prepare_update',
+      local_checkout: { branch: 'main', commit_sha: 'checkout-old', dirty: false },
+      fetched_remote: { remote: 'origin', base_ref: 'main', commit_sha: 'remote-new' },
+      ahead_behind: { ahead: 0, behind: 2 }
+    });
+    expect(diagnosticsPayload.runtime_update).toEqual(statePayload.runtime_update);
+  });
+
+  it('starts the guided runtime update by entering Drain Mode through the real control path', async () => {
+    const enterDrainMode = vi.fn(() => ({
+      active: true,
+      entered_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+      updated_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+      reason: 'runtime_update_prepare'
+    }));
+    const prepareUpdate = vi.fn(async () => ({
+      success: true,
+      status: 'draining',
+      step: 'prepare',
+      idempotent_replay: false,
+      recommended_action: 'wait_for_quiescence'
+    }));
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      drainControlSource: {
+        readDrainMode: () => ({
+          active: false,
+          entered_at_ms: null,
+          updated_at_ms: null,
+          reason: null
+        }),
+        enterDrainMode,
+        exitDrainMode: vi.fn()
+      },
+      runtimeUpdateSource: {
+        readUpdateReadiness: () => null,
+        prepareUpdate,
+        applyUpdate: vi.fn()
+      },
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z')
+    } as any);
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/runtime-update/prepare`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const payload = (await response.json()) as any;
+
+    expect(response.status).toBe(202);
+    expect(enterDrainMode).toHaveBeenCalledWith({ reason: 'runtime_update_prepare' });
+    expect(prepareUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      drain_mode: expect.objectContaining({ active: true })
+    }));
+    expect(payload).toMatchObject({
+      success: true,
+      status: 'draining',
+      recommended_action: 'wait_for_quiescence',
+      drain_mode: { active: true, reason: 'runtime_update_prepare' }
+    });
+  });
+
+  it('refuses guided runtime update apply before quiescence by default', async () => {
+    const applyUpdate = vi.fn();
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState({
+          drain_mode: {
+            active: true,
+            entered_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+            updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+            reason: 'runtime_update_prepare'
+          },
+          quiescence: {
+            safe_to_shutdown: false,
+            state: 'blocked',
+            updated_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+            blockers: [
+              {
+                category: 'active_worker',
+                count: 1,
+                detail: 'NIE-1 is still running',
+                issue_identifiers: ['NIE-1']
+              }
+            ],
+            blocker_counts: {
+              active_worker: 1,
+              live_codex_app_server_process: 0,
+              pending_retry: 0,
+              in_flight_tracker_write: 0,
+              persistence_history_write: 0,
+              unknown_degraded_blocker_source_health: 0,
+              stale_runtime: 0,
+              unknown_current_build_identity: 0
+            }
+          }
+        })
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      runtimeUpdateSource: {
+        readUpdateReadiness: () => null,
+        prepareUpdate: vi.fn(),
+        applyUpdate
+      },
+      nowMs: () => Date.parse('2026-05-21T10:02:00.000Z')
+    } as any);
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/runtime-update/apply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const payload = (await response.json()) as any;
+
+    expect(response.status).toBe(409);
+    expect(applyUpdate).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      success: false,
+      status: 'refused',
+      reason_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+      recommended_action: 'wait_for_quiescence'
+    });
+    expect(payload.blockers).toContainEqual(expect.objectContaining({
+      category: 'active_worker',
+      issue_identifiers: ['NIE-1']
+    }));
+  });
+
   it('serves runtime build identity metadata on GET /api/v1/state and diagnostics', async () => {
     const state = makeState({
       runtime_identity: {

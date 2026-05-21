@@ -2,6 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { performance } from 'node:perf_hooks';
 
 import type { StructuredLogger } from '../observability';
+import { REASON_CODES } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import type { DurableRunHistoryRecord, ProjectHistoryTicketSummaryProjection } from '../persistence';
 import { ControlPlaneHealthRecorder, type ControlPlaneHealthState, type ControlPlaneObservation } from './control-plane-health';
@@ -108,6 +109,7 @@ export class LocalApiServer {
   private readonly drainControlSource?: LocalApiServerOptions['drainControlSource'];
   private readonly drainAuditSink?: LocalApiServerOptions['drainAuditSink'];
   private readonly shutdownSource?: LocalApiServerOptions['shutdownSource'];
+  private readonly runtimeUpdateSource?: LocalApiServerOptions['runtimeUpdateSource'];
   private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
   private readonly issueControlSource?: LocalApiServerOptions['issueControlSource'];
   private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
@@ -137,6 +139,7 @@ export class LocalApiServer {
     this.drainControlSource = options.drainControlSource;
     this.drainAuditSink = options.drainAuditSink;
     this.shutdownSource = options.shutdownSource;
+    this.runtimeUpdateSource = options.runtimeUpdateSource;
     this.workflowControlSource = options.workflowControlSource;
     this.issueControlSource = options.issueControlSource;
     this.dashboardConfig = options.dashboardConfig ?? {
@@ -342,6 +345,7 @@ export class LocalApiServer {
     try {
       const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
+      payload.runtime_update = this.runtimeUpdateSource?.readUpdateReadiness() ?? null;
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
       const enrichment = this.enrichLiveTokenFallbackState(payload);
@@ -397,6 +401,7 @@ export class LocalApiServer {
     try {
       const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
+      payload.runtime_update = this.runtimeUpdateSource?.readUpdateReadiness() ?? null;
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
       const enrichment = this.enrichLiveTokenFallbackState(payload);
@@ -778,7 +783,8 @@ export class LocalApiServer {
       streamDiagnostics: this.streamDiagnostics,
       liveClientCount: this.eventClients.size,
       controlPlaneSummary: () => this.controlPlaneSummary(),
-      enrichLiveTokenFallbackState: (payload) => this.enrichLiveTokenFallbackState(payload)
+      enrichLiveTokenFallbackState: (payload) => this.enrichLiveTokenFallbackState(payload),
+      readUpdateReadiness: () => this.runtimeUpdateSource?.readUpdateReadiness() ?? null
     });
   }
 
@@ -1076,6 +1082,110 @@ export class LocalApiServer {
               });
               sendJson(response, 202, payload);
               this.scheduleSafeShutdown();
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/runtime-update\/prepare$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (_request, response) => {
+              if (!this.runtimeUpdateSource) {
+                throw new LocalApiError('runtime_update_unavailable', 'Runtime update source is not configured', 503);
+              }
+              if (!this.drainControlSource) {
+                throw new LocalApiError('drain_control_unavailable', 'Drain Mode control source is not configured', 503);
+              }
+              const drainMode = this.projectDrainControlState(
+                this.drainControlSource.enterDrainMode({ reason: 'runtime_update_prepare' })
+              );
+              this.broadcastStateSnapshot('runtime_update_prepare');
+              this.recordDrainAuditEvent({
+                event_type: 'update-prepare-requested',
+                actor: 'operator',
+                source: 'api',
+                result: 'accepted',
+                result_code: 'runtime_update_prepare_requested',
+                state_context: { drain_mode_active: drainMode.active },
+                blocker_summaries: [],
+                occurred_at: new Date(this.nowMs()).toISOString(),
+                observed_at: new Date(this.nowMs()).toISOString()
+              });
+              this.recordDrainAuditEvent({
+                event_type: 'update-drain-entered',
+                actor: 'operator',
+                source: 'api',
+                result: 'accepted',
+                result_code: 'drain_mode_entered',
+                state_context: { reason: drainMode.reason },
+                blocker_summaries: [],
+                occurred_at: new Date(this.nowMs()).toISOString(),
+                observed_at: new Date(this.nowMs()).toISOString()
+              });
+              const payload = await this.runtimeUpdateSource.prepareUpdate({ drain_mode: drainMode });
+              sendJson(response, payload.success ? 202 : 409, {
+                ...payload,
+                drain_mode: drainMode
+              });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/runtime-update\/apply$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (_request, response) => {
+              if (!this.runtimeUpdateSource) {
+                throw new LocalApiError('runtime_update_unavailable', 'Runtime update source is not configured', 503);
+              }
+              const { state, quiescence } = this.readDrainQuiescenceProjection();
+              if (!quiescence.safe_to_shutdown) {
+                const blockers = this.projectDrainControlBlockers(state, quiescence);
+                const payload = {
+                  success: false,
+                  status: 'refused',
+                  step: 'apply',
+                  reason_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+                  recommended_action: 'wait_for_quiescence',
+                  idempotent_replay: false,
+                  quiescence,
+                  blockers,
+                  readiness: this.runtimeUpdateSource.readUpdateReadiness(),
+                  message: 'Runtime update apply refused because Symphony is not quiescent.'
+                };
+                this.broadcastStateSnapshot('runtime_update_apply_refused');
+                this.recordDrainAuditEvent({
+                  event_type: 'update-pull-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+                  state_context: { safe_to_shutdown: false },
+                  blocker_summaries: this.drainAuditBlockerSummaries(blockers),
+                  occurred_at: new Date(this.nowMs()).toISOString(),
+                  observed_at: new Date(this.nowMs()).toISOString()
+                });
+                sendJson(response, 409, payload);
+                return;
+              }
+              this.recordDrainAuditEvent({
+                event_type: 'update-quiescence-reached',
+                actor: 'operator',
+                source: 'api',
+                result: 'accepted',
+                result_code: 'quiescent',
+                state_context: { safe_to_shutdown: true },
+                blocker_summaries: [],
+                occurred_at: new Date(this.nowMs()).toISOString(),
+                observed_at: new Date(this.nowMs()).toISOString()
+              });
+              const payload = await this.runtimeUpdateSource.applyUpdate({ quiescence });
+              this.broadcastStateSnapshot('runtime_update_apply_finished');
+              sendJson(response, payload.success ? 202 : 409, payload);
             }
           }
         ]

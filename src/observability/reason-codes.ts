@@ -102,6 +102,9 @@ export const REASON_CODES = {
   projectHistoryPayloadTruncated: 'project_history_payload_truncated',
   liveTokenFallbackNotOnHotPath: 'live_token_fallback_not_on_hot_path',
   stateProjectionUnavailable: 'state_projection_unavailable',
+  runtimeUpdateQuiescenceRequired: 'runtime_update_quiescence_required',
+  runtimeUpdateRepositoryUnavailable: 'runtime_update_repository_unavailable',
+  runtimeUpdateRestartWrapperUnavailable: 'runtime_update_restart_wrapper_unavailable',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
 
@@ -897,6 +900,36 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'State projection unavailable',
     detail: 'Diagnostics could not project the current state snapshot and returned degraded enrichment metadata instead.',
     expected_transition: 'Diagnostics remain available while state projection is degraded'
+  },
+  [REASON_CODES.runtimeUpdateQuiescenceRequired]: {
+    reason_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+    classification: 'stalled_waiting',
+    actionability: 'required',
+    recommended_actions: ['Wait for Drain Mode quiescence before applying the update'],
+    label: 'Runtime Update Quiescence Required',
+    headline: 'Runtime update is waiting for quiescence',
+    detail: 'The guided runtime update refused to apply because blockers still make restart unsafe.',
+    expected_transition: 'Apply can be retried after quiescence reports safe_to_shutdown'
+  },
+  [REASON_CODES.runtimeUpdateRepositoryUnavailable]: {
+    reason_code: REASON_CODES.runtimeUpdateRepositoryUnavailable,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Inspect runtime update repository configuration'],
+    label: 'Runtime Update Repository Unavailable',
+    headline: 'Runtime update repository is unavailable',
+    detail: 'The guided runtime update could not resolve a safe local repository root for fetch, pull, install, and build.',
+    expected_transition: 'Update detection can resume after repository configuration is corrected'
+  },
+  [REASON_CODES.runtimeUpdateRestartWrapperUnavailable]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable,
+    classification: 'awaiting_input',
+    actionability: 'required',
+    recommended_actions: ['Restart Symphony with the provided manual restart command'],
+    label: 'Runtime Update Restart Wrapper Unavailable',
+    headline: 'Manual restart is required',
+    detail: 'The guided runtime update prepared and built the new checkout, but no local restart wrapper is configured.',
+    expected_transition: 'The new runtime identity appears after Symphony restarts externally'
   },
   [REASON_CODES.unknownRuntimeReason]: {
     reason_code: REASON_CODES.unknownRuntimeReason,
