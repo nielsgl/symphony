@@ -54,11 +54,36 @@ export function buildDiagnosticsPayload(options: {
     reason_code: null,
     duration_ms: 0
   };
+  let drainMode: ApiDiagnosticsResponse['drain_mode'] = {
+    active: false,
+    entered_at: null,
+    entered_at_ms: null,
+    updated_at: null,
+    updated_at_ms: null,
+    reason: null
+  };
+  let quiescence: ApiDiagnosticsResponse['quiescence'] = {
+    safe_to_shutdown: true,
+    state: 'safe',
+    updated_at: new Date(projectionStartedAtMs).toISOString(),
+    updated_at_ms: projectionStartedAtMs,
+    blockers: [],
+    blocker_counts: {
+      active_worker: 0,
+      live_codex_app_server_process: 0,
+      pending_retry: 0,
+      in_flight_tracker_write: 0,
+      persistence_history_write: 0,
+      unknown_degraded_blocker_source_health: 0
+    }
+  };
   let projectionDurationMs: number | null = null;
   let enrichmentDurationMs: number | null = null;
   try {
     const snapshot = options.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
     const projected = options.snapshotService.projectState(snapshot);
+    drainMode = options.snapshotService.projectDrainMode(snapshot);
+    quiescence = options.snapshotService.projectQuiescence(snapshot);
     projectionDurationMs = options.nowMs() - projectionStartedAtMs;
     const enrichmentStartedAtMs = options.nowMs();
     tokenEnrichment = options.enrichLiveTokenFallbackState(projected);
@@ -87,6 +112,8 @@ export function buildDiagnosticsPayload(options: {
   const runtimeResolution = options.diagnosticsSource.getRuntimeResolution();
 
   const payload: ApiDiagnosticsResponse = {
+    drain_mode: drainMode,
+    quiescence,
     active_profile: options.diagnosticsSource.getActiveProfile(),
     persistence: options.diagnosticsSource.getPersistenceHealth(),
     logging: options.diagnosticsSource.getLoggingHealth(),
