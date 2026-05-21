@@ -228,6 +228,13 @@ function historyMigrations(): HistoryMigration[] {
       apply: (context) => {
         context.identity.ensureProjectScopedTicketIdentityTable();
       }
+    },
+    {
+      version: 10,
+      name: 'drain_audit_history_v1',
+      apply: (context) => {
+        createProjectExecutionHistoryTables(context.context);
+      }
     }
   ];
 }

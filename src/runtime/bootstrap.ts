@@ -892,6 +892,10 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       remoteIssueId: params.issue_id,
       humanIssueIdentifier: params.issue_identifier
     });
+  const runtimeProjectIdentity = createIdentityForIssue({
+    issue_id: '__runtime__',
+    issue_identifier: 'RUNTIME'
+  }).project;
 
   const codexRunner = new CodexRunner({
     dynamicToolExecutor: createDefaultDynamicToolExecutor({
@@ -1158,6 +1162,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           appendOperatorActionHistory: async (params) => persistenceStore.appendOperatorActionHistory(params),
           appendBlockedInputEvent: async (params) => persistenceStore.appendBlockedInputEvent(params),
           appendTokenModelFact: async (params) => persistenceStore.appendTokenModelFact(params),
+          appendDrainAuditHistory: async (params) =>
+            persistenceStore.appendDrainAuditHistory({ ...params, project_identity: runtimeProjectIdentity }),
           appendAppServerEvent: async (params) => persistenceStore.appendAppServerEvent(params),
           recordHistoryWriteFailure: async (params) => persistenceStore.recordHistoryWriteFailure(params),
           recordSession: async (params) => {
@@ -1209,6 +1215,18 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             enterDrainMode: (params) => orchestrator.enterDrainMode(params),
             exitDrainMode: (params) => orchestrator.exitDrainMode(params)
           },
+          drainAuditSink: persistenceStore
+            ? {
+                appendDrainAuditHistory: async (params) =>
+                  persistenceStore.appendDrainAuditHistory({ ...params, project_identity: runtimeProjectIdentity }),
+                recordHistoryWriteFailure: async (operation, reasonCode, error) =>
+                  persistenceStore.recordHistoryWriteFailure({
+                    operation,
+                    reason_code: reasonCode,
+                    detail: error instanceof Error ? error.message : String(error)
+                  })
+              }
+            : undefined,
           shutdownSource: {
             shutdown: async () => {
               if (!stopRuntime) {
@@ -1241,6 +1259,10 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               persistenceStore ? persistenceStore.listProjectTicketIdentities(projectKey, page) : { items: [], limit: page?.limit ?? 50, offset: page?.offset ?? 0, has_more: false, total: 0 },
             listProjectTicketSummaries: (projectKey, page) =>
               persistenceStore ? persistenceStore.listProjectTicketSummaries(projectKey, page) : { items: [], limit: page?.limit ?? 50, offset: page?.offset ?? 0, has_more: false, total: 0 },
+            listProjectDrainAuditEvents: (projectKey, page) =>
+              persistenceStore
+                ? persistenceStore.listProjectDrainAuditEvents(projectKey, page)
+                : { items: [], limit: page?.limit ?? 50, offset: page?.offset ?? 0, has_more: false, total: 0 },
             getProjectTicketIdentity: (projectKey, ticketKey) =>
               persistenceStore ? persistenceStore.getProjectTicketIdentity(projectKey, ticketKey) : null,
             reconstructTicketTimeline: (identity) => persistenceStore
@@ -1259,6 +1281,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
                   tracker_snapshots: [],
                   ticket_references: [],
                   operator_actions: [],
+                  drain_audit_events: [],
                   blocked_input_events: [],
                   app_server_events: [],
                   token_model_facts: []

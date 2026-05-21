@@ -725,6 +725,8 @@ export interface DrainQuiescenceBlocker {
   count: number;
   detail: string;
   issue_identifiers: string[];
+  run_identifiers?: string[];
+  thread_identifiers?: string[];
 }
 
 export type DrainQuiescenceBlockerCounts = Record<DrainQuiescenceBlockerCategory, number>;
@@ -1078,6 +1080,36 @@ export interface OrchestratorPersistencePort {
     telemetry_confidence: 'observed_live' | 'backfilled' | 'missing';
     observed_at: string;
     token_model_fact_id?: string;
+  }) => Promise<string>;
+  appendDrainAuditHistory?: (params: {
+    issue_run_id?: string | null;
+    attempt_id?: string | null;
+    thread_id?: string | null;
+    turn_id?: string | null;
+    event_type:
+      | 'drain-entered'
+      | 'drain-exited'
+      | 'quiescence-reached'
+      | 'wait-started'
+      | 'wait-timed-out'
+      | 'safe-shutdown-allowed'
+      | 'safe-shutdown-refused';
+    actor?: string | null;
+    source: string;
+    result: 'accepted' | 'rejected' | 'failed' | 'observed';
+    result_code: string;
+    reason_note?: string | null;
+    state_context?: Record<string, unknown> | null;
+    blocker_summaries?: Array<{
+      category: string;
+      count: number;
+      issue_identifiers?: string[];
+      run_identifiers?: string[];
+      thread_identifiers?: string[];
+      detail?: string | null;
+    }>;
+    occurred_at: string;
+    observed_at: string;
   }) => Promise<string>;
   appendAppServerEvent?: (params: {
     issue_run_id: string;

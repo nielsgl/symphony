@@ -1,5 +1,6 @@
 import type {
   AppServerEventLedgerExcerpt,
+  DrainAuditEventRecord,
   DurableIdentity,
   ExecutionGraphEntityStatus,
   HistorySchemaHealth,
@@ -118,6 +119,7 @@ export interface ProjectHistoryTicketRow {
     tracker_snapshot_count: number;
     ticket_reference_count: number;
     operator_action_count: number;
+    drain_audit_event_count: number;
     blocked_input_event_count: number;
     app_server_event_count: number;
     token_model_fact_count: number;
@@ -134,6 +136,7 @@ export interface ProjectHistoryTicketListResponse {
   health: ProjectHistoryHealth;
   page: ProjectHistoryPage;
   tickets: ProjectHistoryTicketRow[];
+  drain_audit_events: DrainAuditEventRecord[];
   facts: ProjectHistoryFactState[];
 }
 
@@ -151,6 +154,7 @@ export interface ProjectHistoryTicketDetailResponse extends ProjectHistoryTicket
   tracker_facts: TicketTimelineRecord['tracker_snapshots'];
   pr_and_reference_facts: TicketTimelineRecord['ticket_references'];
   operator_facts: TicketTimelineRecord['operator_actions'];
+  drain_audit_events: TicketTimelineRecord['drain_audit_events'];
   blocked_input_events: TicketTimelineRecord['blocked_input_events'];
   app_server_lite_summaries: AppServerEventLedgerExcerpt[];
   token_model_summaries: TicketTimelineRecord['token_model_facts'];
@@ -254,6 +258,7 @@ export function buildProjectHistoryListResponse(params: {
   projectKey: string;
   timelines?: TicketTimelineRecord[];
   summaries?: ProjectHistoryTicketSummaryProjection[];
+  drainAuditEvents?: DrainAuditEventRecord[];
   page: ProjectHistoryPage;
   persistenceHealth?: PersistenceHealth | null;
   historySchemaHealth?: HistorySchemaHealth | null;
@@ -274,6 +279,7 @@ export function buildProjectHistoryListResponse(params: {
     health,
     page: params.page,
     tickets: summaries.map((summary) => buildProjectHistoryTicketRowFromSummary(summary, historySchemaHealth)),
+    drain_audit_events: params.drainAuditEvents ?? [],
     facts: health.diagnostics
   };
 }
@@ -319,6 +325,7 @@ export function buildProjectHistoryTicketDetailResponse(
     tracker_facts: timeline.tracker_snapshots,
     pr_and_reference_facts: timeline.ticket_references,
     operator_facts: timeline.operator_actions,
+    drain_audit_events: timeline.drain_audit_events,
     blocked_input_events: timeline.blocked_input_events,
     app_server_lite_summaries: timeline.app_server_events,
     token_model_summaries: timeline.token_model_facts
@@ -875,6 +882,7 @@ function buildProjectHistoryTicketSummary(timeline: TicketTimelineRecord): Proje
       tracker_snapshot_count: timeline.tracker_snapshots.length,
       ticket_reference_count: timeline.ticket_references.length,
       operator_action_count: timeline.operator_actions.length,
+      drain_audit_event_count: timeline.drain_audit_events.length,
       blocked_input_event_count: timeline.blocked_input_events.length,
       app_server_event_count: timeline.app_server_events.length,
       token_model_fact_count: timeline.token_model_facts.length,
@@ -887,6 +895,7 @@ function buildProjectHistoryTicketSummary(timeline: TicketTimelineRecord): Proje
       latestOutcome?.recorded_at ?? null,
       latestTrackerSnapshot?.last_observed_at ?? null,
       latestTransition?.transitioned_at ?? null,
+      latestBy(timeline.drain_audit_events, (event) => event.observed_at)?.observed_at ?? null,
       latestBy(timeline.app_server_events, (event) => event.observed_at)?.observed_at ?? null
     ])
   };
@@ -919,6 +928,7 @@ function summaryFacts(
       summary.summary.tracker_snapshot_count + summary.summary.ticket_reference_count + summary.summary.operator_action_count,
       REASON_CODES.projectHistoryOperationalFactsMissing
     ),
+    optionalFact('drain_audit_events', summary.summary.drain_audit_event_count, 'project_history_drain_audit_events_missing'),
     optionalFact('token_model_summaries', summary.summary.token_model_fact_count, REASON_CODES.projectHistoryTokenModelSummariesMissing),
     ...appServerLitePolicyFacts(normalizeAppServerLiteSummary(summary.app_server_lite))
   ];

@@ -1,7 +1,7 @@
 import { redactUnknown } from '../security/redaction';
 import { buildProjectIdentity } from './identity';
 import type { PersistenceDatabase } from './store-context';
-import type { DurableIdentity, HistoryIdentityProjectionRecord } from './types';
+import type { DurableIdentity, HistoryIdentityProjectionRecord, ProjectIdentity } from './types';
 
 export interface IdentityProjectionStoreDependencies {
   db: PersistenceDatabase;
@@ -196,14 +196,13 @@ export class IdentityProjectionStore {
     }
   }
 
-  upsertHistoryIdentity(identity: DurableIdentity, options: { bypassHealthCheck?: boolean } = {}): void {
+  upsertProjectIdentity(project: ProjectIdentity, options: { bypassHealthCheck?: boolean } = {}): void {
     if (!options.bypassHealthCheck && !this.isHistorySchemaHealthy()) {
       return;
     }
     const now = asIso(this.nowMs());
-    const workflowHash = identity.project.workflow_hash;
-    const repositoryRemote = identity.project.repository_remote;
-    const trackerScope = identity.ticket.tracker_scope;
+    const workflowHash = project.workflow_hash;
+    const repositoryRemote = project.repository_remote;
     this.db
       .prepare(
         `INSERT INTO history_project_identity
@@ -222,9 +221,9 @@ export class IdentityProjectionStore {
           updated_at = excluded.updated_at`
       )
       .run(
-        identity.project.key,
-        identity.project.project_root,
-        identity.project.workflow_path,
+        project.key,
+        project.project_root,
+        project.workflow_path,
         workflowHash.status,
         workflowHash.status === 'present' ? workflowHash.value : null,
         workflowHash.status === 'missing' ? workflowHash.reason : null,
@@ -234,6 +233,15 @@ export class IdentityProjectionStore {
         now,
         now
       );
+  }
+
+  upsertHistoryIdentity(identity: DurableIdentity, options: { bypassHealthCheck?: boolean } = {}): void {
+    this.upsertProjectIdentity(identity.project, options);
+    if (!options.bypassHealthCheck && !this.isHistorySchemaHealthy()) {
+      return;
+    }
+    const now = asIso(this.nowMs());
+    const trackerScope = identity.ticket.tracker_scope;
     this.db
       .prepare(
         `INSERT INTO history_ticket_identity
@@ -411,6 +419,7 @@ export class IdentityProjectionStore {
       'history_tracker_ticket_snapshot',
       'history_ticket_reference',
       'history_operator_action',
+      'history_drain_audit_event',
       'history_blocked_input_event',
       'history_retention_prune_record'
     ];
@@ -477,6 +486,7 @@ export class IdentityProjectionStore {
       'history_tracker_ticket_snapshot',
       'history_ticket_reference',
       'history_operator_action',
+      'history_drain_audit_event',
       'history_blocked_input_event'
     ];
     const factUpdates = projectKeyFacts

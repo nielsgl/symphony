@@ -104,6 +104,19 @@ describe('SqlitePersistenceStore retention and health', () => {
       raw_payload: { message: 'old protocol evidence' },
       summary: 'old protocol evidence'
     });
+    store.appendDrainAuditHistory({
+      issue_run_id: expiredGraph.issue_run_id,
+      project_identity: identity({ issue_id: 'expired-issue-run', issue_identifier: 'EXP-ISSUE-1' }).project,
+      event_type: 'wait-timed-out',
+      actor: 'operator',
+      source: 'api',
+      result: 'rejected',
+      result_code: 'timeout',
+      state_context: { safe_to_shutdown: false, blocker_count: 1 },
+      blocker_summaries: [{ category: 'active_worker', count: 1, issue_identifiers: ['EXP-ISSUE-1'] }],
+      occurred_at: '2026-04-10T10:00:05.000Z',
+      observed_at: '2026-04-10T10:00:05.000Z'
+    });
     store.completeRun({ run_id: expiredGraph.run_id, terminal_status: 'succeeded' });
 
     const activeIssueRunId = store.appendIssueRun({
@@ -144,6 +157,20 @@ describe('SqlitePersistenceStore retention and health', () => {
       raw_payload: { message: 'active protocol evidence' },
       summary: 'active protocol evidence'
     });
+    const activeIdentity = identity({ issue_id: 'active-issue-run', issue_identifier: 'ACTIVE-ISSUE-1' });
+    store.appendDrainAuditHistory({
+      issue_run_id: activeIssueRunId,
+      project_identity: activeIdentity.project,
+      event_type: 'drain-entered',
+      actor: 'operator',
+      source: 'orchestrator',
+      result: 'accepted',
+      result_code: 'drain_mode_entered',
+      state_context: { drain_active: true, safe_to_shutdown: true },
+      blocker_summaries: [],
+      occurred_at: '2026-04-10T09:00:05.000Z',
+      observed_at: '2026-04-10T09:00:05.000Z'
+    });
 
     const lateStore = new SqlitePersistenceStore({ dbPath, retentionDays: 1, nowMs: () => base + 2 * 24 * 60 * 60 * 1000 });
     stores.push(lateStore);
@@ -155,28 +182,38 @@ describe('SqlitePersistenceStore retention and health', () => {
     expect(lateStore.reconstructThreadLineage(expiredThreadId)).toBeNull();
     expect(lateStore.listAppServerEventLedger(activeIssueRunId)).toHaveLength(1);
     expect(lateStore.listAppServerEventLedger(expiredGraph.issue_run_id)).toHaveLength(0);
+    const retainedDrainAuditEvents = lateStore.listProjectDrainAuditEvents(activeIdentity.project.key).items;
+    expect(retainedDrainAuditEvents.map((entry) => entry.issue_run_id)).toEqual([activeIssueRunId]);
+    expect(retainedDrainAuditEvents.map((entry) => entry.issue_run_id)).not.toContain(expiredGraph.issue_run_id);
 
     const db = openDatabase(dbPath);
     try {
-      const records = db.prepare('SELECT source_table, source_id, reason_code FROM history_retention_prune_record ORDER BY source_table, source_id').all();
+      const records = db
+        .prepare(
+          `SELECT source_table, source_id, reason_code, pruned_record_count
+           FROM history_retention_prune_record
+           ORDER BY source_table, source_id`
+        )
+        .all();
       expect(records).toHaveLength(3);
       expect(records).toEqual(
         expect.arrayContaining([
-          {
+          expect.objectContaining({
             source_table: 'runs',
             source_id: expiredRunId,
             reason_code: 'retention_policy_expired_completed_history'
-          },
-          {
+          }),
+          expect.objectContaining({
             source_table: 'runs',
             source_id: expiredGraph.run_id,
             reason_code: 'retention_policy_expired_completed_history'
-          },
-          {
+          }),
+          expect.objectContaining({
             source_table: 'issue_run',
             source_id: expiredGraph.issue_run_id,
-            reason_code: 'retention_policy_expired_completed_history'
-          }
+            reason_code: 'retention_policy_expired_completed_history',
+            pruned_record_count: 7
+          })
         ])
       );
     } finally {

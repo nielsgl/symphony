@@ -13,6 +13,106 @@ describe('SqlitePersistenceStore project history', () => {
   const { dirs, stores, identity, openDatabase, tableNames, withLegacyProjectKey, cleanup } = createStoreTestHarness();
 
   afterEach(cleanup);
+
+  it('persists drain mode audit history across restart with project and ticket projections', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-drain-audit-history-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const durableIdentity = identity({ issue_id: 'remote-drain-1', issue_identifier: 'DRAIN-1' });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    const issueRunId = storeA.appendIssueRun({
+      issue_id: 'remote-drain-1',
+      issue_identifier: 'DRAIN-1',
+      identity: durableIdentity,
+      started_at: '2026-05-21T10:00:00.000Z',
+      status: 'running'
+    });
+
+    (storeA as any).appendDrainAuditHistory({
+      project_identity: durableIdentity.project,
+      event_type: 'drain-entered',
+      actor: 'operator',
+      source: 'api',
+      result: 'accepted',
+      result_code: 'drain_mode_entered',
+      state_context: { drain_active: true, transcript: 'should be redacted' },
+      blocker_summaries: [],
+      occurred_at: '2026-05-21T10:01:00.000Z',
+      observed_at: '2026-05-21T10:01:00.000Z'
+    });
+    (storeA as any).appendDrainAuditHistory({
+      project_identity: durableIdentity.project,
+      issue_run_id: issueRunId,
+      event_type: 'wait-timed-out',
+      actor: 'operator',
+      source: 'api',
+      result: 'rejected',
+      result_code: 'timeout',
+      state_context: { safe_to_shutdown: false, blocker_count: 1 },
+      blocker_summaries: [
+        {
+          category: 'active_worker',
+          count: 1,
+          issue_identifiers: ['DRAIN-1'],
+          run_identifiers: [issueRunId, 'thread-drain-1'],
+          detail: 'DRAIN-1 is still running token=secret'
+        }
+      ],
+      occurred_at: '2026-05-21T10:02:00.000Z',
+      observed_at: '2026-05-21T10:02:00.000Z'
+    });
+    (storeA as any).appendDrainAuditHistory({
+      project_identity: durableIdentity.project,
+      event_type: 'safe-shutdown-refused',
+      actor: 'operator',
+      source: 'api',
+      result: 'rejected',
+      result_code: 'blockers_present',
+      state_context: { safe_to_shutdown: false },
+      blocker_summaries: [{ category: 'active_worker', count: 1, issue_identifiers: ['DRAIN-1'] }],
+      occurred_at: '2026-05-21T10:03:00.000Z',
+      observed_at: '2026-05-21T10:03:00.000Z'
+    });
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const projectAudit = (storeB as any).listProjectDrainAuditEvents(durableIdentity.project.key, { limit: 10 });
+    const timeline = storeB.reconstructTicketTimeline(durableIdentity);
+
+    expect(projectAudit.items.map((entry: any) => entry.event_type)).toEqual([
+      'safe-shutdown-refused',
+      'wait-timed-out',
+      'drain-entered'
+    ]);
+    expect(projectAudit.items[1]).toMatchObject({
+      project_key: durableIdentity.project.key,
+      ticket_key: durableIdentity.ticket.key,
+      issue_run_id: issueRunId,
+      actor: 'operator',
+      source: 'api',
+      result: 'rejected',
+      result_code: 'timeout',
+      blocker_summaries: [
+        {
+          category: 'active_worker',
+          count: 1,
+          issue_identifiers: ['DRAIN-1'],
+          run_identifiers: [issueRunId, 'thread-drain-1']
+        }
+      ]
+    });
+    expect(JSON.stringify(projectAudit.items)).not.toContain('should be redacted');
+    expect(JSON.stringify(projectAudit.items)).not.toContain('token=secret');
+    expect(timeline.drain_audit_events.map((entry: any) => entry.event_type)).toEqual([
+      'wait-timed-out',
+      'safe-shutdown-refused'
+    ]);
+  });
+
   it('persists operational tracker facts, references, and operator actions across restart with duplicate coalescing', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-operational-history-'));
     dirs.push(dir);
@@ -343,7 +443,7 @@ describe('SqlitePersistenceStore project history', () => {
       nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
     });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 9, status: 'healthy' });
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 10, status: 'healthy' });
     storeA.close();
     stores.pop();
 
@@ -368,7 +468,7 @@ describe('SqlitePersistenceStore project history', () => {
     });
 
     expect(storeB.historySchemaHealth()).toMatchObject({
-      applied_version: 9,
+      applied_version: 10,
       status: 'degraded',
       degraded_reason_code: 'history_write_failed',
       degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'

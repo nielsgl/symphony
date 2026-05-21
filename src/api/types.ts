@@ -14,6 +14,7 @@ import type { StructuredLogger } from '../observability';
 import type {
   DurableIdentity,
   DurableRunHistoryRecord,
+  DrainAuditEventRecord,
   ExecutionGraphThreadLineage,
   PersistenceHealth,
   ProjectHistoryTicketSummaryPage,
@@ -105,6 +106,10 @@ export interface DiagnosticsSource {
     projectKey: string,
     options?: { limit?: number; offset?: number }
   ) => ProjectHistoryTicketSummaryPage;
+  listProjectDrainAuditEvents?: (
+    projectKey: string,
+    options?: { limit?: number; offset?: number }
+  ) => { items: DrainAuditEventRecord[]; limit: number; offset: number; has_more: boolean; total: number };
   getProjectTicketIdentity?: (projectKey: string, ticketKey: string) => DurableIdentity | null;
   reconstructTicketTimeline?: (identity: DurableIdentity) => TicketTimelineRecord;
   getLoggingHealth(): {
@@ -844,6 +849,8 @@ export interface ApiDrainQuiescenceProjection {
     count: number;
     detail: string;
     issue_identifiers: string[];
+    run_identifiers?: string[];
+    thread_identifiers?: string[];
   }>;
   blocker_counts: Record<
     | 'active_worker'
@@ -863,6 +870,7 @@ export interface ApiDrainControlBlocker {
   count: number;
   issue_identifiers: string[];
   run_identifiers: string[];
+  thread_identifiers: string[];
   reason: string;
 }
 
@@ -1338,6 +1346,33 @@ export interface LocalApiServerOptions {
     readDrainMode: () => DrainModeState;
     enterDrainMode: (params?: { reason?: string | null }) => DrainModeState;
     exitDrainMode: (params?: { reason?: string | null }) => DrainModeState;
+  };
+  drainAuditSink?: {
+    appendDrainAuditHistory: (params: {
+      event_type:
+        | 'wait-started'
+        | 'wait-timed-out'
+        | 'quiescence-reached'
+        | 'safe-shutdown-allowed'
+        | 'safe-shutdown-refused';
+      actor?: string | null;
+      source: string;
+      result: 'accepted' | 'rejected' | 'failed' | 'observed';
+      result_code: string;
+      reason_note?: string | null;
+      state_context?: Record<string, unknown> | null;
+      blocker_summaries?: Array<{
+        category: string;
+        count: number;
+        issue_identifiers?: string[];
+        run_identifiers?: string[];
+        thread_identifiers?: string[];
+        detail?: string | null;
+      }>;
+      occurred_at: string;
+      observed_at: string;
+    }) => Promise<string>;
+    recordHistoryWriteFailure?: (operation: string, reasonCode: string, error: unknown) => Promise<void>;
   };
   shutdownSource?: {
     shutdown: () => Promise<void>;

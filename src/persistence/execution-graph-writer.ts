@@ -5,9 +5,13 @@ import { serializeDurableIdentity } from './identity-projection-store';
 import type { PersistenceDatabase } from './store-context';
 import type {
   DurableIdentity,
+  DrainAuditBlockerSummary,
+  DrainAuditEventRecord,
+  DrainAuditEventType,
   ExecutionGraphEntityStatus,
   HistoryIdentityProjectionRecord,
   IdentityEvidence,
+  ProjectIdentity,
   RunTerminalStatus,
   TicketReferenceRecord,
   TokenModelTelemetryConfidence
@@ -16,6 +20,7 @@ import type {
 export interface ExecutionGraphWriterDependencies {
   db: PersistenceDatabase;
   transaction: <T>(fn: () => T) => T;
+  upsertProjectIdentity: (project: ProjectIdentity) => void;
   upsertHistoryIdentity: (identity: DurableIdentity) => void;
   recordIdentityProjection: (record: Omit<HistoryIdentityProjectionRecord, 'updated_at'>) => void;
   readIssueRunIdentity: (issueRunId: string | null) => DurableIdentity | null;
@@ -243,6 +248,25 @@ export interface AppendTokenModelFactParams {
   token_model_fact_id?: string;
 }
 
+export interface AppendDrainAuditHistoryParams {
+  project_identity: ProjectIdentity;
+  issue_run_id?: string | null;
+  attempt_id?: string | null;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  event_type: DrainAuditEventType;
+  actor?: string | null;
+  source: string;
+  result: DrainAuditEventRecord['result'];
+  result_code: string;
+  reason_note?: string | null;
+  state_context?: Record<string, unknown> | null;
+  blocker_summaries?: DrainAuditBlockerSummary[];
+  occurred_at: string;
+  observed_at: string;
+  drain_audit_event_id?: string;
+}
+
 export interface CompleteIssueRunRowParams {
   issue_run_id: string;
   ended_at: string;
@@ -310,9 +334,44 @@ function normalizeTelemetryConfidence(value: TokenModelTelemetryConfidence): Tok
   return value;
 }
 
+function normalizeIdentifierArray(value: string[] | undefined): string[] {
+  return [...new Set((value ?? []).filter((entry) => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim()))].slice(
+    0,
+    12
+  );
+}
+
+function normalizeDrainAuditBlockers(blockers: DrainAuditBlockerSummary[]): DrainAuditBlockerSummary[] {
+  return blockers.slice(0, 20).map((blocker) => ({
+    category: blocker.category,
+    count: Number.isSafeInteger(blocker.count) && blocker.count >= 0 ? blocker.count : 0,
+    issue_identifiers: normalizeIdentifierArray(blocker.issue_identifiers),
+    run_identifiers: normalizeIdentifierArray(blocker.run_identifiers),
+    thread_identifiers: normalizeIdentifierArray(blocker.thread_identifiers),
+    detail: redactUnknown(blocker.detail ?? null) as string | null
+  }));
+}
+
+function normalizeDrainAuditStateContext(value: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!value) {
+    return null;
+  }
+  const redacted = redactUnknown(value) as Record<string, unknown>;
+  const bounded: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(redacted).slice(0, 24)) {
+    if (/transcript|raw_payload|conversation/i.test(key)) {
+      bounded[key] = '[omitted]';
+      continue;
+    }
+    bounded[key] = raw;
+  }
+  return bounded;
+}
+
 export class ExecutionGraphWriter {
   private readonly db: PersistenceDatabase;
   private readonly transaction: <T>(fn: () => T) => T;
+  private readonly upsertProjectIdentity: (project: ProjectIdentity) => void;
   private readonly upsertHistoryIdentity: (identity: DurableIdentity) => void;
   private readonly recordIdentityProjection: ExecutionGraphWriterDependencies['recordIdentityProjection'];
   private readonly readIssueRunIdentity: ExecutionGraphWriterDependencies['readIssueRunIdentity'];
@@ -320,6 +379,7 @@ export class ExecutionGraphWriter {
   constructor(dependencies: ExecutionGraphWriterDependencies) {
     this.db = dependencies.db;
     this.transaction = dependencies.transaction;
+    this.upsertProjectIdentity = dependencies.upsertProjectIdentity;
     this.upsertHistoryIdentity = dependencies.upsertHistoryIdentity;
     this.recordIdentityProjection = dependencies.recordIdentityProjection;
     this.readIssueRunIdentity = dependencies.readIssueRunIdentity;
@@ -840,6 +900,59 @@ export class ExecutionGraphWriter {
         params.observed_at
       );
     return operatorActionId;
+  }
+
+  appendDrainAuditHistory(params: AppendDrainAuditHistoryParams): string {
+    this.upsertProjectIdentity(params.project_identity);
+    const identity = params.issue_run_id ? this.readIssueRunIdentity(params.issue_run_id) : null;
+    const stateContext = normalizeDrainAuditStateContext(params.state_context);
+    const blockerSummaries = normalizeDrainAuditBlockers(params.blocker_summaries ?? []);
+    const observationHash = stableOperationalHash([
+      params.event_type,
+      params.actor ?? null,
+      params.source,
+      params.result,
+      params.result_code,
+      params.reason_note ?? null,
+      stateContext,
+      blockerSummaries,
+      params.occurred_at
+    ]);
+    const drainAuditEventId =
+      params.drain_audit_event_id ?? asExecutionGraphId('drain_audit_event', [params.project_identity.key, params.event_type, observationHash]);
+    this.db
+      .prepare(
+        `INSERT INTO history_drain_audit_event
+          (drain_audit_event_id, project_key, ticket_key, issue_run_id, attempt_id, thread_id, turn_id,
+           event_type, actor, source, result, result_code, reason_note, state_context, blocker_summaries,
+           occurred_at, observed_at, observation_hash, duplicate_count, last_observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+         ON CONFLICT(project_key, event_type, observation_hash) DO UPDATE SET
+          duplicate_count = history_drain_audit_event.duplicate_count + 1,
+          last_observed_at = excluded.last_observed_at`
+      )
+      .run(
+        drainAuditEventId,
+        params.project_identity.key,
+        identity?.ticket.key ?? null,
+        params.issue_run_id ?? null,
+        params.attempt_id ?? null,
+        params.thread_id ?? null,
+        params.turn_id ?? null,
+        params.event_type,
+        params.actor ?? null,
+        params.source,
+        params.result,
+        params.result_code,
+        redactUnknown(params.reason_note ?? null),
+        stateContext ? JSON.stringify(stateContext) : null,
+        JSON.stringify(blockerSummaries),
+        params.occurred_at,
+        params.observed_at,
+        observationHash,
+        params.observed_at
+      );
+    return drainAuditEventId;
   }
 
   appendBlockedInputEvent(params: AppendBlockedInputEventParams): string {

@@ -60,6 +60,128 @@ function makeRuntimeIdentity(status: 'current' | 'stale'): RuntimeBuildIdentityS
 }
 
 describe('OrchestratorCore dispatch and backpressure', () => {
+  it('records Drain Mode audit history through orchestrator control paths', async () => {
+    const drainAuditEvents: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendDrainAuditHistory']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-drain-audit',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined,
+      appendDrainAuditHistory: async (params) => {
+        drainAuditEvents.push(params);
+        return `audit-${drainAuditEvents.length}`;
+      }
+    };
+    const harness = createHarness({
+      persistence
+    });
+
+    const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
+    runtimeState.running.set('issue-drain-1', {
+      issue: makeIssue({ id: 'issue-drain-1', identifier: 'DRAIN-1' }),
+      identifier: 'DRAIN-1',
+      run_id: 'run-drain-1',
+      worker_handle: {},
+      monitor_handle: {},
+      retry_attempt: 0,
+      workspace_path: '/tmp/symphony/DRAIN-1',
+      provisioner_type: 'none',
+      branch_name: null,
+      repo_root: null,
+      workspace_exists: true,
+      workspace_git_status: 'unknown',
+      workspace_provisioned: false,
+      workspace_is_git_worktree: false,
+      session_id: 'session-drain-1',
+      thread_id: 'thread-drain-1',
+      turn_id: 'turn-drain-1',
+      turn_count: 1,
+      last_event: null,
+      last_event_summary: null,
+      last_message: null,
+      tokens: null,
+      last_reported_tokens: null,
+      token_telemetry_status: 'missing',
+      token_telemetry_last_source: null,
+      token_telemetry_last_at_ms: null,
+      token_telemetry_turn_started_at_ms: null,
+      token_telemetry_warning_emitted: false,
+      recent_events: [],
+      started_at_ms: harness.now.value,
+      last_codex_timestamp_ms: null,
+      transcript_tool_call_diagnostics: []
+    } as any);
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+    runtimeState.running.clear();
+    (harness.orchestrator as any).refreshQuiescenceState();
+    (harness.orchestrator as any).exitDrainMode({ reason: 'restart complete' });
+
+    await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(3));
+    expect(drainAuditEvents.map((entry) => entry.event_type)).toEqual([
+      'drain-entered',
+      'quiescence-reached',
+      'drain-exited'
+    ]);
+    expect(drainAuditEvents[0]).toMatchObject({
+      actor: 'operator',
+      source: 'orchestrator',
+      result: 'accepted',
+      result_code: 'drain_mode_entered',
+      reason_note: 'safe runtime restart',
+      blocker_summaries: [
+        expect.objectContaining({
+          category: 'active_worker',
+          count: 1,
+          issue_identifiers: ['DRAIN-1'],
+          run_identifiers: ['run-drain-1'],
+          thread_identifiers: ['thread-drain-1']
+        })
+      ]
+    });
+    expect(drainAuditEvents[1]).toMatchObject({
+      actor: 'operator',
+      source: 'orchestrator',
+      result: 'observed',
+      result_code: 'quiescent',
+      blocker_summaries: []
+    });
+    expect(drainAuditEvents[2]).toMatchObject({
+      actor: 'operator',
+      source: 'orchestrator',
+      result: 'accepted',
+      result_code: 'drain_mode_exited',
+      reason_note: 'restart complete'
+    });
+  });
+
+  it('degrades history health when orchestrator Drain Mode audit writes fail', async () => {
+    const writeFailures: Array<Parameters<NonNullable<OrchestratorPersistencePort['recordHistoryWriteFailure']>>[0]> = [];
+    const persistence: OrchestratorPersistencePort = {
+      startRun: async () => 'legacy-run-drain-audit-failure',
+      recordSession: async () => undefined,
+      recordEvent: async () => undefined,
+      completeRun: async () => undefined,
+      appendDrainAuditHistory: async () => {
+        throw new Error('database locked token=secret');
+      },
+      recordHistoryWriteFailure: async (params) => {
+        writeFailures.push(params);
+      }
+    };
+    const harness = createHarness({
+      persistence
+    });
+
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+
+    await vi.waitFor(() => expect(writeFailures).toHaveLength(1));
+    expect(writeFailures[0]).toMatchObject({
+      operation: 'appendDrainAuditHistory',
+      reason_code: 'drain_mode_entered'
+    });
+    expect(writeFailures[0].detail).toContain('database locked');
+  });
+
   it('summary snapshots omit raw transcript diagnostic clone work for high-volume active entries', async () => {
     const harness = createHarness({ configOverrides: { max_concurrent_agents: 4 } });
     harness.tracker.fetch_candidate_issues.mockResolvedValue(

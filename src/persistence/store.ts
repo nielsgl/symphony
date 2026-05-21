@@ -2,6 +2,7 @@ import { redactUnknown } from '../security/redaction';
 import { AppServerLedgerStore } from './app-server-ledger-store';
 import {
   ExecutionGraphWriter,
+  type AppendDrainAuditHistoryParams,
   type AppendAttemptParams,
   type AppendBlockedInputEventParams,
   type AppendIssueRunParams,
@@ -32,6 +33,7 @@ import type {
   BreakerMetadataRecord,
   DurableRunHistoryRecord,
   DurableIdentity,
+  DrainAuditEventRecord,
   AttemptRecord,
   ExecutionGraphEntityStatus,
   HistoryPayloadClass,
@@ -113,6 +115,7 @@ export class SqlitePersistenceStore {
     this.executionGraphWriter = new ExecutionGraphWriter({
       db: this.db,
       transaction: (fn) => this.transaction(fn),
+      upsertProjectIdentity: (project) => this.identityProjectionStore.upsertProjectIdentity(project),
       upsertHistoryIdentity: (identity) => this.identityProjectionStore.upsertHistoryIdentity(identity),
       recordIdentityProjection: (record) => this.identityProjectionStore.recordIdentityProjection(record),
       readIssueRunIdentity: (issueRunId) => this.identityProjectionStore.readIssueRunIdentity(issueRunId)
@@ -308,6 +311,17 @@ export class SqlitePersistenceStore {
 
   appendOperatorActionHistory(params: AppendOperatorActionHistoryParams): string {
     return this.executionGraphWriter.appendOperatorActionHistory(params);
+  }
+
+  appendDrainAuditHistory(params: AppendDrainAuditHistoryParams): string {
+    return this.executionGraphWriter.appendDrainAuditHistory(params);
+  }
+
+  listProjectDrainAuditEvents(
+    projectKey: string,
+    options: { limit?: number; offset?: number } = {}
+  ): { items: DrainAuditEventRecord[]; limit: number; offset: number; has_more: boolean; total: number } {
+    return this.projectHistoryReader.listProjectDrainAuditEvents(projectKey, options);
   }
 
   appendBlockedInputEvent(params: AppendBlockedInputEventParams): string {
