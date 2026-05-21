@@ -23,6 +23,18 @@ bundle `src/api/dashboard-client/entry.ts` into
 so the runtime `renderDashboardClientJs(config)` API can return a string without
 requiring a browser build step at request time.
 
+Freshness is enforced by:
+
+```bash
+npm run check:dashboard-client
+```
+
+The check runs the same bundle operation in memory, compares the exact expected
+`src/api/dashboard-assets/generated-client.ts` contents to the committed file,
+and fails with instructions to run `npm run build:dashboard-client` when the
+generated asset is stale. `npm run check:meta` runs this guard so governed PR
+submission cannot pass with a stale served dashboard client.
+
 ## Runtime Wrapper
 
 `src/api/dashboard-assets/client.ts` remains the public asset facade. It
@@ -47,7 +59,7 @@ After this change:
 - `src/api/dashboard-assets/client.ts`: 15 lines
 - `src/api/dashboard-assets/generated-client.ts`: 4 generated lines
 - `src/api/dashboard-client/*.ts`: 3,340 authored lines
-- `scripts/build-dashboard-client.js`: 33 lines
+- `scripts/build-dashboard-client.js`: 47 lines
 
 ## Coverage Map
 
@@ -57,20 +69,34 @@ After this change:
   labels, API errors, token fallback, and aggregate-only split behavior:
   `tests/api/dashboard-client.test.ts`
 - Connection state labels/classes, polling fallback scheduling, and SSE refresh
-  envelope handling: `tests/api/dashboard-client.test.ts`
-- Running issue filter behavior: `tests/api/dashboard-client.test.ts`
-- Operator action request payload construction for resume, cancel, requeue-style
-  actions, and blocked-input submission: `tests/api/dashboard-client.test.ts`
-- Stopped-run recovery normalization, merge behavior, and status labels:
+  envelope handling, refresh request shape, diagnostics loading, history
+  fallback rows, and UI state load/save recovery:
   `tests/api/dashboard-client.test.ts`
-- Project history project-key discovery, summary helpers, health fallback text,
-  fact badge classes, and empty-row rendering:
+- Running issue filter behavior plus running/retry/blocked empty and populated
+  row rendering, including aggregate-only token UI behavior:
   `tests/api/dashboard-client.test.ts`
-- Generated asset execution, full SSE/polling fallback behavior, refresh
-  requests, diagnostics loading, running/retry/blocked row rendering, issue
-  drilldown/timeline/raw event rendering, stopped-run lazy loading, project
-  history list/detail behavior, operator action submission, UI state
-  persistence, and aggregate-only token UI behavior:
+- Overview KPI rendering, missing/null value handling, aggregate-only token
+  display, API degraded banner states, action-required grouping, retry summary,
+  and operator transition row derivation: `tests/api/dashboard-client.test.ts`
+- Issue drilldown rendering, operator explainer states, diagnostics timeline
+  lanes, blocker/root-cause display helpers, capability warnings, raw event
+  display, issue load success, diagnostics-load-failed, and issue-load-failed
+  fallback paths: `tests/api/dashboard-client.test.ts`
+- Operator actions: request payload construction plus resume, cancel, requeue,
+  blocked-input submission, reason-note enforcement, confirmation behavior,
+  endpoint paths, refresh after success, and failure status text:
+  `tests/api/dashboard-client.test.ts`
+- Stopped-run recovery: normalization, merge behavior, status labels, lazy
+  unloaded state, loaded empty state, loaded rows, localStorage
+  acknowledgement, load success, and recovery API failure:
+  `tests/api/dashboard-client.test.ts`
+- Project history: project-key discovery, summary helpers, health fallback text,
+  fact badges, empty/loading/error states, list endpoint construction, list
+  success, fallback health loading, detail endpoint construction, detail
+  success, and detail failure rendering: `tests/api/dashboard-client.test.ts`
+- Generated asset execution and browser-packaging regression coverage:
   `tests/api/dashboard-assets.test.ts`
+- Generated asset freshness:
+  `npm run check:dashboard-client` and `npm run check:meta`
 - `/dashboard/client.js` route and content type:
   `tests/api/server-dashboard-assets.test.ts`
