@@ -309,6 +309,311 @@ describe('LocalApiServer state API', () => {
     expect(exitDrainMode).toHaveBeenCalledWith({ reason: 'restart complete' });
   });
 
+  it('waits for Drain Mode quiescence and returns structured blocker details on timeout', async () => {
+    let state = makeState({
+      drain_mode: {
+        active: true,
+        entered_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        reason: 'operator restart'
+      },
+      running: new Map([
+        [
+          'issue-1',
+          makeRunningEntry({
+            issue: makeIssue({ id: 'issue-1', identifier: 'ABC-1' }),
+            identifier: 'ABC-1',
+            run_id: 'run-1',
+            issue_run_id: 'issue-run-1',
+            attempt_id: 'attempt-1'
+          })
+        ]
+      ]),
+      quiescence: {
+        safe_to_shutdown: false,
+        state: 'blocked',
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        blockers: [
+          {
+            category: 'active_worker',
+            count: 1,
+            detail: 'ABC-1 is still running',
+            issue_identifiers: ['ABC-1']
+          }
+        ],
+        blocker_counts: {
+          active_worker: 1,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0
+        }
+      }
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      nowMs: () => Date.parse('2026-04-10T10:04:30.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const timeoutResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/wait`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ timeout_ms: 5 })
+    });
+    const timeoutPayload = (await timeoutResponse.json()) as any;
+
+    expect(timeoutResponse.status).toBe(408);
+    expect(timeoutPayload).toMatchObject({
+      success: false,
+      status: 'timeout',
+      reason: 'timeout'
+    });
+    expect(timeoutPayload.blockers).toContainEqual({
+      category: 'active_worker',
+      count: 1,
+      issue_identifiers: ['ABC-1'],
+      run_identifiers: ['run-1', 'issue-run-1', 'attempt-1'],
+      reason: 'ABC-1 is still running'
+    });
+
+    setTimeout(() => {
+      state = makeState({
+        drain_mode: {
+          active: true,
+          entered_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+          updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+          reason: 'operator restart'
+        },
+        quiescence: {
+          safe_to_shutdown: true,
+          state: 'safe',
+          updated_at_ms: Date.parse('2026-04-10T10:04:35.000Z'),
+          blockers: [],
+          blocker_counts: {
+            active_worker: 0,
+            live_codex_app_server_process: 0,
+            pending_retry: 0,
+            in_flight_tracker_write: 0,
+            persistence_history_write: 0,
+            unknown_degraded_blocker_source_health: 0
+          }
+        }
+      });
+    }, 10);
+
+    const successResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/wait`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ timeout_ms: 200 })
+    });
+    const successPayload = (await successResponse.json()) as any;
+
+    expect(successResponse.status).toBe(200);
+    expect(successPayload).toMatchObject({
+      success: true,
+      status: 'safe_to_shutdown',
+      reason: 'quiescent',
+      blockers: []
+    });
+    expect(successPayload.quiescence).toMatchObject({ safe_to_shutdown: true, state: 'safe' });
+  });
+
+  it('refuses safe shutdown while blocked unless the operator explicitly overrides', async () => {
+    const shutdown = vi.fn(async () => undefined);
+    const state = makeState({
+      drain_mode: {
+        active: true,
+        entered_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        reason: 'operator restart'
+      },
+      retry_attempts: new Map([
+        [
+          'issue-2',
+          {
+            issue_id: 'issue-2',
+            identifier: 'ABC-2',
+            attempt: 2,
+            due_at_ms: Date.parse('2026-04-10T10:05:00.000Z'),
+            error: 'retry pending',
+            worker_host: null,
+            workspace_path: null,
+            provisioner_type: 'none',
+            branch_name: null,
+            repo_root: null,
+            workspace_exists: true,
+            workspace_git_status: 'unknown',
+            workspace_provisioned: false,
+            workspace_is_git_worktree: false,
+            stop_reason_code: 'worker_exit_abnormal',
+            stop_reason_detail: 'retry pending',
+            previous_thread_id: null,
+            previous_session_id: 'session-prev',
+            issue_run_id: 'issue-run-2',
+            previous_attempt_id: 'attempt-1',
+            timer_handle: {}
+          }
+        ]
+      ]),
+      quiescence: {
+        safe_to_shutdown: false,
+        state: 'blocked',
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        blockers: [
+          {
+            category: 'pending_retry',
+            count: 1,
+            detail: 'ABC-2 has a pending retry',
+            issue_identifiers: ['ABC-2']
+          }
+        ],
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 1,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0
+        }
+      }
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      shutdownSource: {
+        shutdown
+      },
+      nowMs: () => Date.parse('2026-04-10T10:04:30.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const refused = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restart upgrade' })
+    });
+    const refusedPayload = (await refused.json()) as any;
+
+    expect(refused.status).toBe(409);
+    expect(refusedPayload).toMatchObject({
+      success: false,
+      status: 'blocked',
+      reason: 'blockers_present'
+    });
+    expect(refusedPayload.blockers).toContainEqual({
+      category: 'pending_retry',
+      count: 1,
+      issue_identifiers: ['ABC-2'],
+      run_identifiers: ['issue-run-2', 'attempt-1'],
+      reason: 'ABC-2 has a pending retry'
+    });
+    expect(shutdown).not.toHaveBeenCalled();
+
+    const override = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restart upgrade', override: true })
+    });
+
+    expect(override.status).toBe(202);
+    expect(await override.json()).toMatchObject({
+      success: true,
+      status: 'shutdown_requested',
+      mode: 'override',
+      reason: 'operator_override'
+    });
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+
+    const repeated = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restart upgrade', override: true })
+    });
+
+    expect(repeated.status).toBe(202);
+    expect(await repeated.json()).toMatchObject({
+      success: true,
+      status: 'shutdown_requested',
+      idempotent_replay: true
+    });
+    expect(shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('broadcasts state snapshots when wait and shutdown control status changes', async () => {
+    const state = makeState({
+      drain_mode: {
+        active: true,
+        entered_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        reason: 'operator restart'
+      },
+      quiescence: {
+        safe_to_shutdown: true,
+        state: 'safe',
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        blockers: [],
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0
+        }
+      }
+    });
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      shutdownSource: {
+        shutdown: vi.fn(async () => undefined)
+      },
+      nowMs: () => Date.parse('2026-04-10T10:04:30.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+    const streamResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/events`);
+    const eventsPromise = readSseEvents(streamResponse, 3);
+
+    await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/wait`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ timeout_ms: 25 })
+    });
+    await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restart upgrade' })
+    });
+
+    const events = await eventsPromise;
+
+    expect(events.filter((event) => event.data.type === 'state_snapshot')).toHaveLength(3);
+  });
+
   it('serves GET /api/v1/state with bounded transcript diagnostic summaries instead of raw records', async () => {
     const state = makeState({
       running: new Map([

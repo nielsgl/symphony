@@ -30,6 +30,9 @@ import {
 } from './thread-diagnostics';
 import type {
   ApiDiagnosticsResponse,
+  ApiDrainControlBlocker,
+  ApiDrainShutdownResponse,
+  ApiDrainWaitResponse,
   ApiIssueResponse,
   ApiEventEnvelope,
   ApiIssueRuntimeDiagnosticsResponse,
@@ -103,6 +106,7 @@ export class LocalApiServer {
   private readonly refreshCoalescer: RefreshCoalescer;
   private readonly diagnosticsSource?: LocalApiServerOptions['diagnosticsSource'];
   private readonly drainControlSource?: LocalApiServerOptions['drainControlSource'];
+  private readonly shutdownSource?: LocalApiServerOptions['shutdownSource'];
   private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
   private readonly issueControlSource?: LocalApiServerOptions['issueControlSource'];
   private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
@@ -121,6 +125,7 @@ export class LocalApiServer {
   private lastHealthSignature: string | null;
   private readonly streamDiagnostics: StreamDiagnosticsState;
   private readonly liveTokenFallbackCache: Map<string, LiveTokenFallbackCacheEntry>;
+  private shutdownOutcome: ApiDrainShutdownResponse | null;
 
   constructor(options: LocalApiServerOptions) {
     this.host = options.host ?? '127.0.0.1';
@@ -129,6 +134,7 @@ export class LocalApiServer {
     this.snapshotSource = options.snapshotSource;
     this.diagnosticsSource = options.diagnosticsSource;
     this.drainControlSource = options.drainControlSource;
+    this.shutdownSource = options.shutdownSource;
     this.workflowControlSource = options.workflowControlSource;
     this.issueControlSource = options.issueControlSource;
     this.dashboardConfig = options.dashboardConfig ?? {
@@ -154,6 +160,7 @@ export class LocalApiServer {
     this.heartbeatHandle = null;
     this.lastHealthSignature = null;
     this.liveTokenFallbackCache = new Map();
+    this.shutdownOutcome = null;
     this.streamDiagnostics = createStreamDiagnosticsState();
 
     this.server = http.createServer((req, res) => {
@@ -540,6 +547,159 @@ export class LocalApiServer {
     };
   }
 
+  private readDrainQuiescenceProjection(): { state: OrchestratorState; quiescence: ApiDrainWaitResponse['quiescence'] } {
+    const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
+    return {
+      state,
+      quiescence: this.snapshotService.projectQuiescence(state)
+    };
+  }
+
+  private projectDrainControlBlockers(
+    state: OrchestratorState,
+    quiescence: ApiDrainWaitResponse['quiescence']
+  ): ApiDrainControlBlocker[] {
+    const runningByIdentifier = new Map(Array.from(state.running.values()).map((entry) => [entry.identifier, entry]));
+    const retryByIdentifier = new Map(Array.from(state.retry_attempts.values()).map((entry) => [entry.identifier, entry]));
+
+    return quiescence.blockers.map((blocker) => {
+      const runIdentifiers = new Set<string>();
+      for (const issueIdentifier of blocker.issue_identifiers) {
+        const running = runningByIdentifier.get(issueIdentifier);
+        if (running) {
+          for (const id of [running.run_id, running.issue_run_id, running.attempt_id]) {
+            if (id) {
+              runIdentifiers.add(id);
+            }
+          }
+        }
+
+        const retry = retryByIdentifier.get(issueIdentifier);
+        if (retry) {
+          for (const id of [retry.issue_run_id, retry.previous_attempt_id]) {
+            if (id) {
+              runIdentifiers.add(id);
+            }
+          }
+        }
+      }
+
+      return {
+        category: blocker.category,
+        count: blocker.count,
+        issue_identifiers: [...blocker.issue_identifiers],
+        run_identifiers: [...runIdentifiers],
+        reason: blocker.detail
+      };
+    });
+  }
+
+  private parseDrainControlTimeoutMs(parsed: Record<string, unknown>, requestUrl: URL): number {
+    const raw = parsed.timeout_ms ?? requestUrl.searchParams.get('timeout_ms');
+    if (raw === undefined || raw === null || raw === '') {
+      return 30_000;
+    }
+    const value = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isInteger(value) || value < 0 || value > 300_000) {
+      throw new LocalApiError('invalid_drain_control_timeout', 'timeout_ms must be an integer between 0 and 300000', 400);
+    }
+    return value;
+  }
+
+  private async waitForDrainQuiescence(timeoutMs: number): Promise<ApiDrainWaitResponse> {
+    const startedAtMonotonicMs = performance.now();
+    this.broadcastStateSnapshot('drain_wait_started');
+
+    let latest = this.readDrainQuiescenceProjection();
+    while (!latest.quiescence.safe_to_shutdown) {
+      const elapsedMs = Math.max(0, Math.round(performance.now() - startedAtMonotonicMs));
+      if (elapsedMs >= timeoutMs) {
+        const response: ApiDrainWaitResponse = {
+          success: false,
+          status: 'timeout',
+          reason: 'timeout',
+          waited_ms: elapsedMs,
+          timed_out: true,
+          quiescence: latest.quiescence,
+          blockers: this.projectDrainControlBlockers(latest.state, latest.quiescence)
+        };
+        this.broadcastStateSnapshot('drain_wait_timeout');
+        return response;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, timeoutMs - elapsedMs)));
+      latest = this.readDrainQuiescenceProjection();
+    }
+
+    const response: ApiDrainWaitResponse = {
+      success: true,
+      status: 'safe_to_shutdown',
+      reason: 'quiescent',
+      waited_ms: Math.max(0, Math.round(performance.now() - startedAtMonotonicMs)),
+      timed_out: false,
+      quiescence: latest.quiescence,
+      blockers: []
+    };
+    this.broadcastStateSnapshot('drain_wait_succeeded');
+    return response;
+  }
+
+  private buildBlockedShutdownResponse(
+    state: OrchestratorState,
+    quiescence: ApiDrainShutdownResponse['quiescence'],
+    override: boolean
+  ): ApiDrainShutdownResponse {
+    const requestedAtMs = this.nowMs();
+    return {
+      success: false,
+      status: 'blocked',
+      mode: override ? 'override' : 'default',
+      reason: 'blockers_present',
+      message: 'Drain Mode shutdown refused because the runtime is not quiescent',
+      requested_at: new Date(requestedAtMs).toISOString(),
+      requested_at_ms: requestedAtMs,
+      idempotent_replay: false,
+      quiescence,
+      blockers: this.projectDrainControlBlockers(state, quiescence)
+    };
+  }
+
+  private buildAcceptedShutdownResponse(
+    quiescence: ApiDrainShutdownResponse['quiescence'],
+    override: boolean
+  ): ApiDrainShutdownResponse {
+    const requestedAtMs = this.nowMs();
+    return {
+      success: true,
+      status: 'shutdown_requested',
+      mode: override ? 'override' : 'default',
+      reason: override ? 'operator_override' : 'quiescent',
+      message: override
+        ? 'Operator override accepted; shutdown has been requested despite current blockers'
+        : 'Runtime is quiescent; shutdown has been requested',
+      requested_at: new Date(requestedAtMs).toISOString(),
+      requested_at_ms: requestedAtMs,
+      idempotent_replay: false,
+      quiescence,
+      blockers: []
+    };
+  }
+
+  private scheduleSafeShutdown(): void {
+    setImmediate(() => {
+      void (this.shutdownSource?.shutdown() ?? this.close()).catch((error) => {
+        this.logger?.log({
+          level: 'error',
+          event: CANONICAL_EVENT.runtime.stopped,
+          message: 'safe shutdown request failed',
+          context: {
+            error: error instanceof Error ? error.message : 'unknown'
+          }
+        });
+      });
+    });
+  }
+
   private buildDiagnosticsPayload(): TimedDiagnosticsPayload {
     return buildDiagnosticsPayload({
       diagnosticsSource: this.diagnosticsSource,
@@ -777,6 +937,54 @@ export class LocalApiServer {
               sendJson(response, 202, {
                 drain_mode: this.projectDrainControlState(drainMode)
               });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/drain-mode\/wait$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response) => {
+              const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+              const parsed = await readOptionalJsonObject(request, 'invalid_drain_control_submit');
+              const timeoutMs = this.parseDrainControlTimeoutMs(parsed, requestUrl);
+              const payload = await this.waitForDrainQuiescence(timeoutMs);
+              sendJson(response, payload.success ? 200 : 408, payload);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/drain-mode\/shutdown$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response) => {
+              if (this.shutdownOutcome) {
+                sendJson(response, 202, {
+                  ...this.shutdownOutcome,
+                  idempotent_replay: true
+                });
+                return;
+              }
+
+              const parsed = await readOptionalJsonObject(request, 'invalid_drain_control_submit');
+              const override = parsed.override === true;
+              const { state, quiescence } = this.readDrainQuiescenceProjection();
+              if (!quiescence.safe_to_shutdown && !override) {
+                const payload = this.buildBlockedShutdownResponse(state, quiescence, false);
+                this.broadcastStateSnapshot('drain_shutdown_blocked');
+                sendJson(response, 409, payload);
+                return;
+              }
+
+              const payload = this.buildAcceptedShutdownResponse(quiescence, override);
+              this.shutdownOutcome = payload;
+              this.broadcastStateSnapshot(override ? 'drain_shutdown_override_requested' : 'drain_shutdown_requested');
+              sendJson(response, 202, payload);
+              this.scheduleSafeShutdown();
             }
           }
         ]
