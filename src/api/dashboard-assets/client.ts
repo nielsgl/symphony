@@ -1,5 +1,6 @@
 import { GENERATED_DASHBOARD_CLIENT_JS } from './generated-client';
-import { DEFAULT_DASHBOARD_CLIENT_CONFIG, resolveDashboardClientConstants } from '../dashboard-client/config';
+import { DEFAULT_DASHBOARD_CLIENT_CONFIG } from '../dashboard-client/config';
+import { resolveDashboardClientConstants } from '../dashboard-client/server-config';
 import type { DashboardClientConfig } from './types';
 
 export function renderDashboardClientJs(config: DashboardClientConfig = DEFAULT_DASHBOARD_CLIENT_CONFIG): string {
