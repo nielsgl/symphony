@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { redactUnknown } from '../security/redaction';
+import { AppServerLedgerStore } from './app-server-ledger-store';
 import {
   ExecutionGraphWriter,
   type AppendAttemptParams,
@@ -19,9 +20,9 @@ import {
   type AppendTrackerTicketSnapshotParams,
   type AppendTurnParams
 } from './execution-graph-writer';
-import { buildHistoryPayloadDetails } from './history-payload-policy';
 import { IdentityProjectionStore, parseDurableIdentity } from './identity-projection-store';
 import { ProjectHistoryReader } from './project-history-reader';
+import { RuntimeStateStore } from './runtime-state-store';
 import { RunHistoryStore, type RunHistoryIdentityProjection } from './run-history-store';
 import {
   createBasePersistenceSchema,
@@ -91,34 +92,6 @@ function asExecutionGraphId(kind: string, parts: Array<string | number | null | 
   return `${kind}_${hash}`;
 }
 
-function parseNullableJsonObject(value: string | null): Record<string, unknown> | null {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseHistoryPayloadTruncation(value: string): AppServerEventLedgerRecord['truncation'] {
-  const parsed = JSON.parse(value) as AppServerEventLedgerRecord['truncation'];
-  return {
-    truncated: Boolean(parsed.truncated),
-    original_bytes: Number(parsed.original_bytes),
-    excerpt_bytes: Number(parsed.excerpt_bytes),
-    max_excerpt_bytes: Number(parsed.max_excerpt_bytes)
-  };
-}
-
-function ensureMonotonicTimestamp(next: string, previous: string | null | undefined, label: string): void {
-  if (previous && next < previous) {
-    throw new Error(`${label} timestamp must be monotonic`);
-  }
-}
-
 export class SqlitePersistenceStore {
   private readonly context: PersistenceStoreContext;
   private readonly dbPath: string;
@@ -130,6 +103,8 @@ export class SqlitePersistenceStore {
   private readonly identityProjectionStore: IdentityProjectionStore;
   private readonly runHistoryStore: RunHistoryStore;
   private readonly projectHistoryReader: ProjectHistoryReader;
+  private readonly runtimeStateStore: RuntimeStateStore;
+  private readonly appServerLedgerStore: AppServerLedgerStore;
   private transactionDepth = 0;
   private readonly db: PersistenceDatabase;
 
@@ -172,6 +147,14 @@ export class SqlitePersistenceStore {
       transaction: (fn) => this.transaction(fn),
       identityProjection: runHistoryIdentityProjection,
       executionGraphWriter: this.executionGraphWriter
+    });
+    this.runtimeStateStore = new RuntimeStateStore({
+      db: this.db,
+      nowMs: this.nowMs
+    });
+    this.appServerLedgerStore = new AppServerLedgerStore({
+      db: this.db,
+      nowMs: this.nowMs
     });
     this.projectHistoryReader = new ProjectHistoryReader({
       db: this.db
@@ -266,84 +249,11 @@ export class SqlitePersistenceStore {
     turn_id?: string | null;
     app_server_event_id?: string;
   }): string {
-    this.ensureAppServerEventReferences({ ...params, observed_at: params.observed_at });
-    const payloadDetails = buildHistoryPayloadDetails({
-      payloadClass: params.payload_class,
-      sourceEventId: params.source_event_id,
-      sourceEventName: params.source_event_name,
-      rawPayload: params.raw_payload,
-      summary: params.summary,
-      summaryFields: params.summary_fields,
-      unavailableReasonCode: params.unavailable_reason_code
-    });
-    const appServerEventId =
-      params.app_server_event_id ??
-      asExecutionGraphId('app_server_event', [
-        params.issue_run_id,
-        params.attempt_id,
-        params.thread_id,
-        params.turn_id,
-        params.source_event_id,
-        params.observed_at
-      ]);
-
-    this.db
-      .prepare(
-        `INSERT INTO history_app_server_event
-          (app_server_event_id, issue_run_id, attempt_id, thread_id, turn_id, observed_at,
-           source_event_id, source_event_name, payload_class, detail_status, redaction_status,
-           summary, summary_fields, redacted_excerpt, truncation, unavailable_reason_code,
-           full_payload_stored, policy_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        appServerEventId,
-        params.issue_run_id,
-        params.attempt_id ?? null,
-        params.thread_id ?? null,
-        params.turn_id ?? null,
-        params.observed_at,
-        payloadDetails.source_event_id,
-        payloadDetails.source_event_name,
-        payloadDetails.payload_class,
-        payloadDetails.detail_status,
-        payloadDetails.redaction_status,
-        payloadDetails.summary,
-        JSON.stringify(payloadDetails.summary_fields),
-        payloadDetails.redacted_excerpt,
-        JSON.stringify(payloadDetails.truncation),
-        payloadDetails.unavailable_reason_code,
-        payloadDetails.full_payload_stored ? 1 : 0,
-        payloadDetails.policy_version
-      );
-    return appServerEventId;
+    return this.appServerLedgerStore.appendAppServerEvent(params);
   }
 
   listAppServerEventLedger(issueRunId: string): AppServerEventLedgerRecord[] {
-    const rows = this.db
-      .prepare(
-        `SELECT app_server_event_id, issue_run_id, attempt_id, thread_id, turn_id, observed_at,
-          source_event_id, source_event_name, payload_class, detail_status, redaction_status,
-          summary, summary_fields, redacted_excerpt, truncation, unavailable_reason_code,
-          full_payload_stored, policy_version
-         FROM history_app_server_event
-         WHERE issue_run_id = ?
-         ORDER BY observed_at ASC, app_server_event_id ASC`
-      )
-      .all(issueRunId) as Array<
-      Omit<AppServerEventLedgerRecord, 'summary_fields' | 'truncation' | 'full_payload_stored'> & {
-        summary_fields: string;
-        truncation: string;
-        full_payload_stored: 0 | 1;
-      }
-    >;
-
-    return rows.map((row) => ({
-      ...row,
-      summary_fields: parseNullableJsonObject(row.summary_fields) ?? {},
-      truncation: parseHistoryPayloadTruncation(row.truncation),
-      full_payload_stored: row.full_payload_stored === 1
-    }));
+    return this.appServerLedgerStore.listAppServerEventLedger(issueRunId);
   }
 
   appendIssueRun(params: AppendIssueRunParams): string {
@@ -990,22 +900,6 @@ export class SqlitePersistenceStore {
     };
   }
 
-  private ensureAppServerEventReferences(params: {
-    issue_run_id: string;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    observed_at?: string;
-  }): void {
-    this.ensureStateTransitionReferences({
-      issue_run_id: params.issue_run_id,
-      attempt_id: params.attempt_id,
-      thread_id: params.thread_id,
-      turn_id: params.turn_id,
-      transitioned_at: params.observed_at ?? asIso(this.nowMs())
-    });
-  }
-
   private ensureRunDiagnosticColumns(): void {
     const columns = this.db.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>;
     const existing = new Set(columns.map((column) => column.name));
@@ -1065,183 +959,43 @@ export class SqlitePersistenceStore {
   }
 
   saveUiState(state: UiContinuityState): void {
-    const payload = JSON.stringify(redactUnknown(state));
-    this.db
-      .prepare(
-        'INSERT INTO ui_state (singleton_id, payload, updated_at) VALUES (1, ?, ?) ON CONFLICT(singleton_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at'
-      )
-      .run(payload, asIso(this.nowMs()));
+    this.runtimeStateStore.saveUiState(state);
   }
 
   loadUiState(): UiContinuityState | null {
-    const row = this.db.prepare('SELECT payload FROM ui_state WHERE singleton_id = 1').get() as { payload: string } | undefined;
-    if (!row) {
-      return null;
-    }
-
-    return JSON.parse(row.payload) as UiContinuityState;
+    return this.runtimeStateStore.loadUiState();
   }
 
   upsertBreaker(record: BreakerMetadataRecord): void {
-    this.db
-      .prepare(
-        `INSERT INTO issue_breakers
-        (issue_id, issue_identifier, breaker_active, breaker_hit_count, breaker_window_minutes, breaker_first_hit_at, breaker_last_hit_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(issue_id) DO UPDATE SET
-          issue_identifier = excluded.issue_identifier,
-          breaker_active = excluded.breaker_active,
-          breaker_hit_count = excluded.breaker_hit_count,
-          breaker_window_minutes = excluded.breaker_window_minutes,
-          breaker_first_hit_at = excluded.breaker_first_hit_at,
-          breaker_last_hit_at = excluded.breaker_last_hit_at,
-          updated_at = excluded.updated_at`
-      )
-      .run(
-        record.issue_id,
-        record.issue_identifier,
-        record.breaker_active ? 1 : 0,
-        record.breaker_hit_count,
-        record.breaker_window_minutes,
-        record.breaker_first_hit_at,
-        record.breaker_last_hit_at,
-        asIso(this.nowMs())
-      );
+    this.runtimeStateStore.upsertBreaker(record);
   }
 
   deleteBreaker(issueId: string): void {
-    this.db.prepare('DELETE FROM issue_breakers WHERE issue_id = ?').run(issueId);
+    this.runtimeStateStore.deleteBreaker(issueId);
   }
 
   listBreakers(): BreakerMetadataRecord[] {
-    const rows = this.db
-      .prepare(
-        'SELECT issue_id, issue_identifier, breaker_active, breaker_hit_count, breaker_window_minutes, breaker_first_hit_at, breaker_last_hit_at FROM issue_breakers ORDER BY issue_identifier ASC'
-      )
-      .all() as Array<{
-      issue_id: string;
-      issue_identifier: string;
-      breaker_active: number;
-      breaker_hit_count: number;
-      breaker_window_minutes: number;
-      breaker_first_hit_at: string | null;
-      breaker_last_hit_at: string | null;
-    }>;
-    return rows.map((row) => ({
-      issue_id: row.issue_id,
-      issue_identifier: row.issue_identifier,
-      breaker_active: row.breaker_active === 1,
-      breaker_hit_count: row.breaker_hit_count,
-      breaker_window_minutes: row.breaker_window_minutes,
-      breaker_first_hit_at: row.breaker_first_hit_at,
-      breaker_last_hit_at: row.breaker_last_hit_at
-    }));
+    return this.runtimeStateStore.listBreakers();
   }
 
   upsertBlockedInput(issueId: string, payload: string): void {
-    this.db
-      .prepare(
-        `INSERT INTO blocked_inputs (issue_id, payload, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(issue_id) DO UPDATE SET
-           payload = excluded.payload,
-           updated_at = excluded.updated_at`
-      )
-      .run(issueId, payload, asIso(this.nowMs()));
+    this.runtimeStateStore.upsertBlockedInput(issueId, payload);
   }
 
   deleteBlockedInput(issueId: string): void {
-    this.db.prepare('DELETE FROM blocked_inputs WHERE issue_id = ?').run(issueId);
+    this.runtimeStateStore.deleteBlockedInput(issueId);
   }
 
   listBlockedInputs(): PersistedBlockedInputRecord[] {
-    return this.db
-      .prepare('SELECT issue_id, payload, updated_at FROM blocked_inputs ORDER BY updated_at DESC')
-      .all() as PersistedBlockedInputRecord[];
+    return this.runtimeStateStore.listBlockedInputs();
   }
 
   upsertOperatorActions(issueId: string, payload: string): void {
-    this.db
-      .prepare(
-        `INSERT INTO operator_actions (issue_id, payload, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(issue_id) DO UPDATE SET
-           payload = excluded.payload,
-           updated_at = excluded.updated_at`
-      )
-      .run(issueId, payload, asIso(this.nowMs()));
+    this.runtimeStateStore.upsertOperatorActions(issueId, payload);
   }
 
   listOperatorActions(): PersistedOperatorActionsRecord[] {
-    return this.db
-      .prepare('SELECT issue_id, payload, updated_at FROM operator_actions ORDER BY updated_at DESC')
-      .all() as PersistedOperatorActionsRecord[];
-  }
-
-  private ensureStateTransitionReferences(params: {
-    issue_run_id: string;
-    attempt_id?: string | null;
-    thread_id?: string | null;
-    turn_id?: string | null;
-    transitioned_at: string;
-  }): void {
-    const issueRun = this.db.prepare('SELECT started_at FROM issue_run WHERE issue_run_id = ?').get(params.issue_run_id) as
-      | { started_at: string }
-      | undefined;
-    if (!issueRun) {
-      throw new Error(`issue_run ${params.issue_run_id} does not exist`);
-    }
-    ensureMonotonicTimestamp(params.transitioned_at, issueRun.started_at, 'state_transition');
-
-    if (params.attempt_id) {
-      const attempt = this.db.prepare('SELECT issue_run_id, started_at FROM attempt WHERE attempt_id = ?').get(params.attempt_id) as
-        | { issue_run_id: string; started_at: string }
-        | undefined;
-      if (!attempt || attempt.issue_run_id !== params.issue_run_id) {
-        throw new Error(`attempt ${params.attempt_id} does not belong to issue_run ${params.issue_run_id}`);
-      }
-      ensureMonotonicTimestamp(params.transitioned_at, attempt.started_at, 'state_transition');
-    }
-
-    if (params.thread_id) {
-      const thread = this.db
-        .prepare(
-          `SELECT thread.started_at, thread.attempt_id, attempt.issue_run_id
-           FROM thread
-           JOIN attempt ON attempt.attempt_id = thread.attempt_id
-           WHERE thread.thread_id = ?`
-        )
-        .get(params.thread_id) as { started_at: string; attempt_id: string; issue_run_id: string } | undefined;
-      if (!thread || thread.issue_run_id !== params.issue_run_id) {
-        throw new Error(`thread ${params.thread_id} does not belong to issue_run ${params.issue_run_id}`);
-      }
-      if (params.attempt_id && thread.attempt_id !== params.attempt_id) {
-        throw new Error(`thread ${params.thread_id} does not belong to attempt ${params.attempt_id}`);
-      }
-      ensureMonotonicTimestamp(params.transitioned_at, thread.started_at, 'state_transition');
-    }
-
-    if (params.turn_id) {
-      const turn = this.db
-        .prepare(
-          `SELECT turn.started_at, turn.thread_id, thread.attempt_id, attempt.issue_run_id
-           FROM turn
-           JOIN thread ON thread.thread_id = turn.thread_id
-           JOIN attempt ON attempt.attempt_id = thread.attempt_id
-           WHERE turn.turn_id = ?`
-        )
-        .get(params.turn_id) as { started_at: string; thread_id: string; attempt_id: string; issue_run_id: string } | undefined;
-      if (!turn || turn.issue_run_id !== params.issue_run_id) {
-        throw new Error(`turn ${params.turn_id} does not belong to issue_run ${params.issue_run_id}`);
-      }
-      if (params.attempt_id && turn.attempt_id !== params.attempt_id) {
-        throw new Error(`turn ${params.turn_id} does not belong to attempt ${params.attempt_id}`);
-      }
-      if (params.thread_id && turn.thread_id !== params.thread_id) {
-        throw new Error(`turn ${params.turn_id} does not belong to thread ${params.thread_id}`);
-      }
-      ensureMonotonicTimestamp(params.transitioned_at, turn.started_at, 'state_transition');
-    }
+    return this.runtimeStateStore.listOperatorActions();
   }
 
   pruneExpiredRuns(): number {
