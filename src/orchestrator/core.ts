@@ -464,6 +464,12 @@ export class OrchestratorCore {
     const counts = emptyDrainBlockerCounts();
     const runningEntries = Array.from(this.state.running.values());
     const runningIssueIdentifiers = runningEntries.map((entry) => entry.identifier);
+    const runningRunIdentifiers = runningEntries.flatMap((entry) =>
+      [entry.run_id, entry.issue_run_id, entry.attempt_id].filter((id): id is string => Boolean(id))
+    );
+    const runningThreadIdentifiers = runningEntries
+      .map((entry) => entry.thread_id)
+      .filter((id): id is string => Boolean(id));
     if (runningEntries.length > 0) {
       counts.active_worker = runningEntries.length;
       blockers.push({
@@ -473,7 +479,9 @@ export class OrchestratorCore {
           runningEntries.length === 1
             ? `${runningIssueIdentifiers[0]} is still running`
             : `${runningEntries.length} workers are still running`,
-        issue_identifiers: runningIssueIdentifiers
+        issue_identifiers: runningIssueIdentifiers,
+        run_identifiers: runningRunIdentifiers,
+        thread_identifiers: runningThreadIdentifiers
       });
     }
 
@@ -487,7 +495,11 @@ export class OrchestratorCore {
           liveCodexEntries.length === 1
             ? `${liveCodexEntries[0].identifier} has a live Codex app-server process`
             : `${liveCodexEntries.length} live Codex app-server processes are attached to active workers`,
-        issue_identifiers: liveCodexEntries.map((entry) => entry.identifier)
+        issue_identifiers: liveCodexEntries.map((entry) => entry.identifier),
+        run_identifiers: liveCodexEntries.flatMap((entry) =>
+          [entry.run_id, entry.issue_run_id, entry.attempt_id].filter((id): id is string => Boolean(id))
+        ),
+        thread_identifiers: liveCodexEntries.map((entry) => entry.thread_id).filter((id): id is string => Boolean(id))
       });
     }
 
@@ -501,7 +513,13 @@ export class OrchestratorCore {
           retryEntries.length === 1
             ? `${retryEntries[0].identifier} has a pending retry`
             : `${retryEntries.length} retry attempts are pending`,
-        issue_identifiers: retryEntries.map((entry) => entry.identifier)
+        issue_identifiers: retryEntries.map((entry) => entry.identifier),
+        run_identifiers: retryEntries.flatMap((entry) =>
+          [entry.issue_run_id, entry.previous_attempt_id].filter((id): id is string => Boolean(id))
+        ),
+        thread_identifiers: retryEntries
+          .map((entry) => entry.previous_thread_id)
+          .filter((id): id is string => Boolean(id))
       });
     }
 
@@ -541,7 +559,14 @@ export class OrchestratorCore {
           .join('; '),
         issue_identifiers: runningEntries
           .filter((entry) => (entry.pending_persisted_turn_ids?.length ?? 0) > 0)
-          .map((entry) => entry.identifier)
+          .map((entry) => entry.identifier),
+        run_identifiers: runningEntries
+          .filter((entry) => (entry.pending_persisted_turn_ids?.length ?? 0) > 0)
+          .flatMap((entry) => [entry.run_id, entry.issue_run_id, entry.attempt_id].filter((id): id is string => Boolean(id))),
+        thread_identifiers: runningEntries
+          .filter((entry) => (entry.pending_persisted_turn_ids?.length ?? 0) > 0)
+          .map((entry) => entry.thread_id)
+          .filter((id): id is string => Boolean(id))
       });
     }
 
@@ -1115,12 +1140,16 @@ export class OrchestratorCore {
     category: string;
     count: number;
     issue_identifiers: string[];
+    run_identifiers?: string[];
+    thread_identifiers?: string[];
     detail: string | null;
   }> {
     return blockers.map((blocker) => ({
       category: blocker.category,
       count: blocker.count,
       issue_identifiers: blocker.issue_identifiers,
+      run_identifiers: blocker.run_identifiers,
+      thread_identifiers: blocker.thread_identifiers,
       detail: blocker.detail
     }));
   }
@@ -1138,7 +1167,14 @@ export class OrchestratorCore {
     result_code: string;
     reason_note?: string | null;
     state_context: Record<string, unknown>;
-    blocker_summaries: Array<{ category: string; count: number; issue_identifiers: string[]; detail: string | null }>;
+    blocker_summaries: Array<{
+      category: string;
+      count: number;
+      issue_identifiers: string[];
+      run_identifiers?: string[];
+      thread_identifiers?: string[];
+      detail: string | null;
+    }>;
     occurred_at: string;
     observed_at: string;
   }): void {

@@ -619,6 +619,7 @@ describe('LocalApiServer state API', () => {
       count: 1,
       issue_identifiers: ['ABC-1'],
       run_identifiers: ['run-1', 'issue-run-1', 'attempt-1'],
+      thread_identifiers: ['thread-1'],
       reason: 'ABC-1 is still running'
     });
     await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(2));
@@ -643,6 +644,7 @@ describe('LocalApiServer state API', () => {
           count: 1,
           issue_identifiers: ['ABC-1'],
           run_identifiers: ['run-1', 'issue-run-1', 'attempt-1'],
+          thread_identifiers: ['thread-1'],
           detail: 'ABC-1 is still running'
         }
       ]
@@ -813,6 +815,7 @@ describe('LocalApiServer state API', () => {
       count: 1,
       issue_identifiers: ['ABC-2'],
       run_identifiers: ['issue-run-2', 'attempt-1'],
+      thread_identifiers: [],
       reason: 'ABC-2 has a pending retry'
     });
     expect(shutdown).not.toHaveBeenCalled();
@@ -830,6 +833,7 @@ describe('LocalApiServer state API', () => {
           count: 1,
           issue_identifiers: ['ABC-2'],
           run_identifiers: ['issue-run-2', 'attempt-1'],
+          thread_identifiers: [],
           detail: 'ABC-2 has a pending retry'
         }
       ]
@@ -842,11 +846,20 @@ describe('LocalApiServer state API', () => {
     });
 
     expect(override.status).toBe(202);
-    expect(await override.json()).toMatchObject({
+    const overridePayload = (await override.json()) as any;
+    expect(overridePayload).toMatchObject({
       success: true,
       status: 'shutdown_requested',
       mode: 'override',
       reason: 'operator_override'
+    });
+    expect(overridePayload.blockers).toContainEqual({
+      category: 'pending_retry',
+      count: 1,
+      issue_identifiers: ['ABC-2'],
+      run_identifiers: ['issue-run-2', 'attempt-1'],
+      thread_identifiers: [],
+      reason: 'ABC-2 has a pending retry'
     });
     await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(2));
@@ -857,7 +870,16 @@ describe('LocalApiServer state API', () => {
       result: 'accepted',
       result_code: 'operator_override',
       state_context: { mode: 'override', safe_to_shutdown: false },
-      blocker_summaries: []
+      blocker_summaries: [
+        {
+          category: 'pending_retry',
+          count: 1,
+          issue_identifiers: ['ABC-2'],
+          run_identifiers: ['issue-run-2', 'attempt-1'],
+          thread_identifiers: [],
+          detail: 'ABC-2 has a pending retry'
+        }
+      ]
     });
 
     const repeated = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {

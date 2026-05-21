@@ -566,6 +566,7 @@ export class LocalApiServer {
 
     return quiescence.blockers.map((blocker) => {
       const runIdentifiers = new Set<string>();
+      const threadIdentifiers = new Set<string>();
       for (const issueIdentifier of blocker.issue_identifiers) {
         const running = runningByIdentifier.get(issueIdentifier);
         if (running) {
@@ -573,6 +574,9 @@ export class LocalApiServer {
             if (id) {
               runIdentifiers.add(id);
             }
+          }
+          if (running.thread_id) {
+            threadIdentifiers.add(running.thread_id);
           }
         }
 
@@ -583,6 +587,9 @@ export class LocalApiServer {
               runIdentifiers.add(id);
             }
           }
+          if (retry.previous_thread_id) {
+            threadIdentifiers.add(retry.previous_thread_id);
+          }
         }
       }
 
@@ -591,6 +598,7 @@ export class LocalApiServer {
         count: blocker.count,
         issue_identifiers: [...blocker.issue_identifiers],
         run_identifiers: [...runIdentifiers],
+        thread_identifiers: [...threadIdentifiers],
         reason: blocker.detail
       };
     });
@@ -602,6 +610,7 @@ export class LocalApiServer {
       count: blocker.count,
       issue_identifiers: blocker.issue_identifiers,
       run_identifiers: blocker.run_identifiers,
+      thread_identifiers: blocker.thread_identifiers,
       detail: blocker.reason
     }));
   }
@@ -723,10 +732,12 @@ export class LocalApiServer {
   }
 
   private buildAcceptedShutdownResponse(
+    state: OrchestratorState,
     quiescence: ApiDrainShutdownResponse['quiescence'],
     override: boolean
   ): ApiDrainShutdownResponse {
     const requestedAtMs = this.nowMs();
+    const blockers = override && !quiescence.safe_to_shutdown ? this.projectDrainControlBlockers(state, quiescence) : [];
     return {
       success: true,
       status: 'shutdown_requested',
@@ -739,7 +750,7 @@ export class LocalApiServer {
       requested_at_ms: requestedAtMs,
       idempotent_replay: false,
       quiescence,
-      blockers: []
+      blockers
     };
   }
 
@@ -1049,7 +1060,7 @@ export class LocalApiServer {
                 return;
               }
 
-              const payload = this.buildAcceptedShutdownResponse(quiescence, override);
+              const payload = this.buildAcceptedShutdownResponse(state, quiescence, override);
               this.shutdownOutcome = payload;
               this.broadcastStateSnapshot(override ? 'drain_shutdown_override_requested' : 'drain_shutdown_requested');
               this.recordDrainAuditEvent({

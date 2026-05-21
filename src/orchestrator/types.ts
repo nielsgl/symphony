@@ -725,6 +725,8 @@ export interface DrainQuiescenceBlocker {
   count: number;
   detail: string;
   issue_identifiers: string[];
+  run_identifiers?: string[];
+  thread_identifiers?: string[];
 }
 
 export type DrainQuiescenceBlockerCounts = Record<DrainQuiescenceBlockerCategory, number>;

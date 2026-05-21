@@ -132,7 +132,9 @@ describe('OrchestratorCore dispatch and backpressure', () => {
         expect.objectContaining({
           category: 'active_worker',
           count: 1,
-          issue_identifiers: ['DRAIN-1']
+          issue_identifiers: ['DRAIN-1'],
+          run_identifiers: ['run-drain-1'],
+          thread_identifiers: ['thread-drain-1']
         })
       ]
     });

@@ -849,6 +849,8 @@ export interface ApiDrainQuiescenceProjection {
     count: number;
     detail: string;
     issue_identifiers: string[];
+    run_identifiers?: string[];
+    thread_identifiers?: string[];
   }>;
   blocker_counts: Record<
     | 'active_worker'
@@ -868,6 +870,7 @@ export interface ApiDrainControlBlocker {
   count: number;
   issue_identifiers: string[];
   run_identifiers: string[];
+  thread_identifiers: string[];
   reason: string;
 }
 
