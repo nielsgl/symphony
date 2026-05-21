@@ -653,6 +653,7 @@ export interface OrchestratorState {
   };
   drain_mode: DrainModeState;
   quiescence: DrainQuiescenceState;
+  runtime_identity: RuntimeBuildIdentityState | null;
   throughput: {
     current_tps: number;
     avg_tps_60s: number;
@@ -706,7 +707,9 @@ export type DrainQuiescenceBlockerCategory =
   | 'pending_retry'
   | 'in_flight_tracker_write'
   | 'persistence_history_write'
-  | 'unknown_degraded_blocker_source_health';
+  | 'unknown_degraded_blocker_source_health'
+  | 'stale_runtime'
+  | 'unknown_current_build_identity';
 
 export type DrainQuiescenceStateName = 'safe' | 'blocked';
 
@@ -732,6 +735,34 @@ export interface DrainQuiescenceState {
   updated_at_ms: number;
   blockers: DrainQuiescenceBlocker[];
   blocker_counts: DrainQuiescenceBlockerCounts;
+}
+
+export type RuntimeBuildIdentityStatus = 'current' | 'stale' | 'unknown_current';
+export type CurrentBuildIdentityStatus = 'available' | 'unknown';
+
+export interface RuntimeBuildIdentityDetails {
+  identity: string | null;
+  commit_sha: string | null;
+  source_timestamp_ms: number | null;
+}
+
+export interface CurrentRuntimeBuildIdentityDetails extends RuntimeBuildIdentityDetails {
+  status: CurrentBuildIdentityStatus;
+}
+
+export interface RuntimeBuildIdentityWarning {
+  code: 'stale_runtime_build' | 'unknown_current_build_identity';
+  severity: 'warning' | 'degraded';
+  message: string;
+  recommended_action: string;
+}
+
+export interface RuntimeBuildIdentityState {
+  process_started_at_ms: number;
+  running_build: RuntimeBuildIdentityDetails;
+  current_build: CurrentRuntimeBuildIdentityDetails;
+  status: RuntimeBuildIdentityStatus;
+  health_warning: RuntimeBuildIdentityWarning | null;
 }
 
 export interface SpawnWorkerResultSuccess {
@@ -771,6 +802,7 @@ export type SpawnWorkerResult = SpawnWorkerResultSuccess | SpawnWorkerResultFail
 export interface OrchestratorPorts {
   tracker: TrackerAdapter;
   dispatchPreflight: () => DispatchPreflightResult;
+  resolveRuntimeIdentity?: () => RuntimeBuildIdentityState | null;
   getControlPlaneHealth?: () => ControlPlaneHealthSummary | null;
   getHostLoad?: () => HostLoadSnapshot | null;
   getPersistenceHealth?: () => PersistenceHealth;

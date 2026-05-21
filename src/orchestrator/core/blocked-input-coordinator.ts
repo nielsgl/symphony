@@ -500,13 +500,19 @@ export async function resumeBlockedIssue(
     };
   }
   const preState = context.hooks.describeIssueRuntimeState(blocked.issue_id);
-  if (context.state.drain_mode.active) {
+  const runtimeIdentityBlocker =
+    context.state.runtime_identity?.status === 'stale' || context.state.runtime_identity?.status === 'unknown_current'
+      ? context.state.runtime_identity.health_warning?.message
+      : null;
+  if (context.state.drain_mode.active || runtimeIdentityBlocker) {
+    const resultCode = runtimeIdentityBlocker ? 'runtime_identity_dispatch_blocked' : 'drain_mode_active';
+    const message = runtimeIdentityBlocker ?? 'Drain Mode is active; resume is held until drain exits';
     context.hooks.recordOperatorAction(blocked.issue_id, {
       action: resume_metadata ? 'submit_input' : 'resume',
       requested_at_ms: context.nowMs(),
       result: 'rejected',
-      result_code: 'drain_mode_active',
-      message: 'Drain Mode is active; resume is held until drain exits',
+      result_code: resultCode,
+      message,
       actor: operator_context?.actor ?? null,
       reason_note: reasonNote,
       pre_state: preState,
@@ -516,13 +522,13 @@ export async function resumeBlockedIssue(
       event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
       severity: 'info',
       issue_identifier: blocked.issue_identifier,
-      detail: 'blocked issue resume held during drain mode'
+      detail: message
     });
     context.notifyObservers?.();
     return {
       ok: false,
-      code: 'drain_mode_active',
-      message: 'Drain Mode is active; resume is held until drain exits'
+      code: resultCode,
+      message
     };
   }
 
@@ -936,13 +942,19 @@ export async function submitBlockedIssueInput(
     }
   }
 
-  if (context.state.drain_mode.active) {
+  const runtimeIdentityBlocker =
+    context.state.runtime_identity?.status === 'stale' || context.state.runtime_identity?.status === 'unknown_current'
+      ? context.state.runtime_identity.health_warning?.message
+      : null;
+  if (context.state.drain_mode.active || runtimeIdentityBlocker) {
+    const resultCode = runtimeIdentityBlocker ? 'runtime_identity_dispatch_blocked' : 'drain_mode_active';
+    const message = runtimeIdentityBlocker ?? 'Drain Mode is active; input submission is held until drain exits';
     context.hooks.recordOperatorAction(blocked.issue_id, {
       action: 'submit_input',
       requested_at_ms: context.nowMs(),
       result: 'rejected',
-      result_code: 'drain_mode_active',
-      message: 'Drain Mode is active; input submission is held until drain exits',
+      result_code: resultCode,
+      message,
       actor: operatorContext.actor,
       reason_note: operatorContext.reason_note,
       pre_state: preState,
@@ -952,13 +964,13 @@ export async function submitBlockedIssueInput(
       event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
       severity: 'info',
       issue_identifier: blocked.issue_identifier,
-      detail: 'blocked input submission held during drain mode'
+      detail: message
     });
     context.notifyObservers?.();
     return {
       ok: false,
-      code: 'drain_mode_active',
-      message: 'Drain Mode is active; input submission is held until drain exits'
+      code: resultCode,
+      message
     };
   }
 

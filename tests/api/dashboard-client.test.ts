@@ -154,6 +154,9 @@ function makeDashboardElements() {
     actionRequiredTitle: new FakeElement(),
     actionRequiredSummary: new FakeElement(),
     actionRequiredGroups: new FakeElement(),
+    runtimeStaleBanner: new FakeElement(),
+    runtimeStaleTitle: new FakeElement(),
+    runtimeStaleSummary: new FakeElement(),
     apiDegradedBanner: new FakeElement(),
     apiDegradedSummary: new FakeElement(),
     snapshotErrorPanel: new FakeElement(),
@@ -611,7 +614,9 @@ describe('dashboard browser client modules', () => {
             pending_retry: 1,
             in_flight_tracker_write: 0,
             persistence_history_write: 0,
-            unknown_degraded_blocker_source_health: 0
+            unknown_degraded_blocker_source_health: 0,
+            stale_runtime: 0,
+            unknown_current_build_identity: 0
           },
           blockers: [
             {
@@ -630,6 +635,81 @@ describe('dashboard browser client modules', () => {
     expect(collectText(elements.kpiGrid)).toContain('Safe To Shutdown No');
     expect(collectText(elements.kpiGrid)).toContain('Drain Blockers 3');
     expect(elements.lastError.textContent).toContain('ABC-1 is still running');
+  });
+
+  it('renders a stale runtime warning above the overview', () => {
+    renderOverview(
+      snapshotPayload({
+        runtime_identity: {
+          process_started_at: '2026-05-21T09:00:00.000Z',
+          process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+          running_build: {
+            identity: 'runtime-old',
+            commit_sha: 'runtime-old',
+            source_timestamp: '2026-05-21T08:55:00.000Z',
+            source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+          },
+          current_build: {
+            identity: 'current-new',
+            commit_sha: 'current-new',
+            source_timestamp: '2026-05-21T09:30:00.000Z',
+            source_timestamp_ms: Date.parse('2026-05-21T09:30:00.000Z'),
+            status: 'available'
+          },
+          status: 'stale',
+          health_warning: {
+            code: 'stale_runtime_build',
+            severity: 'warning',
+            message: 'Running runtime build runtime-old is stale compared with current-new',
+            recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+          }
+        }
+      })
+    );
+
+    expect(elements.runtimeStaleBanner.className).not.toContain('hidden');
+    expect(elements.runtimeStaleTitle.textContent).toBe('Runtime build is stale');
+    expect(elements.runtimeStaleSummary.textContent).toContain('runtime-old');
+    expect(elements.runtimeStaleSummary.textContent).toContain('current-new');
+    expect(elements.runtimeStaleSummary.textContent).toContain('Process started');
+    expect(elements.runtimeStaleSummary.textContent).toContain('Enter Drain Mode');
+  });
+
+  it('renders unknown current build identity as degraded rather than stale', () => {
+    renderOverview(
+      snapshotPayload({
+        runtime_identity: {
+          process_started_at: '2026-05-21T09:00:00.000Z',
+          process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+          running_build: {
+            identity: 'runtime-sha',
+            commit_sha: 'runtime-sha',
+            source_timestamp: '2026-05-21T08:55:00.000Z',
+            source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+          },
+          current_build: {
+            identity: null,
+            commit_sha: null,
+            source_timestamp: null,
+            source_timestamp_ms: null,
+            status: 'unknown'
+          },
+          status: 'unknown_current',
+          health_warning: {
+            code: 'unknown_current_build_identity',
+            severity: 'degraded',
+            message: 'Current repository build identity is unavailable',
+            recommended_action: 'Validate the repository checkout and rerun build identity detection before dispatching new work.'
+          }
+        }
+      })
+    );
+
+    expect(elements.runtimeStaleBanner.className).not.toContain('hidden');
+    expect(elements.runtimeStaleTitle.textContent).toBe('Runtime build identity unknown');
+    expect(elements.runtimeStaleSummary.textContent).toContain('runtime-sha');
+    expect(elements.runtimeStaleSummary.textContent).toContain('Current build unknown');
+    expect(elements.runtimeStaleSummary.textContent).toContain('Validate the repository checkout');
   });
 
   it('handles refresh, diagnostics, UI state load/save, and SSE snapshot/error envelopes directly', async () => {

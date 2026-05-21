@@ -145,6 +145,19 @@ h1 {
   gap: 8px;
 }
 
+.runtime-stale-banner {
+  margin: 10px 24px 0;
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .reason-chip {
   font-size: 11px;
   padding: 4px 8px;

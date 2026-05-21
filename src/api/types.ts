@@ -399,6 +399,7 @@ export interface ApiCodexSessionTranscriptScanBudget {
 
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
+  runtime_identity: ApiRuntimeBuildIdentityProjection | null;
   drain_mode: ApiDrainModeProjection;
   quiescence: ApiDrainQuiescenceProjection;
   counts: {
@@ -800,6 +801,31 @@ export interface ApiDrainModeProjection {
   reason: string | null;
 }
 
+export interface ApiRuntimeBuildIdentityProjection {
+  process_started_at: string;
+  process_started_at_ms: number;
+  running_build: {
+    identity: string | null;
+    commit_sha: string | null;
+    source_timestamp: string | null;
+    source_timestamp_ms: number | null;
+  };
+  current_build: {
+    identity: string | null;
+    commit_sha: string | null;
+    source_timestamp: string | null;
+    source_timestamp_ms: number | null;
+    status: 'available' | 'unknown';
+  };
+  status: 'current' | 'stale' | 'unknown_current';
+  health_warning: {
+    code: 'stale_runtime_build' | 'unknown_current_build_identity';
+    severity: 'warning' | 'degraded';
+    message: string;
+    recommended_action: string;
+  } | null;
+}
+
 export interface ApiDrainQuiescenceProjection {
   safe_to_shutdown: boolean;
   state: 'safe' | 'blocked';
@@ -812,7 +838,9 @@ export interface ApiDrainQuiescenceProjection {
       | 'pending_retry'
       | 'in_flight_tracker_write'
       | 'persistence_history_write'
-      | 'unknown_degraded_blocker_source_health';
+      | 'unknown_degraded_blocker_source_health'
+      | 'stale_runtime'
+      | 'unknown_current_build_identity';
     count: number;
     detail: string;
     issue_identifiers: string[];
@@ -823,7 +851,9 @@ export interface ApiDrainQuiescenceProjection {
     | 'pending_retry'
     | 'in_flight_tracker_write'
     | 'persistence_history_write'
-    | 'unknown_degraded_blocker_source_health',
+    | 'unknown_degraded_blocker_source_health'
+    | 'stale_runtime'
+    | 'unknown_current_build_identity',
     number
   >;
 }
@@ -1347,6 +1377,7 @@ export interface LocalApiServerOptions {
 }
 
 export interface ApiDiagnosticsResponse {
+  runtime_identity: ApiRuntimeBuildIdentityProjection | null;
   drain_mode: ApiDrainModeProjection;
   quiescence: ApiDrainQuiescenceProjection;
   active_profile: SecurityProfile;

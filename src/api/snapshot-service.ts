@@ -25,6 +25,7 @@ import type {
   ApiDrainQuiescenceProjection,
   ApiIssueResponse,
   ApiIssueRuntimeDiagnosticsResponse,
+  ApiRuntimeBuildIdentityProjection,
   ApiStateResponse
 } from './types';
 
@@ -47,6 +48,34 @@ export class SnapshotService {
       updated_at: state.drain_mode.updated_at_ms === null ? null : asIsoDate(state.drain_mode.updated_at_ms),
       updated_at_ms: state.drain_mode.updated_at_ms,
       reason: state.drain_mode.reason
+    };
+  }
+
+  projectRuntimeIdentity(state: OrchestratorState): ApiRuntimeBuildIdentityProjection | null {
+    const identity = state.runtime_identity;
+    if (!identity) {
+      return null;
+    }
+    return {
+      process_started_at: asIsoDate(identity.process_started_at_ms),
+      process_started_at_ms: identity.process_started_at_ms,
+      running_build: {
+        identity: identity.running_build.identity,
+        commit_sha: identity.running_build.commit_sha,
+        source_timestamp:
+          identity.running_build.source_timestamp_ms === null ? null : asIsoDate(identity.running_build.source_timestamp_ms),
+        source_timestamp_ms: identity.running_build.source_timestamp_ms
+      },
+      current_build: {
+        identity: identity.current_build.identity,
+        commit_sha: identity.current_build.commit_sha,
+        source_timestamp:
+          identity.current_build.source_timestamp_ms === null ? null : asIsoDate(identity.current_build.source_timestamp_ms),
+        source_timestamp_ms: identity.current_build.source_timestamp_ms,
+        status: identity.current_build.status
+      },
+      status: identity.status,
+      health_warning: identity.health_warning ? { ...identity.health_warning } : null
     };
   }
 
@@ -252,6 +281,7 @@ export class SnapshotService {
       generated_at: asIsoDate(nowMs),
       ...freshness,
       ...createApiDegradedDiagnostics(null, []),
+      runtime_identity: this.projectRuntimeIdentity(state),
       drain_mode: this.projectDrainMode(state),
       quiescence: this.projectQuiescence(state),
       counts: {

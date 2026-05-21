@@ -90,6 +90,7 @@ export interface DispatchCoordinatorHooks {
     tool_call_id?: string | null;
     tool_name?: string | null;
   }) => void;
+  refreshQuiescenceState?: () => void;
   selectWorkerHost: () => string | null;
   persistPreSpawnExecutionGraphAttempt: (params: {
     issue: Issue;
@@ -203,12 +204,17 @@ export async function coordinateDispatchTick(context: DispatchCoordinatorContext
   }
 
   const sortedCandidates = sortCandidatesForDispatch(candidates);
-  if (state.drain_mode.active) {
+  const runtimeIdentityBlocker =
+    state.runtime_identity?.status === 'stale' || state.runtime_identity?.status === 'unknown_current'
+      ? state.runtime_identity.health_warning?.message
+      : null;
+  if (state.drain_mode.active || runtimeIdentityBlocker) {
     context.hooks.recordRuntimeEvent({
       event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
       severity: 'info',
-      detail: `dispatch skipped during drain mode: ${reason}`
+      detail: runtimeIdentityBlocker ?? `dispatch skipped during drain mode: ${reason}`
     });
+    context.hooks.refreshQuiescenceState?.();
     context.notifyObservers?.();
     return;
   }
