@@ -4,6 +4,28 @@ import { state } from './state';
 import { formatCanonicalJsonBlock, formatDate, formatElapsedMs, formatNumber, getActionRequiredLabel, isActionRequiredCode, formatOverviewTokenValue } from './formatting';
 import { renderRunning, renderRetry, renderBlocked } from './issues';
 
+const DRAIN_BLOCKER_LABELS: Record<string, string> = {
+  active_worker: 'Active workers',
+  live_codex_app_server_process: 'Codex app servers',
+  pending_retry: 'Pending retries',
+  in_flight_tracker_write: 'Tracker writes',
+  persistence_history_write: 'Persistence/history writes',
+  unknown_degraded_blocker_source_health: 'Unknown/degraded source health',
+  stale_runtime: 'Stale runtime',
+  unknown_current_build_identity: 'Unknown current build identity'
+};
+
+const DRAIN_BLOCKER_ORDER = [
+  'active_worker',
+  'live_codex_app_server_process',
+  'pending_retry',
+  'in_flight_tracker_write',
+  'persistence_history_write',
+  'unknown_degraded_blocker_source_health',
+  'stale_runtime',
+  'unknown_current_build_identity'
+];
+
 export function createMetricCard(label: any, value: any) {
     const card = document.createElement('article');
     card.className = 'kpi-card';
@@ -70,10 +92,94 @@ export function renderOverview(payload: any) {
       blockerDetail ? 'Quiescence blockers: ' + blockerDetail : ''
     ].filter(Boolean).join(' • ');
     renderRuntimeIdentityWarning(payload.runtime_identity || null);
+    renderDrainModeWorkflow(payload);
     renderRetryStatusSummary(payload);
 
     const rateLimits = payload.rate_limits;
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+  }
+
+export function renderDrainModeWorkflow(payload: any) {
+    if (!elements.drainModeSummary || !elements.drainModeBoundary || !elements.drainBlockersList) {
+      return;
+    }
+    const drainMode = payload.drain_mode || { active: false };
+    const quiescence = payload.quiescence || { safe_to_shutdown: true, blocker_counts: {}, blockers: [] };
+    const active = !!drainMode.active;
+    const safeToShutdown = !!quiescence.safe_to_shutdown;
+    const blockers = Array.isArray(quiescence.blockers) ? quiescence.blockers : [];
+    const blockerDetails = blockers
+      .map(function (blocker: any) {
+        return blocker && blocker.detail ? blocker.detail : '';
+      })
+      .filter(Boolean);
+    const totalBlockers = DRAIN_BLOCKER_ORDER.reduce(function (total, category) {
+      return total + (Number(quiescence.blocker_counts && quiescence.blocker_counts[category]) || 0);
+    }, 0);
+
+    elements.drainModeSummary.textContent = active
+      ? 'Drain Mode active' + (drainMode.reason ? ': ' + drainMode.reason : '')
+      : 'Drain Mode inactive';
+    elements.drainModeBoundary.className = safeToShutdown ? 'drain-boundary drain-boundary-safe' : 'drain-boundary drain-boundary-blocked';
+    if (safeToShutdown) {
+      elements.drainModeBoundary.textContent = active
+        ? 'Shutdown/restart is safe: no quiescence blockers are present.'
+        : 'Restart safety is clear, but Drain Mode is not active.';
+    } else {
+      elements.drainModeBoundary.textContent =
+        'Restart is not safe yet: ' +
+        (blockerDetails.length ? blockerDetails.join(' • ') : totalBlockers + ' quiescence blockers remain.');
+    }
+
+    const warning = payload.runtime_identity && payload.runtime_identity.health_warning;
+    const metaParts = [];
+    if (drainMode.entered_at) {
+      metaParts.push('Entered ' + formatDate(drainMode.entered_at));
+    }
+    if (drainMode.updated_at) {
+      metaParts.push('Updated ' + formatDate(drainMode.updated_at));
+    }
+    if (warning && warning.code === 'stale_runtime_build') {
+      metaParts.push('Dispatch is unsafe because this runtime is stale; Drain Mode shows when restart is safe.');
+    } else if (warning && warning.code === 'unknown_current_build_identity') {
+      metaParts.push('Dispatch is unsafe because current build identity is unknown; Drain Mode shows when restart is safe.');
+    } else {
+      metaParts.push(active ? 'New dispatch is stopped while Drain Mode is active.' : 'Use Drain Mode before planned runtime restarts.');
+    }
+    elements.drainModeMeta.textContent = metaParts.join(' • ');
+
+    const countByCategory = quiescence.blocker_counts || {};
+    const detailByCategory = blockers.reduce(function (acc: Record<string, string>, blocker: any) {
+      if (blocker && blocker.category && blocker.detail) {
+        acc[blocker.category] = blocker.detail;
+      }
+      return acc;
+    }, {});
+    const nodes = DRAIN_BLOCKER_ORDER.map(function (category) {
+      const count = Number(countByCategory[category]) || 0;
+      const item = document.createElement('div');
+      item.className = 'drain-blocker-item ' + (count > 0 ? 'drain-blocker-active' : 'drain-blocker-clear');
+      const label = document.createElement('strong');
+      label.textContent = DRAIN_BLOCKER_LABELS[category] + ' ' + formatNumber(count);
+      const detail = document.createElement('span');
+      detail.textContent = count > 0 ? (detailByCategory[category] || 'Blocking safe restart') : 'Clear';
+      item.append(label, detail);
+      return item;
+    });
+    elements.drainBlockersList.replaceChildren(...nodes);
+
+    if (elements.drainEnterButton) {
+      elements.drainEnterButton.disabled = active;
+    }
+    if (elements.drainExitButton) {
+      elements.drainExitButton.disabled = !active || !safeToShutdown;
+    }
+    if (elements.drainWaitButton) {
+      elements.drainWaitButton.disabled = !active || safeToShutdown;
+    }
+    if (elements.drainShutdownButton) {
+      elements.drainShutdownButton.disabled = !active || !safeToShutdown;
+    }
   }
 
 export function renderRuntimeIdentityWarning(runtimeIdentity: any) {

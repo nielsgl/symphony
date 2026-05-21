@@ -316,6 +316,77 @@ h3 {
   border-left-color: var(--danger);
 }
 
+.drain-mode-panel {
+  border-color: #b6c9b8;
+}
+
+.drain-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.drain-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  filter: none;
+}
+
+.drain-mode-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.drain-boundary {
+  margin: 8px 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-weight: 700;
+}
+
+.drain-boundary-safe {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.drain-boundary-blocked {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.drain-blockers-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+}
+
+.drain-blocker-item {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px;
+  background: #fbfdf9;
+}
+
+.drain-blocker-item strong,
+.drain-blocker-item span {
+  display: block;
+}
+
+.drain-blocker-item span {
+  margin-top: 4px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.drain-blocker-active {
+  border-color: #d58a44;
+  background: #fff8ef;
+}
+
 .retry-status-title {
   display: flex;
   flex-wrap: wrap;
@@ -790,6 +861,10 @@ details summary {
   }
 
   .thread-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .drain-mode-grid {
     grid-template-columns: 1fr;
   }
 

@@ -37,11 +37,13 @@ import { renderBlocked, renderRetry, renderRunning, rowMatchesFilter } from '../
 import {
   buildBlockedInputRequest,
   buildCancelRequest,
+  buildDrainControlRequest,
   buildOperatorActionRequest,
   buildResumeRequest,
   cancelBlockedIssue,
   resumeBlockedIssue,
   runOperatorAction,
+  waitForDrainQuiescence,
   submitBlockedInput
 } from '../../src/api/dashboard-client/operator-actions';
 import {
@@ -157,6 +159,16 @@ function makeDashboardElements() {
     runtimeStaleBanner: new FakeElement(),
     runtimeStaleTitle: new FakeElement(),
     runtimeStaleSummary: new FakeElement(),
+    drainModePanel: new FakeElement(),
+    drainModeSummary: new FakeElement(),
+    drainModeBoundary: new FakeElement(),
+    drainModeMeta: new FakeElement(),
+    drainBlockersList: new FakeElement(),
+    drainControlStatus: new FakeElement(),
+    drainEnterButton: new FakeElement(),
+    drainExitButton: new FakeElement(),
+    drainWaitButton: new FakeElement(),
+    drainShutdownButton: new FakeElement(),
     apiDegradedBanner: new FakeElement(),
     apiDegradedSummary: new FakeElement(),
     snapshotErrorPanel: new FakeElement(),
@@ -635,6 +647,108 @@ describe('dashboard browser client modules', () => {
     expect(collectText(elements.kpiGrid)).toContain('Safe To Shutdown No');
     expect(collectText(elements.kpiGrid)).toContain('Drain Blockers 3');
     expect(elements.lastError.textContent).toContain('ABC-1 is still running');
+  });
+
+  it('renders Drain Mode workflow controls, blockers, stale warning context, and timeout results', async () => {
+    renderOverview(
+      snapshotPayload({
+        drain_mode: {
+          active: true,
+          entered_at: '2026-05-21T09:59:00.000Z',
+          entered_at_ms: Date.parse('2026-05-21T09:59:00.000Z'),
+          updated_at: '2026-05-21T10:00:00.000Z',
+          updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          reason: 'safe runtime restart'
+        },
+        runtime_identity: {
+          health_warning: {
+            code: 'stale_runtime_build',
+            severity: 'warning',
+            message: 'Running runtime build is stale',
+            recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+          },
+          running_build: { identity: 'old', commit_sha: 'old' },
+          current_build: { identity: 'new', commit_sha: 'new' },
+          process_started_at: '2026-05-21T09:00:00.000Z'
+        },
+        quiescence: {
+          safe_to_shutdown: false,
+          state: 'blocked',
+          updated_at: '2026-05-21T10:00:00.000Z',
+          updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          blocker_counts: {
+            active_worker: 2,
+            live_codex_app_server_process: 1,
+            pending_retry: 1,
+            in_flight_tracker_write: 1,
+            persistence_history_write: 1,
+            unknown_degraded_blocker_source_health: 1,
+            stale_runtime: 1,
+            unknown_current_build_identity: 0
+          },
+          blockers: [
+            { category: 'active_worker', count: 2, detail: 'ABC-1 and ABC-2 are still running', issue_identifiers: ['ABC-1', 'ABC-2'] },
+            { category: 'live_codex_app_server_process', count: 1, detail: 'app server pid 123 is live', issue_identifiers: [] },
+            { category: 'pending_retry', count: 1, detail: 'retry queue has one held item', issue_identifiers: ['ABC-3'] },
+            { category: 'in_flight_tracker_write', count: 1, detail: 'tracker mutation is pending', issue_identifiers: ['ABC-4'] },
+            { category: 'persistence_history_write', count: 1, detail: 'history write is pending', issue_identifiers: ['ABC-5'] },
+            { category: 'unknown_degraded_blocker_source_health', count: 1, detail: 'blocker source health is degraded', issue_identifiers: [] },
+            { category: 'stale_runtime', count: 1, detail: 'running code is stale', issue_identifiers: [] }
+          ]
+        }
+      })
+    );
+
+    expect(elements.drainModeSummary.textContent).toContain('Drain Mode active');
+    expect(elements.drainModeBoundary.textContent).toContain('Restart is not safe yet');
+    expect(elements.drainModeBoundary.textContent).toContain('ABC-1 and ABC-2 are still running');
+    expect(collectText(elements.drainBlockersList)).toContain('Active workers 2');
+    expect(collectText(elements.drainBlockersList)).toContain('Codex app servers 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Pending retries 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Tracker writes 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Persistence/history writes 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Unknown/degraded source health 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Stale runtime 1');
+    expect(elements.drainEnterButton.disabled).toBe(true);
+    expect(elements.drainExitButton.disabled).toBe(true);
+    expect(elements.drainWaitButton.disabled).toBe(false);
+    expect(elements.drainShutdownButton.disabled).toBe(true);
+    expect(elements.drainModeMeta.textContent).toContain('Dispatch is unsafe because this runtime is stale');
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: false,
+          status: 'timeout',
+          reason: 'timeout',
+          timed_out: true,
+          waited_ms: 250,
+          quiescence: {
+            safe_to_shutdown: false,
+            state: 'blocked',
+            updated_at: '2026-05-21T10:00:01.000Z',
+            updated_at_ms: Date.parse('2026-05-21T10:00:01.000Z'),
+            blocker_counts: { active_worker: 1 },
+            blockers: [{ category: 'active_worker', count: 1, detail: 'ABC-1 is still running', issue_identifiers: ['ABC-1'] }]
+          },
+          blockers: [{ category: 'active_worker', count: 1, issue_identifiers: ['ABC-1'], run_identifiers: [], reason: 'ABC-1 is still running' }]
+        }, false)
+      )
+      .mockResolvedValueOnce(jsonResponse(snapshotPayload()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await waitForDrainQuiescence();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/drain-mode/wait', expect.objectContaining({ method: 'POST' }));
+    expect(elements.drainControlStatus.textContent).toContain('Drain wait timed out');
+    expect(elements.drainControlStatus.textContent).toContain('ABC-1 is still running');
+    expect(elements.drainControlStatus.textContent).toContain('No forced cancel was requested');
+
+    expect(buildDrainControlRequest('maintenance')).toMatchObject({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' }
+    });
   });
 
   it('renders a stale runtime warning above the overview', () => {

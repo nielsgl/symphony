@@ -65,6 +65,27 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
       <div id="retry-status-summary" class="retry-status-summary hidden" aria-live="polite"></div>
     </section>
 
+    <section id="drain-mode-panel" class="panel panel-wide drain-mode-panel" aria-live="polite">
+      <div class="panel-head">
+        <h2>Drain Mode</h2>
+        <div class="drain-actions">
+          <button id="drain-enter-button" type="button">Enter Drain Mode</button>
+          <button id="drain-exit-button" class="ghost-button" type="button">Exit Drain Mode</button>
+          <button id="drain-wait-button" class="ghost-button" type="button">Wait for Quiescence</button>
+          <button id="drain-shutdown-button" type="button">Request Safe Shutdown</button>
+        </div>
+      </div>
+      <div class="drain-mode-grid">
+        <div>
+          <strong id="drain-mode-summary">Drain Mode inactive</strong>
+          <p id="drain-mode-boundary" class="drain-boundary">Restart safety has not been evaluated yet.</p>
+          <p id="drain-mode-meta" class="muted"></p>
+          <p id="drain-control-status" class="muted"></p>
+        </div>
+        <div id="drain-blockers-list" class="drain-blockers-list"></div>
+      </div>
+    </section>
+
     <section class="panel panel-wide">
       <div class="panel-head">
         <h2>Rate Limits</h2>
