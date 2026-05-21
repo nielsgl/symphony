@@ -268,6 +268,7 @@ export class RetentionHealthStore {
             + (SELECT COUNT(*) FROM history_tracker_ticket_snapshot WHERE history_tracker_ticket_snapshot.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_ticket_reference WHERE history_ticket_reference.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_operator_action WHERE history_operator_action.issue_run_id = issue_run.issue_run_id)
+            + (SELECT COUNT(*) FROM history_drain_audit_event WHERE history_drain_audit_event.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_blocked_input_event WHERE history_blocked_input_event.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_protocol_summary WHERE history_protocol_summary.issue_run_id = issue_run.issue_run_id)
             + (SELECT COUNT(*) FROM history_token_model_fact WHERE history_token_model_fact.issue_run_id = issue_run.issue_run_id)

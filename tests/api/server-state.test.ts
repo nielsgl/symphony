@@ -28,6 +28,7 @@ import {
   replayForensicsBundle
 } from './server-test-harness';
 import type { DurableIdentity, ForensicsBundle } from './server-test-harness';
+import { SqlitePersistenceStore } from '../../src/persistence';
 
 let server: LocalApiServer | null = null;
 
@@ -536,6 +537,7 @@ describe('LocalApiServer state API', () => {
   });
 
   it('waits for Drain Mode quiescence and returns structured blocker details on timeout', async () => {
+    const drainAuditEvents: any[] = [];
     let state = makeState({
       drain_mode: {
         active: true,
@@ -587,6 +589,12 @@ describe('LocalApiServer state API', () => {
       refreshSource: {
         tick: vi.fn(async () => undefined)
       },
+      drainAuditSink: {
+        appendDrainAuditHistory: async (params) => {
+          drainAuditEvents.push(params);
+          return `audit-${drainAuditEvents.length}`;
+        }
+      },
       nowMs: () => Date.parse('2026-04-10T10:04:30.000Z')
     });
 
@@ -612,6 +620,32 @@ describe('LocalApiServer state API', () => {
       issue_identifiers: ['ABC-1'],
       run_identifiers: ['run-1', 'issue-run-1', 'attempt-1'],
       reason: 'ABC-1 is still running'
+    });
+    await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(2));
+    expect(drainAuditEvents[0]).toMatchObject({
+      event_type: 'wait-started',
+      actor: 'operator',
+      source: 'api',
+      result: 'observed',
+      result_code: 'drain_wait_started',
+      state_context: { timeout_ms: 5 }
+    });
+    expect(drainAuditEvents[1]).toMatchObject({
+      event_type: 'wait-timed-out',
+      actor: 'operator',
+      source: 'api',
+      result: 'rejected',
+      result_code: 'timeout',
+      state_context: { timeout_ms: 5, safe_to_shutdown: false },
+      blocker_summaries: [
+        {
+          category: 'active_worker',
+          count: 1,
+          issue_identifiers: ['ABC-1'],
+          run_identifiers: ['run-1', 'issue-run-1', 'attempt-1'],
+          detail: 'ABC-1 is still running'
+        }
+      ]
     });
 
     setTimeout(() => {
@@ -656,10 +690,29 @@ describe('LocalApiServer state API', () => {
       blockers: []
     });
     expect(successPayload.quiescence).toMatchObject({ safe_to_shutdown: true, state: 'safe' });
+    await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(4));
+    expect(drainAuditEvents[2]).toMatchObject({
+      event_type: 'wait-started',
+      actor: 'operator',
+      source: 'api',
+      result: 'observed',
+      result_code: 'drain_wait_started',
+      state_context: { timeout_ms: 200 }
+    });
+    expect(drainAuditEvents[3]).toMatchObject({
+      event_type: 'quiescence-reached',
+      actor: 'operator',
+      source: 'api',
+      result: 'accepted',
+      result_code: 'quiescent',
+      state_context: { timeout_ms: 200, safe_to_shutdown: true },
+      blocker_summaries: []
+    });
   });
 
   it('refuses safe shutdown while blocked unless the operator explicitly overrides', async () => {
     const shutdown = vi.fn(async () => undefined);
+    const drainAuditEvents: any[] = [];
     const state = makeState({
       drain_mode: {
         active: true,
@@ -730,6 +783,12 @@ describe('LocalApiServer state API', () => {
       shutdownSource: {
         shutdown
       },
+      drainAuditSink: {
+        appendDrainAuditHistory: async (params) => {
+          drainAuditEvents.push(params);
+          return `audit-${drainAuditEvents.length}`;
+        }
+      },
       nowMs: () => Date.parse('2026-04-10T10:04:30.000Z')
     });
 
@@ -757,6 +816,24 @@ describe('LocalApiServer state API', () => {
       reason: 'ABC-2 has a pending retry'
     });
     expect(shutdown).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(1));
+    expect(drainAuditEvents[0]).toMatchObject({
+      event_type: 'safe-shutdown-refused',
+      actor: 'operator',
+      source: 'api',
+      result: 'rejected',
+      result_code: 'blockers_present',
+      state_context: { mode: 'default', safe_to_shutdown: false },
+      blocker_summaries: [
+        {
+          category: 'pending_retry',
+          count: 1,
+          issue_identifiers: ['ABC-2'],
+          run_identifiers: ['issue-run-2', 'attempt-1'],
+          detail: 'ABC-2 has a pending retry'
+        }
+      ]
+    });
 
     const override = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {
       method: 'POST',
@@ -772,6 +849,16 @@ describe('LocalApiServer state API', () => {
       reason: 'operator_override'
     });
     await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(2));
+    expect(drainAuditEvents[1]).toMatchObject({
+      event_type: 'safe-shutdown-allowed',
+      actor: 'operator',
+      source: 'api',
+      result: 'accepted',
+      result_code: 'operator_override',
+      state_context: { mode: 'override', safe_to_shutdown: false },
+      blocker_summaries: []
+    });
 
     const repeated = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {
       method: 'POST',
@@ -786,6 +873,99 @@ describe('LocalApiServer state API', () => {
       idempotent_replay: true
     });
     expect(shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('degrades persistence health when API Drain Mode audit writes fail', async () => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'symphony-api-drain-audit-health-'));
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const store = new SqlitePersistenceStore({
+      dbPath,
+      retentionDays: 14,
+      nowMs: () => Date.parse('2026-04-10T10:04:30.000Z')
+    });
+    const state = makeState({
+      drain_mode: {
+        active: true,
+        entered_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        reason: 'operator restart'
+      },
+      quiescence: {
+        safe_to_shutdown: true,
+        state: 'safe',
+        updated_at_ms: Date.parse('2026-04-10T10:04:00.000Z'),
+        blockers: [],
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0,
+          stale_runtime: 0,
+          unknown_current_build_identity: 0
+        }
+      }
+    });
+
+    try {
+      server = new LocalApiServer({
+        snapshotSource: {
+          getStateSnapshot: () => state
+        },
+        refreshSource: {
+          tick: vi.fn(async () => undefined)
+        },
+        drainAuditSink: {
+          appendDrainAuditHistory: async () => {
+            throw new Error('database locked token=secret');
+          },
+          recordHistoryWriteFailure: async (operation, reasonCode, error) => {
+            store.recordHistoryWriteFailure({
+              operation,
+              reason_code: reasonCode,
+              detail: error instanceof Error ? error.message : String(error)
+            });
+          }
+        },
+        nowMs: () => Date.parse('2026-04-10T10:04:30.000Z')
+      });
+
+      await server.listen();
+      const address = server.address();
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/wait`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ timeout_ms: 5 })
+      });
+
+      expect(response.status).toBe(200);
+      await vi.waitFor(() =>
+        expect(store.historySchemaHealth()).toMatchObject({
+          status: 'degraded',
+          degraded_reason_code: 'history_write_failed',
+          degraded_detail: 'appendDrainAuditHistory: quiescent'
+        })
+      );
+      expect(store.listHistoryWriteFailures()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            operation: 'appendDrainAuditHistory',
+            reason_code: 'drain_wait_started',
+            detail: 'database locked token=***REDACTED***'
+          }),
+          expect.objectContaining({
+            operation: 'appendDrainAuditHistory',
+            reason_code: 'quiescent',
+            detail: 'database locked token=***REDACTED***'
+          })
+        ])
+      );
+    } finally {
+      store.close();
+      await fs.promises.rm(dir, { force: true, recursive: true });
+    }
   });
 
   it('broadcasts state snapshots when wait and shutdown control status changes', async () => {
