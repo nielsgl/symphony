@@ -107,6 +107,7 @@ export const REASON_CODES = {
   runtimeUpdateNotActionable: 'runtime_update_not_actionable',
   runtimeUpdateNotPrepared: 'runtime_update_not_prepared',
   runtimeUpdateRepositoryUnavailable: 'runtime_update_repository_unavailable',
+  runtimeUpdateGithubEligibilityRequired: 'runtime_update_github_eligibility_required',
   runtimeUpdateRestartWrapperUnavailable: 'runtime_update_restart_wrapper_unavailable',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
@@ -953,6 +954,18 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Runtime update repository is unavailable',
     detail: 'The guided runtime update could not resolve a safe local repository root for fetch, pull, install, and build.',
     expected_transition: 'Update detection can resume after repository configuration is corrected'
+  },
+  [REASON_CODES.runtimeUpdateGithubEligibilityRequired]: {
+    reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Verify GitHub checks or explicitly configure raw git update trust'],
+    label: 'Runtime Update GitHub Eligibility Required',
+    headline: 'Runtime update candidate is not GitHub verified',
+    detail:
+      'The guided runtime update refused because the candidate commit is not verified by the configured GitHub eligibility policy.',
+    expected_transition:
+      'GitHub eligibility becomes verified, checks are explicitly allowed absent, or raw git update trust is configured'
   },
   [REASON_CODES.runtimeUpdateRestartWrapperUnavailable]: {
     reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable,

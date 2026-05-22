@@ -5,6 +5,7 @@ import { REASON_CODES } from '../observability';
 import type {
   ApiRuntimeBuildIdentityProjection,
   ApiRuntimeUpdateActionResponse,
+  ApiRuntimeUpdateGithubEligibility,
   ApiRuntimeUpdateReadiness,
   LocalApiServerOptions
 } from '../api/types';
@@ -31,6 +32,17 @@ export interface LocalRuntimeUpdateManagerOptions {
   repoRoot: string | null;
   baseRef: string | null;
   remote?: string;
+  githubEligibilityMode?: ApiRuntimeUpdateGithubEligibility['mode'];
+  githubEligibilityResolver?: (params: {
+    repoRoot: string;
+    remote: string;
+    remoteUrl: string;
+    baseRef: string;
+    candidateSha: string | null;
+    mode: ApiRuntimeUpdateGithubEligibility['mode'];
+    nowMs: () => number;
+    timeoutMs: number;
+  }) => ApiRuntimeUpdateGithubEligibility;
   nowMs?: () => number;
   commandTimeoutMs?: number;
   discoveryFetchIntervalMs?: number;
@@ -45,6 +57,11 @@ interface GitProbe {
   stderr: string;
   status: number | null;
   timedOut: boolean;
+}
+
+interface GitHubRemote {
+  owner: string;
+  repo: string;
 }
 
 function truncate(value: string): string {
@@ -110,6 +127,179 @@ function command(repoRoot: string, step: CommandResult['step'], argv: string[], 
     stderr_excerpt: truncate(result.stderr || ''),
     reason_code: status === 'succeeded' ? null : timedOut ? `${step}_timeout` : `${step}_failed`
   };
+}
+
+function parseGitHubRemote(remoteUrl: string): GitHubRemote | null {
+  const normalized = remoteUrl.trim().replace(/\.git$/i, '');
+  const httpsMatch = normalized.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)$/i);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1]!, repo: httpsMatch[2]! };
+  }
+  const sshMatch = normalized.match(/^git@github\.com:([^/]+)\/([^/]+)$/i);
+  if (sshMatch) {
+    return { owner: sshMatch[1]!, repo: sshMatch[2]! };
+  }
+  return null;
+}
+
+function emptyCheckSummary(): ApiRuntimeUpdateGithubEligibility['check_summary'] {
+  return { total: null, succeeded: null, pending: null, failed: null, skipped: null };
+}
+
+function githubEligibility(params: Partial<ApiRuntimeUpdateGithubEligibility>): ApiRuntimeUpdateGithubEligibility {
+  return {
+    mode: params.mode ?? 'required',
+    state: params.state ?? 'github_candidate_unknown',
+    provider: params.provider ?? 'none',
+    owner: params.owner ?? null,
+    repo: params.repo ?? null,
+    base_ref: params.base_ref ?? null,
+    candidate_sha: params.candidate_sha ?? null,
+    checked_at: params.checked_at ?? null,
+    reason_code: params.reason_code ?? null,
+    check_summary: params.check_summary ?? emptyCheckSummary()
+  };
+}
+
+function defaultGithubEligibilityResolver(params: {
+  repoRoot: string;
+  remoteUrl: string;
+  baseRef: string;
+  candidateSha: string | null;
+  mode: ApiRuntimeUpdateGithubEligibility['mode'];
+  nowMs: () => number;
+  timeoutMs: number;
+}): ApiRuntimeUpdateGithubEligibility {
+  const remote = parseGitHubRemote(params.remoteUrl);
+  if (!remote) {
+    return githubEligibility({
+      mode: params.mode,
+      state: params.mode === 'trust_raw_git' ? 'github_trusted_raw_git' : 'github_not_configured',
+      provider: 'none',
+      base_ref: params.baseRef,
+      candidate_sha: params.candidateSha,
+      reason_code: params.mode === 'trust_raw_git' ? null : REASON_CODES.runtimeUpdateGithubEligibilityRequired
+    });
+  }
+  if (params.mode === 'trust_raw_git') {
+    return githubEligibility({
+      mode: params.mode,
+      state: 'github_trusted_raw_git',
+      provider: 'github',
+      owner: remote.owner,
+      repo: remote.repo,
+      base_ref: params.baseRef,
+      candidate_sha: params.candidateSha,
+      checked_at: new Date(params.nowMs()).toISOString()
+    });
+  }
+  if (!params.candidateSha) {
+    return githubEligibility({
+      mode: params.mode,
+      state: 'github_candidate_unknown',
+      provider: 'github',
+      owner: remote.owner,
+      repo: remote.repo,
+      base_ref: params.baseRef,
+      checked_at: new Date(params.nowMs()).toISOString(),
+      reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired
+    });
+  }
+
+  const result = spawnSync('gh', [
+    'api',
+    `repos/${remote.owner}/${remote.repo}/commits/${params.candidateSha}/check-runs`,
+    '--jq',
+    '[.check_runs[] | {status, conclusion}]'
+  ], {
+    cwd: params.repoRoot,
+    encoding: 'utf8',
+    timeout: params.timeoutMs,
+    maxBuffer: 256 * 1024,
+    shell: false
+  });
+  const timedOut = result.error && (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+  if (timedOut || result.status !== 0) {
+    return githubEligibility({
+      mode: params.mode,
+      state: 'github_unavailable',
+      provider: 'github',
+      owner: remote.owner,
+      repo: remote.repo,
+      base_ref: params.baseRef,
+      candidate_sha: params.candidateSha,
+      checked_at: new Date(params.nowMs()).toISOString(),
+      reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired
+    });
+  }
+
+  let checks: Array<{ status?: string | null; conclusion?: string | null }>;
+  try {
+    checks = JSON.parse(result.stdout || '[]');
+  } catch {
+    return githubEligibility({
+      mode: params.mode,
+      state: 'github_unavailable',
+      provider: 'github',
+      owner: remote.owner,
+      repo: remote.repo,
+      base_ref: params.baseRef,
+      candidate_sha: params.candidateSha,
+      checked_at: new Date(params.nowMs()).toISOString(),
+      reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired
+    });
+  }
+  const summary = checks.reduce(
+    (acc, check) => {
+      acc.total += 1;
+      if (check.status !== 'completed') {
+        acc.pending += 1;
+      } else if (check.conclusion === 'success' || check.conclusion === 'neutral') {
+        acc.succeeded += 1;
+      } else if (check.conclusion === 'skipped') {
+        acc.skipped += 1;
+      } else {
+        acc.failed += 1;
+      }
+      return acc;
+    },
+    { total: 0, succeeded: 0, pending: 0, failed: 0, skipped: 0 }
+  );
+  const state = summary.failed > 0
+    ? 'github_checks_failed'
+    : summary.pending > 0
+      ? 'github_checks_pending'
+      : summary.total === 0
+        ? params.mode === 'allow_absent_checks'
+          ? 'github_checks_absent_allowed'
+          : 'github_candidate_unknown'
+        : 'github_verified';
+  return githubEligibility({
+    mode: params.mode,
+    state,
+    provider: 'github',
+    owner: remote.owner,
+    repo: remote.repo,
+    base_ref: params.baseRef,
+    candidate_sha: params.candidateSha,
+    checked_at: new Date(params.nowMs()).toISOString(),
+    reason_code: state === 'github_verified' || state === 'github_checks_absent_allowed'
+      ? null
+      : REASON_CODES.runtimeUpdateGithubEligibilityRequired,
+    check_summary: summary
+  });
+}
+
+function isGithubEligible(eligibility: ApiRuntimeUpdateGithubEligibility): boolean {
+  return [
+    'github_verified',
+    'github_checks_absent_allowed',
+    'github_trusted_raw_git'
+  ].includes(eligibility.state);
+}
+
+function githubEligibilityRefusal(eligibility: ApiRuntimeUpdateGithubEligibility): string | null {
+  return isGithubEligible(eligibility) ? null : eligibility.reason_code ?? REASON_CODES.runtimeUpdateGithubEligibilityRequired;
 }
 
 function skipped(repoRoot: string, step: CommandResult['step'], argv: string[], reasonCode: string): CommandResult {
@@ -282,6 +472,8 @@ export function detectRuntimeUpdateReadiness(options: {
   repoRoot: string | null;
   baseRef: string | null;
   remote?: string;
+  githubEligibilityMode?: ApiRuntimeUpdateGithubEligibility['mode'];
+  githubEligibilityResolver?: LocalRuntimeUpdateManagerOptions['githubEligibilityResolver'];
   runtimeIdentity: ApiRuntimeBuildIdentityProjection | null;
   nowMs?: () => number;
   fetch?: boolean;
@@ -291,7 +483,14 @@ export function detectRuntimeUpdateReadiness(options: {
   const nowMs = options.nowMs ?? (() => Date.now());
   const repoRoot = options.repoRoot;
   const remote = options.remote ?? 'origin';
+  const githubEligibilityMode = options.githubEligibilityMode ?? 'required';
   const baseRef = normalizeBaseRef(options.baseRef, remote);
+  const unresolvedGithubEligibility = githubEligibility({
+    mode: githubEligibilityMode,
+    state: 'github_candidate_unknown',
+    base_ref: baseRef,
+    reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired
+  });
   const fallbackFetch = options.previousFetch ?? {
     attempted_at: null,
     completed_at: null,
@@ -319,6 +518,7 @@ export function detectRuntimeUpdateReadiness(options: {
       fetched_remote: { remote, base_ref: baseRef, commit_sha: null },
       ahead_behind: { ahead: null, behind: null },
       last_fetch: fallbackFetch,
+      github_eligibility: unresolvedGithubEligibility,
       prepared: false,
       apply_ready: false
     };
@@ -369,7 +569,7 @@ export function detectRuntimeUpdateReadiness(options: {
     runtimeIdentity: options.runtimeIdentity,
     fetchFailed: options.fetch && lastFetch.result !== 'succeeded'
   });
-  return {
+  const baseReadiness = {
     ...decision,
     running_runtime_identity: options.runtimeIdentity,
     local_checkout: {
@@ -385,8 +585,38 @@ export function detectRuntimeUpdateReadiness(options: {
     },
     ahead_behind: { ahead, behind },
     last_fetch: lastFetch,
+    github_eligibility: unresolvedGithubEligibility,
     prepared: false,
     apply_ready: false
+  } satisfies ApiRuntimeUpdateReadiness;
+  const candidateSha = remoteSha ?? localSha;
+  const githubResult = remoteUrl.ok && isActionableReadiness(baseReadiness)
+    ? (options.githubEligibilityResolver ?? defaultGithubEligibilityResolver)({
+        repoRoot,
+        remote,
+        remoteUrl: remoteUrl.stdout,
+        baseRef,
+        candidateSha,
+        mode: githubEligibilityMode,
+        nowMs,
+        timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+      })
+    : githubEligibility({
+        mode: githubEligibilityMode,
+        state: githubEligibilityMode === 'trust_raw_git' ? 'github_trusted_raw_git' : 'github_candidate_unknown',
+        provider: remoteUrl.ok && parseGitHubRemote(remoteUrl.stdout) ? 'github' : 'none',
+        ...(remoteUrl.ok && parseGitHubRemote(remoteUrl.stdout) ? parseGitHubRemote(remoteUrl.stdout)! : {}),
+        base_ref: baseRef,
+        candidate_sha: candidateSha,
+        reason_code: isActionableReadiness(baseReadiness) ? REASON_CODES.runtimeUpdateGithubEligibilityRequired : null
+      });
+  const githubRefusal = isActionableReadiness(baseReadiness) ? githubEligibilityRefusal(githubResult) : null;
+  return {
+    ...baseReadiness,
+    refusal_reasons: githubRefusal
+      ? [...baseReadiness.refusal_reasons, REASON_CODES.runtimeUpdateGithubEligibilityRequired, githubRefusal]
+      : baseReadiness.refusal_reasons,
+    github_eligibility: githubResult
   };
 }
 
@@ -410,6 +640,8 @@ export class LocalRuntimeUpdateManager {
       repoRoot: this.options.repoRoot,
       baseRef: this.options.baseRef,
       remote: this.options.remote,
+      githubEligibilityMode: this.options.githubEligibilityMode,
+      githubEligibilityResolver: this.options.githubEligibilityResolver,
       runtimeIdentity: this.options.runtimeIdentity(),
       nowMs,
       timeoutMs: this.options.commandTimeoutMs,
@@ -427,6 +659,8 @@ export class LocalRuntimeUpdateManager {
       repoRoot: this.options.repoRoot,
       baseRef: this.options.baseRef,
       remote: this.options.remote,
+      githubEligibilityMode: this.options.githubEligibilityMode,
+      githubEligibilityResolver: this.options.githubEligibilityResolver,
       runtimeIdentity: this.options.runtimeIdentity(),
       nowMs: this.options.nowMs,
       timeoutMs: this.options.commandTimeoutMs,
@@ -442,7 +676,8 @@ export class LocalRuntimeUpdateManager {
     await this.record('update-detected', this.readiness.attention_required ? 'accepted' : 'observed', this.readiness.state, {
       state: this.readiness.state,
       recommended_action: this.readiness.recommended_action,
-      fetch_result: this.readiness.last_fetch.result
+      fetch_result: this.readiness.last_fetch.result,
+      github_eligibility: this.readiness.github_eligibility
     });
     const actionable = isActionableReadiness(this.readiness) && this.readiness.refusal_reasons.length === 0;
     this.prepareAccepted = actionable;
@@ -536,6 +771,8 @@ export class LocalRuntimeUpdateManager {
       repoRoot,
       baseRef: this.options.baseRef,
       remote: this.options.remote,
+      githubEligibilityMode: this.options.githubEligibilityMode,
+      githubEligibilityResolver: this.options.githubEligibilityResolver,
       runtimeIdentity: this.options.runtimeIdentity(),
       nowMs: this.options.nowMs,
       timeoutMs,
@@ -550,7 +787,8 @@ export class LocalRuntimeUpdateManager {
     );
     if (this.readiness.refusal_reasons.length > 0) {
       await this.record('update-pull-refused', 'rejected', this.readiness.refusal_reasons[0] ?? 'readiness_refused', {
-        state: this.readiness.state
+        state: this.readiness.state,
+        github_eligibility: this.readiness.github_eligibility
       });
       return {
         success: false,
@@ -646,6 +884,8 @@ export class LocalRuntimeUpdateManager {
       repoRoot,
       baseRef: this.options.baseRef,
       remote: this.options.remote,
+      githubEligibilityMode: this.options.githubEligibilityMode,
+      githubEligibilityResolver: this.options.githubEligibilityResolver,
       runtimeIdentity: this.options.runtimeIdentity(),
       nowMs: this.options.nowMs,
       timeoutMs,

@@ -106,7 +106,11 @@ function isRuntimeUpdateActionable(readiness: ApiRuntimeUpdateReadiness | null):
     'remote_update_available',
     'runtime_stale',
     'source_changed_build_not_updated'
-  ].includes(readiness.state) && readiness.refusal_reasons.length === 0;
+  ].includes(readiness.state) && !!readiness.github_eligibility && [
+    'github_verified',
+    'github_checks_absent_allowed',
+    'github_trusted_raw_git'
+  ].includes(readiness.github_eligibility.state) && readiness.refusal_reasons.length === 0;
 }
 
 function isRuntimeUpdateApplyReady(readiness: ApiRuntimeUpdateReadiness | null): boolean {

@@ -85,6 +85,18 @@ describe('LocalApiServer state API', () => {
         result: 'not_attempted',
         reason_code: null
       },
+      github_eligibility: {
+        mode: 'required',
+        state: 'github_verified',
+        provider: 'github',
+        owner: 'nielsgl',
+        repo: 'symphony',
+        base_ref: 'main',
+        candidate_sha: 'remote-new',
+        checked_at: '2026-05-21T10:00:00.000Z',
+        reason_code: null,
+        check_summary: { total: 1, succeeded: 1, pending: 0, failed: 0, skipped: 0 }
+      },
       build_status: 'runtime_stale',
       recommended_action: 'prepare_update',
       refusal_reasons: []
@@ -342,7 +354,19 @@ describe('LocalApiServer state API', () => {
       prepared: false,
       apply_ready: false,
       refusal_reasons: [],
-      last_fetch: { result: 'succeeded' }
+      last_fetch: { result: 'succeeded' },
+      github_eligibility: {
+        mode: 'required',
+        state: 'github_verified',
+        provider: 'github',
+        owner: 'nielsgl',
+        repo: 'symphony',
+        base_ref: 'main',
+        candidate_sha: 'new',
+        checked_at: '2026-05-21T10:00:00.000Z',
+        reason_code: null,
+        check_summary: { total: 1, succeeded: 1, pending: 0, failed: 0, skipped: 0 }
+      }
     };
     server = new LocalApiServer({
       snapshotSource: {

@@ -34,6 +34,17 @@ async function makeRepoPair() {
   return { root, remote, local };
 }
 
+async function pushRemoteUpdate(root: string, fileName = 'index.js') {
+  const remoteWork = path.join(root, `remote-work-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  git(root, ['clone', path.join(root, 'remote.git'), remoteWork]);
+  git(remoteWork, ['config', 'user.email', 'symphony@example.test']);
+  git(remoteWork, ['config', 'user.name', 'Symphony Test']);
+  await writeFile(path.join(remoteWork, fileName), `console.log("${fileName}-${Date.now()}");\n`);
+  git(remoteWork, ['add', '.']);
+  git(remoteWork, ['commit', '-m', 'remote update']);
+  git(remoteWork, ['push', 'origin', 'main']);
+}
+
 describe('runtime update manager', () => {
   it('detects a fetched remote update without mutating the working tree', async () => {
     const { root, local } = await makeRepoPair();
@@ -71,18 +82,12 @@ describe('runtime update manager', () => {
     const { root, local } = await makeRepoPair();
     const beforeHead = git(local, ['rev-parse', 'HEAD']);
     const beforeStatus = git(local, ['status', '--porcelain=v1']);
-    const remoteWork = path.join(root, 'remote-work');
-    git(root, ['clone', path.join(root, 'remote.git'), remoteWork]);
-    git(remoteWork, ['config', 'user.email', 'symphony@example.test']);
-    git(remoteWork, ['config', 'user.name', 'Symphony Test']);
-    await writeFile(path.join(remoteWork, 'index.js'), 'console.log("two");\n');
-    git(remoteWork, ['add', '.']);
-    git(remoteWork, ['commit', '-m', 'remote update']);
-    git(remoteWork, ['push', 'origin', 'main']);
+    await pushRemoteUpdate(root);
 
     const manager = new LocalRuntimeUpdateManager({
       repoRoot: local,
       baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
       nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
       runtimeIdentity: () => null
     });
@@ -100,6 +105,126 @@ describe('runtime update manager', () => {
     });
     expect(git(local, ['rev-parse', 'HEAD'])).toBe(beforeHead);
     expect(git(local, ['status', '--porcelain=v1'])).toBe(beforeStatus);
+  });
+
+  it('blocks actionable update prepare when GitHub eligibility is not configured by default', async () => {
+    const { root, local } = await makeRepoPair();
+    await pushRemoteUpdate(root);
+
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null
+    });
+
+    const prepared = await manager.prepareUpdate();
+
+    expect(prepared).toMatchObject({
+      success: false,
+      status: 'refused',
+      step: 'prepare',
+      reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired,
+      readiness: {
+        state: 'local_checkout_behind',
+        prepared: false,
+        apply_ready: false,
+        github_eligibility: {
+          mode: 'required',
+          state: 'github_not_configured',
+          reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired
+        }
+      }
+    });
+    expect(prepared.readiness?.refusal_reasons).toContain(REASON_CODES.runtimeUpdateGithubEligibilityRequired);
+  });
+
+  it('allows prepare for an actionable update only when GitHub eligibility is verified or explicitly allowed', async () => {
+    const { root, local } = await makeRepoPair();
+    await pushRemoteUpdate(root);
+
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      githubEligibilityResolver: (params) => ({
+        mode: params.mode,
+        state: 'github_verified',
+        provider: 'github',
+        owner: 'nielsgl',
+        repo: 'symphony',
+        base_ref: params.baseRef,
+        candidate_sha: params.candidateSha,
+        checked_at: '2026-05-21T10:00:00.000Z',
+        reason_code: null,
+        check_summary: { total: 2, succeeded: 2, pending: 0, failed: 0, skipped: 0 }
+      })
+    });
+
+    const prepared = await manager.prepareUpdate();
+
+    expect(prepared).toMatchObject({
+      success: true,
+      status: 'draining',
+      readiness: {
+        state: 'local_checkout_behind',
+        github_eligibility: {
+          state: 'github_verified',
+          check_summary: { total: 2, succeeded: 2 }
+        },
+        prepared: true,
+        apply_ready: true
+      }
+    });
+  });
+
+  it.each([
+    'github_checks_pending',
+    'github_checks_failed',
+    'github_unavailable'
+  ] as const)('blocks prepare when GitHub eligibility is %s', async (state) => {
+    const { root, local } = await makeRepoPair();
+    await pushRemoteUpdate(root);
+
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      githubEligibilityResolver: (params) => ({
+        mode: params.mode,
+        state,
+        provider: 'github',
+        owner: 'nielsgl',
+        repo: 'symphony',
+        base_ref: params.baseRef,
+        candidate_sha: params.candidateSha,
+        checked_at: '2026-05-21T10:00:00.000Z',
+        reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired,
+        check_summary: {
+          total: 1,
+          succeeded: state === 'github_checks_pending' ? 0 : null,
+          pending: state === 'github_checks_pending' ? 1 : null,
+          failed: state === 'github_checks_failed' ? 1 : null,
+          skipped: 0
+        }
+      })
+    });
+
+    const prepared = await manager.prepareUpdate();
+
+    expect(prepared).toMatchObject({
+      success: false,
+      status: 'refused',
+      reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired,
+      readiness: {
+        state: 'local_checkout_behind',
+        github_eligibility: { state, reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired },
+        prepared: false,
+        apply_ready: false
+      }
+    });
   });
 
   it('distinguishes dirty worktree, branch mismatch, non-fast-forward, stale runtime, and current build states', async () => {
@@ -158,6 +283,7 @@ describe('runtime update manager', () => {
     const manager = new LocalRuntimeUpdateManager({
       repoRoot: local,
       baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
       nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
       runtimeIdentity: () => null,
       auditSink: {
@@ -219,6 +345,7 @@ describe('runtime update manager', () => {
     const manager = new LocalRuntimeUpdateManager({
       repoRoot: local,
       baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
       nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
       runtimeIdentity: () => null,
       auditSink: {
@@ -252,6 +379,7 @@ describe('runtime update manager', () => {
     const manager = new LocalRuntimeUpdateManager({
       repoRoot: local,
       baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
       nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
       runtimeIdentity: () => null,
       auditSink: {

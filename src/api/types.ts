@@ -858,6 +858,35 @@ export type ApiRuntimeUpdateRecommendedAction =
   | 'rebuild'
   | 'inspect_status';
 
+export type ApiRuntimeUpdateGithubEligibilityState =
+  | 'github_verified'
+  | 'github_checks_pending'
+  | 'github_checks_failed'
+  | 'github_unavailable'
+  | 'github_not_configured'
+  | 'github_candidate_unknown'
+  | 'github_checks_absent_allowed'
+  | 'github_trusted_raw_git';
+
+export interface ApiRuntimeUpdateGithubEligibility {
+  mode: 'required' | 'allow_absent_checks' | 'trust_raw_git';
+  state: ApiRuntimeUpdateGithubEligibilityState;
+  provider: 'github' | 'none';
+  owner: string | null;
+  repo: string | null;
+  base_ref: string | null;
+  candidate_sha: string | null;
+  checked_at: string | null;
+  reason_code: string | null;
+  check_summary: {
+    total: number | null;
+    succeeded: number | null;
+    pending: number | null;
+    failed: number | null;
+    skipped: number | null;
+  };
+}
+
 export interface ApiRuntimeUpdateReadiness {
   state: ApiRuntimeUpdateState;
   attention_required: boolean;
@@ -887,6 +916,7 @@ export interface ApiRuntimeUpdateReadiness {
   build_status: 'unknown' | 'runtime_stale' | 'source_changed_build_not_updated' | 'current';
   recommended_action: ApiRuntimeUpdateRecommendedAction;
   refusal_reasons: string[];
+  github_eligibility: ApiRuntimeUpdateGithubEligibility;
   prepared: boolean;
   apply_ready: boolean;
 }

@@ -110,7 +110,15 @@ function isActionableRuntimeUpdate(readiness: any) {
       'remote_update_available',
       'runtime_stale',
       'source_changed_build_not_updated'
-    ].includes(readiness.state) && !(readiness.refusal_reasons && readiness.refusal_reasons.length > 0);
+    ].includes(readiness.state) && isGithubRuntimeUpdateEligible(readiness.github_eligibility) && !(readiness.refusal_reasons && readiness.refusal_reasons.length > 0);
+  }
+
+function isGithubRuntimeUpdateEligible(eligibility: any) {
+    return !!eligibility && [
+      'github_verified',
+      'github_checks_absent_allowed',
+      'github_trusted_raw_git'
+    ].includes(eligibility.state);
   }
 
 function updateRuntimeUpdateButtons(readiness: any, payload: any) {
@@ -154,12 +162,14 @@ export function renderRuntimeUpdate(readiness: any, payload: any) {
     const remote = readiness.fetched_remote || {};
     const counts = readiness.ahead_behind || {};
     const fetch = readiness.last_fetch || {};
+    const github = readiness.github_eligibility || {};
     const summaryParts = [
       'state ' + formatRuntimeUpdateLabel(readiness.state),
       'branch ' + (local.branch || 'unknown') + ' -> ' + (remote.remote || 'remote') + '/' + (remote.base_ref || 'unknown'),
       'ahead ' + (counts.ahead === null || counts.ahead === undefined ? 'unknown' : counts.ahead),
       'behind ' + (counts.behind === null || counts.behind === undefined ? 'unknown' : counts.behind),
-      'fetch ' + (fetch.result || 'unknown')
+      'fetch ' + (fetch.result || 'unknown'),
+      'github ' + formatRuntimeUpdateLabel(github.state || 'unknown')
     ];
 
     if (readiness.attention_required) {
@@ -175,6 +185,7 @@ export function renderRuntimeUpdate(readiness: any, payload: any) {
     elements.runtimeUpdateState.textContent = formatRuntimeUpdateLabel(readiness.state);
     elements.runtimeUpdateRecommendation.textContent = [
       'Recommended action: ' + formatRuntimeUpdateLabel(readiness.recommended_action),
+      'GitHub eligibility: ' + formatRuntimeUpdateLabel(github.state || 'unknown') + '.',
       readiness.drain_required ? 'Drain Mode is required before applying.' : 'Drain Mode is not required.',
       readiness.refusal_reasons && readiness.refusal_reasons.length ? 'Refusal: ' + readiness.refusal_reasons.join(', ') : ''
     ].filter(Boolean).join(' ');
