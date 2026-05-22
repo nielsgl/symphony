@@ -36,6 +36,26 @@ export function createFactBadge(fact: any) {
     return badge;
   }
 
+export function createFactBadges(facts: any) {
+    if (!Array.isArray(facts)) {
+      return [];
+    }
+    const badgesByLabel = new Map();
+    for (const fact of facts) {
+      const badge = createFactBadge(fact);
+      const label = badge.textContent || '';
+      const existing = badgesByLabel.get(label);
+      if (!existing) {
+        badgesByLabel.set(label, badge);
+        continue;
+      }
+      if (badge.title && existing.title !== badge.title) {
+        existing.title = [existing.title, badge.title].filter(Boolean).join(' | ');
+      }
+    }
+    return Array.from(badgesByLabel.values());
+  }
+
 export function createProjectHistoryEmptyRow(message: any) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
@@ -168,7 +188,7 @@ export function renderProjectHistory() {
         state.projectHistory.healthPayload && Array.isArray(state.projectHistory.healthPayload.diagnostics)
           ? state.projectHistory.healthPayload.diagnostics
           : [];
-      elements.projectHistoryFacts.replaceChildren(...healthFacts.map(createFactBadge));
+      elements.projectHistoryFacts.replaceChildren(...createFactBadges(healthFacts));
       elements.projectHistoryRows.replaceChildren(createProjectHistoryEmptyRow('Project history unavailable.'));
       elements.projectHistoryDetail.classList.add('hidden');
       elements.projectHistoryDetail.replaceChildren();
@@ -198,7 +218,7 @@ export function renderProjectHistory() {
       (page.has_more ? ' (bounded page; more rows available).' : '.') +
       ' • ' +
       summarizeProjectHistoryHealth(payload.health || state.projectHistory.healthPayload);
-    elements.projectHistoryFacts.replaceChildren(...(Array.isArray(payload.facts) ? payload.facts.map(createFactBadge) : []));
+    elements.projectHistoryFacts.replaceChildren(...createFactBadges(payload.facts));
 
     if (!tickets.length) {
       elements.projectHistoryRows.replaceChildren(createProjectHistoryEmptyRow('No project ticket history available for this project.'));
@@ -248,7 +268,7 @@ export function renderProjectHistory() {
 
       const factsCell = document.createElement('td');
       factsCell.className = 'project-history-facts-cell';
-      const factBadges = Array.isArray(entry.facts) ? entry.facts.map(createFactBadge) : [];
+      const factBadges = createFactBadges(entry.facts);
       factsCell.replaceChildren(...factBadges);
 
       const observedCell = document.createElement('td');
@@ -317,7 +337,7 @@ export function renderProjectHistoryDetail() {
     heading.textContent = 'Ticket Timeline: ' + ((detail.ticket_identity && detail.ticket_identity.human_issue_identifier) || detail.ticket_identity.key);
     const facts = document.createElement('div');
     facts.className = 'inline-badges';
-    facts.replaceChildren(...(Array.isArray(detail.facts) ? detail.facts.map(createFactBadge) : []));
+    facts.replaceChildren(...createFactBadges(detail.facts));
 
     const grid = document.createElement('div');
     grid.className = 'project-history-detail-grid';

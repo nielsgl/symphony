@@ -447,7 +447,12 @@ test.describe('phase-marker dashboard e2e', () => {
           },
           page: { limit: 50, offset: 0, has_more: true, total: 2 },
           tickets: [completedRow, activeRow],
-          facts: [{ fact: 'history_schema', status: 'degraded', reason_code: 'history_write_failed', detail: 'history write degraded' }]
+          facts: [
+            { fact: 'history_schema', status: 'degraded', reason_code: 'history_write_failed', detail: 'history write degraded' },
+            { fact: 'history_schema', status: 'degraded', reason_code: 'history_write_failed', detail: 'history write degraded duplicate' },
+            { fact: 'terminal_outcome', status: 'present', reason_code: null, detail: null },
+            { fact: 'terminal_outcome', status: 'present', reason_code: null, detail: null }
+          ]
         },
         details: {
           [completedTicketKey]: completedDetail
@@ -466,6 +471,10 @@ test.describe('phase-marker dashboard e2e', () => {
     await expect(page.locator('#project-history-status')).toContainText('retention 14d');
     await expect(page.locator('#project-history-status')).toContainText('prune failed');
     await expect(page.locator('#project-history-status')).toContainText('writes degraded');
+    await expect(page.locator('#project-history-facts .mini-badge')).toHaveText([
+      'degraded: history schema',
+      'present: terminal outcome'
+    ]);
     await expect(page.locator('#project-history-rows')).toContainText('NIE-200');
     await expect(page.locator('#project-history-rows')).toContainText('completed');
     await expect(page.locator('#project-history-rows')).toContainText('Attempt 2');
