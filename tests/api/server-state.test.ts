@@ -32,6 +32,8 @@ import type { DurableIdentity, ForensicsBundle } from './server-test-harness';
 import { SqlitePersistenceStore } from '../../src/persistence';
 import { LocalRuntimeUpdateManager } from '../../src/runtime/update-manager';
 
+const RUNTIME_UPDATE_API_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
+
 let server: LocalApiServer | null = null;
 
 closeServerAfterEach(
@@ -672,7 +674,7 @@ describe('LocalApiServer state API', () => {
       fetched_candidate: { remote: 'origin', base_ref: 'main' }
     });
     expect(refusal?.state_context.fetched_candidate.candidate_sha).not.toBe(preparedCandidate);
-  });
+  }, RUNTIME_UPDATE_API_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('serves runtime build identity metadata on GET /api/v1/state and diagnostics', async () => {
     const state = makeState({

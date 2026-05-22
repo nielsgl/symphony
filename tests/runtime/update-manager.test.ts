@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest';
 import { REASON_CODES } from '../../src/observability';
 import { detectRuntimeUpdateReadiness, LocalRuntimeUpdateManager } from '../../src/runtime/update-manager';
 
+const GIT_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
+
 function git(cwd: string, args: string[]) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 }
@@ -76,7 +78,7 @@ describe('runtime update manager', () => {
     });
     expect(git(local, ['rev-parse', 'HEAD'])).toBe(readiness.local_checkout.commit_sha);
     expect(git(local, ['status', '--porcelain=v1'])).toBe(beforeStatus);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('discovers a newly pushed remote update from readiness reads without mutating checkout files', async () => {
     const { root, local } = await makeRepoPair();

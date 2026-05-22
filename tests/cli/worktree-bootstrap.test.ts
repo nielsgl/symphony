@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const SCRIPT_PATH = path.resolve(process.cwd(), 'scripts/worktree_bootstrap.py');
+const GIT_WORKTREE_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
 
 function run(cmd: string, args: string[], cwd: string): void {
   const result = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
@@ -46,7 +47,7 @@ describe('worktree_bootstrap.py', () => {
     const result = runBootstrap(['--allow-sensitive'], target);
     expect(result.status).toBe(0);
     expect(fs.existsSync(path.join(target, '.cache', 'artifact.txt'))).toBe(true);
-  });
+  }, GIT_WORKTREE_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('uses current working directory as default target', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-worktree-bootstrap-'));

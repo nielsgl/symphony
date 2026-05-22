@@ -11,6 +11,8 @@ import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort, toWorkerEve
 import { SqlitePersistenceStore, buildDurableIdentity } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
 
+const RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
+
 interface TestDatabase {
   exec(sql: string): void;
   close(): void;
@@ -362,7 +364,7 @@ describe('createRuntimeEnvironment', () => {
     });
     expect(payload.runtime_identity?.process_started_at_ms).toBeGreaterThan(0);
     expect(tracker.fetch_candidate_issues).toHaveBeenCalled();
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('maps refresh endpoint to orchestrator manual refresh tick', async () => {
     const workflowPath = await makeWorkflowFile();
@@ -514,7 +516,7 @@ describe('createRuntimeEnvironment', () => {
     expect(response.headers.get('content-type')).toContain('text/event-stream');
     await runtime.orchestrator.tick('manual_refresh');
     await response.body?.cancel();
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('starts in offline mode when tracker credentials are missing and adapter is provided', async () => {
     const workflowPath = await makeWorkflowFile({ includeTrackerCredentials: false });

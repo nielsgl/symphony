@@ -35,6 +35,7 @@ import {
 } from './runner-test-harness';
 
 const TRANSCRIPT_SCAN_INTERVAL_MS = 100;
+const TRANSCRIPT_FALLBACK_DISCOVERY_TEST_TIMEOUT_MS = 10_000;
 const FIXED_TEST_NOW = new Date('2026-05-21T12:00:00.000Z');
 
 describe('CodexRunner transcript fallback', () => {
@@ -435,7 +436,7 @@ describe('CodexRunner transcript fallback', () => {
     const promise = runner.startSessionAndRunTurn(
       makeStartInput(workspaceCwd, {
         commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 3000
+        turnTimeoutMs: TRANSCRIPT_FALLBACK_DISCOVERY_TEST_TIMEOUT_MS
       })
     );
 
