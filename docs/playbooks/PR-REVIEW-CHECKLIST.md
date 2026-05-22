@@ -25,6 +25,8 @@ For each scenario, include expected status, mode, and reason code:
 - [ ] Success envelopes include all required typed fields.
 - [ ] Failure envelopes are typed and map to deterministic HTTP codes.
 - [ ] Error code naming is consistent across orchestrator, API, and tests.
+- [ ] Cross-surface claims are not proven by API shape alone; UI, persistence,
+  history, and audit consumers each have their own evidence where relevant.
 
 ## 4) Test evidence (must pass)
 
@@ -39,6 +41,10 @@ For each scenario, include expected status, mode, and reason code:
 - [ ] Lifecycle events emitted for requested/applied/fallback/failure transitions.
 - [ ] Request lineage fields are persisted and exposed where required.
 - [ ] Operator-visible state clearly distinguishes warning fallback vs hard failure.
+- [ ] Audit/history/refusal invariants enumerate all relevant write/refusal paths
+  rather than relying on one representative path.
+- [ ] Fixture payloads are not cited as proof unless a production consumer
+  assertion verifies the field or state is used.
 - [ ] Linear workflow operations use MCP for routine issue lookup, comments/workpads,
   state/metadata updates, and ordinary links when MCP can express the operation.
 - [ ] Any raw `linear_graphql` use is justified as GraphQL-only or script-backed,

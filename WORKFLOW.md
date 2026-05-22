@@ -469,41 +469,67 @@ Use this only when completion is blocked by missing required tools or missing au
 8. Run the cross-cutting contract propagation lens when the diff or issue
    introduces or changes any typed contract, lifecycle invariant, state
    machine, persistence/API projection, operator-facing outcome, workflow
-   routing rule, or shared runtime behavior.
+   routing rule, generated asset, audit/history record, runtime state, local
+   API/state/diagnostics surface, dashboard/operator UI surface, or shared
+   runtime behavior.
    - Do not classify the change as non-cross-cutting by judgment alone. If none
      of those concrete triggers is present, the Agent Review comment must state
      `Propagation matrix: not required` and give the specific reason.
-   - Build the matrix from current code reality: inspect the diff and relevant
+   - Build the trace from current code reality: inspect the diff and relevant
      production files rather than copying PR-summary claims.
-   - Check only relevant rows, but consider these repo surfaces before posting
-     findings: canonical type/schema/port contract; adapters and runtime
-     bootstrap wiring; primary happy path; every issue-named
-     stop/failure/retry/block path; persistence and durable records;
-     API/dashboard/forensics projections; logs/operator UX/observability; tests
+   - Recent Linear comments, review comments, and prior findings that add or
+     clarify product scope are acceptance input. Each such comment must become a
+     row in `Scope Comments Reviewed`, or the review must state why it does not
+     change the required scenario.
+   - Check only relevant rows, but split surfaces instead of combining them.
+     Consider these repo surfaces before posting findings: canonical
+     type/schema/port contract; adapters and runtime bootstrap wiring; primary
+     happy path; every issue-named stop/failure/retry/block path; persistence
+     and durable records; API/state/diagnostics; dashboard/operator UI;
+     forensics/history/audit projections; logs/operator UX/observability; tests
      for success and failure modes; and the real implementation path behind
      mocks or fakes when behavior depends on process/runtime semantics.
    - Keep validation evidence separate from propagation evidence. Passing
      commands prove the test suite result, not that each contract boundary was
      semantically traced.
+   - Fixture data is not evidence unless a production consumer assertion proves
+     the field or state is used. A test payload containing a field is invalid as
+     proof when no assertion covers the production consumer behavior.
+   - One representative path is not enough for audit/history/refusal invariants.
+     Enumerate every relevant write/refusal path with search evidence, or mark
+     unreviewed paths explicitly and block the review.
+   - Combined "API/dashboard/persistence pass" verdicts are invalid for
+     triggered cross-surface changes. API/state/diagnostics,
+     dashboard/operator UI, and persistence/history/audit must receive separate
+     evidence or separate `N/A because...` explanations.
    - If blocking findings exist, continue adjacent scanning far enough to batch
      sibling gaps on the same contract surface before moving the issue back.
      Group findings by surface instead of returning after the first local gap.
    - A reviewer may stop early only for an immediate P1 safety issue. In that
      case, the review comment must say sibling-gap scanning intentionally
      stopped and name any unreviewed surfaces.
-   - Keep the review comment compact. For triggered propagation changes, the
-     Agent Review artifact should include this matrix in the relevant lens
-     evidence, then list grouped findings below it:
+   - Keep the review comment compact. For triggered cross-cutting changes, the
+     Agent Review artifact must include these sections before grouped findings:
 
      ```markdown
-     Propagation matrix:
-     | Surface | Checked reality | Result |
-     | --- | --- | --- |
-     | Type/schema/port | `<files or symbols>` | `<pass/finding/N/A>` |
-     | Ports/adapters/runtime bootstrap | `<files or path>` | `<pass/finding/N/A>` |
-     | Named stop/failure paths | `<cases>` | `<pass/finding/N/A>` |
-     | Persistence/API/dashboard/forensics | `<records/projections>` | `<pass/finding/N/A>` |
-     | Logs/operator UX/tests/real path | `<evidence>` | `<pass/finding/N/A>` |
+     ### Scope Comments Reviewed
+     | Comment / prior finding | Required scenario | Evidence | Verdict |
+     | --- | --- | --- | --- |
+
+     ### Scenario-To-Surface Trace
+     | Scenario / criterion | Runtime behavior | API/state/diagnostics | Dashboard/operator UI | Persistence/history/audit | Tests/assertions | Verdict |
+     | --- | --- | --- | --- | --- | --- | --- |
+
+     ### Path Census
+     | Contract / invariant | Search evidence | Paths found | Paths verified | Gaps |
+     | --- | --- | --- | --- | --- |
+
+     ### Invalid Evidence Check
+     - Fixture-only evidence present? `<yes/no>`
+     - Representative-path shortcut used? `<yes/no>`
+     - UI evidence matches changed state? `<yes/no/N/A>`
+     - Head SHA reviewed:
+     - Residual unreviewed surfaces:
      ```
 9. If findings are fixable within the current approach, including missing or non-rendering UI evidence:
    - Post a normal Linear review findings comment; do not edit the implementation workpad for reviewer findings.

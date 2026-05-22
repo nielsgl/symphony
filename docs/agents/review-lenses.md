@@ -33,7 +33,9 @@ Review question: does the implementation satisfy the issue's actual acceptance
 criteria, including negative cases and evidence requirements?
 
 Evidence examples: issue checklist mapping, PR diff, focused tests, validation
-commands, UI evidence comments.
+commands, UI evidence comments. Recent issue or review comments that add a
+live scenario are acceptance input, not background context; map them to reviewed
+evidence before passing.
 
 ### Production Wiring
 
@@ -77,7 +79,9 @@ Review question: do named failure, refusal, timeout, offline, mismatch,
 permission, and unavailable paths return deterministic operator-visible states?
 
 Evidence examples: typed error envelopes, refusal reason codes, negative-path
-tests, dashboard or diagnostics projection.
+tests, dashboard or diagnostics projection. For refusal/audit invariants,
+enumerate every relevant refusal path instead of sampling one representative
+route.
 
 ### Idempotency, Retry, And Concurrency
 
@@ -122,7 +126,9 @@ Review question: does the durable schema, migration path, projection, and
 restart/reopen behavior support the claim?
 
 Evidence examples: real store tests, migration tests from older schema,
-close/reopen tests, bounded/redacted payload checks.
+close/reopen tests, bounded/redacted payload checks. Search write sites such as
+history appenders, audit sinks, and state-context builders; a helper used in one
+path does not prove sibling write paths are covered.
 
 ### Security, Secrets, And Shell Execution
 
@@ -144,7 +150,9 @@ Review question: can the operator understand the current state, the next safe
 action, and why actions are enabled or refused?
 
 Evidence examples: rendered Linear media, Playwright screenshots or videos,
-dashboard tests, accessibility and responsive layout checks.
+dashboard tests, accessibility and responsive layout checks. API fields are not
+UI evidence unless the dashboard rendering path consumes them and a DOM or
+rendered-media assertion proves the visible state.
 
 ### Refactor Boundary Preservation
 
@@ -188,7 +196,9 @@ Review question: do tests cover the real path, happy path, negative paths,
 regressions, production wiring, and the highest-risk lens scenarios?
 
 Evidence examples: focused test list, full validation, real-path integration
-tests, explicit rationale for untested areas.
+tests, explicit rationale for untested areas. Fixture-only payloads are not
+coverage unless assertions prove the production consumer behavior; tests must
+assert the field, event, UI text, or persisted record that the review relies on.
 
 ## Project-Specific Lenses
 

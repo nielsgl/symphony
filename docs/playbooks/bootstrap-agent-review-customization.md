@@ -135,6 +135,10 @@ include:
 - independent invariants,
 - acceptance criteria mapping,
 - triggered lenses with evidence-backed verdicts,
+- scope comments reviewed when comments change required scenarios,
+- scenario-to-surface trace and path census for cross-cutting reviews,
+- invalid-evidence checks for fixture-only proof and representative-path
+  shortcuts,
 - findings, and
 - a routing verdict.
 

@@ -119,6 +119,119 @@ function requireTableEvidence(section, heading, expectedHeaders) {
   }
 }
 
+function requireTableRows(section, heading, expectedHeaders) {
+  const rows = tableRows(section);
+  if (rows.length < 2) {
+    fail(`${heading} must include a markdown table with at least one evidence row`);
+  }
+  const headers = splitRow(rows[0]).map((header) => header.toLowerCase());
+  for (const expected of expectedHeaders) {
+    if (!headers.includes(expected.toLowerCase())) {
+      fail(`${heading} table missing header: ${expected}`);
+    }
+  }
+  const dataRows = rows.slice(1);
+  for (const row of dataRows) {
+    const cells = splitRow(row);
+    for (let index = 0; index < expectedHeaders.length; index += 1) {
+      const expected = expectedHeaders[index];
+      const actualIndex = headers.indexOf(expected.toLowerCase());
+      const value = cells[actualIndex] || '';
+      if (!value || /^-+$/.test(value)) {
+        fail(`${heading} row is missing ${expected}: ${row}`);
+      }
+    }
+  }
+  return { headers, dataRows };
+}
+
+function requireFlag(section, label) {
+  const pattern = new RegExp(`^-\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*:?`, 'i');
+  const line = section.split(/\r?\n/).find((candidate) => pattern.test(candidate));
+  if (!line) {
+    fail(`Invalid Evidence Check missing required field: ${label}`);
+  }
+  const value = line.replace(pattern, '').trim();
+  if (!value) {
+    fail(`Invalid Evidence Check missing required field: ${label}`);
+  }
+  return value;
+}
+
+function isBlockedVerdict(verdict) {
+  return /(Blocked: move to In Progress|Reset required: move to Rework)/.test(verdict);
+}
+
+function requiresCrossSurfaceTrace(body) {
+  const lenses = sectionContent(body, 'Triggered Review Lenses') || '';
+  const searchable = `${body}\n${lenses}`;
+  const hasRequiredPropagationMatrix = /propagation matrix:/i.test(searchable) && !/propagation matrix:\s*not required/i.test(searchable);
+  return (
+    /(^|\|)\s*cross-cutting|contract propagation|scenario-to-surface/i.test(searchable) ||
+    hasRequiredPropagationMatrix
+  );
+}
+
+function validateScenarioToSurfaceTrace(section) {
+  const { headers, dataRows } = requireTableRows(section, 'Scenario-To-Surface Trace', [
+    'Scenario / criterion',
+    'Runtime behavior',
+    'API/state/diagnostics',
+    'Dashboard/operator UI',
+    'Persistence/history/audit',
+    'Tests/assertions',
+    'Verdict'
+  ]);
+  const dashboardIndex = headers.indexOf('dashboard/operator ui');
+  const apiIndex = headers.indexOf('api/state/diagnostics');
+  const persistenceIndex = headers.indexOf('persistence/history/audit');
+  for (const row of dataRows) {
+    const cells = splitRow(row);
+    const dashboard = cells[dashboardIndex] || '';
+    const api = cells[apiIndex] || '';
+    const persistence = cells[persistenceIndex] || '';
+    if (/^(same as api|covered by api|api only|see api)$/i.test(dashboard)) {
+      fail(`Scenario-To-Surface Trace dashboard evidence cannot be merged into API evidence: ${row}`);
+    }
+    if (/^(same as api|covered by api|api only|see api)$/i.test(persistence)) {
+      fail(`Scenario-To-Surface Trace persistence evidence cannot be merged into API evidence: ${row}`);
+    }
+    if (/api\/dashboard\/persistence|api, dashboard, persistence|projection surfaces/i.test(`${api} ${dashboard} ${persistence}`)) {
+      fail(`Scenario-To-Surface Trace must split API, dashboard, and persistence evidence: ${row}`);
+    }
+  }
+}
+
+function validateCrossSurfaceArtifact(body, verdict) {
+  requireTableEvidence(
+    requireSection(body, 'Scope Comments Reviewed'),
+    'Scope Comments Reviewed',
+    ['Comment / prior finding', 'Required scenario', 'Evidence', 'Verdict']
+  );
+  validateScenarioToSurfaceTrace(requireSection(body, 'Scenario-To-Surface Trace'));
+  requireTableRows(requireSection(body, 'Path Census'), 'Path Census', [
+    'Contract / invariant',
+    'Search evidence',
+    'Paths found',
+    'Paths verified',
+    'Gaps'
+  ]);
+
+  const invalidEvidence = requireSection(body, 'Invalid Evidence Check');
+  const fixtureOnly = requireFlag(invalidEvidence, 'Fixture-only evidence present?');
+  const representativePath = requireFlag(invalidEvidence, 'Representative-path shortcut used?');
+  requireFlag(invalidEvidence, 'UI evidence matches changed state?');
+  requireFlag(invalidEvidence, 'Head SHA reviewed');
+  requireFlag(invalidEvidence, 'Residual unreviewed surfaces');
+
+  if (/^yes\b/i.test(fixtureOnly) && !isBlockedVerdict(verdict)) {
+    fail('Fixture-only evidence cannot pass cross-surface review');
+  }
+  if (/^yes\b/i.test(representativePath) && !isBlockedVerdict(verdict)) {
+    fail('Representative-path shortcut cannot pass cross-surface review');
+  }
+}
+
 function validateReviewArtifact(rawBody) {
   const body = assertHumanReadableMarkdownBody(rawBody);
   if (!/^## Agent Review\s*$/m.test(body)) {
@@ -154,6 +267,9 @@ function validateReviewArtifact(rawBody) {
   const verdict = requireSection(body, 'Verdict');
   if (!/(Blocked: move to In Progress|Reset required: move to Rework|Pass: route to Human Review|Pass: route to Merging)/.test(verdict)) {
     fail('Verdict must use one of the allowed routing outcomes');
+  }
+  if (requiresCrossSurfaceTrace(body)) {
+    validateCrossSurfaceArtifact(body, verdict);
   }
 }
 
