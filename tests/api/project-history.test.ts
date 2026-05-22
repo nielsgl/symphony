@@ -261,14 +261,48 @@ describe('Project History consumer summary', () => {
       attempt_id: 'attempt-1',
       thread_id: 'thread-1',
       turn_id: null,
-      event_type: 'wait-timed-out' as const,
+      event_type: 'safe-shutdown-allowed' as const,
       actor: 'operator',
       source: 'api',
-      result: 'rejected' as const,
-      result_code: 'timeout',
+      result: 'accepted' as const,
+      result_code: 'quiescent',
       reason_note: null,
-      state_context: { safe_to_shutdown: false },
-      blocker_summaries: [{ category: 'active_worker', count: 1, issue_identifiers: ['ABC-1'] }],
+      state_context: {
+        safe_to_shutdown: true,
+        quiescence_state: 'safe',
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0,
+          stale_runtime: 0,
+          unknown_current_build_identity: 0
+        },
+        warnings: [
+          {
+            category: 'stale_runtime_warning',
+            count: 1,
+            detail: 'Running runtime build runtime-old is stale compared with current-new',
+            source: 'dispatch_safety',
+            recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+          },
+          {
+            category: 'persistence_history_degraded',
+            count: 1,
+            detail: 'appendStateTransition.executionGraph: turn_waiting_threshold_exceeded',
+            source: 'audit_health'
+          }
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }],
+          detail: 'Runtime is quiescent enough to restart; restart/update Symphony before dispatching normal work.'
+        }
+      },
+      blocker_summaries: [],
       occurred_at: '2026-04-10T10:26:00.000Z',
       observed_at: '2026-04-10T10:26:00.000Z',
       observation_hash: 'drain-hash',
@@ -291,6 +325,18 @@ describe('Project History consumer summary', () => {
       expect.arrayContaining([expect.objectContaining({ fact: 'drain_audit_events', status: 'present' })])
     );
     expect(detail.drain_audit_events).toEqual([drainEvent]);
+    expect(detail.drain_audit_events[0].state_context).toMatchObject({
+      safe_to_shutdown: true,
+      warnings: [
+        expect.objectContaining({ category: 'stale_runtime_warning', source: 'dispatch_safety' }),
+        expect.objectContaining({ category: 'persistence_history_degraded', source: 'audit_health' })
+      ],
+      restart_guidance: {
+        safe_to_restart: true,
+        recommended_action: 'restart_runtime_to_current_build',
+        pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }]
+      }
+    });
     expect(detail.latest_observed_at).toBe('2026-04-10T10:30:00.000Z');
   });
 

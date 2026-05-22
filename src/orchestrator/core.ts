@@ -1205,7 +1205,14 @@ export class OrchestratorCore {
       drain_active: this.state.drain_mode.active,
       safe_to_shutdown: this.state.quiescence.safe_to_shutdown,
       quiescence_state: this.state.quiescence.state,
-      blocker_counts: this.state.quiescence.blocker_counts
+      blocker_counts: this.state.quiescence.blocker_counts,
+      warnings: (this.state.quiescence.warnings ?? []).map((warning) => ({ ...warning })),
+      restart_guidance: this.state.quiescence.restart_guidance
+        ? {
+            ...this.state.quiescence.restart_guidance,
+            pending_work: this.state.quiescence.restart_guidance.pending_work.map((entry) => ({ ...entry }))
+          }
+        : null
     };
   }
 

@@ -655,6 +655,25 @@ export class LocalApiServer {
     }));
   }
 
+  private drainAuditQuiescenceContext(
+    quiescence: ApiDrainWaitResponse['quiescence'],
+    extra: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    return {
+      ...extra,
+      safe_to_shutdown: quiescence.safe_to_shutdown,
+      quiescence_state: quiescence.state,
+      blocker_counts: quiescence.blocker_counts,
+      warnings: (quiescence.warnings ?? []).map((warning) => ({ ...warning })),
+      restart_guidance: quiescence.restart_guidance
+        ? {
+            ...quiescence.restart_guidance,
+            pending_work: quiescence.restart_guidance.pending_work.map((entry) => ({ ...entry }))
+          }
+        : null
+    };
+  }
+
   private recordDrainAuditEvent(
     params: Parameters<NonNullable<LocalApiServerOptions['drainAuditSink']>['appendDrainAuditHistory']>[0]
   ): void {
@@ -715,7 +734,10 @@ export class LocalApiServer {
           source: 'api',
           result: 'rejected',
           result_code: 'timeout',
-          state_context: { waited_ms: response.waited_ms, timeout_ms: timeoutMs, safe_to_shutdown: false },
+          state_context: this.drainAuditQuiescenceContext(latest.quiescence, {
+            waited_ms: response.waited_ms,
+            timeout_ms: timeoutMs
+          }),
           blocker_summaries: this.drainAuditBlockerSummaries(response.blockers),
           occurred_at: new Date(this.nowMs()).toISOString(),
           observed_at: new Date(this.nowMs()).toISOString()
@@ -743,7 +765,10 @@ export class LocalApiServer {
       source: 'api',
       result: 'accepted',
       result_code: 'quiescent',
-      state_context: { waited_ms: response.waited_ms, timeout_ms: timeoutMs, safe_to_shutdown: true },
+      state_context: this.drainAuditQuiescenceContext(latest.quiescence, {
+        waited_ms: response.waited_ms,
+        timeout_ms: timeoutMs
+      }),
       blocker_summaries: [],
       occurred_at: new Date(this.nowMs()).toISOString(),
       observed_at: new Date(this.nowMs()).toISOString()
@@ -1092,7 +1117,7 @@ export class LocalApiServer {
                   source: 'api',
                   result: 'rejected',
                   result_code: payload.reason,
-                  state_context: { mode: payload.mode, safe_to_shutdown: false },
+                  state_context: this.drainAuditQuiescenceContext(quiescence, { mode: payload.mode }),
                   blocker_summaries: this.drainAuditBlockerSummaries(payload.blockers),
                   occurred_at: payload.requested_at,
                   observed_at: payload.requested_at
@@ -1110,7 +1135,7 @@ export class LocalApiServer {
                 source: 'api',
                 result: 'accepted',
                 result_code: payload.reason,
-                state_context: { mode: payload.mode, safe_to_shutdown: quiescence.safe_to_shutdown },
+                state_context: this.drainAuditQuiescenceContext(quiescence, { mode: payload.mode }),
                 blocker_summaries: this.drainAuditBlockerSummaries(payload.blockers),
                 occurred_at: payload.requested_at,
                 observed_at: payload.requested_at
@@ -1296,7 +1321,7 @@ export class LocalApiServer {
                 source: 'api',
                 result: 'accepted',
                 result_code: 'quiescent',
-                state_context: { safe_to_shutdown: true },
+                state_context: this.drainAuditQuiescenceContext(quiescence),
                 blocker_summaries: [],
                 occurred_at: new Date(this.nowMs()).toISOString(),
                 observed_at: new Date(this.nowMs()).toISOString()

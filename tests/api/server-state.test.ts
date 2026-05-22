@@ -1560,6 +1560,138 @@ describe('LocalApiServer state API', () => {
     expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
+  it('records stale-runtime restart guidance in safe-shutdown drain audit history', async () => {
+    const shutdown = vi.fn(async () => undefined);
+    const drainAuditEvents: any[] = [];
+    const state = makeState({
+      drain_mode: {
+        active: true,
+        entered_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        reason: 'operator restart'
+      },
+      runtime_identity: {
+        process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+        running_build: {
+          identity: 'runtime-old',
+          commit_sha: 'runtime-old',
+          source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+        },
+        current_build: {
+          identity: 'current-new',
+          commit_sha: 'current-new',
+          source_timestamp_ms: Date.parse('2026-05-21T09:30:00.000Z'),
+          status: 'available'
+        },
+        status: 'stale',
+        health_warning: {
+          code: 'stale_runtime_build',
+          severity: 'warning',
+          message: 'Running runtime build runtime-old is stale compared with current-new',
+          recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+        }
+      },
+      quiescence: {
+        safe_to_shutdown: true,
+        state: 'safe',
+        updated_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+        blockers: [],
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0,
+          stale_runtime: 0,
+          unknown_current_build_identity: 0
+        },
+        warnings: [
+          {
+            category: 'stale_runtime_warning',
+            count: 1,
+            detail: 'Running runtime build runtime-old is stale compared with current-new',
+            source: 'dispatch_safety',
+            recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+          },
+          {
+            category: 'persistence_history_degraded',
+            count: 1,
+            detail: 'appendStateTransition.executionGraph: turn_waiting_threshold_exceeded',
+            source: 'audit_health'
+          }
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }],
+          detail: 'Runtime is quiescent enough to restart; restart/update Symphony before dispatching normal work.'
+        }
+      }
+    } as any);
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      shutdownSource: {
+        shutdown
+      },
+      drainAuditSink: {
+        appendDrainAuditHistory: async (params) => {
+          drainAuditEvents.push(params);
+          return `audit-${drainAuditEvents.length}`;
+        }
+      },
+      nowMs: () => Date.parse('2026-05-21T10:02:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restart into current build' })
+    });
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      status: 'shutdown_requested',
+      reason: 'quiescent',
+      blockers: []
+    });
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(1));
+    expect(drainAuditEvents[0]).toMatchObject({
+      event_type: 'safe-shutdown-allowed',
+      actor: 'operator',
+      source: 'api',
+      result: 'accepted',
+      result_code: 'quiescent',
+      state_context: {
+        mode: 'default',
+        safe_to_shutdown: true,
+        quiescence_state: 'safe',
+        blocker_counts: { stale_runtime: 0, persistence_history_write: 0 },
+        warnings: [
+          expect.objectContaining({ category: 'stale_runtime_warning', source: 'dispatch_safety' }),
+          expect.objectContaining({ category: 'persistence_history_degraded', source: 'audit_health' })
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }]
+        }
+      },
+      blocker_summaries: []
+    });
+  });
+
   it('degrades persistence health when API Drain Mode audit writes fail', async () => {
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'symphony-api-drain-audit-health-'));
     const dbPath = path.join(dir, 'runtime.sqlite');
