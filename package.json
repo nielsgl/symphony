@@ -29,6 +29,7 @@
     "check:spec-coverage": "node scripts/check-spec-coverage.js",
     "check:pr-governance": "node scripts/check-pr-governance.js",
     "check:upstream-parity": "node scripts/check-upstream-parity.js",
+    "check:review-artifact": "node scripts/check-review-artifact.js",
     "check:meta": "node scripts/check-meta.js && npm run check:dashboard-client",
     "normalize:pr-body": "node scripts/normalize-pr-body.js",
     "stress:control-plane": "node scripts/stress-control-plane.js",
