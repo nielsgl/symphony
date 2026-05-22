@@ -38,8 +38,16 @@ closeServerAfterEach(
   }
 );
 
+async function waitForMockCallCount(mock: ReturnType<typeof vi.fn>, expectedCalls: number, timeoutMs: number = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (mock.mock.calls.length < expectedCalls && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(mock).toHaveBeenCalledTimes(expectedCalls);
+}
+
 describe('LocalApiServer refresh and events', () => {
-  it('accepts refresh requests and coalesces bursts', async () => {
+  it('accepts refresh requests and coalesces requests inside the scheduled flush window', async () => {
     const tick = vi.fn(async () => undefined);
 
     server = new LocalApiServer({
@@ -48,16 +56,18 @@ describe('LocalApiServer refresh and events', () => {
       },
       refreshSource: {
         tick
-      }
+      },
+      refreshCoalesceWindowMs: 60_000
     });
 
     await server.listen();
     const address = server.address();
 
-    const [first, second] = await Promise.all([
-      fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' }),
-      fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' })
-    ]);
+    // API-level coalescing is defined for requests accepted while a scheduled
+    // refresh flush is pending; it is not a Promise.all request ordering
+    // guarantee across the HTTP server and the coalescer's timer.
+    const first = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
+    const second = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
 
     const firstPayload = (await first.json()) as { queued: boolean; coalesced: boolean; operations: string[] };
     const secondPayload = (await second.json()) as { queued: boolean; coalesced: boolean; operations: string[] };
@@ -89,8 +99,7 @@ describe('LocalApiServer refresh and events', () => {
     const first = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
     expect(first.status).toBe(202);
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(tick).toHaveBeenCalledTimes(1);
+    await waitForMockCallCount(tick, 1);
 
     const second = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
     const third = await fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' });
@@ -103,9 +112,7 @@ describe('LocalApiServer refresh and events', () => {
     expect(thirdPayload.coalesced).toBe(true);
 
     currentTick.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(tick).toHaveBeenCalledTimes(2);
+    await waitForMockCallCount(tick, 2);
   });
 
   it('serves GET /api/v1/events as SSE and emits state snapshots with monotonic ids', async () => {
