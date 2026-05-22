@@ -2,7 +2,7 @@ import vm from 'node:vm';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderDashboardClientJs, renderDashboardHtml } from '../../src/api/dashboard-assets';
+import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from '../../src/api/dashboard-assets';
 
 const ORIGINAL_GLOBALS = {
   document: globalThis.document,
@@ -510,6 +510,14 @@ afterEach(() => {
 });
 
 describe('dashboard assets', () => {
+  it('styles the Refresh Now button with the ticket pink treatment', () => {
+    const css = renderDashboardStylesCss();
+
+    expect(css).toContain('.refresh-now-button {\n  background: #ec4899;');
+    expect(css).toContain('.refresh-now-button:hover {\n  background: #db2777;');
+    expect(css).toContain('.refresh-now-button:focus-visible {\n  outline: 2px solid #f9a8d4;');
+  });
+
   it('renders client budget display logic for visible status, policy, and stop messages', () => {
     const clientJs = renderDashboardClientJs();
 
