@@ -9,6 +9,7 @@ const childArgs = process.argv.slice(2);
 const shutdownTimeoutMs = Number(process.env.SYMPHONY_RESTART_SHUTDOWN_TIMEOUT_MS || 30_000);
 const startupTimeoutMs = Number(process.env.SYMPHONY_RESTART_STARTUP_TIMEOUT_MS || 30_000);
 const killGraceMs = Number(process.env.SYMPHONY_RESTART_KILL_GRACE_MS || 5_000);
+const failureNotifyGraceMs = Number(process.env.SYMPHONY_RESTART_FAILURE_NOTIFY_GRACE_MS || 50);
 const failureHandoffFile = process.env.SYMPHONY_RESTART_FAILURE_HANDOFF_FILE || path.join(process.cwd(), '.symphony', 'runtime-restart-failure.json');
 
 let child = null;
@@ -77,16 +78,18 @@ function failRestart(reason, metadata) {
     return;
   }
   const childToTerminate = child;
-  if (!childToTerminate.killed) {
-    childToTerminate.kill('SIGTERM');
-  }
+  setTimeout(() => {
+    if (child === childToTerminate && !childToTerminate.killed) {
+      childToTerminate.kill('SIGTERM');
+    }
+  }, failureNotifyGraceMs);
   clearTimer(killTimer);
   killTimer = setTimeout(() => {
     if (child === childToTerminate) {
       console.error(`[symphony-supervisor] restart failure child did not exit after SIGTERM; sending SIGKILL pid=${childToTerminate.pid}`);
       childToTerminate.kill('SIGKILL');
     }
-  }, killGraceMs);
+  }, failureNotifyGraceMs + killGraceMs);
 }
 
 function spawnChild(restartMetadata) {
