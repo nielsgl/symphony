@@ -83,6 +83,32 @@ describe('RefreshCoalescer', () => {
     expect(tick).toHaveBeenCalledTimes(2);
   });
 
+  it('does not schedule a follow-up tick after close during an in-flight tick', async () => {
+    vi.useFakeTimers();
+
+    const currentTick = deferred();
+    const tick = vi.fn(async () => await currentTick.promise);
+
+    const coalescer = new RefreshCoalescer({
+      refreshSource: { tick },
+      coalesceWindowMs: 10
+    });
+
+    coalescer.requestRefresh();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(tick).toHaveBeenCalledTimes(1);
+
+    const duringRun = coalescer.requestRefresh();
+    expect(duringRun.coalesced).toBe(true);
+
+    coalescer.close();
+    currentTick.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(tick).toHaveBeenCalledTimes(1);
+  });
+
   it('absorbs tick failures and continues processing future refresh requests', async () => {
     vi.useFakeTimers();
 

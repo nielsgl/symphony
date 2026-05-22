@@ -190,7 +190,8 @@ export class LocalApiServer {
     this.codexStateDbPath = options.codexStateDbPath ?? `${codexHome.replace(/\/+$/, '')}/state_5.sqlite`;
     this.refreshCoalescer = new RefreshCoalescer({
       refreshSource: options.refreshSource,
-      nowMs: options.nowMs
+      nowMs: options.nowMs,
+      coalesceWindowMs: options.refreshCoalesceWindowMs
     });
     this.eventClients = new Map();
     this.nextClientId = 1;
@@ -235,6 +236,7 @@ export class LocalApiServer {
   }
 
   async close(): Promise<void> {
+    this.refreshCoalescer.close();
     this.eventLoopHealth.close?.();
     if (this.heartbeatHandle) {
       clearInterval(this.heartbeatHandle);

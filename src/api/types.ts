@@ -1479,6 +1479,7 @@ export interface LocalApiServerOptions {
   port?: number;
   snapshotSource: RuntimeSnapshotSource;
   refreshSource: RefreshTickSource;
+  refreshCoalesceWindowMs?: number;
   diagnosticsSource?: DiagnosticsSource;
   drainControlSource?: {
     readDrainMode: () => DrainModeState;

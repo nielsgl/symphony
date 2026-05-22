@@ -67,6 +67,20 @@ function initTempGitRepository(root: string) {
   }
 }
 
+function removeTempRoot(root: string): void {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      return;
+    } catch (error) {
+      if (attempt === 4) {
+        throw error;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+}
+
 describe('meta check scripts', () => {
   it(
     '[SPEC-18-1][SPEC-18.1-1][SPEC-18.2-1] passes api contract and governance checks in repository root',
@@ -112,7 +126,7 @@ describe('meta check scripts', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('high-impact delta(s) are untriaged');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails with actionable output when governance docs are missing from cwd', () => {
@@ -153,7 +167,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('SPEC coverage check failed');
     expect(result.stderr).toContain('SPEC-TEST-MANIFEST.json');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails with actionable output when public API contract is violated', () => {
@@ -175,7 +189,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('Public API contract check failed');
     expect(result.stderr).toContain("module 'runtime'");
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails aggregate meta check when source files add ad-hoc reason-code literals outside the registry', () => {
@@ -195,7 +209,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('reason-code literals must be referenced');
     expect(result.stderr).toContain('src/api/ad-hoc-reason.ts');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails aggregate meta check when source files add unknown reason-code field literals', () => {
@@ -220,7 +234,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('src/api/unknown-runtime-reason.ts');
     expect(result.stderr).toContain('new_runtime_blocker_reason');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails aggregate meta check when source files add reason-code prefix literals', () => {
@@ -241,7 +255,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('src/orchestrator/ad-hoc-prefix.ts');
     expect(result.stderr).toContain('turn_input_required:');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails ui evidence gate when dashboard UI changes exist without evidence markers', () => {
@@ -266,7 +280,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('UI-affecting changes detected without e2e evidence');
     expect(result.stderr).toContain(UI_FIXTURE_PATH);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('passes ui evidence gate when marker file is present for UI changes', () => {
@@ -297,7 +311,7 @@ describe('meta check scripts', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('UI evidence gate passed');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('passes baseline profile when UI evidence env marker is set without artifact file', () => {
@@ -322,7 +336,7 @@ describe('meta check scripts', () => {
     expect(result.stdout).toContain('UI evidence profile active: baseline');
     expect(result.stdout).toContain('UI evidence gate passed via env:SYMPHONY_UI_E2E_PLAYWRIGHT_PASS');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('passes strict profile with the Playwright env marker and no ui-evidence manifest', () => {
@@ -347,7 +361,7 @@ describe('meta check scripts', () => {
     expect(result.stdout).toContain('UI evidence profile active: strict');
     expect(result.stdout).toContain('UI evidence gate passed via env:SYMPHONY_UI_E2E_PLAYWRIGHT_PASS');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails when PR body uses a local Playwright artifact path as review evidence', () => {
@@ -374,7 +388,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('Publish UI evidence with the linear-ui-evidence skill');
     expect(result.stderr).toContain('output/playwright/demo.webm');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails when strict evidence artifacts are staged for commit', () => {
@@ -405,7 +419,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('staged UI evidence entries are not allowed');
     expect(result.stderr).toContain('output/playwright/demo.webm');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   });
 
   it('fails when strict evidence artifacts are committed in branch history', () => {
@@ -436,7 +450,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('tracked UI evidence artifacts are not allowed');
     expect(result.stderr).toContain('output/playwright/demo.webm');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('fails with typed hygiene diagnostic when provision artifact is staged', () => {
@@ -462,7 +476,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('.symphony-provision.json');
     expect(result.stderr).toContain('Remediation:');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('does not allow provision artifact when only legacy UI evidence allow env is set', () => {
@@ -488,7 +502,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('.symphony-provision.json');
     expect(result.stderr).toContain('SYMPHONY_REPO_HYGIENE_ALLOW_TRACKED=1');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('keeps legacy UI evidence allow env scoped to playwright artifacts', () => {
@@ -513,7 +527,7 @@ describe('meta check scripts', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Meta checks passed');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('allows known hygiene artifacts when explicit allow env is set', () => {
@@ -536,7 +550,7 @@ describe('meta check scripts', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Meta checks passed');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('resolves strict profile from WORKFLOW.md validation config', () => {
@@ -560,7 +574,7 @@ describe('meta check scripts', () => {
     });
     expectStrictPassOrParserUnavailable(result);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('fails when workflow profile exists but shared parser is unavailable', () => {
@@ -585,7 +599,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('unable to load workflow validation profile');
     expect(result.stderr).toContain('shared_frontmatter_parser_unavailable');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('resolves strict profile from quoted WORKFLOW.md value with comments and extra keys', () => {
@@ -623,7 +637,7 @@ describe('meta check scripts', () => {
     });
     expectStrictPassOrParserUnavailable(result);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('resolves strict profile from indented WORKFLOW.md frontmatter formatting', () => {
@@ -659,7 +673,7 @@ describe('meta check scripts', () => {
     });
     expectStrictPassOrParserUnavailable(result);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('fails ui evidence gate for committed UI changes in branch history when origin/main is unavailable', () => {
@@ -690,6 +704,6 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('UI-affecting changes detected without e2e evidence');
     expect(result.stderr).toContain(UI_FIXTURE_PATH);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 });

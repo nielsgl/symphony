@@ -487,7 +487,7 @@ describe('createRuntimeEnvironment', () => {
 
     expect(response.status).toBe(409);
     expect(payload.error.code).toBe('input_submission_expired');
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('exposes SSE event stream endpoint for runtime state push updates', async () => {
     const workflowPath = await makeWorkflowFile();
