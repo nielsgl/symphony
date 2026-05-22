@@ -109,6 +109,10 @@ function isRuntimeUpdateActionable(readiness: ApiRuntimeUpdateReadiness | null):
   ].includes(readiness.state) && readiness.refusal_reasons.length === 0;
 }
 
+function isRuntimeUpdateApplyReady(readiness: ApiRuntimeUpdateReadiness | null): boolean {
+  return isRuntimeUpdateActionable(readiness) && readiness?.apply_ready === true;
+}
+
 export class LocalApiServer {
   private readonly host: string;
   private readonly port: number;
@@ -1232,13 +1236,14 @@ export class LocalApiServer {
                 return;
               }
               const readiness = this.runtimeUpdateSource.readUpdateReadiness();
-              if (!isRuntimeUpdateActionable(readiness)) {
+              if (!isRuntimeUpdateApplyReady(readiness)) {
+                const actionable = isRuntimeUpdateActionable(readiness);
                 const payload = {
                   success: false,
                   status: 'refused',
                   step: 'apply',
-                  reason_code: readiness?.refusal_reasons[0] ?? REASON_CODES.runtimeUpdateNotActionable,
-                  recommended_action: readiness?.recommended_action ?? 'inspect_status',
+                  reason_code: actionable ? REASON_CODES.runtimeUpdateNotPrepared : readiness?.refusal_reasons[0] ?? REASON_CODES.runtimeUpdateNotActionable,
+                  recommended_action: actionable ? 'prepare_update' : readiness?.recommended_action ?? 'inspect_status',
                   idempotent_replay: false,
                   quiescence,
                   blockers: [],

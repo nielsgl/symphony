@@ -887,6 +887,8 @@ export interface ApiRuntimeUpdateReadiness {
   build_status: 'unknown' | 'runtime_stale' | 'source_changed_build_not_updated' | 'current';
   recommended_action: ApiRuntimeUpdateRecommendedAction;
   refusal_reasons: string[];
+  prepared: boolean;
+  apply_ready: boolean;
 }
 
 export interface ApiRuntimeUpdateActionResponse {

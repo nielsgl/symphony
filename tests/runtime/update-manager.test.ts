@@ -93,6 +93,8 @@ describe('runtime update manager', () => {
       state: 'local_checkout_behind',
       attention_required: true,
       recommended_action: 'prepare_update',
+      prepared: false,
+      apply_ready: false,
       ahead_behind: { ahead: 0, behind: 1 },
       last_fetch: { result: 'succeeded' }
     });
@@ -167,7 +169,12 @@ describe('runtime update manager', () => {
       restartCommand: ['npm', 'run', 'start:dashboard']
     });
 
-    await manager.prepareUpdate();
+    const prepared = await manager.prepareUpdate();
+    expect(prepared.readiness).toMatchObject({
+      state: 'local_checkout_behind',
+      prepared: true,
+      apply_ready: true
+    });
     const applied = await manager.applyUpdate();
 
     expect(applied).toMatchObject({
@@ -264,7 +271,7 @@ describe('runtime update manager', () => {
       step: 'prepare',
       reason_code: REASON_CODES.runtimeUpdateNotActionable,
       recommended_action: 'none',
-      readiness: { state: 'build_current' }
+      readiness: { state: 'build_current', prepared: false, apply_ready: false }
     });
     expect(apply).toMatchObject({
       success: false,

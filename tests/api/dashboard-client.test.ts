@@ -801,7 +801,7 @@ describe('dashboard browser client modules', () => {
     expect(elements.runtimeStaleSummary.textContent).toContain('Enter Drain Mode');
   });
 
-  it('enables guided runtime update buttons only for actionable readiness states', () => {
+  it('enables guided runtime update buttons only for actionable prepared readiness states', () => {
     renderOverview(
       snapshotPayload({
         quiescence: { safe_to_shutdown: true, blocker_counts: {}, blockers: [] },
@@ -841,6 +841,8 @@ describe('dashboard browser client modules', () => {
           attention_required: true,
           drain_required: true,
           recommended_action: 'apply_update',
+          prepared: true,
+          apply_ready: true,
           refusal_reasons: [],
           local_checkout: { branch: 'main', commit_sha: 'old', dirty: false, detached: false },
           fetched_remote: { remote: 'origin', base_ref: 'main', commit_sha: 'new' },
@@ -855,6 +857,41 @@ describe('dashboard browser client modules', () => {
     expect(elements.runtimeUpdatePreparePanelButton.disabled).toBe(true);
     expect(elements.runtimeUpdateApplyButton.disabled).toBe(false);
     expect(elements.runtimeUpdateApplyPanelButton.disabled).toBe(false);
+  });
+
+  it('does not offer apply as the first action when Drain Mode is already active', () => {
+    renderOverview(
+      snapshotPayload({
+        drain_mode: {
+          active: true,
+          entered_at: '2026-05-21T10:00:00.000Z',
+          entered_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          updated_at: '2026-05-21T10:00:00.000Z',
+          updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          reason: 'manual_maintenance'
+        },
+        quiescence: { safe_to_shutdown: true, blocker_counts: {}, blockers: [] },
+        runtime_update: {
+          state: 'local_checkout_behind',
+          attention_required: true,
+          drain_required: true,
+          recommended_action: 'prepare_update',
+          prepared: false,
+          apply_ready: false,
+          refusal_reasons: [],
+          local_checkout: { branch: 'main', commit_sha: 'old', dirty: false, detached: false },
+          fetched_remote: { remote: 'origin', base_ref: 'main', commit_sha: 'new' },
+          ahead_behind: { ahead: 0, behind: 1 },
+          last_fetch: { result: 'succeeded' }
+        }
+      })
+    );
+
+    expect(elements.runtimeUpdateBanner.className).not.toContain('hidden');
+    expect(elements.runtimeUpdatePrepareButton.disabled).toBe(false);
+    expect(elements.runtimeUpdatePreparePanelButton.disabled).toBe(false);
+    expect(elements.runtimeUpdateApplyButton.disabled).toBe(true);
+    expect(elements.runtimeUpdateApplyPanelButton.disabled).toBe(true);
   });
 
   it('renders unknown current build identity as degraded rather than stale', () => {

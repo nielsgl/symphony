@@ -332,6 +332,81 @@ describe('LocalApiServer state API', () => {
     });
   });
 
+  it('does not call the runtime update apply source before prepare is accepted', async () => {
+    const applyUpdate = vi.fn();
+    const readiness = {
+      state: 'local_checkout_behind',
+      attention_required: true,
+      drain_required: true,
+      recommended_action: 'prepare_update',
+      prepared: false,
+      apply_ready: false,
+      refusal_reasons: [],
+      last_fetch: { result: 'succeeded' }
+    };
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState({
+          drain_mode: {
+            active: true,
+            entered_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+            updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+            reason: 'manual_maintenance'
+          },
+          quiescence: {
+            safe_to_shutdown: true,
+            state: 'safe',
+            updated_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+            blockers: [],
+            blocker_counts: {
+              active_worker: 0,
+              live_codex_app_server_process: 0,
+              pending_retry: 0,
+              in_flight_tracker_write: 0,
+              persistence_history_write: 0,
+              unknown_degraded_blocker_source_health: 0,
+              stale_runtime: 0,
+              unknown_current_build_identity: 0
+            }
+          }
+        })
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      runtimeUpdateSource: {
+        readUpdateReadiness: () => readiness as any,
+        prepareUpdate: vi.fn(),
+        applyUpdate
+      },
+      nowMs: () => Date.parse('2026-05-21T10:02:00.000Z')
+    } as any);
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/runtime-update/apply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const payload = (await response.json()) as any;
+
+    expect(response.status).toBe(409);
+    expect(applyUpdate).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      success: false,
+      status: 'refused',
+      reason_code: REASON_CODES.runtimeUpdateNotPrepared,
+      recommended_action: 'prepare_update',
+      readiness: {
+        state: 'local_checkout_behind',
+        prepared: false,
+        apply_ready: false
+      }
+    });
+  });
+
   it('refuses guided runtime update apply before quiescence by default', async () => {
     const applyUpdate = vi.fn();
     server = new LocalApiServer({

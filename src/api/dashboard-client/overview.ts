@@ -117,8 +117,10 @@ function updateRuntimeUpdateButtons(readiness: any, payload: any) {
     const quiescence = payload && payload.quiescence ? payload.quiescence : { safe_to_shutdown: false };
     const drainMode = payload && payload.drain_mode ? payload.drain_mode : { active: false };
     const actionable = isActionableRuntimeUpdate(readiness);
-    const prepareDisabled = !actionable || !!drainMode.active;
-    const applyDisabled = !actionable || !drainMode.active || !quiescence.safe_to_shutdown;
+    const prepared = readiness && readiness.prepared === true;
+    const applyReady = readiness && readiness.apply_ready === true;
+    const prepareDisabled = !actionable || prepared;
+    const applyDisabled = !actionable || !applyReady || !drainMode.active || !quiescence.safe_to_shutdown;
     [
       elements.runtimeUpdatePrepareButton,
       elements.runtimeUpdatePreparePanelButton

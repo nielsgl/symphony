@@ -318,7 +318,9 @@ export function detectRuntimeUpdateReadiness(options: {
       local_checkout: { branch: null, commit_sha: null, dirty: null, detached: false },
       fetched_remote: { remote, base_ref: baseRef, commit_sha: null },
       ahead_behind: { ahead: null, behind: null },
-      last_fetch: fallbackFetch
+      last_fetch: fallbackFetch,
+      prepared: false,
+      apply_ready: false
     };
   }
 
@@ -382,7 +384,9 @@ export function detectRuntimeUpdateReadiness(options: {
       commit_sha: remoteSha
     },
     ahead_behind: { ahead, behind },
-    last_fetch: lastFetch
+    last_fetch: lastFetch,
+    prepared: false,
+    apply_ready: false
   };
 }
 
@@ -402,7 +406,7 @@ export class LocalRuntimeUpdateManager {
   readUpdateReadiness(): ApiRuntimeUpdateReadiness | null {
     const nowMs = this.options.nowMs ?? (() => Date.now());
     const discoveryFetchIntervalMs = this.options.discoveryFetchIntervalMs ?? 60_000;
-    this.readiness = detectRuntimeUpdateReadiness({
+    this.readiness = this.withPreparedState(detectRuntimeUpdateReadiness({
       repoRoot: this.options.repoRoot,
       baseRef: this.options.baseRef,
       remote: this.options.remote,
@@ -411,7 +415,7 @@ export class LocalRuntimeUpdateManager {
       timeoutMs: this.options.commandTimeoutMs,
       fetch: shouldRunDiscoveryFetch(this.readiness?.last_fetch, nowMs(), discoveryFetchIntervalMs),
       previousFetch: this.readiness?.last_fetch
-    });
+    }));
     return this.readiness;
   }
 
@@ -442,6 +446,7 @@ export class LocalRuntimeUpdateManager {
     });
     const actionable = isActionableReadiness(this.readiness) && this.readiness.refusal_reasons.length === 0;
     this.prepareAccepted = actionable;
+    this.readiness = this.withPreparedState(this.readiness);
     return {
       success: actionable,
       status: actionable ? 'draining' : 'refused',
@@ -637,7 +642,7 @@ export class LocalRuntimeUpdateManager {
     await this.record('update-restart-ready', 'accepted', 'ready_to_restart', {
       restart_mode: restart.mode
     });
-    this.readiness = detectRuntimeUpdateReadiness({
+    this.readiness = this.withPreparedState(detectRuntimeUpdateReadiness({
       repoRoot,
       baseRef: this.options.baseRef,
       remote: this.options.remote,
@@ -645,7 +650,7 @@ export class LocalRuntimeUpdateManager {
       nowMs: this.options.nowMs,
       timeoutMs,
       previousFetch: this.readiness.last_fetch
-    });
+    }));
     return {
       success: true,
       status: 'manual_restart_required',
@@ -656,6 +661,15 @@ export class LocalRuntimeUpdateManager {
       command_results: results,
       restart,
       message: 'Update prepared and built. Restart Symphony with the explicit command to run the new runtime.'
+    };
+  }
+
+  private withPreparedState(readiness: ApiRuntimeUpdateReadiness): ApiRuntimeUpdateReadiness {
+    const prepared = this.prepareAccepted && isActionableReadiness(readiness) && readiness.refusal_reasons.length === 0;
+    return {
+      ...readiness,
+      prepared,
+      apply_ready: prepared
     };
   }
 
