@@ -1281,6 +1281,26 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
         }
       : undefined
   });
+  if (process.env.SYMPHONY_RESTART_SUPERVISOR === '1' && typeof process.send === 'function') {
+    process.on('message', (message: unknown) => {
+      if (
+        !message ||
+        typeof message !== 'object' ||
+        (message as { type?: unknown }).type !== 'symphony_supervised_restart_failed'
+      ) {
+        return;
+      }
+      const payload = message as { reason_code?: unknown; message?: unknown };
+      void runtimeUpdateManager.recordSupervisedRestartFailure(
+        typeof payload.reason_code === 'string' && payload.reason_code.trim()
+          ? payload.reason_code
+          : REASON_CODES.runtimeUpdateRestartFailed,
+        typeof payload.message === 'string' && payload.message.trim()
+          ? payload.message
+          : 'Supervisor reported that child process replacement failed.'
+      );
+    });
+  }
   apiServer =
     resolvedPort === undefined
       ? null

@@ -20,14 +20,33 @@ function clearTimer(timer) {
   }
 }
 
+function notifyChildRestartFailed(reason, metadata) {
+  if (!child || typeof child.send !== 'function' || !child.connected) {
+    return;
+  }
+  child.send({
+    type: 'symphony_supervised_restart_failed',
+    version: 1,
+    attempt_id: metadata?.attempt_id || null,
+    target_commit_sha: metadata?.target_commit_sha || null,
+    reason_code: 'runtime_update_restart_failed',
+    failure_reason: reason,
+    message: `Supervisor restart failed: ${reason}. Restart Symphony manually with npm run start:dashboard and inspect supervisor logs.`,
+    failed_at: new Date().toISOString()
+  });
+}
+
 function failRestart(reason, metadata) {
   console.error(`[symphony-supervisor] restart failed reason=${reason} attempt=${metadata?.attempt_id || 'unknown'}`);
+  notifyChildRestartFailed(reason, metadata);
   stopping = true;
-  if (child && !child.killed) {
-    child.kill('SIGTERM');
-  }
   process.exitCode = 1;
-  setTimeout(() => process.exit(1), 100).unref();
+  setTimeout(() => {
+    if (child && !child.killed) {
+      child.kill('SIGTERM');
+    }
+    process.exit(1);
+  }, 500).unref();
 }
 
 function spawnChild(restartMetadata) {

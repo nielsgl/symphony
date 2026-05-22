@@ -695,11 +695,11 @@ export class LocalRuntimeUpdateManager {
     if (metadata?.attempt_id) {
       return {
         capability,
-        phase: 'completed',
+        phase: 'restarting',
         attempt_id: metadata.attempt_id,
         requested_at: null,
         started_at: metadata.started_at,
-        completed_at: new Date((this.options.nowMs ?? (() => Date.now()))()).toISOString(),
+        completed_at: null,
         failed_at: null,
         old_child_pid: metadata.old_child_pid,
         new_child_pid: metadata.new_child_pid,
@@ -748,15 +748,61 @@ export class LocalRuntimeUpdateManager {
     });
   }
 
-  async recordSupervisedRestartReady(): Promise<void> {
-    if (
-      this.startupRestartAuditRecorded ||
-      this.restartStatus.phase !== 'completed' ||
-      !this.restartStatus.attempt_id
-    ) {
+  async recordSupervisedRestartFailure(reasonCode: string, message: string): Promise<void> {
+    if (!this.restartStatus.attempt_id || this.restartStatus.phase === 'failed') {
       return;
     }
+    const failedAt = new Date((this.options.nowMs ?? (() => Date.now()))()).toISOString();
+    this.restartStatus = {
+      ...this.restartStatus,
+      phase: 'failed',
+      failed_at: failedAt,
+      recommended_manual_recovery: 'Restart Symphony manually with npm run start:dashboard and inspect supervisor logs.',
+      last_error: {
+        reason_code: reasonCode,
+        message
+      }
+    };
+    await this.record('update-restart-failed', 'failed', reasonCode, {
+      attempt_id: this.restartStatus.attempt_id,
+      target_commit_sha: this.restartStatus.target_commit_sha,
+      observed_running_commit_sha: this.restartStatus.observed_running_commit_sha,
+      message
+    });
+  }
+
+  async recordSupervisedRestartReady(): Promise<boolean> {
+    if (
+      this.startupRestartAuditRecorded ||
+      this.restartStatus.phase !== 'restarting' ||
+      !this.restartStatus.attempt_id
+    ) {
+      return this.restartStatus.phase === 'completed';
+    }
+    const observedCommit = this.options.runtimeIdentity()?.running_build.commit_sha ?? null;
+    this.restartStatus = {
+      ...this.restartStatus,
+      observed_running_commit_sha: observedCommit
+    };
+    if (
+      this.restartStatus.target_commit_sha
+      && observedCommit !== this.restartStatus.target_commit_sha
+    ) {
+      await this.recordSupervisedRestartFailure(
+        REASON_CODES.runtimeUpdateRestartIdentityMismatch,
+        `Replacement child is running ${observedCommit ?? 'unknown'}, expected ${this.restartStatus.target_commit_sha}.`
+      );
+      return false;
+    }
     this.startupRestartAuditRecorded = true;
+    this.restartStatus = {
+      ...this.restartStatus,
+      phase: 'completed',
+      completed_at: new Date((this.options.nowMs ?? (() => Date.now()))()).toISOString(),
+      failed_at: null,
+      recommended_manual_recovery: null,
+      last_error: null
+    };
     const context = {
       attempt_id: this.restartStatus.attempt_id,
       old_child_pid: this.restartStatus.old_child_pid,
@@ -768,6 +814,7 @@ export class LocalRuntimeUpdateManager {
     await this.record('update-new-child-spawned', 'observed', REASON_CODES.runtimeUpdateRestartStarted, context);
     await this.record('update-new-child-ready', 'accepted', REASON_CODES.runtimeUpdateRestartCompleted, context);
     await this.record('update-restart-completed', 'accepted', REASON_CODES.runtimeUpdateRestartCompleted, context);
+    return true;
   }
 
   readUpdateReadiness(): ApiRuntimeUpdateReadiness | null {

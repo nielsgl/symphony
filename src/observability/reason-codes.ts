@@ -117,6 +117,7 @@ export const REASON_CODES = {
   runtimeUpdateRestartStarted: 'runtime_update_restart_started',
   runtimeUpdateRestartCompleted: 'runtime_update_restart_completed',
   runtimeUpdateRestartFailed: 'runtime_update_restart_failed',
+  runtimeUpdateRestartIdentityMismatch: 'runtime_update_restart_identity_mismatch',
   runtimeUpdateReconnectObserved: 'runtime_update_reconnect_observed',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
@@ -1066,6 +1067,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Supervised restart failed',
     detail: 'The supervisor could not complete child process replacement within the bounded restart contract.',
     expected_transition: 'Manual recovery starts Symphony from the updated checkout'
+  },
+  [REASON_CODES.runtimeUpdateRestartIdentityMismatch]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartIdentityMismatch,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Restart Symphony manually with npm run start:dashboard and verify the checkout commit'],
+    label: 'Runtime Update Restart Identity Mismatch',
+    headline: 'Restarted runtime does not match update target',
+    detail: 'The replacement child started, but its running build identity does not match the guided update target commit.',
+    expected_transition: 'Manual recovery starts Symphony from the updated checkout and verifies the runtime identity'
   },
   [REASON_CODES.runtimeUpdateReconnectObserved]: {
     reason_code: REASON_CODES.runtimeUpdateReconnectObserved,
