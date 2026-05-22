@@ -31,6 +31,12 @@ async function waitForEvent(filePath: string, predicate: (event: any) => boolean
   throw new Error('timed out waiting for supervisor event');
 }
 
+async function waitForExit(child: ReturnType<typeof spawn>): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return await new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+}
+
 describe('start-dashboard-supervisor', () => {
   const children: Array<ReturnType<typeof spawn>> = [];
 
@@ -109,6 +115,7 @@ setInterval(() => {}, 1000);
   it('reports startup timeout failure to the replacement child before exiting', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-supervisor-timeout-test-'));
     const eventsPath = path.join(dir, 'events.jsonl');
+    const handoffPath = path.join(dir, 'restart-failure.json');
     const childScript = path.join(dir, 'child.js');
     await fs.writeFile(
       childScript,
@@ -163,6 +170,7 @@ setInterval(() => {}, 1000);
         ...process.env,
         SYMPHONY_SUPERVISOR_CHILD_SCRIPT: childScript,
         SYMPHONY_RESTART_STARTUP_TIMEOUT_MS: '80',
+        SYMPHONY_RESTART_FAILURE_HANDOFF_FILE: handoffPath,
         SUPERVISOR_TEST_EVENTS: eventsPath
       },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -178,5 +186,129 @@ setInterval(() => {}, 1000);
       failure_reason: 'child_startup_timeout'
     });
     expect(failed.message).toContain('Restart Symphony manually');
+  }, SUPERVISOR_TIMEOUT_MS);
+
+  it('writes durable startup timeout handoff when the replacement child has no IPC failure handler', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-supervisor-no-ipc-timeout-test-'));
+    const eventsPath = path.join(dir, 'events.jsonl');
+    const handoffPath = path.join(dir, 'restart-failure.json');
+    const childScript = path.join(dir, 'child.js');
+    await fs.writeFile(
+      childScript,
+      `
+const fs = require('node:fs');
+const eventsPath = process.env.SUPERVISOR_TEST_EVENTS;
+function write(event) {
+  fs.appendFileSync(eventsPath, JSON.stringify({ ...event, pid: process.pid }) + '\\n');
+}
+write({
+  type: 'started',
+  attempt_id: process.env.SYMPHONY_RESTART_ATTEMPT_ID || null,
+  target: process.env.SYMPHONY_RESTART_TARGET_SHA || null
+});
+if (!process.env.SYMPHONY_RESTART_ATTEMPT_ID) {
+  setTimeout(() => {
+    process.send({
+      type: 'symphony_supervised_restart_request',
+      version: 1,
+      attempt_id: 'attempt-no-ipc-timeout',
+      target_commit_sha: 'target-sha',
+      old_commit_sha: 'old-sha',
+      requested_at: '2026-05-22T10:00:00.000Z',
+      child_pid: process.pid
+    });
+  }, 20);
+}
+process.on('SIGTERM', () => {
+  write({ type: 'stopping' });
+  process.exit(0);
+});
+setInterval(() => {}, 1000);
+`,
+      'utf8'
+    );
+
+    const supervisor = spawn(process.execPath, ['scripts/start-dashboard-supervisor.js'], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: {
+        ...process.env,
+        SYMPHONY_SUPERVISOR_CHILD_SCRIPT: childScript,
+        SYMPHONY_RESTART_STARTUP_TIMEOUT_MS: '80',
+        SYMPHONY_RESTART_FAILURE_HANDOFF_FILE: handoffPath,
+        SUPERVISOR_TEST_EVENTS: eventsPath
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    children.push(supervisor);
+
+    const exit = await waitForExit(supervisor);
+    const handoff = JSON.parse(await fs.readFile(handoffPath, 'utf8'));
+
+    expect(exit.code).toBe(1);
+    expect(handoff).toMatchObject({
+      version: 1,
+      attempt_id: 'attempt-no-ipc-timeout',
+      target_commit_sha: 'target-sha',
+      reason_code: 'runtime_update_restart_failed',
+      failure_reason: 'child_startup_timeout',
+      message: expect.stringContaining('Restart Symphony manually')
+    });
+    expect(handoff.new_child_pid).toEqual(expect.any(Number));
+  }, SUPERVISOR_TIMEOUT_MS);
+
+  it('writes durable old-child shutdown timeout handoff before exiting', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-supervisor-old-child-timeout-test-'));
+    const handoffPath = path.join(dir, 'restart-failure.json');
+    const childScript = path.join(dir, 'child.js');
+    await fs.writeFile(
+      childScript,
+      `
+if (!process.env.SYMPHONY_RESTART_ATTEMPT_ID) {
+  setTimeout(() => {
+    process.send({
+      type: 'symphony_supervised_restart_request',
+      version: 1,
+      attempt_id: 'attempt-old-child-timeout',
+      target_commit_sha: 'target-sha',
+      old_commit_sha: 'old-sha',
+      requested_at: '2026-05-22T10:00:00.000Z',
+      child_pid: process.pid
+    });
+  }, 20);
+}
+process.on('SIGTERM', () => {
+  // Simulate a child that cannot reach the safe shutdown boundary in time.
+  setTimeout(() => process.exit(0), 1000);
+});
+setInterval(() => {}, 1000);
+`,
+      'utf8'
+    );
+
+    const supervisor = spawn(process.execPath, ['scripts/start-dashboard-supervisor.js'], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: {
+        ...process.env,
+        SYMPHONY_SUPERVISOR_CHILD_SCRIPT: childScript,
+        SYMPHONY_RESTART_SHUTDOWN_TIMEOUT_MS: '80',
+        SYMPHONY_RESTART_FAILURE_HANDOFF_FILE: handoffPath
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    children.push(supervisor);
+
+    const exit = await waitForExit(supervisor);
+    const handoff = JSON.parse(await fs.readFile(handoffPath, 'utf8'));
+
+    expect(exit.code).toBe(1);
+    expect(handoff).toMatchObject({
+      version: 1,
+      attempt_id: 'attempt-old-child-timeout',
+      target_commit_sha: 'target-sha',
+      reason_code: 'runtime_update_restart_failed',
+      failure_reason: 'old_child_shutdown_timeout',
+      message: expect.stringContaining('Restart Symphony manually')
+    });
+    expect(handoff.old_child_pid).toEqual(expect.any(Number));
   }, SUPERVISOR_TIMEOUT_MS);
 });

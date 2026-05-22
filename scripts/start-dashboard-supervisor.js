@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 const path = require('node:path');
+const fs = require('node:fs');
 const { fork } = require('node:child_process');
 
 const childScript = process.env.SYMPHONY_SUPERVISOR_CHILD_SCRIPT || path.join(__dirname, 'start-dashboard.js');
 const childArgs = process.argv.slice(2);
 const shutdownTimeoutMs = Number(process.env.SYMPHONY_RESTART_SHUTDOWN_TIMEOUT_MS || 30_000);
 const startupTimeoutMs = Number(process.env.SYMPHONY_RESTART_STARTUP_TIMEOUT_MS || 30_000);
+const failureHandoffFile = process.env.SYMPHONY_RESTART_FAILURE_HANDOFF_FILE || path.join(process.cwd(), '.symphony-runtime-restart-failure.json');
 
 let child = null;
 let stopping = false;
@@ -36,8 +38,33 @@ function notifyChildRestartFailed(reason, metadata) {
   });
 }
 
+function writeFailureHandoff(reason, metadata) {
+  if (!metadata?.attempt_id) {
+    return;
+  }
+  const payload = {
+    version: 1,
+    attempt_id: metadata.attempt_id,
+    target_commit_sha: metadata.target_commit_sha || null,
+    old_child_pid: typeof metadata.old_child_pid === 'number' ? metadata.old_child_pid : null,
+    new_child_pid: child && child.pid ? child.pid : null,
+    started_at: metadata.started_at || null,
+    failed_at: new Date().toISOString(),
+    reason_code: 'runtime_update_restart_failed',
+    failure_reason: reason,
+    message: `Supervisor restart failed: ${reason}. Restart Symphony manually with npm run start:dashboard and inspect supervisor logs.`
+  };
+  try {
+    fs.mkdirSync(path.dirname(failureHandoffFile), { recursive: true });
+    fs.writeFileSync(failureHandoffFile, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+  } catch (error) {
+    console.error(`[symphony-supervisor] failed to write restart failure handoff: ${error && error.message ? error.message : String(error)}`);
+  }
+}
+
 function failRestart(reason, metadata) {
   console.error(`[symphony-supervisor] restart failed reason=${reason} attempt=${metadata?.attempt_id || 'unknown'}`);
+  writeFailureHandoff(reason, metadata);
   notifyChildRestartFailed(reason, metadata);
   stopping = true;
   process.exitCode = 1;
@@ -52,7 +79,8 @@ function failRestart(reason, metadata) {
 function spawnChild(restartMetadata) {
   const env = {
     ...process.env,
-    SYMPHONY_RESTART_SUPERVISOR: '1'
+    SYMPHONY_RESTART_SUPERVISOR: '1',
+    SYMPHONY_RESTART_FAILURE_HANDOFF_FILE: failureHandoffFile
   };
   if (restartMetadata) {
     env.SYMPHONY_RESTART_ATTEMPT_ID = restartMetadata.attempt_id;

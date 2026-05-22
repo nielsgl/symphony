@@ -90,6 +90,16 @@ export interface LocalRuntimeUpdateManagerOptions {
     new_child_pid: number | null;
     started_at: string | null;
   };
+  supervisedRestartFailure?: {
+    attempt_id: string;
+    target_commit_sha: string | null;
+    old_child_pid: number | null;
+    new_child_pid: number | null;
+    started_at: string | null;
+    failed_at: string | null;
+    reason_code: string;
+    message: string;
+  };
 }
 
 interface GitProbe {
@@ -677,10 +687,12 @@ export class LocalRuntimeUpdateManager {
   private restartStatus: ApiRuntimeRestartStatus;
   private reconnectObserved = false;
   private startupRestartAuditRecorded = false;
+  private pendingSupervisedRestartFailureAudit = false;
 
   constructor(options: LocalRuntimeUpdateManagerOptions) {
     this.options = options;
     this.readiness = null;
+    this.pendingSupervisedRestartFailureAudit = !!options.supervisedRestartFailure?.attempt_id;
     this.restartStatus = this.initialRestartStatus();
   }
 
@@ -692,6 +704,27 @@ export class LocalRuntimeUpdateManager {
       detail: 'Symphony is not running under the local restart supervisor.'
     };
     const metadata = this.options.supervisedRestartMetadata;
+    const failure = this.options.supervisedRestartFailure;
+    if (failure?.attempt_id) {
+      return {
+        capability,
+        phase: 'failed',
+        attempt_id: failure.attempt_id,
+        requested_at: null,
+        started_at: failure.started_at,
+        completed_at: null,
+        failed_at: failure.failed_at,
+        old_child_pid: failure.old_child_pid,
+        new_child_pid: failure.new_child_pid,
+        target_commit_sha: failure.target_commit_sha,
+        observed_running_commit_sha: this.options.runtimeIdentity()?.running_build.commit_sha ?? null,
+        recommended_manual_recovery: 'Restart Symphony manually with npm run start:dashboard and inspect supervisor logs.',
+        last_error: {
+          reason_code: failure.reason_code,
+          message: failure.message
+        }
+      };
+    }
     if (metadata?.attempt_id) {
       return {
         capability,
@@ -768,6 +801,22 @@ export class LocalRuntimeUpdateManager {
       target_commit_sha: this.restartStatus.target_commit_sha,
       observed_running_commit_sha: this.restartStatus.observed_running_commit_sha,
       message
+    });
+  }
+
+  async recordPendingSupervisedRestartFailure(): Promise<void> {
+    const failure = this.options.supervisedRestartFailure;
+    if (!this.pendingSupervisedRestartFailureAudit || !failure?.attempt_id) {
+      return;
+    }
+    this.pendingSupervisedRestartFailureAudit = false;
+    await this.record('update-restart-failed', 'failed', failure.reason_code, {
+      attempt_id: failure.attempt_id,
+      target_commit_sha: failure.target_commit_sha,
+      observed_running_commit_sha: this.restartStatus.observed_running_commit_sha,
+      old_child_pid: failure.old_child_pid,
+      new_child_pid: failure.new_child_pid,
+      message: failure.message
     });
   }
 

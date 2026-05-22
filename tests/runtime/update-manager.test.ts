@@ -602,6 +602,69 @@ describe('runtime update manager', () => {
     expect(auditEvents.map((event) => event.event_type)).toEqual(['update-restart-failed']);
   }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
+  it('loads supervisor failure handoff as durable failed restart state on bootstrap', async () => {
+    const { local } = await makeRepoPair();
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => ({
+        process_started_at: '2026-05-21T10:00:00.000Z',
+        process_started_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        running_build: { identity: 'target-sha', commit_sha: 'target-sha', source_timestamp: null, source_timestamp_ms: null },
+        current_build: { identity: 'target-sha', commit_sha: 'target-sha', source_timestamp: null, source_timestamp_ms: null, status: 'available' },
+        status: 'current',
+        health_warning: null
+      }),
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      supervisedRestartFailure: {
+        attempt_id: 'restart-handoff',
+        target_commit_sha: 'target-sha',
+        old_child_pid: 111,
+        new_child_pid: 222,
+        started_at: '2026-05-21T09:59:00.000Z',
+        failed_at: '2026-05-21T09:59:30.000Z',
+        reason_code: REASON_CODES.runtimeUpdateRestartFailed,
+        message: 'Supervisor restart failed: child_startup_timeout.'
+      }
+    });
+
+    expect(manager.readRestartStatus()).toMatchObject({
+      phase: 'failed',
+      attempt_id: 'restart-handoff',
+      failed_at: '2026-05-21T09:59:30.000Z',
+      target_commit_sha: 'target-sha',
+      recommended_manual_recovery: 'Restart Symphony manually with npm run start:dashboard and inspect supervisor logs.',
+      last_error: {
+        reason_code: REASON_CODES.runtimeUpdateRestartFailed,
+        message: 'Supervisor restart failed: child_startup_timeout.'
+      }
+    });
+
+    await manager.recordPendingSupervisedRestartFailure();
+    await manager.recordPendingSupervisedRestartFailure();
+
+    expect(auditEvents.map((event) => event.event_type)).toEqual(['update-restart-failed']);
+    expect(auditEvents[0]).toMatchObject({
+      result: 'failed',
+      result_code: REASON_CODES.runtimeUpdateRestartFailed,
+      state_context: expect.objectContaining({
+        attempt_id: 'restart-handoff',
+        target_commit_sha: 'target-sha',
+        old_child_pid: 111,
+        new_child_pid: 222,
+        message: 'Supervisor restart failed: child_startup_timeout.'
+      })
+    });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
   it('refuses apply when the remote candidate changed after prepare', async () => {
     const { root, local } = await makeRepoPair();
     await pushRemoteUpdate(root);
