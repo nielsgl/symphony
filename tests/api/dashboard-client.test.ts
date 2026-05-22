@@ -55,6 +55,7 @@ import {
   renderOverview
 } from '../../src/api/dashboard-client/overview';
 import {
+  createFactBadges,
   createProjectHistoryEmptyRow,
   factClass,
   loadProjectHistory,
@@ -1461,5 +1462,25 @@ describe('dashboard browser client modules', () => {
     renderProjectHistoryDetail();
     expect(elements.projectHistoryDetail.className).not.toContain('hidden');
     expect(collectText(elements.projectHistoryDetail)).toContain('Ticket timeline unavailable');
+  });
+
+  it('deduplicates repeated project history fact labels while preserving distinct labels', () => {
+    const badges = createFactBadges([
+      { status: 'present', fact: 'tracker_snapshot', reason_code: 'first_tracker_snapshot', detail: 'first detail' },
+      { status: 'present', fact: 'tracker_snapshot', reason_code: 'second_tracker_snapshot', detail: 'second detail' },
+      { status: 'redacted', fact: 'app_server_lite_payload', reason_code: 'project_history_payload_redacted' },
+      { status: 'truncated', fact: 'app_server_lite_payload', reason_code: 'project_history_payload_truncated' },
+      { status: '', fact: '' },
+      { status: '', fact: '' }
+    ]);
+
+    expect(badges.map((badge) => badge.textContent)).toEqual([
+      'present: tracker snapshot',
+      'redacted: app server lite payload',
+      'truncated: app server lite payload',
+      'unknown: unknown'
+    ]);
+    expect(badges[0].title).toContain('first_tracker_snapshot');
+    expect(badges[0].title).toContain('second_tracker_snapshot');
   });
 });
