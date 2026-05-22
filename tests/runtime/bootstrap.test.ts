@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -51,6 +52,8 @@ async function makeWorkflowFile(options?: {
   pollingIntervalMs?: number;
   hooksTimeoutMs?: number;
   codexBlock?: string;
+  workspaceProvisionerBlock?: string;
+  runtimeUpdateBlock?: string;
 }): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-'));
   const workflowPath = path.join(dir, 'WORKFLOW.md');
@@ -84,6 +87,8 @@ async function makeWorkflowFile(options?: {
   root: ${JSON.stringify(loggingRoot)}
 `
       : '';
+  const workspaceProvisionerBlock = options?.workspaceProvisionerBlock ?? '';
+  const runtimeUpdateBlock = options?.runtimeUpdateBlock ?? '';
   const content = `---
 tracker:
   kind: linear
@@ -96,6 +101,8 @@ polling:
   interval_ms: ${pollingIntervalMs}
 workspace:
   root: ${JSON.stringify(path.join(dir, 'workspaces'))}
+${workspaceProvisionerBlock}\
+${runtimeUpdateBlock}\
 hooks:
   timeout_ms: ${hooksTimeoutMs}
 agent:
@@ -112,6 +119,43 @@ Issue {{ issue.identifier }} attempt {{ attempt }}
 `;
   await fs.writeFile(workflowPath, content, 'utf8');
   return workflowPath;
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+async function writeTestFile(filePath: string, contents: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, contents, 'utf8');
+}
+
+async function makeRuntimeUpdateRepo(): Promise<{ root: string; remote: string; local: string }> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-bootstrap-update-'));
+  const remote = path.join(root, 'remote.git');
+  const local = path.join(root, 'local');
+  git(root, ['init', '--bare', remote]);
+  git(root, ['clone', remote, local]);
+  git(local, ['config', 'user.email', 'symphony@example.test']);
+  git(local, ['config', 'user.name', 'Symphony Test']);
+  await writeTestFile(path.join(local, 'package.json'), '{"scripts":{"build":"node -e \\"process.exit(0)\\""}}\n');
+  await writeTestFile(path.join(local, 'index.js'), 'console.log("bootstrap");\n');
+  git(local, ['add', '.']);
+  git(local, ['commit', '-m', 'initial']);
+  git(local, ['branch', '-M', 'main']);
+  git(local, ['push', '-u', 'origin', 'main']);
+  return { root, remote, local };
+}
+
+async function pushRuntimeUpdate(root: string): Promise<void> {
+  const remoteWork = path.join(root, `remote-work-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  git(root, ['clone', path.join(root, 'remote.git'), remoteWork]);
+  git(remoteWork, ['config', 'user.email', 'symphony@example.test']);
+  git(remoteWork, ['config', 'user.name', 'Symphony Test']);
+  await writeTestFile(path.join(remoteWork, 'index.js'), `console.log("update-${Date.now()}");\n`);
+  git(remoteWork, ['add', '.']);
+  git(remoteWork, ['commit', '-m', 'remote update']);
+  git(remoteWork, ['push', 'origin', 'main']);
 }
 
 describe('createRuntimeEnvironment', () => {
@@ -572,6 +616,65 @@ describe('createRuntimeEnvironment', () => {
       enabled: false,
       conflict_policy: 'skip',
       from: 'primary_worktree'
+    });
+  });
+
+  it('wires runtime update GitHub eligibility mode from workflow config into bootstrap readiness', async () => {
+    const repo = await makeRuntimeUpdateRepo();
+    dirs.push(repo.root);
+    await pushRuntimeUpdate(repo.root);
+    const workflowPath = await makeWorkflowFile({
+      workspaceProvisionerBlock: `  provisioner:
+    type: none
+    repo_root: ${JSON.stringify(repo.local)}
+    base_ref: origin/main
+`,
+      runtimeUpdateBlock: `runtime_update:
+  github_eligibility:
+    mode: trust_raw_git
+`
+    });
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      runtime_update: {
+        state: string;
+        github_eligibility: {
+          mode: string;
+          state: string;
+          provider: string;
+        };
+        refusal_reasons: string[];
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.runtime_update).toMatchObject({
+      state: 'local_checkout_behind',
+      github_eligibility: {
+        mode: 'trust_raw_git',
+        state: 'github_trusted_raw_git',
+        provider: 'none'
+      },
+      refusal_reasons: []
     });
   });
 

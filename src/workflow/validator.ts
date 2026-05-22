@@ -532,6 +532,20 @@ export class ConfigValidator {
       };
     }
 
+    const runtimeUpdateGithubEligibilityMode = effectiveConfig.runtime_update?.github_eligibility.mode ?? 'required';
+    if (
+      runtimeUpdateGithubEligibilityMode !== 'required' &&
+      runtimeUpdateGithubEligibilityMode !== 'allow_absent_checks' &&
+      runtimeUpdateGithubEligibilityMode !== 'trust_raw_git'
+    ) {
+      return {
+        ok: false,
+        error_code: 'invalid_runtime_update_github_eligibility_mode',
+        message: `runtime_update.github_eligibility.mode '${runtimeUpdateGithubEligibilityMode}' is not supported`,
+        at
+      };
+    }
+
     const teardownMode = effectiveConfig.workspace.provisioner.teardown_mode;
     if (teardownMode !== 'remove_worktree' && teardownMode !== 'keep') {
       return {

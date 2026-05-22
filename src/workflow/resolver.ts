@@ -357,6 +357,8 @@ export class ConfigResolver {
     const persistence = asRecord(config.persistence);
     const observability = asRecord(config.observability);
     const validation = asRecord(config.validation);
+    const runtimeUpdate = asRecord(config.runtime_update);
+    const runtimeUpdateGithubEligibility = asRecord(runtimeUpdate.github_eligibility);
     const logging = asRecord(config.logging);
     const worker = asRecord(config.worker);
     const server = asRecord(config.server);
@@ -519,6 +521,8 @@ export class ConfigResolver {
     const loggingMaxBytes = readInt(logging.max_bytes, DEFAULT_LOG_ROTATION_MAX_BYTES);
     const loggingMaxFiles = readInt(logging.max_files, DEFAULT_LOG_ROTATION_MAX_FILES);
     const uiEvidenceProfile = readString(validation.ui_evidence_profile, 'baseline').trim().toLowerCase() || 'baseline';
+    const runtimeUpdateGithubEligibilityMode =
+      readString(runtimeUpdateGithubEligibility.mode, 'required').trim() || 'required';
 
     const resolved: EffectiveConfig = {
       tracker: {
@@ -651,6 +655,11 @@ export class ConfigResolver {
       },
       validation: {
         ui_evidence_profile: uiEvidenceProfile
+      },
+      runtime_update: {
+        github_eligibility: {
+          mode: runtimeUpdateGithubEligibilityMode
+        }
       },
       logging: {
         root: loggingRoot,

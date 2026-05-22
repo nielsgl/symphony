@@ -253,6 +253,13 @@ function resolveRuntimeBuildIdentityState(params: {
   };
 }
 
+function resolveRuntimeUpdateGithubEligibilityMode(mode: string | undefined): 'required' | 'allow_absent_checks' | 'trust_raw_git' | undefined {
+  if (mode === 'required' || mode === 'allow_absent_checks' || mode === 'trust_raw_git') {
+    return mode;
+  }
+  return undefined;
+}
+
 function extractChecklistCheckpoint(issueDescription: string | null): string | null {
   if (!issueDescription || issueDescription.trim().length === 0) {
     return null;
@@ -1205,6 +1212,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     repoRoot: runtimeIdentityRepoRoot,
     baseRef: effectiveConfig.workspace.provisioner.base_ref ?? 'main',
     remote: 'origin',
+    githubEligibilityMode: resolveRuntimeUpdateGithubEligibilityMode(effectiveConfig.runtime_update?.github_eligibility.mode),
     nowMs,
     runtimeIdentity: () => runtimeUpdateSnapshotService.projectRuntimeIdentity(
       orchestrator.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false })
