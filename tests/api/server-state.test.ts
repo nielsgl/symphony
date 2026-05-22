@@ -148,6 +148,26 @@ describe('LocalApiServer state API', () => {
       diagnosticsSource: makeDiagnosticsSource(),
       runtimeUpdateSource: {
         readUpdateReadiness: () => readiness as any,
+        readRestartStatus: () => ({
+          capability: {
+            mode: 'manual_restart_required',
+            available: false,
+            reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable,
+            detail: 'not supervised'
+          },
+          phase: 'manual_restart_required',
+          attempt_id: null,
+          requested_at: null,
+          started_at: null,
+          completed_at: null,
+          failed_at: null,
+          old_child_pid: null,
+          new_child_pid: null,
+          target_commit_sha: null,
+          observed_running_commit_sha: null,
+          recommended_manual_recovery: 'restart manually',
+          last_error: null
+        }),
         prepareUpdate: vi.fn(),
         applyUpdate: vi.fn()
       },
@@ -174,6 +194,16 @@ describe('LocalApiServer state API', () => {
       ahead_behind: { ahead: 0, behind: 2 }
     });
     expect(diagnosticsPayload.runtime_update).toEqual(statePayload.runtime_update);
+    expect(statePayload.runtime_restart).toMatchObject({
+      capability: {
+        mode: 'manual_restart_required',
+        available: false,
+        reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable
+      },
+      phase: 'manual_restart_required',
+      recommended_manual_recovery: 'restart manually'
+    });
+    expect(diagnosticsPayload.runtime_restart).toEqual(statePayload.runtime_restart);
   });
 
   it('starts the guided runtime update by entering Drain Mode through the real control path', async () => {

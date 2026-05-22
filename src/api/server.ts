@@ -38,6 +38,7 @@ import type {
   ApiEventEnvelope,
   ApiIssueRuntimeDiagnosticsResponse,
   ApiRuntimeUpdateReadiness,
+  ApiRuntimeRestartStatus,
   ApiStateResponse,
   ApiStateErrorResponse,
   ApiStateSnapshotResponse,
@@ -129,6 +130,29 @@ function runtimeUpdateCandidateDriftAuditContext(readiness: ApiRuntimeUpdateRead
       candidate_sha: readiness.fetched_remote.commit_sha ?? readiness.local_checkout.commit_sha,
       github_eligibility: readiness.github_eligibility
     }
+  };
+}
+
+function manualRestartStatus(): ApiRuntimeRestartStatus {
+  return {
+    capability: {
+      mode: 'manual_restart_required',
+      available: false,
+      reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable,
+      detail: 'Symphony is not running under the local restart supervisor.'
+    },
+    phase: 'manual_restart_required',
+    attempt_id: null,
+    requested_at: null,
+    started_at: null,
+    completed_at: null,
+    failed_at: null,
+    old_child_pid: null,
+    new_child_pid: null,
+    target_commit_sha: null,
+    observed_running_commit_sha: null,
+    recommended_manual_recovery: 'Restart Symphony with the supported supervisor command or rerun npm run start:dashboard manually.',
+    last_error: null
   };
 }
 
@@ -381,6 +405,7 @@ export class LocalApiServer {
       const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
       payload.runtime_update = this.runtimeUpdateSource?.readUpdateReadiness() ?? null;
+      payload.runtime_restart = this.runtimeUpdateSource?.readRestartStatus?.() ?? manualRestartStatus();
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
       const enrichment = this.enrichLiveTokenFallbackState(payload);
@@ -437,6 +462,7 @@ export class LocalApiServer {
       const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
       payload.runtime_update = this.runtimeUpdateSource?.readUpdateReadiness() ?? null;
+      payload.runtime_restart = this.runtimeUpdateSource?.readRestartStatus?.() ?? manualRestartStatus();
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
       const enrichment = this.enrichLiveTokenFallbackState(payload);
@@ -844,7 +870,8 @@ export class LocalApiServer {
       liveClientCount: this.eventClients.size,
       controlPlaneSummary: () => this.controlPlaneSummary(),
       enrichLiveTokenFallbackState: (payload) => this.enrichLiveTokenFallbackState(payload),
-      readUpdateReadiness: () => this.runtimeUpdateSource?.readUpdateReadiness() ?? null
+      readUpdateReadiness: () => this.runtimeUpdateSource?.readUpdateReadiness() ?? null,
+      readRestartStatus: () => this.runtimeUpdateSource?.readRestartStatus?.() ?? manualRestartStatus()
     });
   }
 
@@ -872,6 +899,7 @@ export class LocalApiServer {
     const clientId = this.nextClientId++;
     this.eventClients.set(clientId, response);
     this.streamDiagnostics.lastClientConnectedAtMs = this.nowMs();
+    void this.runtimeUpdateSource?.recordReconnectObserved?.();
     this.broadcastStateSnapshot('stream_connected');
 
     response.on('close', () => {

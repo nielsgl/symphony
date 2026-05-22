@@ -4,6 +4,7 @@ import { LocalApiError } from '../errors';
 import type { SnapshotService } from '../snapshot-service';
 import type {
   ApiDiagnosticsResponse,
+  ApiRuntimeRestartStatus,
   ApiStateErrorResponse,
   ApiStateResponse,
   LocalApiServerOptions
@@ -30,6 +31,7 @@ export function buildDiagnosticsPayload(options: {
   controlPlaneSummary: () => ApiDiagnosticsResponse['control_plane'];
   enrichLiveTokenFallbackState: (payload: ApiStateResponse) => ApiDiagnosticsResponse['token_enrichment'];
   readUpdateReadiness?: () => ApiDiagnosticsResponse['runtime_update'];
+  readRestartStatus?: () => ApiRuntimeRestartStatus;
 }): TimedDiagnosticsPayload {
   if (!options.diagnosticsSource) {
     throw new LocalApiError('diagnostics_unavailable', 'Diagnostics source is not configured', 503);
@@ -208,7 +210,29 @@ export function buildDiagnosticsPayload(options: {
     },
     workspace_provisioner: options.diagnosticsSource.getWorkspaceProvisioner(),
     workspace_copy_ignored: options.diagnosticsSource.getWorkspaceCopyIgnored(),
-    runtime_update: options.readUpdateReadiness ? options.readUpdateReadiness() : null
+    runtime_update: options.readUpdateReadiness ? options.readUpdateReadiness() : null,
+    runtime_restart: options.readRestartStatus
+      ? options.readRestartStatus()
+      : {
+          capability: {
+            mode: 'manual_restart_required',
+            available: false,
+            reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable,
+            detail: 'Symphony is not running under the local restart supervisor.'
+          },
+          phase: 'manual_restart_required',
+          attempt_id: null,
+          requested_at: null,
+          started_at: null,
+          completed_at: null,
+          failed_at: null,
+          old_child_pid: null,
+          new_child_pid: null,
+          target_commit_sha: null,
+          observed_running_commit_sha: null,
+          recommended_manual_recovery: 'Restart Symphony with the supported supervisor command or rerun npm run start:dashboard manually.',
+          last_error: null
+        }
   };
   return {
     payload,

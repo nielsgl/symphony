@@ -35,7 +35,7 @@ import {
 import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
-import { LocalRuntimeUpdateManager } from './update-manager';
+import { LocalRuntimeUpdateManager, type RuntimeRestartController } from './update-manager';
 import { WorkflowConfigError } from '../workflow/errors';
 import {
   WorkflowLoader,
@@ -258,6 +258,46 @@ function resolveRuntimeUpdateGithubEligibilityMode(mode: string | undefined): 'r
     return mode;
   }
   return undefined;
+}
+
+function createProcessRestartController(): RuntimeRestartController | undefined {
+  if (process.env.SYMPHONY_RESTART_SUPERVISOR !== '1' || typeof process.send !== 'function') {
+    return undefined;
+  }
+  let requested = false;
+  return {
+    capability: () => ({
+      mode: 'supervisor_available',
+      available: true,
+      reason_code: REASON_CODES.runtimeUpdateRestartSupervisorAvailable,
+      detail: 'The local Symphony restart supervisor owns this dashboard child process.'
+    }),
+    requestRestart: async (request) => {
+      if (requested) {
+        return {
+          accepted: false,
+          reason_code: REASON_CODES.runtimeUpdateRestartDuplicate,
+          message: 'A supervised restart request is already in progress.',
+          old_child_pid: process.pid
+        };
+      }
+      requested = true;
+      process.send?.({
+        type: 'symphony_supervised_restart_request',
+        version: 1,
+        attempt_id: request.attempt_id,
+        target_commit_sha: request.target_commit_sha,
+        old_commit_sha: request.old_commit_sha,
+        requested_at: request.requested_at,
+        child_pid: process.pid
+      });
+      return {
+        accepted: true,
+        reason_code: REASON_CODES.runtimeUpdateRestartRequested,
+        old_child_pid: process.pid
+      };
+    }
+  };
 }
 
 function extractChecklistCheckpoint(issueDescription: string | null): string | null {
@@ -1229,7 +1269,17 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             })
         }
       : undefined,
-    restartCommand: ['npm', 'run', 'start:dashboard']
+    restartCommand: ['npm', 'run', 'start:dashboard'],
+    restartController: createProcessRestartController(),
+    supervisedRestartMetadata: process.env.SYMPHONY_RESTART_ATTEMPT_ID
+      ? {
+          attempt_id: process.env.SYMPHONY_RESTART_ATTEMPT_ID,
+          target_commit_sha: process.env.SYMPHONY_RESTART_TARGET_SHA || null,
+          old_child_pid: process.env.SYMPHONY_RESTART_OLD_CHILD_PID ? Number(process.env.SYMPHONY_RESTART_OLD_CHILD_PID) : null,
+          new_child_pid: process.pid,
+          started_at: process.env.SYMPHONY_RESTART_STARTED_AT || null
+        }
+      : undefined
   });
   apiServer =
     resolvedPort === undefined
@@ -1566,6 +1616,13 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           configured_port: resolvedPort,
           configured_host: resolvedHost
         }
+      });
+      await runtimeUpdateManager.recordSupervisedRestartReady();
+      process.send?.({
+        type: 'symphony_supervised_restart_ready',
+        version: 1,
+        child_pid: process.pid,
+        ready_at: new Date().toISOString()
       });
     } else {
       logger.log({

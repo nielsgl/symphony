@@ -406,6 +406,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
   generated_at: string;
   runtime_identity: ApiRuntimeBuildIdentityProjection | null;
   runtime_update: ApiRuntimeUpdateReadiness | null;
+  runtime_restart: ApiRuntimeRestartStatus;
   drain_mode: ApiDrainModeProjection;
   quiescence: ApiDrainQuiescenceProjection;
   counts: {
@@ -851,6 +852,7 @@ export type ApiRuntimeUpdateRecommendedAction =
   | 'prepare_update'
   | 'wait_for_quiescence'
   | 'apply_update'
+  | 'reconnect_dashboard'
   | 'manual_restart'
   | 'inspect_worktree'
   | 'resolve_branch'
@@ -929,6 +931,40 @@ export interface ApiRuntimeUpdateReadiness {
   apply_ready: boolean;
 }
 
+export type ApiRuntimeRestartCapabilityMode = 'supervisor_available' | 'manual_restart_required' | 'unknown';
+
+export type ApiRuntimeRestartPhase =
+  | 'idle'
+  | 'restart_ready'
+  | 'restarting'
+  | 'completed'
+  | 'failed'
+  | 'manual_restart_required';
+
+export interface ApiRuntimeRestartStatus {
+  capability: {
+    mode: ApiRuntimeRestartCapabilityMode;
+    available: boolean;
+    reason_code: string | null;
+    detail: string;
+  };
+  phase: ApiRuntimeRestartPhase;
+  attempt_id: string | null;
+  requested_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  failed_at: string | null;
+  old_child_pid: number | null;
+  new_child_pid: number | null;
+  target_commit_sha: string | null;
+  observed_running_commit_sha: string | null;
+  recommended_manual_recovery: string | null;
+  last_error: {
+    reason_code: string;
+    message: string;
+  } | null;
+}
+
 export interface ApiRuntimeUpdateActionResponse {
   success: boolean;
   status:
@@ -965,6 +1001,7 @@ export interface ApiRuntimeUpdateActionResponse {
     status: 'manual_restart_required' | 'restarting' | 'completed' | 'failed' | 'unavailable';
     command: string[];
     reason_code: string | null;
+    attempt_id?: string | null;
   } | null;
   message?: string | null;
 }
@@ -1530,8 +1567,15 @@ export interface LocalApiServerOptions {
         | 'update-build-succeeded'
         | 'update-build-failed'
         | 'update-build-skipped'
+        | 'update-restart-requested'
+        | 'update-restart-refused'
         | 'update-restart-ready'
         | 'update-restart-started'
+        | 'update-old-child-shutdown-requested'
+        | 'update-old-child-exited'
+        | 'update-new-child-spawned'
+        | 'update-new-child-ready'
+        | 'update-reconnect-observed'
         | 'update-restart-completed'
         | 'update-restart-failed'
         | 'update-manual-restart-required';
@@ -1559,6 +1603,8 @@ export interface LocalApiServerOptions {
   };
   runtimeUpdateSource?: {
     readUpdateReadiness: () => ApiRuntimeUpdateReadiness | null;
+    readRestartStatus?: () => ApiRuntimeRestartStatus;
+    recordReconnectObserved?: () => Promise<void>;
     prepareUpdate: (params: { drain_mode: ApiDrainModeProjection }) => Promise<ApiRuntimeUpdateActionResponse>;
     applyUpdate: (params: { quiescence: ApiDrainQuiescenceProjection }) => Promise<ApiRuntimeUpdateActionResponse>;
   };
@@ -1633,6 +1679,7 @@ export interface LocalApiServerOptions {
 export interface ApiDiagnosticsResponse {
   runtime_identity: ApiRuntimeBuildIdentityProjection | null;
   runtime_update: ApiRuntimeUpdateReadiness | null;
+  runtime_restart: ApiRuntimeRestartStatus;
   drain_mode: ApiDrainModeProjection;
   quiescence: ApiDrainQuiescenceProjection;
   active_profile: SecurityProfile;

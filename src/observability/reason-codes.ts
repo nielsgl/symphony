@@ -110,6 +110,14 @@ export const REASON_CODES = {
   runtimeUpdateGithubEligibilityRequired: 'runtime_update_github_eligibility_required',
   runtimeUpdateCandidateChanged: 'runtime_update_candidate_changed',
   runtimeUpdateRestartWrapperUnavailable: 'runtime_update_restart_wrapper_unavailable',
+  runtimeUpdateRestartSupervisorAvailable: 'runtime_update_restart_supervisor_available',
+  runtimeUpdateRestartRequested: 'runtime_update_restart_requested',
+  runtimeUpdateRestartDuplicate: 'runtime_update_restart_duplicate',
+  runtimeUpdateRestartSupervisorRefused: 'runtime_update_restart_supervisor_refused',
+  runtimeUpdateRestartStarted: 'runtime_update_restart_started',
+  runtimeUpdateRestartCompleted: 'runtime_update_restart_completed',
+  runtimeUpdateRestartFailed: 'runtime_update_restart_failed',
+  runtimeUpdateReconnectObserved: 'runtime_update_reconnect_observed',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
 
@@ -988,6 +996,86 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Manual restart is required',
     detail: 'The guided runtime update prepared and built the new checkout, but no local restart wrapper is configured.',
     expected_transition: 'The new runtime identity appears after Symphony restarts externally'
+  },
+  [REASON_CODES.runtimeUpdateRestartSupervisorAvailable]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartSupervisorAvailable,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Supervisor Available',
+    headline: 'Supervised restart is available',
+    detail: 'The local supervisor owns the dashboard child process and can restart it after a guided runtime update.',
+    expected_transition: 'Apply update requests a supervisor-backed restart after quiescence'
+  },
+  [REASON_CODES.runtimeUpdateRestartRequested]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartRequested,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Restart Requested',
+    headline: 'Supervised restart requested',
+    detail: 'The guided runtime update reached the safe boundary and requested child process replacement from the supervisor.',
+    expected_transition: 'The supervisor stops the old child and starts a new child from the updated checkout'
+  },
+  [REASON_CODES.runtimeUpdateRestartDuplicate]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartDuplicate,
+    classification: 'awaiting_input',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Restart Duplicate',
+    headline: 'Restart request already in progress',
+    detail: 'A duplicate restart request was ignored because the current restart attempt is already active.',
+    expected_transition: 'The original restart attempt completes or fails'
+  },
+  [REASON_CODES.runtimeUpdateRestartSupervisorRefused]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartSupervisorRefused,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Restart Symphony manually with npm run start:dashboard'],
+    label: 'Runtime Update Restart Supervisor Refused',
+    headline: 'Supervised restart was refused',
+    detail: 'The supervisor rejected the restart request before replacing the dashboard child process.',
+    expected_transition: 'Manual recovery starts Symphony from the updated checkout'
+  },
+  [REASON_CODES.runtimeUpdateRestartStarted]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartStarted,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Restart Started',
+    headline: 'Supervised restart started',
+    detail: 'The supervisor accepted the restart request and the old child is exiting at the safe boundary.',
+    expected_transition: 'A new child starts from the updated checkout'
+  },
+  [REASON_CODES.runtimeUpdateRestartCompleted]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartCompleted,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Restart Completed',
+    headline: 'Supervised restart completed',
+    detail: 'The replacement child started and exposed the updated runtime identity.',
+    expected_transition: 'The dashboard reconnects and shows the runtime as current'
+  },
+  [REASON_CODES.runtimeUpdateRestartFailed]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartFailed,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Restart Symphony manually with npm run start:dashboard and inspect supervisor logs'],
+    label: 'Runtime Update Restart Failed',
+    headline: 'Supervised restart failed',
+    detail: 'The supervisor could not complete child process replacement within the bounded restart contract.',
+    expected_transition: 'Manual recovery starts Symphony from the updated checkout'
+  },
+  [REASON_CODES.runtimeUpdateReconnectObserved]: {
+    reason_code: REASON_CODES.runtimeUpdateReconnectObserved,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Reconnect Observed',
+    headline: 'Dashboard reconnected after restart',
+    detail: 'A dashboard event stream connection was observed after supervised restart.',
+    expected_transition: 'The restart attempt is complete from the operator perspective'
   },
   [REASON_CODES.unknownRuntimeReason]: {
     reason_code: REASON_CODES.unknownRuntimeReason,
