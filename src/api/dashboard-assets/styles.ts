@@ -206,17 +206,17 @@ button:hover {
 }
 
 .refresh-now-button {
-  background: #2563eb;
+  background: #ec4899;
   color: #ffffff;
 }
 
 .refresh-now-button:hover {
-  background: #1d4ed8;
+  background: #db2777;
   filter: none;
 }
 
 .refresh-now-button:focus-visible {
-  outline: 2px solid #93c5fd;
+  outline: 2px solid #f9a8d4;
   outline-offset: 2px;
 }
 
