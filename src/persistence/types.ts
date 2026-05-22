@@ -217,7 +217,31 @@ export type DrainAuditEventType =
   | 'wait-started'
   | 'wait-timed-out'
   | 'safe-shutdown-allowed'
-  | 'safe-shutdown-refused';
+  | 'safe-shutdown-refused'
+  | 'update-detected'
+  | 'update-prepare-requested'
+  | 'update-drain-entered'
+  | 'update-quiescence-reached'
+  | 'update-fetch-started'
+  | 'update-fetch-succeeded'
+  | 'update-fetch-failed'
+  | 'update-pull-started'
+  | 'update-pull-succeeded'
+  | 'update-pull-failed'
+  | 'update-pull-refused'
+  | 'update-install-started'
+  | 'update-install-succeeded'
+  | 'update-install-failed'
+  | 'update-install-skipped'
+  | 'update-build-started'
+  | 'update-build-succeeded'
+  | 'update-build-failed'
+  | 'update-build-skipped'
+  | 'update-restart-ready'
+  | 'update-restart-started'
+  | 'update-restart-completed'
+  | 'update-restart-failed'
+  | 'update-manual-restart-required';
 
 export interface DrainAuditBlockerSummary {
   category: string;

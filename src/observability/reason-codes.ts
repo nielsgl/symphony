@@ -102,6 +102,14 @@ export const REASON_CODES = {
   projectHistoryPayloadTruncated: 'project_history_payload_truncated',
   liveTokenFallbackNotOnHotPath: 'live_token_fallback_not_on_hot_path',
   stateProjectionUnavailable: 'state_projection_unavailable',
+  runtimeUpdateDrainModeRequired: 'runtime_update_drain_mode_required',
+  runtimeUpdateQuiescenceRequired: 'runtime_update_quiescence_required',
+  runtimeUpdateNotActionable: 'runtime_update_not_actionable',
+  runtimeUpdateNotPrepared: 'runtime_update_not_prepared',
+  runtimeUpdateRepositoryUnavailable: 'runtime_update_repository_unavailable',
+  runtimeUpdateGithubEligibilityRequired: 'runtime_update_github_eligibility_required',
+  runtimeUpdateCandidateChanged: 'runtime_update_candidate_changed',
+  runtimeUpdateRestartWrapperUnavailable: 'runtime_update_restart_wrapper_unavailable',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
 
@@ -897,6 +905,89 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'State projection unavailable',
     detail: 'Diagnostics could not project the current state snapshot and returned degraded enrichment metadata instead.',
     expected_transition: 'Diagnostics remain available while state projection is degraded'
+  },
+  [REASON_CODES.runtimeUpdateQuiescenceRequired]: {
+    reason_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+    classification: 'stalled_waiting',
+    actionability: 'required',
+    recommended_actions: ['Wait for Drain Mode quiescence before applying the update'],
+    label: 'Runtime Update Quiescence Required',
+    headline: 'Runtime update is waiting for quiescence',
+    detail: 'The guided runtime update refused to apply because blockers still make restart unsafe.',
+    expected_transition: 'Apply can be retried after quiescence reports safe_to_shutdown'
+  },
+  [REASON_CODES.runtimeUpdateDrainModeRequired]: {
+    reason_code: REASON_CODES.runtimeUpdateDrainModeRequired,
+    classification: 'stalled_waiting',
+    actionability: 'required',
+    recommended_actions: ['Prepare the guided runtime update so Drain Mode stops new dispatch first'],
+    label: 'Runtime Update Drain Mode Required',
+    headline: 'Runtime update is waiting for Drain Mode',
+    detail: 'The guided runtime update refused to apply because Drain Mode is not active.',
+    expected_transition: 'Apply can be retried after Prepare update enters Drain Mode and quiescence is safe'
+  },
+  [REASON_CODES.runtimeUpdateNotActionable]: {
+    reason_code: REASON_CODES.runtimeUpdateNotActionable,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Not Actionable',
+    headline: 'Runtime update is not needed',
+    detail: 'The guided runtime update refused because readiness is current or otherwise does not require an update action.',
+    expected_transition: 'No update transition is needed while readiness remains non-actionable'
+  },
+  [REASON_CODES.runtimeUpdateNotPrepared]: {
+    reason_code: REASON_CODES.runtimeUpdateNotPrepared,
+    classification: 'stalled_waiting',
+    actionability: 'required',
+    recommended_actions: ['Prepare the guided runtime update before applying it'],
+    label: 'Runtime Update Not Prepared',
+    headline: 'Runtime update has not been prepared',
+    detail: 'The guided runtime update refused apply because no actionable prepared update is available in this process.',
+    expected_transition: 'Apply can be retried after Prepare update accepts an actionable readiness state'
+  },
+  [REASON_CODES.runtimeUpdateRepositoryUnavailable]: {
+    reason_code: REASON_CODES.runtimeUpdateRepositoryUnavailable,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Inspect runtime update repository configuration'],
+    label: 'Runtime Update Repository Unavailable',
+    headline: 'Runtime update repository is unavailable',
+    detail: 'The guided runtime update could not resolve a safe local repository root for fetch, pull, install, and build.',
+    expected_transition: 'Update detection can resume after repository configuration is corrected'
+  },
+  [REASON_CODES.runtimeUpdateGithubEligibilityRequired]: {
+    reason_code: REASON_CODES.runtimeUpdateGithubEligibilityRequired,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Verify GitHub checks or explicitly configure raw git update trust'],
+    label: 'Runtime Update GitHub Eligibility Required',
+    headline: 'Runtime update candidate is not GitHub verified',
+    detail:
+      'The guided runtime update refused because the candidate commit is not verified by the configured GitHub eligibility policy.',
+    expected_transition:
+      'GitHub eligibility becomes verified, checks are explicitly allowed absent, or raw git update trust is configured'
+  },
+  [REASON_CODES.runtimeUpdateCandidateChanged]: {
+    reason_code: REASON_CODES.runtimeUpdateCandidateChanged,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Run Prepare update again to review and accept the new remote candidate'],
+    label: 'Runtime Update Candidate Changed',
+    headline: 'Runtime update candidate changed after prepare',
+    detail:
+      'The guided runtime update refused to apply because the fetched remote candidate no longer matches the candidate accepted during Prepare.',
+    expected_transition: 'A new Prepare update cycle pins the current remote candidate before Apply can mutate the checkout'
+  },
+  [REASON_CODES.runtimeUpdateRestartWrapperUnavailable]: {
+    reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable,
+    classification: 'awaiting_input',
+    actionability: 'required',
+    recommended_actions: ['Restart Symphony with the provided manual restart command'],
+    label: 'Runtime Update Restart Wrapper Unavailable',
+    headline: 'Manual restart is required',
+    detail: 'The guided runtime update prepared and built the new checkout, but no local restart wrapper is configured.',
+    expected_transition: 'The new runtime identity appears after Symphony restarts externally'
   },
   [REASON_CODES.unknownRuntimeReason]: {
     reason_code: REASON_CODES.unknownRuntimeReason,

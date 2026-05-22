@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 
 import { WorkspaceError, WorkspaceManager } from '../../src/workspace';
 
-const GIT_INTEGRATION_TIMEOUT_MS = 20_000;
+const GIT_PREFLIGHT_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
 
 async function makeTempRoot(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'symphony-workspace-test-'));
@@ -170,7 +170,7 @@ describe('WorkspaceManager', () => {
 
     expect(status).not.toContain('output/playwright/demo.webm');
     expect(preflightResults.some((entry) => entry.status === 'cleaned')).toBe(true);
-  }, GIT_INTEGRATION_TIMEOUT_MS);
+  }, GIT_PREFLIGHT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('preflight blocks when tracked output/playwright artifacts remain', async () => {
     const root = await makeTempRoot();

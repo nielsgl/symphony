@@ -312,7 +312,7 @@ describe('meta check scripts', () => {
     expect(result.stdout).toContain('UI evidence gate passed');
 
     removeTempRoot(tempRoot);
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('passes baseline profile when UI evidence env marker is set without artifact file', () => {
     const root = process.cwd();
@@ -451,7 +451,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('output/playwright/demo.webm');
 
     removeTempRoot(tempRoot);
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('fails with typed hygiene diagnostic when provision artifact is staged', () => {
     const root = process.cwd();

@@ -92,11 +92,104 @@ export function renderOverview(payload: any) {
       blockerDetail ? 'Quiescence blockers: ' + blockerDetail : ''
     ].filter(Boolean).join(' • ');
     renderRuntimeIdentityWarning(payload.runtime_identity || null);
+    renderRuntimeUpdate(payload.runtime_update || null, payload);
     renderDrainModeWorkflow(payload);
     renderRetryStatusSummary(payload);
 
     const rateLimits = payload.rate_limits;
     elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+  }
+
+function formatRuntimeUpdateLabel(value: any) {
+    return String(value || 'unknown').replace(/_/g, ' ');
+  }
+
+function isActionableRuntimeUpdate(readiness: any) {
+    return !!readiness && [
+      'local_checkout_behind',
+      'remote_update_available',
+      'runtime_stale',
+      'source_changed_build_not_updated'
+    ].includes(readiness.state) && isGithubRuntimeUpdateEligible(readiness.github_eligibility) && !(readiness.refusal_reasons && readiness.refusal_reasons.length > 0);
+  }
+
+function isGithubRuntimeUpdateEligible(eligibility: any) {
+    return !!eligibility && [
+      'github_verified',
+      'github_checks_absent_allowed',
+      'github_trusted_raw_git'
+    ].includes(eligibility.state);
+  }
+
+function updateRuntimeUpdateButtons(readiness: any, payload: any) {
+    const quiescence = payload && payload.quiescence ? payload.quiescence : { safe_to_shutdown: false };
+    const drainMode = payload && payload.drain_mode ? payload.drain_mode : { active: false };
+    const actionable = isActionableRuntimeUpdate(readiness);
+    const prepared = readiness && readiness.prepared === true;
+    const applyReady = readiness && readiness.apply_ready === true;
+    const prepareDisabled = !actionable || prepared;
+    const applyDisabled = !actionable || !applyReady || !drainMode.active || !quiescence.safe_to_shutdown;
+    [
+      elements.runtimeUpdatePrepareButton,
+      elements.runtimeUpdatePreparePanelButton
+    ].filter(Boolean).forEach(function (button: any) {
+      button.disabled = prepareDisabled;
+    });
+    [
+      elements.runtimeUpdateApplyButton,
+      elements.runtimeUpdateApplyPanelButton
+    ].filter(Boolean).forEach(function (button: any) {
+      button.disabled = applyDisabled;
+    });
+  }
+
+export function renderRuntimeUpdate(readiness: any, payload: any) {
+    if (!elements.runtimeUpdatePanel || !elements.runtimeUpdateState || !elements.runtimeUpdateDetails) {
+      return;
+    }
+    updateRuntimeUpdateButtons(readiness, payload);
+    if (!readiness) {
+      if (elements.runtimeUpdateBanner) {
+        elements.runtimeUpdateBanner.classList.add('hidden');
+      }
+      elements.runtimeUpdateState.textContent = 'Runtime update readiness unavailable';
+      elements.runtimeUpdateRecommendation.textContent = 'The local runtime update detector is not configured.';
+      elements.runtimeUpdateDetails.textContent = 'Runtime update details unavailable.';
+      return;
+    }
+
+    const local = readiness.local_checkout || {};
+    const remote = readiness.fetched_remote || {};
+    const counts = readiness.ahead_behind || {};
+    const fetch = readiness.last_fetch || {};
+    const github = readiness.github_eligibility || {};
+    const summaryParts = [
+      'state ' + formatRuntimeUpdateLabel(readiness.state),
+      'branch ' + (local.branch || 'unknown') + ' -> ' + (remote.remote || 'remote') + '/' + (remote.base_ref || 'unknown'),
+      'ahead ' + (counts.ahead === null || counts.ahead === undefined ? 'unknown' : counts.ahead),
+      'behind ' + (counts.behind === null || counts.behind === undefined ? 'unknown' : counts.behind),
+      'fetch ' + (fetch.result || 'unknown'),
+      'github ' + formatRuntimeUpdateLabel(github.state || 'unknown')
+    ];
+
+    if (readiness.attention_required) {
+      elements.runtimeUpdateBanner.classList.remove('hidden');
+      elements.runtimeUpdateTitle.textContent =
+        readiness.state === 'runtime_stale' ? 'Runtime restart required' : 'Runtime update available';
+      elements.runtimeUpdateSummary.textContent = summaryParts.join(' • ');
+    } else {
+      elements.runtimeUpdateBanner.classList.add('hidden');
+      elements.runtimeUpdateSummary.textContent = '';
+    }
+
+    elements.runtimeUpdateState.textContent = formatRuntimeUpdateLabel(readiness.state);
+    elements.runtimeUpdateRecommendation.textContent = [
+      'Recommended action: ' + formatRuntimeUpdateLabel(readiness.recommended_action),
+      'GitHub eligibility: ' + formatRuntimeUpdateLabel(github.state || 'unknown') + '.',
+      readiness.drain_required ? 'Drain Mode is required before applying.' : 'Drain Mode is not required.',
+      readiness.refusal_reasons && readiness.refusal_reasons.length ? 'Refusal: ' + readiness.refusal_reasons.join(', ') : ''
+    ].filter(Boolean).join(' ');
+    elements.runtimeUpdateDetails.textContent = formatCanonicalJsonBlock('Runtime Update JSON', readiness);
   }
 
 export function renderDrainModeWorkflow(payload: any) {

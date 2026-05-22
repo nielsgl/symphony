@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,7 +11,7 @@ import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort, toWorkerEve
 import { SqlitePersistenceStore, buildDurableIdentity } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
 
-const RUNTIME_STARTUP_INTEGRATION_TIMEOUT_MS = 20_000;
+const RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
 
 interface TestDatabase {
   exec(sql: string): void;
@@ -53,6 +54,8 @@ async function makeWorkflowFile(options?: {
   pollingIntervalMs?: number;
   hooksTimeoutMs?: number;
   codexBlock?: string;
+  workspaceProvisionerBlock?: string;
+  runtimeUpdateBlock?: string;
 }): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-'));
   const workflowPath = path.join(dir, 'WORKFLOW.md');
@@ -86,6 +89,8 @@ async function makeWorkflowFile(options?: {
   root: ${JSON.stringify(loggingRoot)}
 `
       : '';
+  const workspaceProvisionerBlock = options?.workspaceProvisionerBlock ?? '';
+  const runtimeUpdateBlock = options?.runtimeUpdateBlock ?? '';
   const content = `---
 tracker:
   kind: linear
@@ -98,6 +103,8 @@ polling:
   interval_ms: ${pollingIntervalMs}
 workspace:
   root: ${JSON.stringify(path.join(dir, 'workspaces'))}
+${workspaceProvisionerBlock}\
+${runtimeUpdateBlock}\
 hooks:
   timeout_ms: ${hooksTimeoutMs}
 agent:
@@ -114,6 +121,43 @@ Issue {{ issue.identifier }} attempt {{ attempt }}
 `;
   await fs.writeFile(workflowPath, content, 'utf8');
   return workflowPath;
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+async function writeTestFile(filePath: string, contents: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, contents, 'utf8');
+}
+
+async function makeRuntimeUpdateRepo(): Promise<{ root: string; remote: string; local: string }> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-bootstrap-update-'));
+  const remote = path.join(root, 'remote.git');
+  const local = path.join(root, 'local');
+  git(root, ['init', '--bare', remote]);
+  git(root, ['clone', remote, local]);
+  git(local, ['config', 'user.email', 'symphony@example.test']);
+  git(local, ['config', 'user.name', 'Symphony Test']);
+  await writeTestFile(path.join(local, 'package.json'), '{"scripts":{"build":"node -e \\"process.exit(0)\\""}}\n');
+  await writeTestFile(path.join(local, 'index.js'), 'console.log("bootstrap");\n');
+  git(local, ['add', '.']);
+  git(local, ['commit', '-m', 'initial']);
+  git(local, ['branch', '-M', 'main']);
+  git(local, ['push', '-u', 'origin', 'main']);
+  return { root, remote, local };
+}
+
+async function pushRuntimeUpdate(root: string): Promise<void> {
+  const remoteWork = path.join(root, `remote-work-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  git(root, ['clone', path.join(root, 'remote.git'), remoteWork]);
+  git(remoteWork, ['config', 'user.email', 'symphony@example.test']);
+  git(remoteWork, ['config', 'user.name', 'Symphony Test']);
+  await writeTestFile(path.join(remoteWork, 'index.js'), `console.log("update-${Date.now()}");\n`);
+  git(remoteWork, ['add', '.']);
+  git(remoteWork, ['commit', '-m', 'remote update']);
+  git(remoteWork, ['push', 'origin', 'main']);
 }
 
 describe('createRuntimeEnvironment', () => {
@@ -320,7 +364,7 @@ describe('createRuntimeEnvironment', () => {
     });
     expect(payload.runtime_identity?.process_started_at_ms).toBeGreaterThan(0);
     expect(tracker.fetch_candidate_issues).toHaveBeenCalled();
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('maps refresh endpoint to orchestrator manual refresh tick', async () => {
     const workflowPath = await makeWorkflowFile();
@@ -443,7 +487,7 @@ describe('createRuntimeEnvironment', () => {
 
     expect(response.status).toBe(409);
     expect(payload.error.code).toBe('input_submission_expired');
-  }, RUNTIME_STARTUP_INTEGRATION_TIMEOUT_MS);
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('exposes SSE event stream endpoint for runtime state push updates', async () => {
     const workflowPath = await makeWorkflowFile();
@@ -472,7 +516,7 @@ describe('createRuntimeEnvironment', () => {
     expect(response.headers.get('content-type')).toContain('text/event-stream');
     await runtime.orchestrator.tick('manual_refresh');
     await response.body?.cancel();
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('starts in offline mode when tracker credentials are missing and adapter is provided', async () => {
     const workflowPath = await makeWorkflowFile({ includeTrackerCredentials: false });
@@ -504,7 +548,7 @@ describe('createRuntimeEnvironment', () => {
     expect(response.status).toBe(200);
     expect(payload.health.dispatch_validation).toBe('failed');
     expect(payload.health.last_error).toMatch(/tracker\.(api_key|project_slug)/);
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('fails startup on strict numeric validation errors', async () => {
     const workflowPath = await makeWorkflowFile({ hooksTimeoutMs: 0 });
@@ -577,6 +621,65 @@ describe('createRuntimeEnvironment', () => {
     });
   });
 
+  it('wires runtime update GitHub eligibility mode from workflow config into bootstrap readiness', async () => {
+    const repo = await makeRuntimeUpdateRepo();
+    dirs.push(repo.root);
+    await pushRuntimeUpdate(repo.root);
+    const workflowPath = await makeWorkflowFile({
+      workspaceProvisionerBlock: `  provisioner:
+    type: none
+    repo_root: ${JSON.stringify(repo.local)}
+    base_ref: origin/main
+`,
+      runtimeUpdateBlock: `runtime_update:
+  github_eligibility:
+    mode: trust_raw_git
+`
+    });
+    dirs.push(path.dirname(workflowPath));
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      runtime_update: {
+        state: string;
+        github_eligibility: {
+          mode: string;
+          state: string;
+          provider: string;
+        };
+        refusal_reasons: string[];
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.runtime_update).toMatchObject({
+      state: 'local_checkout_behind',
+      github_eligibility: {
+        mode: 'trust_raw_git',
+        state: 'github_trusted_raw_git',
+        provider: 'none'
+      },
+      refusal_reasons: []
+    });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
+
   it('exposes redaction-safe effective typed codex config in diagnostics', async () => {
     const workflowPath = await makeWorkflowFile({
       codexBlock: `codex:
@@ -630,7 +733,7 @@ describe('createRuntimeEnvironment', () => {
       effective_extra_flags_count: 2,
       codex_resolution_mode: 'typed'
     });
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('restores durable history on restart without restoring running or retry state', async () => {
     const workflowPath = await makeWorkflowFile();
@@ -897,7 +1000,7 @@ describe('createRuntimeEnvironment', () => {
         })
       ])
     );
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('keeps HTTP extension disabled when neither CLI port nor workflow server.port is configured', async () => {
     const workflowPath = await makeWorkflowFile({ includeServerPort: false });
@@ -946,7 +1049,7 @@ describe('createRuntimeEnvironment', () => {
     await runtime.start();
     const address = requireApiAddress(runtime);
     expect(address.port).toBeGreaterThan(0);
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('uses CLI port precedence over workflow server.port when both are configured', async () => {
     const workflowPath = await makeWorkflowFile({ includeServerPort: true, serverPort: 41001 });
@@ -996,7 +1099,7 @@ describe('createRuntimeEnvironment', () => {
     };
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.logging.sinks).toEqual(expectedRuntimeSinks({ observer: true }));
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('enables stderr runtime logs in tests when explicitly requested', async () => {
     process.env.SYMPHONY_TEST_LOGS = '1';

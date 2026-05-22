@@ -2,6 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { performance } from 'node:perf_hooks';
 
 import type { StructuredLogger } from '../observability';
+import { REASON_CODES } from '../observability';
 import { CANONICAL_EVENT } from '../observability/events';
 import type { DurableRunHistoryRecord, ProjectHistoryTicketSummaryProjection } from '../persistence';
 import { ControlPlaneHealthRecorder, type ControlPlaneHealthState, type ControlPlaneObservation } from './control-plane-health';
@@ -36,6 +37,7 @@ import type {
   ApiIssueResponse,
   ApiEventEnvelope,
   ApiIssueRuntimeDiagnosticsResponse,
+  ApiRuntimeUpdateReadiness,
   ApiStateResponse,
   ApiStateErrorResponse,
   ApiStateSnapshotResponse,
@@ -98,6 +100,38 @@ interface TimedStateSnapshot {
   snapshotErrorCode: ApiStateErrorResponse['error']['code'] | null;
 }
 
+function isRuntimeUpdateActionable(readiness: ApiRuntimeUpdateReadiness | null): boolean {
+  return !!readiness && [
+    'local_checkout_behind',
+    'remote_update_available',
+    'runtime_stale',
+    'source_changed_build_not_updated'
+  ].includes(readiness.state) && !!readiness.github_eligibility && [
+    'github_verified',
+    'github_checks_absent_allowed',
+    'github_trusted_raw_git'
+  ].includes(readiness.github_eligibility.state) && readiness.refusal_reasons.length === 0;
+}
+
+function isRuntimeUpdateApplyReady(readiness: ApiRuntimeUpdateReadiness | null): boolean {
+  return isRuntimeUpdateActionable(readiness) && readiness?.apply_ready === true;
+}
+
+function runtimeUpdateCandidateDriftAuditContext(readiness: ApiRuntimeUpdateReadiness | null): Record<string, unknown> {
+  if (!readiness?.refusal_reasons.includes(REASON_CODES.runtimeUpdateCandidateChanged)) {
+    return {};
+  }
+  return {
+    prepared_update: readiness.prepared_update,
+    fetched_candidate: {
+      remote: readiness.fetched_remote.remote,
+      base_ref: readiness.fetched_remote.base_ref,
+      candidate_sha: readiness.fetched_remote.commit_sha ?? readiness.local_checkout.commit_sha,
+      github_eligibility: readiness.github_eligibility
+    }
+  };
+}
+
 export class LocalApiServer {
   private readonly host: string;
   private readonly port: number;
@@ -108,6 +142,7 @@ export class LocalApiServer {
   private readonly drainControlSource?: LocalApiServerOptions['drainControlSource'];
   private readonly drainAuditSink?: LocalApiServerOptions['drainAuditSink'];
   private readonly shutdownSource?: LocalApiServerOptions['shutdownSource'];
+  private readonly runtimeUpdateSource?: LocalApiServerOptions['runtimeUpdateSource'];
   private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
   private readonly issueControlSource?: LocalApiServerOptions['issueControlSource'];
   private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
@@ -137,6 +172,7 @@ export class LocalApiServer {
     this.drainControlSource = options.drainControlSource;
     this.drainAuditSink = options.drainAuditSink;
     this.shutdownSource = options.shutdownSource;
+    this.runtimeUpdateSource = options.runtimeUpdateSource;
     this.workflowControlSource = options.workflowControlSource;
     this.issueControlSource = options.issueControlSource;
     this.dashboardConfig = options.dashboardConfig ?? {
@@ -344,6 +380,7 @@ export class LocalApiServer {
     try {
       const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
+      payload.runtime_update = this.runtimeUpdateSource?.readUpdateReadiness() ?? null;
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
       const enrichment = this.enrichLiveTokenFallbackState(payload);
@@ -399,6 +436,7 @@ export class LocalApiServer {
     try {
       const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
+      payload.runtime_update = this.runtimeUpdateSource?.readUpdateReadiness() ?? null;
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
       const enrichment = this.enrichLiveTokenFallbackState(payload);
@@ -780,7 +818,8 @@ export class LocalApiServer {
       streamDiagnostics: this.streamDiagnostics,
       liveClientCount: this.eventClients.size,
       controlPlaneSummary: () => this.controlPlaneSummary(),
-      enrichLiveTokenFallbackState: (payload) => this.enrichLiveTokenFallbackState(payload)
+      enrichLiveTokenFallbackState: (payload) => this.enrichLiveTokenFallbackState(payload),
+      readUpdateReadiness: () => this.runtimeUpdateSource?.readUpdateReadiness() ?? null
     });
   }
 
@@ -1078,6 +1117,193 @@ export class LocalApiServer {
               });
               sendJson(response, 202, payload);
               this.scheduleSafeShutdown();
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/runtime-update\/prepare$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (_request, response) => {
+              if (!this.runtimeUpdateSource) {
+                throw new LocalApiError('runtime_update_unavailable', 'Runtime update source is not configured', 503);
+              }
+              if (!this.drainControlSource) {
+                throw new LocalApiError('drain_control_unavailable', 'Drain Mode control source is not configured', 503);
+              }
+              const requestedAt = new Date(this.nowMs()).toISOString();
+              const preflightDrainMode = this.projectDrainControlState(this.drainControlSource.readDrainMode());
+              this.recordDrainAuditEvent({
+                event_type: 'update-prepare-requested',
+                actor: 'operator',
+                source: 'api',
+                result: 'accepted',
+                result_code: 'runtime_update_prepare_requested',
+                state_context: { drain_mode_active: preflightDrainMode.active },
+                blocker_summaries: [],
+                occurred_at: requestedAt,
+                observed_at: requestedAt
+              });
+              const preflight = await this.runtimeUpdateSource.prepareUpdate({ drain_mode: preflightDrainMode });
+              if (!preflight.success) {
+                this.broadcastStateSnapshot('runtime_update_prepare_refused');
+                this.recordDrainAuditEvent({
+                  event_type: 'update-pull-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: preflight.reason_code ?? 'runtime_update_prepare_refused',
+                  state_context: { drain_mode_active: preflightDrainMode.active },
+                  blocker_summaries: [],
+                  occurred_at: new Date(this.nowMs()).toISOString(),
+                  observed_at: new Date(this.nowMs()).toISOString()
+                });
+                sendJson(response, 409, {
+                  ...preflight,
+                  drain_mode: preflightDrainMode
+                });
+                return;
+              }
+              const drainMode = this.projectDrainControlState(
+                this.drainControlSource.enterDrainMode({ reason: 'runtime_update_prepare' })
+              );
+              this.broadcastStateSnapshot('runtime_update_prepare');
+              this.recordDrainAuditEvent({
+                event_type: 'update-drain-entered',
+                actor: 'operator',
+                source: 'api',
+                result: 'accepted',
+                result_code: 'drain_mode_entered',
+                state_context: { reason: drainMode.reason },
+                blocker_summaries: [],
+                occurred_at: new Date(this.nowMs()).toISOString(),
+                observed_at: new Date(this.nowMs()).toISOString()
+              });
+              sendJson(response, 202, {
+                ...preflight,
+                drain_mode: drainMode
+              });
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/runtime-update\/apply$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (_request, response) => {
+              if (!this.runtimeUpdateSource) {
+                throw new LocalApiError('runtime_update_unavailable', 'Runtime update source is not configured', 503);
+              }
+              const { state, quiescence } = this.readDrainQuiescenceProjection();
+              if (!state.drain_mode.active) {
+                const payload = {
+                  success: false,
+                  status: 'refused',
+                  step: 'apply',
+                  reason_code: REASON_CODES.runtimeUpdateDrainModeRequired,
+                  recommended_action: 'prepare_update',
+                  idempotent_replay: false,
+                  quiescence,
+                  blockers: [],
+                  readiness: this.runtimeUpdateSource.readUpdateReadiness(),
+                  message: 'Runtime update apply refused because Drain Mode is not active.'
+                };
+                this.broadcastStateSnapshot('runtime_update_apply_refused');
+                this.recordDrainAuditEvent({
+                  event_type: 'update-pull-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: REASON_CODES.runtimeUpdateDrainModeRequired,
+                  state_context: { drain_mode_active: false },
+                  blocker_summaries: [],
+                  occurred_at: new Date(this.nowMs()).toISOString(),
+                  observed_at: new Date(this.nowMs()).toISOString()
+                });
+                sendJson(response, 409, payload);
+                return;
+              }
+              if (!quiescence.safe_to_shutdown) {
+                const blockers = this.projectDrainControlBlockers(state, quiescence);
+                const payload = {
+                  success: false,
+                  status: 'refused',
+                  step: 'apply',
+                  reason_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+                  recommended_action: 'wait_for_quiescence',
+                  idempotent_replay: false,
+                  quiescence,
+                  blockers,
+                  readiness: this.runtimeUpdateSource.readUpdateReadiness(),
+                  message: 'Runtime update apply refused because Symphony is not quiescent.'
+                };
+                this.broadcastStateSnapshot('runtime_update_apply_refused');
+                this.recordDrainAuditEvent({
+                  event_type: 'update-pull-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+                  state_context: { safe_to_shutdown: false },
+                  blocker_summaries: this.drainAuditBlockerSummaries(blockers),
+                  occurred_at: new Date(this.nowMs()).toISOString(),
+                  observed_at: new Date(this.nowMs()).toISOString()
+                });
+                sendJson(response, 409, payload);
+                return;
+              }
+              const readiness = this.runtimeUpdateSource.readUpdateReadiness();
+              if (!isRuntimeUpdateApplyReady(readiness)) {
+                const actionable = isRuntimeUpdateActionable(readiness);
+                const payload = {
+                  success: false,
+                  status: 'refused',
+                  step: 'apply',
+                  reason_code: actionable ? REASON_CODES.runtimeUpdateNotPrepared : readiness?.refusal_reasons[0] ?? REASON_CODES.runtimeUpdateNotActionable,
+                  recommended_action: actionable ? 'prepare_update' : readiness?.recommended_action ?? 'inspect_status',
+                  idempotent_replay: false,
+                  quiescence,
+                  blockers: [],
+                  readiness,
+                  message: 'Runtime update apply refused because no actionable prepared update is available.'
+                };
+                this.broadcastStateSnapshot('runtime_update_apply_refused');
+                this.recordDrainAuditEvent({
+                  event_type: 'update-pull-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: payload.reason_code,
+                  state_context: {
+                    drain_mode_active: true,
+                    readiness_state: readiness?.state ?? 'unknown',
+                    ...runtimeUpdateCandidateDriftAuditContext(readiness)
+                  },
+                  blocker_summaries: [],
+                  occurred_at: new Date(this.nowMs()).toISOString(),
+                  observed_at: new Date(this.nowMs()).toISOString()
+                });
+                sendJson(response, 409, payload);
+                return;
+              }
+              this.recordDrainAuditEvent({
+                event_type: 'update-quiescence-reached',
+                actor: 'operator',
+                source: 'api',
+                result: 'accepted',
+                result_code: 'quiescent',
+                state_context: { safe_to_shutdown: true },
+                blocker_summaries: [],
+                occurred_at: new Date(this.nowMs()).toISOString(),
+                observed_at: new Date(this.nowMs()).toISOString()
+              });
+              const payload = await this.runtimeUpdateSource.applyUpdate({ quiescence });
+              this.broadcastStateSnapshot('runtime_update_apply_finished');
+              sendJson(response, payload.success ? 202 : 409, payload);
             }
           }
         ]

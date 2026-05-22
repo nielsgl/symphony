@@ -26,10 +26,11 @@ Conflict rules:
   lifecycle semantics documented here.
 
 This extension defines workflow-config metadata and runtime semantics for
-role-aware handoff states and fresh-dispatch states. The v1 reference
-implementation covers typed config resolution, validation, local-worker
-state-refresh handling, orchestrator retry/dispatch behavior, and terminal
-cleanup separation.
+role-aware handoff states, fresh-dispatch states, and local guided runtime
+update policy. The v1 reference implementation covers typed config resolution,
+validation, local-worker state-refresh handling, orchestrator retry/dispatch
+behavior, terminal cleanup separation, and explicit runtime-update GitHub
+eligibility decisions.
 
 ## 2. Domain Model Extensions
 
@@ -149,12 +150,45 @@ Lifecycle semantics:
   worker must stop and report `fresh_dispatch_state_routed` unless the target
   state is itself a handoff state, in which case `handoff_state_reached` applies.
 
+### 3.3 `runtime_update.github_eligibility.mode`
+
+Type: string enum.
+
+Default: `required`.
+
+Allowed values:
+
+- `required`: require GitHub check-run eligibility for an actionable update
+  candidate before Prepare or Apply can proceed.
+- `allow_absent_checks`: allow GitHub candidates with an intentionally empty
+  check-run set while still refusing pending, failing, unavailable, or unknown
+  GitHub states.
+- `trust_raw_git`: explicitly trust the configured git remote/base ref without
+  requiring GitHub eligibility. This is intended for local or non-GitHub
+  repositories where the operator has chosen raw git authority.
+
+Validation:
+
+- The field is optional.
+- When provided, the value must be one of the allowed values above.
+- Invalid values must fail config validation before runtime startup.
+
+Lifecycle semantics:
+
+- The default remains conservative and must not silently allow raw git
+  fast-forwards when GitHub eligibility is unknown or unavailable.
+- Non-default modes are operator policy choices and must be represented in the
+  runtime update readiness payload exposed by state and diagnostics.
+- The guided runtime update loop must use the resolved effective config value
+  from runtime bootstrap, not an unconfigured internal default or direct
+  construction-only test seam.
+
 ## 4. Invariants
 
 Implementations must enforce the following invariants for the typed effective
 workflow config:
 
-1. Omitted extension fields resolve to `[]`.
+1. Omitted handoff extension fields resolve to `[]`.
 2. Omitted extension fields preserve existing behavior compatibility.
 3. `tracker.handoff_states` and `tracker.fresh_dispatch_states` contain only
    non-empty strings.
@@ -167,6 +201,9 @@ workflow config:
 8. Terminal states must not be used for workflow handoff because terminal
    cleanup may remove workspaces before the next role can inspect or continue
    the work.
+9. Omitted `runtime_update.github_eligibility.mode` resolves to `required`.
+10. `runtime_update.github_eligibility.mode` must be one of `required`,
+    `allow_absent_checks`, or `trust_raw_git`.
 
 These invariants are config-contract requirements and runtime preconditions.
 

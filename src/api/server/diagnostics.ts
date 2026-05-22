@@ -29,6 +29,7 @@ export function buildDiagnosticsPayload(options: {
   liveClientCount: number;
   controlPlaneSummary: () => ApiDiagnosticsResponse['control_plane'];
   enrichLiveTokenFallbackState: (payload: ApiStateResponse) => ApiDiagnosticsResponse['token_enrichment'];
+  readUpdateReadiness?: () => ApiDiagnosticsResponse['runtime_update'];
 }): TimedDiagnosticsPayload {
   if (!options.diagnosticsSource) {
     throw new LocalApiError('diagnostics_unavailable', 'Diagnostics source is not configured', 503);
@@ -199,7 +200,8 @@ export function buildDiagnosticsPayload(options: {
       codex_resolution_mode: runtimeResolution.codex_resolution_mode ?? 'typed'
     },
     workspace_provisioner: options.diagnosticsSource.getWorkspaceProvisioner(),
-    workspace_copy_ignored: options.diagnosticsSource.getWorkspaceCopyIgnored()
+    workspace_copy_ignored: options.diagnosticsSource.getWorkspaceCopyIgnored(),
+    runtime_update: options.readUpdateReadiness ? options.readUpdateReadiness() : null
   };
   return {
     payload,

@@ -56,6 +56,7 @@ export type ValidationErrorCode =
   | 'invalid_workspace_copy_ignored_from'
   | 'invalid_workspace_copy_ignored_conflict_policy'
   | 'invalid_workspace_copy_ignored_limits'
+  | 'invalid_runtime_update_github_eligibility_mode'
   | 'invalid_logging_root'
   | 'invalid_logging_max_bytes'
   | 'invalid_logging_max_files'
@@ -213,6 +214,11 @@ export interface EffectiveConfig {
   };
   validation?: {
     ui_evidence_profile: 'baseline' | 'strict' | string;
+  };
+  runtime_update?: {
+    github_eligibility: {
+      mode: 'required' | 'allow_absent_checks' | 'trust_raw_git' | string;
+    };
   };
   logging: LoggingConfig;
   worker?: WorkerConfig;

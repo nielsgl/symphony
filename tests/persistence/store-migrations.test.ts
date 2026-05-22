@@ -55,8 +55,8 @@ describe('SqlitePersistenceStore migrations', () => {
     );
     expect(store.historySchemaHealth()).toMatchObject({
       schema_name: 'project_execution_history',
-      target_version: 10,
-      applied_version: 10,
+      target_version: 11,
+      applied_version: 11,
       status: 'healthy',
       degraded_reason_code: null
     });
@@ -70,7 +70,8 @@ describe('SqlitePersistenceStore migrations', () => {
       expect.objectContaining({ version: 7, name: 'history_retention_prune_evidence_v1', status: 'applied' }),
       expect.objectContaining({ version: 8, name: 'stable_project_identity_key_v1', status: 'applied' }),
       expect.objectContaining({ version: 9, name: 'project_scoped_ticket_identity_v1', status: 'applied' }),
-      expect.objectContaining({ version: 10, name: 'drain_audit_history_v1', status: 'applied' })
+      expect.objectContaining({ version: 10, name: 'drain_audit_history_v1', status: 'applied' }),
+      expect.objectContaining({ version: 11, name: 'runtime_update_drain_audit_events_v1', status: 'applied' })
     ]);
   });
 
@@ -81,14 +82,14 @@ describe('SqlitePersistenceStore migrations', () => {
 
     const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:00:00.000Z') });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth().migrations).toHaveLength(10);
+    expect(storeA.historySchemaHealth().migrations).toHaveLength(11);
     storeA.close();
     stores.pop();
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14, nowMs: () => Date.parse('2026-04-11T10:10:00.000Z') });
     stores.push(storeB);
 
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 10, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 11, status: 'healthy' });
     expect(storeB.historySchemaHealth().migrations).toEqual([
       expect.objectContaining({ version: 1, status: 'applied' }),
       expect.objectContaining({ version: 2, status: 'applied' }),
@@ -99,7 +100,111 @@ describe('SqlitePersistenceStore migrations', () => {
       expect.objectContaining({ version: 7, status: 'applied' }),
       expect.objectContaining({ version: 8, status: 'applied' }),
       expect.objectContaining({ version: 9, status: 'applied' }),
-      expect.objectContaining({ version: 10, status: 'applied' })
+      expect.objectContaining({ version: 10, status: 'applied' }),
+      expect.objectContaining({ version: 11, status: 'applied' })
+    ]);
+  });
+
+  it('upgrades existing drain audit tables to accept runtime update events', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-update-audit-migration-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const durableIdentity = identity({ issue_id: 'runtime-update-migration-1', issue_identifier: 'UPD-MIG-1' });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    storeA.appendDrainAuditHistory({
+      project_identity: durableIdentity.project,
+      event_type: 'drain-entered',
+      actor: 'operator',
+      source: 'api',
+      result: 'accepted',
+      result_code: 'drain_mode_entered',
+      state_context: { drain_active: true },
+      blocker_summaries: [],
+      occurred_at: '2026-05-21T10:00:00.000Z',
+      observed_at: '2026-05-21T10:00:00.000Z'
+    });
+    storeA.close();
+    stores.pop();
+
+    const db = openDatabase(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE history_drain_audit_event_legacy (
+          drain_audit_event_id TEXT PRIMARY KEY,
+          project_key TEXT NOT NULL,
+          ticket_key TEXT,
+          issue_run_id TEXT,
+          attempt_id TEXT,
+          thread_id TEXT,
+          turn_id TEXT,
+          event_type TEXT NOT NULL CHECK (event_type IN (
+            'drain-entered',
+            'drain-exited',
+            'quiescence-reached',
+            'wait-started',
+            'wait-timed-out',
+            'safe-shutdown-allowed',
+            'safe-shutdown-refused'
+          )),
+          actor TEXT,
+          source TEXT NOT NULL,
+          result TEXT NOT NULL CHECK (result IN ('accepted', 'rejected', 'failed', 'observed')),
+          result_code TEXT NOT NULL,
+          reason_note TEXT,
+          state_context TEXT,
+          blocker_summaries TEXT NOT NULL,
+          occurred_at TEXT NOT NULL,
+          observed_at TEXT NOT NULL,
+          observation_hash TEXT NOT NULL,
+          duplicate_count INTEGER NOT NULL DEFAULT 1,
+          last_observed_at TEXT NOT NULL,
+          FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT,
+          FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+          FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+          FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+          FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT,
+          UNIQUE (project_key, event_type, observation_hash)
+        );
+        INSERT INTO history_drain_audit_event_legacy
+          SELECT * FROM history_drain_audit_event;
+        DROP TABLE history_drain_audit_event;
+        ALTER TABLE history_drain_audit_event_legacy RENAME TO history_drain_audit_event;
+        CREATE INDEX IF NOT EXISTS history_drain_audit_event_project_idx
+          ON history_drain_audit_event(project_key, occurred_at DESC, drain_audit_event_id DESC);
+        CREATE INDEX IF NOT EXISTS history_drain_audit_event_ticket_idx
+          ON history_drain_audit_event(project_key, ticket_key, occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS history_drain_audit_event_issue_run_idx
+          ON history_drain_audit_event(issue_run_id);
+        DELETE FROM history_schema_migrations WHERE schema_name = 'project_execution_history' AND version = 11;
+        UPDATE history_schema_state
+          SET applied_version = 10, status = 'healthy', degraded_reason_code = NULL, degraded_detail = NULL
+          WHERE schema_name = 'project_execution_history';
+      `);
+    } finally {
+      db.close();
+    }
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    storeB.appendDrainAuditHistory({
+      project_identity: durableIdentity.project,
+      event_type: 'update-detected',
+      actor: 'operator',
+      source: 'runtime_update',
+      result: 'observed',
+      result_code: 'remote_update_available',
+      state_context: { state: 'remote_update_available' },
+      blocker_summaries: [],
+      occurred_at: '2026-05-21T10:01:00.000Z',
+      observed_at: '2026-05-21T10:01:00.000Z'
+    });
+
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 11, status: 'healthy' });
+    expect((storeB as any).listProjectDrainAuditEvents(durableIdentity.project.key, { limit: 10 }).items.map((entry: any) => entry.event_type)).toEqual([
+      'update-detected',
+      'drain-entered'
     ]);
   });
 
@@ -168,7 +273,7 @@ describe('SqlitePersistenceStore migrations', () => {
            VALUES (?, ?, 'linear', 'present', 'symphony', NULL, ?, ?, '2026-04-11T11:00:00.000Z', '2026-04-11T11:00:00.000Z')`
         )
         .run(projectB.ticket.key, projectB.project.key, projectB.ticket.remote_issue_id, projectB.ticket.human_issue_identifier);
-      dbA.prepare("DELETE FROM history_schema_migrations WHERE schema_name = 'project_execution_history' AND version IN (9, 10)").run();
+      dbA.prepare("DELETE FROM history_schema_migrations WHERE schema_name = 'project_execution_history' AND version IN (9, 10, 11)").run();
       dbA
         .prepare(
           `UPDATE history_schema_state
@@ -182,7 +287,7 @@ describe('SqlitePersistenceStore migrations', () => {
 
     const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
     stores.push(storeB);
-    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 10, status: 'healthy' });
+    expect(storeB.historySchemaHealth()).toMatchObject({ applied_version: 11, status: 'healthy' });
     expect(storeB.listProjectTicketIdentities(projectA.project.key).items).toEqual([projectA]);
     expect(storeB.listProjectTicketIdentities(projectB.project.key).items).toEqual([projectB]);
     expect(storeB.reconstructTicketTimeline(projectA).issue_runs.map((run) => run.issue_run_id)).toEqual(['legacy-project-a-run']);
@@ -318,7 +423,7 @@ describe('SqlitePersistenceStore migrations', () => {
         terminal_reason_code: 'legacy_error'
       })
     ]);
-    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 10, status: 'healthy' });
+    expect(store.historySchemaHealth()).toMatchObject({ applied_version: 11, status: 'healthy' });
     expect(tableNames(dbPath)).toEqual(
       expect.arrayContaining([
         'history_token_model_fact',

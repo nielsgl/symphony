@@ -158,6 +158,26 @@ h1 {
   gap: 8px;
 }
 
+.runtime-update-banner {
+  margin: 10px 24px 0;
+  border: 1px solid #2563eb;
+  background: #eef4ff;
+  color: #1f4fa3;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.runtime-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .reason-chip {
   font-size: 11px;
   padding: 4px 8px;
@@ -333,9 +353,26 @@ h3 {
   filter: none;
 }
 
+.runtime-update-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  filter: none;
+}
+
 .drain-mode-grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.runtime-update-panel {
+  border-color: #b8c7e6;
+}
+
+.runtime-update-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
   gap: 14px;
   align-items: start;
 }
@@ -865,6 +902,10 @@ details summary {
   }
 
   .drain-mode-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-update-grid {
     grid-template-columns: 1fr;
   }
 

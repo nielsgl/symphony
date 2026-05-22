@@ -282,6 +282,7 @@ export class SnapshotService {
       ...freshness,
       ...createApiDegradedDiagnostics(null, []),
       runtime_identity: this.projectRuntimeIdentity(state),
+      runtime_update: null,
       drain_mode: this.projectDrainMode(state),
       quiescence: this.projectQuiescence(state),
       counts: {

@@ -55,6 +55,7 @@ describe('ConfigResolver', () => {
     expect(config.logging.max_bytes).toBe(10 * 1024 * 1024);
     expect(config.logging.max_files).toBe(5);
     expect(config.validation?.ui_evidence_profile).toBe('baseline');
+    expect(config.runtime_update?.github_eligibility.mode).toBe('required');
   });
 
   it('resolves budget controls with defaults for optional policy fields', () => {
@@ -381,6 +382,23 @@ describe('ConfigResolver', () => {
       branch_template: 'feature/{{ issue.identifier }}',
       teardown_mode: 'remove_worktree'
     });
+  });
+
+  it('resolves runtime update GitHub eligibility mode from workflow config', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve({
+      config: {
+        runtime_update: {
+          github_eligibility: {
+            mode: 'allow_absent_checks'
+          }
+        }
+      },
+      prompt_template: 'prompt'
+    });
+
+    expect(config.runtime_update?.github_eligibility.mode).toBe('allow_absent_checks');
   });
 
   it('normalizes per-state concurrency map and preserves invalid entries for validation', () => {

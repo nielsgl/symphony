@@ -2,6 +2,7 @@ import { redactUnknown } from '../security/redaction';
 import {
   createHistoryRetentionPruneRecordTable,
   createProjectExecutionHistoryTables,
+  drainAuditEventTypeCheckSql,
   ensureHistoryMigrationTables,
   ensureHistoryWriteFailureTable
 } from './schema';
@@ -235,8 +236,68 @@ function historyMigrations(): HistoryMigration[] {
       apply: (context) => {
         createProjectExecutionHistoryTables(context.context);
       }
+    },
+    {
+      version: 11,
+      name: 'runtime_update_drain_audit_events_v1',
+      apply: (context) => {
+        ensureRuntimeUpdateDrainAuditEventTypes(context.db);
+      }
     }
   ];
+}
+
+function ensureRuntimeUpdateDrainAuditEventTypes(db: PersistenceDatabase): void {
+  const table = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'history_drain_audit_event'")
+    .get() as { sql: string } | undefined;
+  if (!table) {
+    return;
+  }
+  if (table.sql.includes('update-manual-restart-required')) {
+    return;
+  }
+
+  db.exec(`
+    CREATE TABLE history_drain_audit_event_runtime_update_migration (
+      drain_audit_event_id TEXT PRIMARY KEY,
+      project_key TEXT NOT NULL,
+      ticket_key TEXT,
+      issue_run_id TEXT,
+      attempt_id TEXT,
+      thread_id TEXT,
+      turn_id TEXT,
+      event_type TEXT NOT NULL CHECK (${drainAuditEventTypeCheckSql()}),
+      actor TEXT,
+      source TEXT NOT NULL,
+      result TEXT NOT NULL CHECK (result IN ('accepted', 'rejected', 'failed', 'observed')),
+      result_code TEXT NOT NULL,
+      reason_note TEXT,
+      state_context TEXT,
+      blocker_summaries TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      observation_hash TEXT NOT NULL,
+      duplicate_count INTEGER NOT NULL DEFAULT 1,
+      last_observed_at TEXT NOT NULL,
+      FOREIGN KEY (project_key) REFERENCES history_project_identity(project_key) ON DELETE RESTRICT,
+      FOREIGN KEY (issue_run_id) REFERENCES issue_run(issue_run_id) ON DELETE RESTRICT,
+      FOREIGN KEY (attempt_id) REFERENCES attempt(attempt_id) ON DELETE RESTRICT,
+      FOREIGN KEY (thread_id) REFERENCES thread(thread_id) ON DELETE RESTRICT,
+      FOREIGN KEY (turn_id) REFERENCES turn(turn_id) ON DELETE RESTRICT,
+      UNIQUE (project_key, event_type, observation_hash)
+    );
+    INSERT INTO history_drain_audit_event_runtime_update_migration
+      SELECT * FROM history_drain_audit_event;
+    DROP TABLE history_drain_audit_event;
+    ALTER TABLE history_drain_audit_event_runtime_update_migration RENAME TO history_drain_audit_event;
+    CREATE INDEX IF NOT EXISTS history_drain_audit_event_project_idx
+      ON history_drain_audit_event(project_key, occurred_at DESC, drain_audit_event_id DESC);
+    CREATE INDEX IF NOT EXISTS history_drain_audit_event_ticket_idx
+      ON history_drain_audit_event(project_key, ticket_key, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS history_drain_audit_event_issue_run_idx
+      ON history_drain_audit_event(issue_run_id);
+  `);
 }
 
 function createTicketOrchestrationLedgerTables(

@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 import { ControlPlaneHealthRecorder, LocalApiServer } from '../api';
+import { SnapshotService } from '../api/snapshot-service';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
 import {
   DEFAULT_LOG_FILE_NAME,
@@ -34,6 +35,7 @@ import {
 import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
+import { LocalRuntimeUpdateManager } from './update-manager';
 import { WorkflowConfigError } from '../workflow/errors';
 import {
   WorkflowLoader,
@@ -249,6 +251,13 @@ function resolveRuntimeBuildIdentityState(params: {
     status: 'current',
     health_warning: null
   };
+}
+
+function resolveRuntimeUpdateGithubEligibilityMode(mode: string | undefined): 'required' | 'allow_absent_checks' | 'trust_raw_git' | undefined {
+  if (mode === 'required' || mode === 'allow_absent_checks' || mode === 'trust_raw_git') {
+    return mode;
+  }
+  return undefined;
 }
 
 function extractChecklistCheckpoint(issueDescription: string | null): string | null {
@@ -1198,6 +1207,30 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   const resolvedPort = options.port ?? effectiveConfig.server?.port;
   const resolvedHost = options.host ?? effectiveConfig.server?.host ?? '127.0.0.1';
   let stopRuntime: (() => Promise<void>) | null = null;
+  const runtimeUpdateSnapshotService = new SnapshotService({ nowMs });
+  const runtimeUpdateManager = new LocalRuntimeUpdateManager({
+    repoRoot: runtimeIdentityRepoRoot,
+    baseRef: effectiveConfig.workspace.provisioner.base_ref ?? 'main',
+    remote: 'origin',
+    githubEligibilityMode: resolveRuntimeUpdateGithubEligibilityMode(effectiveConfig.runtime_update?.github_eligibility.mode),
+    nowMs,
+    runtimeIdentity: () => runtimeUpdateSnapshotService.projectRuntimeIdentity(
+      orchestrator.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false })
+    ),
+    auditSink: persistenceStore
+      ? {
+          appendDrainAuditHistory: async (params) =>
+            persistenceStore.appendDrainAuditHistory({ ...params, project_identity: runtimeProjectIdentity }),
+          recordHistoryWriteFailure: async (operation, reasonCode, error) =>
+            persistenceStore.recordHistoryWriteFailure({
+              operation,
+              reason_code: reasonCode,
+              detail: error instanceof Error ? error.message : String(error)
+            })
+        }
+      : undefined,
+    restartCommand: ['npm', 'run', 'start:dashboard']
+  });
   apiServer =
     resolvedPort === undefined
       ? null
@@ -1235,6 +1268,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               await stopRuntime();
             }
           },
+          runtimeUpdateSource: runtimeUpdateManager,
           diagnosticsSource: {
             getActiveProfile: () => activeProfile,
             getPersistenceHealth: () =>

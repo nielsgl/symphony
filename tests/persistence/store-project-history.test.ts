@@ -113,6 +113,65 @@ describe('SqlitePersistenceStore project history', () => {
     ]);
   });
 
+  it('persists runtime update audit events across restart with project history projection', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-runtime-update-audit-history-'));
+    dirs.push(dir);
+    const dbPath = path.join(dir, 'runtime.sqlite');
+    const durableIdentity = identity({ issue_id: 'remote-update-1', issue_identifier: 'UPDATE-1' });
+
+    const storeA = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeA);
+    const issueRunId = storeA.appendIssueRun({
+      issue_id: 'remote-update-1',
+      issue_identifier: 'UPDATE-1',
+      identity: durableIdentity,
+      started_at: '2026-05-21T10:00:00.000Z',
+      status: 'running'
+    });
+
+    for (const [index, eventType] of [
+      'update-detected',
+      'update-pull-started',
+      'update-build-succeeded',
+      'update-manual-restart-required'
+    ].entries()) {
+      (storeA as any).appendDrainAuditHistory({
+        project_identity: durableIdentity.project,
+        issue_run_id: issueRunId,
+        event_type: eventType,
+        actor: 'operator',
+        source: 'runtime_update',
+        result: 'accepted',
+        result_code: eventType,
+        state_context: { command_output: `line ${index}`, secret: 'should be redacted' },
+        blocker_summaries: [],
+        occurred_at: `2026-05-21T10:0${index + 1}:00.000Z`,
+        observed_at: `2026-05-21T10:0${index + 1}:00.000Z`
+      });
+    }
+    storeA.close();
+    stores.pop();
+
+    const storeB = new SqlitePersistenceStore({ dbPath, retentionDays: 14 });
+    stores.push(storeB);
+    const projectAudit = (storeB as any).listProjectDrainAuditEvents(durableIdentity.project.key, { limit: 10 });
+    const timeline = storeB.reconstructTicketTimeline(durableIdentity);
+
+    expect(projectAudit.items.map((entry: any) => entry.event_type)).toEqual([
+      'update-manual-restart-required',
+      'update-build-succeeded',
+      'update-pull-started',
+      'update-detected'
+    ]);
+    expect(timeline.drain_audit_events.map((entry: any) => entry.event_type)).toEqual([
+      'update-detected',
+      'update-pull-started',
+      'update-build-succeeded',
+      'update-manual-restart-required'
+    ]);
+    expect(JSON.stringify(projectAudit.items)).not.toContain('should be redacted');
+  });
+
   it('persists operational tracker facts, references, and operator actions across restart with duplicate coalescing', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-operational-history-'));
     dirs.push(dir);
@@ -443,7 +502,7 @@ describe('SqlitePersistenceStore project history', () => {
       nowMs: () => Date.parse('2026-04-11T10:00:00.000Z')
     });
     stores.push(storeA);
-    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 10, status: 'healthy' });
+    expect(storeA.historySchemaHealth()).toMatchObject({ applied_version: 11, status: 'healthy' });
     storeA.close();
     stores.pop();
 
@@ -468,7 +527,7 @@ describe('SqlitePersistenceStore project history', () => {
     });
 
     expect(storeB.historySchemaHealth()).toMatchObject({
-      applied_version: 10,
+      applied_version: 11,
       status: 'degraded',
       degraded_reason_code: 'history_write_failed',
       degraded_detail: 'appendTicketTerminalOutcome: history_terminal_outcome_write_failed'

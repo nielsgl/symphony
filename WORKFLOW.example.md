@@ -114,6 +114,10 @@ observability:
   refresh_ms: 4000
   render_interval_ms: 1000
 
+runtime_update:
+  github_eligibility:
+    mode: required      # required | allow_absent_checks | trust_raw_git
+
 worker:
   ssh_hosts:
     - build-host-1

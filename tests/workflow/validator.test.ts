@@ -73,6 +73,11 @@ function baseConfig(): EffectiveConfig {
     },
     validation: {
       ui_evidence_profile: 'baseline'
+    },
+    runtime_update: {
+      github_eligibility: {
+        mode: 'required'
+      }
     }
   };
 }
@@ -627,6 +632,25 @@ describe('ConfigValidator', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error_code).toBe('invalid_workspace_provisioner_branch_template');
+    }
+  });
+
+  it('validates runtime update GitHub eligibility mode', () => {
+    const validator = new ConfigValidator();
+    const config = baseConfig();
+    config.runtime_update = {
+      github_eligibility: {
+        mode: 'trust_raw_git'
+      }
+    };
+
+    expect(validator.validate(config)).toEqual({ ok: true, at: expect.any(String) });
+
+    config.runtime_update.github_eligibility.mode = 'optimistic';
+    const result = validator.validate(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error_code).toBe('invalid_runtime_update_github_eligibility_mode');
     }
   });
 
