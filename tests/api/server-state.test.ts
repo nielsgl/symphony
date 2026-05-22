@@ -194,7 +194,8 @@ describe('LocalApiServer state API', () => {
   it.each([
     ['dirty worktree', 'dirty_worktree'],
     ['fetch unavailable', 'fetch_unavailable'],
-    ['branch mismatch', 'branch_mismatch']
+    ['branch mismatch', 'branch_mismatch'],
+    ['current build', REASON_CODES.runtimeUpdateNotActionable]
   ])('refuses guided runtime update prepare for %s before entering Drain Mode', async (_label, reasonCode) => {
     const enterDrainMode = vi.fn(() => ({
       active: true,
@@ -259,6 +260,75 @@ describe('LocalApiServer state API', () => {
       status: 'refused',
       reason_code: reasonCode,
       drain_mode: { active: false }
+    });
+  });
+
+  it('does not call the runtime update apply source for current-build readiness', async () => {
+    const applyUpdate = vi.fn();
+    const readiness = {
+      state: 'build_current',
+      attention_required: false,
+      drain_required: false,
+      recommended_action: 'none',
+      refusal_reasons: [],
+      last_fetch: { result: 'succeeded' }
+    };
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState({
+          drain_mode: {
+            active: true,
+            entered_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+            updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+            reason: 'runtime_update_prepare'
+          },
+          quiescence: {
+            safe_to_shutdown: true,
+            state: 'safe',
+            updated_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+            blockers: [],
+            blocker_counts: {
+              active_worker: 0,
+              live_codex_app_server_process: 0,
+              pending_retry: 0,
+              in_flight_tracker_write: 0,
+              persistence_history_write: 0,
+              unknown_degraded_blocker_source_health: 0,
+              stale_runtime: 0,
+              unknown_current_build_identity: 0
+            }
+          }
+        })
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      runtimeUpdateSource: {
+        readUpdateReadiness: () => readiness as any,
+        prepareUpdate: vi.fn(),
+        applyUpdate
+      },
+      nowMs: () => Date.parse('2026-05-21T10:02:00.000Z')
+    } as any);
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/runtime-update/apply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const payload = (await response.json()) as any;
+
+    expect(response.status).toBe(409);
+    expect(applyUpdate).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      success: false,
+      status: 'refused',
+      reason_code: REASON_CODES.runtimeUpdateNotActionable,
+      recommended_action: 'none',
+      readiness: { state: 'build_current' }
     });
   });
 

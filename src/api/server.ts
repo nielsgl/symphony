@@ -37,6 +37,7 @@ import type {
   ApiIssueResponse,
   ApiEventEnvelope,
   ApiIssueRuntimeDiagnosticsResponse,
+  ApiRuntimeUpdateReadiness,
   ApiStateResponse,
   ApiStateErrorResponse,
   ApiStateSnapshotResponse,
@@ -97,6 +98,15 @@ interface TimedStateSnapshot {
   snapshotAgeMs: number | null;
   snapshotFreshnessState: ApiStateResponse['snapshot_freshness_state'] | null;
   snapshotErrorCode: ApiStateErrorResponse['error']['code'] | null;
+}
+
+function isRuntimeUpdateActionable(readiness: ApiRuntimeUpdateReadiness | null): boolean {
+  return !!readiness && [
+    'local_checkout_behind',
+    'remote_update_available',
+    'runtime_stale',
+    'source_changed_build_not_updated'
+  ].includes(readiness.state) && readiness.refusal_reasons.length === 0;
 }
 
 export class LocalApiServer {
@@ -1215,6 +1225,35 @@ export class LocalApiServer {
                   result_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
                   state_context: { safe_to_shutdown: false },
                   blocker_summaries: this.drainAuditBlockerSummaries(blockers),
+                  occurred_at: new Date(this.nowMs()).toISOString(),
+                  observed_at: new Date(this.nowMs()).toISOString()
+                });
+                sendJson(response, 409, payload);
+                return;
+              }
+              const readiness = this.runtimeUpdateSource.readUpdateReadiness();
+              if (!isRuntimeUpdateActionable(readiness)) {
+                const payload = {
+                  success: false,
+                  status: 'refused',
+                  step: 'apply',
+                  reason_code: readiness?.refusal_reasons[0] ?? REASON_CODES.runtimeUpdateNotActionable,
+                  recommended_action: readiness?.recommended_action ?? 'inspect_status',
+                  idempotent_replay: false,
+                  quiescence,
+                  blockers: [],
+                  readiness,
+                  message: 'Runtime update apply refused because no actionable prepared update is available.'
+                };
+                this.broadcastStateSnapshot('runtime_update_apply_refused');
+                this.recordDrainAuditEvent({
+                  event_type: 'update-pull-refused',
+                  actor: 'operator',
+                  source: 'api',
+                  result: 'rejected',
+                  result_code: payload.reason_code,
+                  state_context: { drain_mode_active: true, readiness_state: readiness?.state ?? 'unknown' },
+                  blocker_summaries: [],
                   occurred_at: new Date(this.nowMs()).toISOString(),
                   observed_at: new Date(this.nowMs()).toISOString()
                 });

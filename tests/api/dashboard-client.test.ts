@@ -159,6 +159,18 @@ function makeDashboardElements() {
     runtimeStaleBanner: new FakeElement(),
     runtimeStaleTitle: new FakeElement(),
     runtimeStaleSummary: new FakeElement(),
+    runtimeUpdateBanner: new FakeElement(),
+    runtimeUpdateTitle: new FakeElement(),
+    runtimeUpdateSummary: new FakeElement(),
+    runtimeUpdatePrepareButton: new FakeElement(),
+    runtimeUpdateApplyButton: new FakeElement(),
+    runtimeUpdatePanel: new FakeElement(),
+    runtimeUpdatePreparePanelButton: new FakeElement(),
+    runtimeUpdateApplyPanelButton: new FakeElement(),
+    runtimeUpdateState: new FakeElement(),
+    runtimeUpdateRecommendation: new FakeElement(),
+    runtimeUpdateStatus: new FakeElement(),
+    runtimeUpdateDetails: new FakeElement(),
     drainModePanel: new FakeElement(),
     drainModeSummary: new FakeElement(),
     drainModeBoundary: new FakeElement(),
@@ -787,6 +799,62 @@ describe('dashboard browser client modules', () => {
     expect(elements.runtimeStaleSummary.textContent).toContain('current-new');
     expect(elements.runtimeStaleSummary.textContent).toContain('Process started');
     expect(elements.runtimeStaleSummary.textContent).toContain('Enter Drain Mode');
+  });
+
+  it('enables guided runtime update buttons only for actionable readiness states', () => {
+    renderOverview(
+      snapshotPayload({
+        quiescence: { safe_to_shutdown: true, blocker_counts: {}, blockers: [] },
+        runtime_update: {
+          state: 'build_current',
+          attention_required: false,
+          drain_required: false,
+          recommended_action: 'none',
+          refusal_reasons: [],
+          local_checkout: { branch: 'main', commit_sha: 'current', dirty: false, detached: false },
+          fetched_remote: { remote: 'origin', base_ref: 'main', commit_sha: 'current' },
+          ahead_behind: { ahead: 0, behind: 0 },
+          last_fetch: { result: 'succeeded' }
+        }
+      })
+    );
+
+    expect(elements.runtimeUpdateBanner.className).toContain('hidden');
+    expect(elements.runtimeUpdatePrepareButton.disabled).toBe(true);
+    expect(elements.runtimeUpdatePreparePanelButton.disabled).toBe(true);
+    expect(elements.runtimeUpdateApplyButton.disabled).toBe(true);
+    expect(elements.runtimeUpdateApplyPanelButton.disabled).toBe(true);
+
+    renderOverview(
+      snapshotPayload({
+        drain_mode: {
+          active: true,
+          entered_at: '2026-05-21T10:00:00.000Z',
+          entered_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          updated_at: '2026-05-21T10:00:00.000Z',
+          updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          reason: 'runtime_update_prepare'
+        },
+        quiescence: { safe_to_shutdown: true, blocker_counts: {}, blockers: [] },
+        runtime_update: {
+          state: 'local_checkout_behind',
+          attention_required: true,
+          drain_required: true,
+          recommended_action: 'apply_update',
+          refusal_reasons: [],
+          local_checkout: { branch: 'main', commit_sha: 'old', dirty: false, detached: false },
+          fetched_remote: { remote: 'origin', base_ref: 'main', commit_sha: 'new' },
+          ahead_behind: { ahead: 0, behind: 1 },
+          last_fetch: { result: 'succeeded' }
+        }
+      })
+    );
+
+    expect(elements.runtimeUpdateBanner.className).not.toContain('hidden');
+    expect(elements.runtimeUpdatePrepareButton.disabled).toBe(true);
+    expect(elements.runtimeUpdatePreparePanelButton.disabled).toBe(true);
+    expect(elements.runtimeUpdateApplyButton.disabled).toBe(false);
+    expect(elements.runtimeUpdateApplyPanelButton.disabled).toBe(false);
   });
 
   it('renders unknown current build identity as degraded rather than stale', () => {

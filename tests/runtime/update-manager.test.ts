@@ -67,6 +67,39 @@ describe('runtime update manager', () => {
     expect(git(local, ['status', '--porcelain=v1'])).toBe(beforeStatus);
   });
 
+  it('discovers a newly pushed remote update from readiness reads without mutating checkout files', async () => {
+    const { root, local } = await makeRepoPair();
+    const beforeHead = git(local, ['rev-parse', 'HEAD']);
+    const beforeStatus = git(local, ['status', '--porcelain=v1']);
+    const remoteWork = path.join(root, 'remote-work');
+    git(root, ['clone', path.join(root, 'remote.git'), remoteWork]);
+    git(remoteWork, ['config', 'user.email', 'symphony@example.test']);
+    git(remoteWork, ['config', 'user.name', 'Symphony Test']);
+    await writeFile(path.join(remoteWork, 'index.js'), 'console.log("two");\n');
+    git(remoteWork, ['add', '.']);
+    git(remoteWork, ['commit', '-m', 'remote update']);
+    git(remoteWork, ['push', 'origin', 'main']);
+
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null
+    });
+
+    const readiness = manager.readUpdateReadiness();
+
+    expect(readiness).toMatchObject({
+      state: 'local_checkout_behind',
+      attention_required: true,
+      recommended_action: 'prepare_update',
+      ahead_behind: { ahead: 0, behind: 1 },
+      last_fetch: { result: 'succeeded' }
+    });
+    expect(git(local, ['rev-parse', 'HEAD'])).toBe(beforeHead);
+    expect(git(local, ['status', '--porcelain=v1'])).toBe(beforeStatus);
+  });
+
   it('distinguishes dirty worktree, branch mismatch, non-fast-forward, stale runtime, and current build states', async () => {
     const { root, local } = await makeRepoPair();
     await writeFile(path.join(local, 'dirty.txt'), 'dirty\n');
@@ -204,5 +237,46 @@ describe('runtime update manager', () => {
     expect(auditEvents.filter((event) => event.event_type === 'update-pull-started')).toHaveLength(1);
     expect(auditEvents.filter((event) => event.event_type === 'update-install-skipped')).toHaveLength(1);
     expect(auditEvents.filter((event) => event.event_type === 'update-build-started')).toHaveLength(1);
+  });
+
+  it('refuses prepare and apply for a current build without entering the command sequence', async () => {
+    const { local } = await makeRepoPair();
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      }
+    });
+
+    const prepare = await manager.prepareUpdate();
+    const apply = await manager.applyUpdate();
+
+    expect(prepare).toMatchObject({
+      success: false,
+      status: 'refused',
+      step: 'prepare',
+      reason_code: REASON_CODES.runtimeUpdateNotActionable,
+      recommended_action: 'none',
+      readiness: { state: 'build_current' }
+    });
+    expect(apply).toMatchObject({
+      success: false,
+      status: 'refused',
+      step: 'apply',
+      reason_code: REASON_CODES.runtimeUpdateNotPrepared,
+      recommended_action: 'none',
+      readiness: { state: 'build_current' }
+    });
+    expect(apply.command_results ?? []).toEqual([]);
+    expect(auditEvents.map((event) => event.event_type)).not.toContain('update-pull-started');
+    expect(auditEvents.map((event) => event.event_type)).not.toContain('update-build-started');
+    expect(git(local, ['status', '--porcelain=v1'])).toBe('');
   });
 });

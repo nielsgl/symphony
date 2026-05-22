@@ -33,6 +33,7 @@ export interface LocalRuntimeUpdateManagerOptions {
   remote?: string;
   nowMs?: () => number;
   commandTimeoutMs?: number;
+  discoveryFetchIntervalMs?: number;
   runtimeIdentity: () => ApiRuntimeBuildIdentityProjection | null;
   auditSink?: LocalApiServerOptions['drainAuditSink'];
   restartCommand?: string[];
@@ -253,6 +254,30 @@ function stateForReadiness(params: {
   };
 }
 
+function isActionableReadiness(readiness: ApiRuntimeUpdateReadiness | null): boolean {
+  return !!readiness && [
+    'local_checkout_behind',
+    'remote_update_available',
+    'runtime_stale',
+    'source_changed_build_not_updated'
+  ].includes(readiness.state);
+}
+
+function shouldRunDiscoveryFetch(
+  previousFetch: ApiRuntimeUpdateReadiness['last_fetch'] | undefined,
+  nowMs: number,
+  intervalMs: number
+): boolean {
+  if (!previousFetch || previousFetch.result === 'not_attempted' || !previousFetch.completed_at) {
+    return true;
+  }
+  const completedAtMs = Date.parse(previousFetch.completed_at);
+  if (!Number.isFinite(completedAtMs)) {
+    return true;
+  }
+  return nowMs - completedAtMs >= intervalMs;
+}
+
 export function detectRuntimeUpdateReadiness(options: {
   repoRoot: string | null;
   baseRef: string | null;
@@ -365,6 +390,7 @@ export class LocalRuntimeUpdateManager {
   private readonly options: LocalRuntimeUpdateManagerOptions;
   private readiness: ApiRuntimeUpdateReadiness | null;
   private prepareStarted = false;
+  private prepareAccepted = false;
   private applyInFlight: Promise<ApiRuntimeUpdateActionResponse> | null = null;
   private completedApplyResult: ApiRuntimeUpdateActionResponse | null = null;
 
@@ -374,13 +400,16 @@ export class LocalRuntimeUpdateManager {
   }
 
   readUpdateReadiness(): ApiRuntimeUpdateReadiness | null {
+    const nowMs = this.options.nowMs ?? (() => Date.now());
+    const discoveryFetchIntervalMs = this.options.discoveryFetchIntervalMs ?? 60_000;
     this.readiness = detectRuntimeUpdateReadiness({
       repoRoot: this.options.repoRoot,
       baseRef: this.options.baseRef,
       remote: this.options.remote,
       runtimeIdentity: this.options.runtimeIdentity(),
-      nowMs: this.options.nowMs,
+      nowMs,
       timeoutMs: this.options.commandTimeoutMs,
+      fetch: shouldRunDiscoveryFetch(this.readiness?.last_fetch, nowMs(), discoveryFetchIntervalMs),
       previousFetch: this.readiness?.last_fetch
     });
     return this.readiness;
@@ -411,15 +440,17 @@ export class LocalRuntimeUpdateManager {
       recommended_action: this.readiness.recommended_action,
       fetch_result: this.readiness.last_fetch.result
     });
+    const actionable = isActionableReadiness(this.readiness) && this.readiness.refusal_reasons.length === 0;
+    this.prepareAccepted = actionable;
     return {
-      success: this.readiness.refusal_reasons.length === 0,
-      status: this.readiness.refusal_reasons.length === 0 ? 'draining' : 'refused',
+      success: actionable,
+      status: actionable ? 'draining' : 'refused',
       step: 'prepare',
-      reason_code: this.readiness.refusal_reasons[0] ?? null,
-      recommended_action: this.readiness.refusal_reasons.length === 0 ? 'wait_for_quiescence' : this.readiness.recommended_action,
+      reason_code: this.readiness.refusal_reasons[0] ?? (actionable ? null : REASON_CODES.runtimeUpdateNotActionable),
+      recommended_action: actionable ? 'wait_for_quiescence' : this.readiness.recommended_action,
       idempotent_replay: idempotentReplay,
       readiness: this.readiness,
-      message: this.readiness.refusal_reasons.length === 0
+      message: actionable
         ? 'Drain Mode entered; wait for quiescence before applying the update.'
         : 'Runtime update prepare refused by readiness checks.'
     };
@@ -443,6 +474,20 @@ export class LocalRuntimeUpdateManager {
       return {
         ...this.completedApplyResult,
         idempotent_replay: true
+      };
+    }
+    const readiness = this.readiness ?? this.readUpdateReadiness();
+    if (!this.prepareAccepted || !isActionableReadiness(readiness) || (readiness?.refusal_reasons.length ?? 0) > 0) {
+      return {
+        success: false,
+        status: 'refused',
+        step: 'apply',
+        reason_code: !this.prepareAccepted ? REASON_CODES.runtimeUpdateNotPrepared : readiness?.refusal_reasons[0] ?? REASON_CODES.runtimeUpdateNotActionable,
+        recommended_action: readiness?.recommended_action ?? 'inspect_status',
+        idempotent_replay: false,
+        readiness,
+        command_results: [],
+        message: 'Runtime update apply refused because no actionable prepared update is available.'
       };
     }
     if (this.applyInFlight) {
@@ -511,6 +556,22 @@ export class LocalRuntimeUpdateManager {
         idempotent_replay: idempotentReplay,
         readiness: this.readiness,
         message: 'Runtime update apply refused by readiness checks.'
+      };
+    }
+    if (!isActionableReadiness(this.readiness)) {
+      await this.record('update-pull-refused', 'rejected', REASON_CODES.runtimeUpdateNotActionable, {
+        state: this.readiness.state
+      });
+      return {
+        success: false,
+        status: 'refused',
+        step: 'apply',
+        reason_code: REASON_CODES.runtimeUpdateNotActionable,
+        recommended_action: this.readiness.recommended_action,
+        idempotent_replay: idempotentReplay,
+        readiness: this.readiness,
+        command_results: [],
+        message: 'Runtime update apply refused because no actionable update is available.'
       };
     }
 

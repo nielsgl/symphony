@@ -104,6 +104,8 @@ export const REASON_CODES = {
   stateProjectionUnavailable: 'state_projection_unavailable',
   runtimeUpdateDrainModeRequired: 'runtime_update_drain_mode_required',
   runtimeUpdateQuiescenceRequired: 'runtime_update_quiescence_required',
+  runtimeUpdateNotActionable: 'runtime_update_not_actionable',
+  runtimeUpdateNotPrepared: 'runtime_update_not_prepared',
   runtimeUpdateRepositoryUnavailable: 'runtime_update_repository_unavailable',
   runtimeUpdateRestartWrapperUnavailable: 'runtime_update_restart_wrapper_unavailable',
   unknownRuntimeReason: 'unknown_runtime_reason'
@@ -921,6 +923,26 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Runtime update is waiting for Drain Mode',
     detail: 'The guided runtime update refused to apply because Drain Mode is not active.',
     expected_transition: 'Apply can be retried after Prepare update enters Drain Mode and quiescence is safe'
+  },
+  [REASON_CODES.runtimeUpdateNotActionable]: {
+    reason_code: REASON_CODES.runtimeUpdateNotActionable,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Not Actionable',
+    headline: 'Runtime update is not needed',
+    detail: 'The guided runtime update refused because readiness is current or otherwise does not require an update action.',
+    expected_transition: 'No update transition is needed while readiness remains non-actionable'
+  },
+  [REASON_CODES.runtimeUpdateNotPrepared]: {
+    reason_code: REASON_CODES.runtimeUpdateNotPrepared,
+    classification: 'stalled_waiting',
+    actionability: 'required',
+    recommended_actions: ['Prepare the guided runtime update before applying it'],
+    label: 'Runtime Update Not Prepared',
+    headline: 'Runtime update has not been prepared',
+    detail: 'The guided runtime update refused apply because no actionable prepared update is available in this process.',
+    expected_transition: 'Apply can be retried after Prepare update accepts an actionable readiness state'
   },
   [REASON_CODES.runtimeUpdateRepositoryUnavailable]: {
     reason_code: REASON_CODES.runtimeUpdateRepositoryUnavailable,

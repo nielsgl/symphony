@@ -104,10 +104,21 @@ function formatRuntimeUpdateLabel(value: any) {
     return String(value || 'unknown').replace(/_/g, ' ');
   }
 
+function isActionableRuntimeUpdate(readiness: any) {
+    return !!readiness && [
+      'local_checkout_behind',
+      'remote_update_available',
+      'runtime_stale',
+      'source_changed_build_not_updated'
+    ].includes(readiness.state) && !(readiness.refusal_reasons && readiness.refusal_reasons.length > 0);
+  }
+
 function updateRuntimeUpdateButtons(readiness: any, payload: any) {
     const quiescence = payload && payload.quiescence ? payload.quiescence : { safe_to_shutdown: false };
-    const prepareDisabled = !readiness || !readiness.attention_required || readiness.recommended_action !== 'prepare_update';
-    const applyDisabled = !readiness || !quiescence.safe_to_shutdown || readiness.refusal_reasons && readiness.refusal_reasons.length > 0;
+    const drainMode = payload && payload.drain_mode ? payload.drain_mode : { active: false };
+    const actionable = isActionableRuntimeUpdate(readiness);
+    const prepareDisabled = !actionable || !!drainMode.active;
+    const applyDisabled = !actionable || !drainMode.active || !quiescence.safe_to_shutdown;
     [
       elements.runtimeUpdatePrepareButton,
       elements.runtimeUpdatePreparePanelButton
