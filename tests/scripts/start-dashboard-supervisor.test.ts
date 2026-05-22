@@ -326,6 +326,7 @@ setInterval(() => {}, 1000);
   it('uses ignored .symphony runtime state for the default failure handoff path', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-supervisor-default-handoff-test-'));
     const childScript = path.join(dir, 'child.js');
+    const { SYMPHONY_RESTART_FAILURE_HANDOFF_FILE: _handoffOverride, ...supervisorEnv } = process.env;
     await fs.writeFile(
       childScript,
       `
@@ -353,7 +354,7 @@ setInterval(() => {}, 1000);
     const supervisor = spawn(process.execPath, [path.resolve(__dirname, '../../scripts/start-dashboard-supervisor.js')], {
       cwd: dir,
       env: {
-        ...process.env,
+        ...supervisorEnv,
         SYMPHONY_SUPERVISOR_CHILD_SCRIPT: childScript,
         SYMPHONY_RESTART_STARTUP_TIMEOUT_MS: '80'
       },
