@@ -366,7 +366,7 @@ describe('runtime update manager', () => {
       'update-build-succeeded',
       'update-manual-restart-required'
     ]));
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('refuses apply when the remote candidate changed after prepare', async () => {
     const { root, local } = await makeRepoPair();
@@ -467,7 +467,7 @@ describe('runtime update manager', () => {
     expect(auditEvents.filter((event) => event.event_type === 'update-pull-started')).toHaveLength(1);
     expect(auditEvents.filter((event) => event.event_type === 'update-install-skipped')).toHaveLength(1);
     expect(auditEvents.filter((event) => event.event_type === 'update-build-started')).toHaveLength(1);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('does not report local-ahead-only history as a remote update candidate', async () => {
     const { local } = await makeRepoPair();

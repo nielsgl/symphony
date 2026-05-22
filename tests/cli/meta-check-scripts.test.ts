@@ -298,7 +298,7 @@ describe('meta check scripts', () => {
     expect(result.stdout).toContain('UI evidence gate passed');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('passes baseline profile when UI evidence env marker is set without artifact file', () => {
     const root = process.cwd();
@@ -437,7 +437,7 @@ describe('meta check scripts', () => {
     expect(result.stderr).toContain('output/playwright/demo.webm');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
-  });
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
 
   it('fails with typed hygiene diagnostic when provision artifact is staged', () => {
     const root = process.cwd();

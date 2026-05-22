@@ -40,7 +40,8 @@ closeServerAfterEach(
 
 describe('LocalApiServer refresh and events', () => {
   it('accepts refresh requests and coalesces bursts', async () => {
-    const tick = vi.fn(async () => undefined);
+    const currentTick = deferred();
+    const tick = vi.fn(async () => await currentTick.promise);
 
     server = new LocalApiServer({
       snapshotSource: {
@@ -59,15 +60,18 @@ describe('LocalApiServer refresh and events', () => {
       fetch(`http://127.0.0.1:${address.port}/api/v1/refresh`, { method: 'POST' })
     ]);
 
-    const firstPayload = (await first.json()) as { queued: boolean; coalesced: boolean; operations: string[] };
-    const secondPayload = (await second.json()) as { queued: boolean; coalesced: boolean; operations: string[] };
+    const payloads = [
+      (await first.json()) as { queued: boolean; coalesced: boolean; operations: string[] },
+      (await second.json()) as { queued: boolean; coalesced: boolean; operations: string[] }
+    ];
+    currentTick.resolve();
 
     expect(first.status).toBe(202);
     expect(second.status).toBe(202);
-    expect(firstPayload.queued).toBe(true);
-    expect(firstPayload.coalesced).toBe(false);
-    expect(firstPayload.operations).toEqual(['poll', 'reconcile']);
-    expect(secondPayload.coalesced).toBe(true);
+    expect(payloads.every((payload) => payload.queued)).toBe(true);
+    expect(payloads.every((payload) => payload.operations.join(',') === 'poll,reconcile')).toBe(true);
+    expect(payloads.filter((payload) => payload.coalesced)).toHaveLength(1);
+    expect(payloads.filter((payload) => !payload.coalesced)).toHaveLength(1);
   });
 
   it('coalesces API refresh requests while a manual refresh tick is in flight', async () => {

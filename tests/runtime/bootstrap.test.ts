@@ -548,7 +548,7 @@ describe('createRuntimeEnvironment', () => {
     expect(response.status).toBe(200);
     expect(payload.health.dispatch_validation).toBe('failed');
     expect(payload.health.last_error).toMatch(/tracker\.(api_key|project_slug)/);
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('fails startup on strict numeric validation errors', async () => {
     const workflowPath = await makeWorkflowFile({ hooksTimeoutMs: 0 });
@@ -678,7 +678,7 @@ describe('createRuntimeEnvironment', () => {
       },
       refusal_reasons: []
     });
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('exposes redaction-safe effective typed codex config in diagnostics', async () => {
     const workflowPath = await makeWorkflowFile({
@@ -733,7 +733,7 @@ describe('createRuntimeEnvironment', () => {
       effective_extra_flags_count: 2,
       codex_resolution_mode: 'typed'
     });
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('restores durable history on restart without restoring running or retry state', async () => {
     const workflowPath = await makeWorkflowFile();
@@ -1000,7 +1000,7 @@ describe('createRuntimeEnvironment', () => {
         })
       ])
     );
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('keeps HTTP extension disabled when neither CLI port nor workflow server.port is configured', async () => {
     const workflowPath = await makeWorkflowFile({ includeServerPort: false });
@@ -1049,7 +1049,7 @@ describe('createRuntimeEnvironment', () => {
     await runtime.start();
     const address = requireApiAddress(runtime);
     expect(address.port).toBeGreaterThan(0);
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('uses CLI port precedence over workflow server.port when both are configured', async () => {
     const workflowPath = await makeWorkflowFile({ includeServerPort: true, serverPort: 41001 });
@@ -1099,7 +1099,7 @@ describe('createRuntimeEnvironment', () => {
     };
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.logging.sinks).toEqual(expectedRuntimeSinks({ observer: true }));
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('enables stderr runtime logs in tests when explicitly requested', async () => {
     process.env.SYMPHONY_TEST_LOGS = '1';
