@@ -32,6 +32,19 @@ const DRAIN_BLOCKER_ORDER = [
   'unknown_current_build_identity'
 ];
 
+function formatPendingWorkDetail(entry: any) {
+    const stateName = String(entry && entry.state ? entry.state : 'Unknown');
+    const count = Number(entry && entry.count) || 0;
+    const countLabel = formatNumber(count);
+    if (entry && entry.maintenance_eligible) {
+      return 'Pending ' + stateName + ' maintenance work ' + countLabel + ': maintenance-eligible, not an active agent.';
+    }
+    if (stateName === 'Agent Review') {
+      return 'Pending Agent Review normal review work ' + countLabel + ': blocked until Symphony restarts on the current build, not an active agent.';
+    }
+    return 'Pending ' + stateName + ' normal work ' + countLabel + ': blocked until Symphony restarts on the current build, not an active agent.';
+  }
+
 export function createMetricCard(label: any, value: any) {
     const card = document.createElement('article');
     card.className = 'kpi-card';
@@ -291,7 +304,20 @@ export function renderDrainModeWorkflow(payload: any) {
       item.append(label, detail);
       return item;
     });
-    const nodes = [...blockerNodes, ...warningNodes];
+    const pendingWork = restartGuidance && Array.isArray(restartGuidance.pending_work)
+      ? restartGuidance.pending_work
+      : [];
+    const pendingWorkNodes = pendingWork.map(function (entry: any) {
+      const item = document.createElement('div');
+      item.className = 'drain-blocker-item drain-blocker-pending-work';
+      const label = document.createElement('strong');
+      label.textContent = 'Pending work ' + formatNumber(Number(entry && entry.count) || 0);
+      const detail = document.createElement('span');
+      detail.textContent = formatPendingWorkDetail(entry);
+      item.append(label, detail);
+      return item;
+    });
+    const nodes = [...blockerNodes, ...warningNodes, ...pendingWorkNodes];
     elements.drainBlockersList.replaceChildren(...nodes);
 
     if (elements.drainEnterButton) {

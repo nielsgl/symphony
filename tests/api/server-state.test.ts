@@ -469,6 +469,7 @@ describe('LocalApiServer state API', () => {
 
   it('refuses guided runtime update apply before quiescence by default', async () => {
     const applyUpdate = vi.fn();
+    const auditEvents: any[] = [];
     server = new LocalApiServer({
       snapshotSource: {
         getStateSnapshot: () => makeState({
@@ -490,6 +491,21 @@ describe('LocalApiServer state API', () => {
                 issue_identifiers: ['NIE-1']
               }
             ],
+            warnings: [
+              {
+                category: 'stale_runtime_warning',
+                count: 1,
+                detail: 'running code is stale',
+                source: 'dispatch_safety',
+                recommended_action: 'restart Symphony on the current build'
+              }
+            ],
+            restart_guidance: {
+              safe_to_restart: false,
+              recommended_action: 'wait_for_true_shutdown_blockers',
+              pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }],
+              detail: 'Wait for true shutdown blockers before restarting.'
+            },
             blocker_counts: {
               active_worker: 1,
               live_codex_app_server_process: 0,
@@ -510,6 +526,12 @@ describe('LocalApiServer state API', () => {
         readUpdateReadiness: () => null,
         prepareUpdate: vi.fn(),
         applyUpdate
+      },
+      drainAuditSink: {
+        appendDrainAuditHistory: async (event: any) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
       },
       nowMs: () => Date.parse('2026-05-21T10:02:00.000Z')
     } as any);
@@ -535,6 +557,30 @@ describe('LocalApiServer state API', () => {
     expect(payload.blockers).toContainEqual(expect.objectContaining({
       category: 'active_worker',
       issue_identifiers: ['NIE-1']
+    }));
+    expect(auditEvents).toContainEqual(expect.objectContaining({
+      event_type: 'update-pull-refused',
+      result_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+      state_context: expect.objectContaining({
+        safe_to_shutdown: false,
+        quiescence_state: 'blocked',
+        blocker_counts: expect.objectContaining({ active_worker: 1 }),
+        warnings: [
+          expect.objectContaining({
+            category: 'stale_runtime_warning',
+            source: 'dispatch_safety'
+          })
+        ],
+        restart_guidance: expect.objectContaining({
+          recommended_action: 'wait_for_true_shutdown_blockers',
+          pending_work: [
+            expect.objectContaining({
+              state: 'Agent Review',
+              maintenance_eligible: false
+            })
+          ]
+        })
+      })
     }));
   });
 

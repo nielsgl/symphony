@@ -785,6 +785,119 @@ describe('dashboard browser client modules', () => {
     });
   });
 
+  it('renders pending Agent Review work as normal review work, not active agents', () => {
+    renderOverview(
+      snapshotPayload({
+        counts: { running: 0, retrying: 0, blocked: 0, stopped: 0 },
+        drain_mode: { active: true, reason: 'safe runtime restart' },
+        runtime_identity: {
+          health_warning: {
+            code: 'stale_runtime_build',
+            severity: 'warning',
+            message: 'Running runtime build is stale',
+            recommended_action: 'restart Symphony on the current build'
+          }
+        },
+        quiescence: {
+          safe_to_shutdown: true,
+          state: 'safe',
+          blocker_counts: {
+            active_worker: 0,
+            live_codex_app_server_process: 0,
+            pending_retry: 0,
+            in_flight_tracker_write: 0,
+            persistence_history_write: 0,
+            unknown_degraded_blocker_source_health: 0,
+            stale_runtime: 0,
+            unknown_current_build_identity: 0
+          },
+          warnings: [
+            {
+              category: 'stale_runtime_warning',
+              count: 1,
+              detail: 'running code is stale',
+              source: 'dispatch_safety',
+              recommended_action: 'restart Symphony on the current build'
+            }
+          ],
+          restart_guidance: {
+            safe_to_restart: true,
+            recommended_action: 'restart_runtime_to_current_build',
+            pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }],
+            detail: 'Restart/update Symphony before dispatching pending normal work.'
+          },
+          blockers: []
+        }
+      })
+    );
+
+    const drainText = collectText(elements.drainBlockersList);
+    expect(elements.drainModeBoundary.textContent).toContain('Shutdown/restart is safe');
+    expect(collectText(elements.kpiGrid)).toContain('Running 0');
+    expect(collectText(elements.kpiGrid)).toContain('Shutdown Blockers 0');
+    expect(drainText).toContain('Pending work 1');
+    expect(drainText).toContain('Pending Agent Review normal review work 1');
+    expect(drainText).toContain('not an active agent');
+    expect(drainText).not.toContain('Active workers 1');
+  });
+
+  it('renders pending Merging work as maintenance-eligible, not active agents', () => {
+    renderOverview(
+      snapshotPayload({
+        counts: { running: 0, retrying: 0, blocked: 0, stopped: 0 },
+        drain_mode: { active: true, reason: 'safe runtime restart' },
+        runtime_identity: {
+          health_warning: {
+            code: 'stale_runtime_build',
+            severity: 'warning',
+            message: 'Running runtime build is stale',
+            recommended_action: 'restart Symphony on the current build'
+          }
+        },
+        quiescence: {
+          safe_to_shutdown: true,
+          state: 'safe',
+          blocker_counts: {
+            active_worker: 0,
+            live_codex_app_server_process: 0,
+            pending_retry: 0,
+            in_flight_tracker_write: 0,
+            persistence_history_write: 0,
+            unknown_degraded_blocker_source_health: 0,
+            stale_runtime: 0,
+            unknown_current_build_identity: 0
+          },
+          warnings: [
+            {
+              category: 'stale_runtime_warning',
+              count: 1,
+              detail: 'running code is stale',
+              source: 'dispatch_safety',
+              recommended_action: 'restart Symphony on the current build'
+            }
+          ],
+          restart_guidance: {
+            safe_to_restart: true,
+            recommended_action: 'restart_runtime_to_current_build',
+            pending_work: [{ state: 'Merging', count: 1, maintenance_eligible: true }],
+            detail: 'Restart/update Symphony before dispatching pending normal work.'
+          },
+          blockers: []
+        }
+      })
+    );
+
+    const drainText = collectText(elements.drainBlockersList);
+    expect(elements.drainModeBoundary.textContent).toContain('Shutdown/restart is safe');
+    expect(collectText(elements.kpiGrid)).toContain('Running 0');
+    expect(collectText(elements.kpiGrid)).toContain('Shutdown Blockers 0');
+    expect(drainText).toContain('Pending work 1');
+    expect(drainText).toContain('Pending Merging maintenance work 1');
+    expect(drainText).toContain('maintenance-eligible');
+    expect(drainText).toContain('not an active agent');
+    expect(drainText).not.toContain('Active workers 1');
+  });
+
   it('renders a stale runtime warning above the overview', () => {
     renderOverview(
       snapshotPayload({

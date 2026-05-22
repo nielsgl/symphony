@@ -1273,7 +1273,7 @@ export class LocalApiServer {
                   source: 'api',
                   result: 'rejected',
                   result_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
-                  state_context: { safe_to_shutdown: false },
+                  state_context: this.drainAuditQuiescenceContext(quiescence),
                   blocker_summaries: this.drainAuditBlockerSummaries(blockers),
                   occurred_at: new Date(this.nowMs()).toISOString(),
                   observed_at: new Date(this.nowMs()).toISOString()
