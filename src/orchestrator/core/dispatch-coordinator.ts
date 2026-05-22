@@ -90,7 +90,7 @@ export interface DispatchCoordinatorHooks {
     tool_call_id?: string | null;
     tool_name?: string | null;
   }) => void;
-  refreshQuiescenceState?: () => void;
+  refreshQuiescenceState?: (pendingIssues?: Issue[]) => void;
   selectWorkerHost: () => string | null;
   persistPreSpawnExecutionGraphAttempt: (params: {
     issue: Issue;
@@ -204,18 +204,25 @@ export async function coordinateDispatchTick(context: DispatchCoordinatorContext
   }
 
   const sortedCandidates = sortCandidatesForDispatch(candidates);
-  context.hooks.refreshQuiescenceState?.();
+  context.hooks.refreshQuiescenceState?.(sortedCandidates);
   const runtimeIdentityBlocker =
     state.runtime_identity?.status === 'stale' || state.runtime_identity?.status === 'unknown_current'
       ? state.runtime_identity.health_warning?.message
       : null;
+  const runtimeIdentityReasonCode =
+    state.runtime_identity?.status === 'stale'
+      ? 'stale_runtime_build'
+      : state.runtime_identity?.status === 'unknown_current'
+        ? 'unknown_current_build_identity'
+        : null;
   if (state.drain_mode.active || runtimeIdentityBlocker) {
     context.hooks.recordRuntimeEvent({
       event: CANONICAL_EVENT.runtime.drainDispatchSkipped,
       severity: 'info',
-      detail: runtimeIdentityBlocker ?? `dispatch skipped during drain mode: ${reason}`
+      detail: runtimeIdentityBlocker ?? `dispatch skipped during drain mode: ${reason}`,
+      reason_code: runtimeIdentityReasonCode
     });
-    context.hooks.refreshQuiescenceState?.();
+    context.hooks.refreshQuiescenceState?.(sortedCandidates);
     context.notifyObservers?.();
     return;
   }

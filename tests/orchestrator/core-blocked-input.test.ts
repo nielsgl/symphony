@@ -859,7 +859,8 @@ describe('OrchestratorCore blocked input', () => {
     expect(snapshot.claimed.has('i-stale-resume')).toBe(true);
     expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-stale-resume']);
     expect(snapshot.runtime_identity?.status).toBe('stale');
-    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect((snapshot.quiescence as any).warnings).toContainEqual(expect.objectContaining({ category: 'stale_runtime_warning' }));
     expect(snapshot.operator_actions?.get('i-stale-resume')).toEqual([
       expect.objectContaining({
         action: 'resume',
@@ -1603,7 +1604,8 @@ describe('OrchestratorCore blocked input', () => {
     expect(snapshot.blocked_inputs.get('i-native-stale')?.pending_input?.request_id).toBe('req-native-stale');
     expect(harness.spawned.map((entry) => entry.issue_id)).toEqual(['i-native-stale']);
     expect(snapshot.runtime_identity?.status).toBe('stale');
-    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect((snapshot.quiescence as any).warnings).toContainEqual(expect.objectContaining({ category: 'stale_runtime_warning' }));
     expect(snapshot.operator_actions?.get('i-native-stale')).toEqual([
       expect.objectContaining({
         action: 'submit_input',

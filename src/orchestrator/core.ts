@@ -123,7 +123,9 @@ import type {
   DrainModeState,
   DrainQuiescenceBlocker,
   DrainQuiescenceBlockerCounts,
+  DrainQuiescenceRestartGuidance,
   DrainQuiescenceState,
+  DrainQuiescenceWarning,
   MissingToolOutputRecoveryState,
   OperatorActionRecord,
   OrchestratorOptions,
@@ -172,7 +174,14 @@ const emptyQuiescenceState = (updatedAtMs: number): DrainQuiescenceState => ({
   state: 'safe',
   updated_at_ms: updatedAtMs,
   blockers: [],
-  blocker_counts: emptyDrainBlockerCounts()
+  blocker_counts: emptyDrainBlockerCounts(),
+  warnings: [],
+  restart_guidance: {
+    safe_to_restart: true,
+    recommended_action: 'none',
+    pending_work: [],
+    detail: 'Runtime is safe to restart.'
+  }
 });
 
 interface ScheduleRetryParams {
@@ -280,6 +289,7 @@ export class OrchestratorCore {
   private serializedOperation: Promise<void>;
   private inFlightTrackerWrites = 0;
   private pendingExecutionGraphPersistenceWrites = 0;
+  private lastQuiescencePendingIssues: Issue[] = [];
 
   constructor(options: OrchestratorOptions) {
     this.config = options.config;
@@ -458,9 +468,13 @@ export class OrchestratorCore {
     return null;
   }
 
-  private refreshQuiescenceState(): DrainQuiescenceState {
+  private refreshQuiescenceState(pendingIssues?: Issue[]): DrainQuiescenceState {
+    if (pendingIssues) {
+      this.lastQuiescencePendingIssues = [...pendingIssues];
+    }
     this.refreshRuntimeIdentity();
     const blockers: DrainQuiescenceBlocker[] = [];
+    const warnings: DrainQuiescenceWarning[] = [];
     const counts = emptyDrainBlockerCounts();
     const runningEntries = Array.from(this.state.running.values());
     const runningIssueIdentifiers = runningEntries.map((entry) => entry.identifier);
@@ -542,21 +556,13 @@ export class OrchestratorCore {
     );
     const pendingHistoryWriteCount = pendingTurnHistoryWriteCount + this.pendingExecutionGraphPersistenceWrites;
     const persistenceHealth = this.readPersistenceHealth();
-    const persistenceHealthBlocker = this.describePersistenceHealthBlocker(persistenceHealth);
-    const persistenceBlockerCount = pendingHistoryWriteCount + (persistenceHealthBlocker ? 1 : 0);
-    if (persistenceBlockerCount > 0) {
-      counts.persistence_history_write = persistenceBlockerCount;
+    const persistenceHealthWarning = this.describePersistenceHealthWarning(persistenceHealth);
+    if (pendingHistoryWriteCount > 0) {
+      counts.persistence_history_write = pendingHistoryWriteCount;
       blockers.push({
         category: 'persistence_history_write',
-        count: persistenceBlockerCount,
-        detail: [
-          pendingHistoryWriteCount > 0
-            ? `${pendingHistoryWriteCount} execution-history write${pendingHistoryWriteCount === 1 ? '' : 's'} pending flush`
-            : null,
-          persistenceHealthBlocker
-        ]
-          .filter((part): part is string => Boolean(part))
-          .join('; '),
+        count: pendingHistoryWriteCount,
+        detail: `${pendingHistoryWriteCount} execution-history write${pendingHistoryWriteCount === 1 ? '' : 's'} pending flush`,
         issue_identifiers: runningEntries
           .filter((entry) => (entry.pending_persisted_turn_ids?.length ?? 0) > 0)
           .map((entry) => entry.identifier),
@@ -567,6 +573,14 @@ export class OrchestratorCore {
           .filter((entry) => (entry.pending_persisted_turn_ids?.length ?? 0) > 0)
           .map((entry) => entry.thread_id)
           .filter((id): id is string => Boolean(id))
+      });
+    }
+    if (persistenceHealthWarning) {
+      warnings.push({
+        category: 'persistence_history_degraded',
+        count: 1,
+        detail: persistenceHealthWarning,
+        source: 'audit_health'
       });
     }
 
@@ -582,38 +596,45 @@ export class OrchestratorCore {
 
     const runtimeIdentity = this.state.runtime_identity;
     if (runtimeIdentity?.status === 'stale' && runtimeIdentity.health_warning) {
-      counts.stale_runtime = 1;
-      blockers.push({
-        category: 'stale_runtime',
+      warnings.push({
+        category: 'stale_runtime_warning',
         count: 1,
         detail: runtimeIdentity.health_warning.message,
-        issue_identifiers: []
+        source: 'dispatch_safety',
+        recommended_action: runtimeIdentity.health_warning.recommended_action
       });
     } else if (runtimeIdentity?.status === 'unknown_current' && runtimeIdentity.health_warning) {
-      counts.unknown_current_build_identity = 1;
-      blockers.push({
-        category: 'unknown_current_build_identity',
+      warnings.push({
+        category: 'unknown_current_build_identity_warning',
         count: 1,
         detail: runtimeIdentity.health_warning.message,
-        issue_identifiers: []
+        source: 'dispatch_safety',
+        recommended_action: runtimeIdentity.health_warning.recommended_action
       });
     }
 
     const safeToShutdown = blockers.length === 0;
+    const restartGuidance = this.buildRestartGuidance(safeToShutdown, warnings, this.lastQuiescencePendingIssues);
     const next: DrainQuiescenceState = {
       safe_to_shutdown: safeToShutdown,
       state: safeToShutdown ? 'safe' : 'blocked',
       updated_at_ms: this.nowMs(),
       blockers,
-      blocker_counts: counts
+      blocker_counts: counts,
+      warnings,
+      restart_guidance: restartGuidance
     };
     const previousSignature = JSON.stringify({
       safe_to_shutdown: this.state.quiescence.safe_to_shutdown,
-      blocker_counts: this.state.quiescence.blocker_counts
+      blocker_counts: this.state.quiescence.blocker_counts,
+      warnings: this.state.quiescence.warnings ?? [],
+      restart_guidance: this.state.quiescence.restart_guidance ?? null
     });
     const nextSignature = JSON.stringify({
       safe_to_shutdown: next.safe_to_shutdown,
-      blocker_counts: next.blocker_counts
+      blocker_counts: next.blocker_counts,
+      warnings: next.warnings,
+      restart_guidance: next.restart_guidance
     });
     this.state.quiescence = next;
     if (this.state.drain_mode.active && previousSignature !== nextSignature) {
@@ -667,7 +688,7 @@ export class OrchestratorCore {
     }
   }
 
-  private describePersistenceHealthBlocker(health: PersistenceHealth | null): string | null {
+  private describePersistenceHealthWarning(health: PersistenceHealth | null): string | null {
     if (!health || !health.enabled) {
       return null;
     }
@@ -682,6 +703,48 @@ export class OrchestratorCore {
       return `recent history write failure: ${latest.operation} (${latest.reason_code})`;
     }
     return null;
+  }
+
+  private buildRestartGuidance(
+    safeToShutdown: boolean,
+    warnings: DrainQuiescenceWarning[],
+    pendingIssues: Issue[]
+  ): DrainQuiescenceRestartGuidance {
+    const pendingByState = new Map<string, { state: string; count: number; maintenance_eligible: boolean }>();
+    for (const issue of pendingIssues) {
+      const stateName = issue.state || 'unknown';
+      const existing = pendingByState.get(stateName) ?? {
+        state: stateName,
+        count: 0,
+        maintenance_eligible: stateName.trim().toLowerCase() === 'merging'
+      };
+      existing.count += 1;
+      pendingByState.set(stateName, existing);
+    }
+    const pending_work = [...pendingByState.values()].sort((a, b) => a.state.localeCompare(b.state));
+    const hasDispatchSafetyWarning = warnings.some((warning) => warning.source === 'dispatch_safety');
+    if (!safeToShutdown) {
+      return {
+        safe_to_restart: false,
+        recommended_action: 'wait_for_true_shutdown_blockers',
+        pending_work,
+        detail: 'Wait for active workers, child processes, retries, and current writes to clear before restarting.'
+      };
+    }
+    if (hasDispatchSafetyWarning) {
+      return {
+        safe_to_restart: true,
+        recommended_action: 'restart_runtime_to_current_build',
+        pending_work,
+        detail: 'Runtime is quiescent enough to restart; restart/update Symphony before dispatching normal work.'
+      };
+    }
+    return {
+      safe_to_restart: true,
+      recommended_action: 'none',
+      pending_work,
+      detail: 'Runtime is safe to restart.'
+    };
   }
 
   getStateSnapshot(options: StateSnapshotOptions = {}): OrchestratorState {
@@ -777,7 +840,17 @@ export class OrchestratorCore {
           ...blocker,
           issue_identifiers: [...blocker.issue_identifiers]
         })),
-        blocker_counts: { ...this.state.quiescence.blocker_counts }
+        blocker_counts: { ...this.state.quiescence.blocker_counts },
+        warnings: (this.state.quiescence.warnings ?? []).map((warning) => ({ ...warning })),
+        restart_guidance: {
+          ...(this.state.quiescence.restart_guidance ?? {
+            safe_to_restart: true,
+            recommended_action: 'none',
+            pending_work: [],
+            detail: 'Runtime is safe to restart.'
+          }),
+          pending_work: (this.state.quiescence.restart_guidance?.pending_work ?? []).map((entry) => ({ ...entry }))
+        }
       },
       throughput: this.throughputTracker.snapshot(this.nowMs()),
       recent_runtime_events: this.state.recent_runtime_events.map((event) => ({ ...event }))
@@ -923,8 +996,8 @@ export class OrchestratorCore {
           this.delayDispatchForBackpressure(issue, attempt, backpressure),
         emitPhaseMarker: (issueId, marker) => this.emitPhaseMarker(issueId, marker),
         recordRuntimeEvent: (params) => this.recordRuntimeEvent(params),
-        refreshQuiescenceState: () => {
-          this.refreshQuiescenceState();
+        refreshQuiescenceState: (pendingIssues) => {
+          this.refreshQuiescenceState(pendingIssues);
         },
         selectWorkerHost: () => this.selectWorkerHost(),
         persistPreSpawnExecutionGraphAttempt: (params) => this.persistPreSpawnExecutionGraphAttempt(params),

@@ -89,7 +89,17 @@ export class SnapshotService {
         ...blocker,
         issue_identifiers: [...blocker.issue_identifiers]
       })),
-      blocker_counts: { ...state.quiescence.blocker_counts }
+      blocker_counts: { ...state.quiescence.blocker_counts },
+      warnings: (state.quiescence.warnings ?? []).map((warning) => ({ ...warning })),
+      restart_guidance: {
+        ...(state.quiescence.restart_guidance ?? {
+          safe_to_restart: true,
+          recommended_action: 'none',
+          pending_work: [],
+          detail: 'Runtime is safe to restart.'
+        }),
+        pending_work: (state.quiescence.restart_guidance?.pending_work ?? []).map((entry) => ({ ...entry }))
+      }
     };
   }
 

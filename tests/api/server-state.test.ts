@@ -963,17 +963,10 @@ describe('LocalApiServer state API', () => {
         }
       },
       quiescence: {
-        safe_to_shutdown: false,
-        state: 'blocked',
+        safe_to_shutdown: true,
+        state: 'safe',
         updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
-        blockers: [
-          {
-            category: 'stale_runtime',
-            count: 1,
-            detail: 'Running runtime build runtime-old is stale compared with current-new',
-            issue_identifiers: []
-          }
-        ],
+        blockers: [],
         blocker_counts: {
           active_worker: 0,
           live_codex_app_server_process: 0,
@@ -981,8 +974,23 @@ describe('LocalApiServer state API', () => {
           in_flight_tracker_write: 0,
           persistence_history_write: 0,
           unknown_degraded_blocker_source_health: 0,
-          stale_runtime: 1,
+          stale_runtime: 0,
           unknown_current_build_identity: 0
+        },
+        warnings: [
+          {
+            category: 'stale_runtime_warning',
+            count: 1,
+            detail: 'Running runtime build runtime-old is stale compared with current-new',
+            source: 'dispatch_safety',
+            recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+          }
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [],
+          detail: 'Runtime is quiescent enough to restart; restart/update Symphony before dispatching normal work.'
         }
       }
     } as any);
@@ -1013,16 +1021,23 @@ describe('LocalApiServer state API', () => {
       code: 'stale_runtime_build',
       recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
     });
-    expect(statePayload.quiescence.safe_to_shutdown).toBe(false);
-    expect(statePayload.quiescence.blocker_counts.stale_runtime).toBe(1);
-    expect(statePayload.quiescence.blockers).toContainEqual({
-      category: 'stale_runtime',
+    expect(statePayload.quiescence.safe_to_shutdown).toBe(true);
+    expect(statePayload.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect(statePayload.quiescence.blockers).toEqual([]);
+    expect(statePayload.quiescence.warnings).toContainEqual({
+      category: 'stale_runtime_warning',
       count: 1,
       detail: 'Running runtime build runtime-old is stale compared with current-new',
-      issue_identifiers: []
+      source: 'dispatch_safety',
+      recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+    });
+    expect(statePayload.quiescence.restart_guidance).toMatchObject({
+      safe_to_restart: true,
+      recommended_action: 'restart_runtime_to_current_build'
     });
     expect(diagnosticsPayload.runtime_identity).toEqual(statePayload.runtime_identity);
-    expect(diagnosticsPayload.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(diagnosticsPayload.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect(diagnosticsPayload.quiescence.warnings).toEqual(statePayload.quiescence.warnings);
   });
 
   it('reports unknown current build identity as degraded but not stale', async () => {
@@ -1049,17 +1064,10 @@ describe('LocalApiServer state API', () => {
         }
       },
       quiescence: {
-        safe_to_shutdown: false,
-        state: 'blocked',
+        safe_to_shutdown: true,
+        state: 'safe',
         updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
-        blockers: [
-          {
-            category: 'unknown_current_build_identity',
-            count: 1,
-            detail: 'Current repository build identity is unavailable',
-            issue_identifiers: []
-          }
-        ],
+        blockers: [],
         blocker_counts: {
           active_worker: 0,
           live_codex_app_server_process: 0,
@@ -1068,7 +1076,22 @@ describe('LocalApiServer state API', () => {
           persistence_history_write: 0,
           unknown_degraded_blocker_source_health: 0,
           stale_runtime: 0,
-          unknown_current_build_identity: 1
+          unknown_current_build_identity: 0
+        },
+        warnings: [
+          {
+            category: 'unknown_current_build_identity_warning',
+            count: 1,
+            detail: 'Current repository build identity is unavailable',
+            source: 'dispatch_safety',
+            recommended_action: 'Validate the repository checkout and rerun build identity detection before dispatching new work.'
+          }
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [],
+          detail: 'Runtime is quiescent enough to restart; restart/update Symphony before dispatching normal work.'
         }
       }
     } as any);
@@ -1096,8 +1119,12 @@ describe('LocalApiServer state API', () => {
       code: 'unknown_current_build_identity',
       severity: 'degraded'
     });
-    expect(payload.quiescence.blocker_counts.unknown_current_build_identity).toBe(1);
+    expect(payload.quiescence.safe_to_shutdown).toBe(true);
+    expect(payload.quiescence.blocker_counts.unknown_current_build_identity).toBe(0);
     expect(payload.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect(payload.quiescence.warnings).toContainEqual(
+      expect.objectContaining({ category: 'unknown_current_build_identity_warning', source: 'dispatch_safety' })
+    );
   });
 
   it('lets operators enter, read, and exit Drain Mode through the API control surface', async () => {

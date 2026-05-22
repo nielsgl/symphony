@@ -1001,6 +1001,23 @@ export interface ApiDrainQuiescenceProjection {
     | 'unknown_current_build_identity',
     number
   >;
+  warnings?: Array<{
+    category: 'stale_runtime_warning' | 'unknown_current_build_identity_warning' | 'persistence_history_degraded';
+    count: number;
+    detail: string;
+    source: 'dispatch_safety' | 'audit_health';
+    recommended_action?: string;
+  }>;
+  restart_guidance?: {
+    safe_to_restart: boolean;
+    recommended_action: 'none' | 'wait_for_true_shutdown_blockers' | 'restart_runtime_to_current_build';
+    pending_work: Array<{
+      state: string;
+      count: number;
+      maintenance_eligible: boolean;
+    }>;
+    detail: string;
+  };
 }
 
 export interface ApiDrainControlBlocker {

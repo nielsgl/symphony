@@ -78,6 +78,13 @@ export function buildDiagnosticsPayload(options: {
       unknown_degraded_blocker_source_health: 0,
       stale_runtime: 0,
       unknown_current_build_identity: 0
+    },
+    warnings: [],
+    restart_guidance: {
+      safe_to_restart: true,
+      recommended_action: 'none',
+      pending_work: [],
+      detail: 'Runtime is safe to restart.'
     }
   };
   let runtimeIdentity: ApiDiagnosticsResponse['runtime_identity'] = null;
