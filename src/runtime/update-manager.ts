@@ -415,7 +415,8 @@ function stateForReadiness(params: {
       refusal_reasons: []
     };
   }
-  if (params.remoteSha && params.remoteSha !== params.localSha) {
+  const localAheadOnly = !!params.ahead && params.ahead > 0 && params.behind === 0;
+  if (!localAheadOnly && params.remoteSha && params.remoteSha !== params.localSha) {
     return {
       state: 'remote_update_available',
       attention_required: true,

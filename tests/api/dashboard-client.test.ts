@@ -812,9 +812,9 @@ describe('dashboard browser client modules', () => {
           drain_required: false,
           recommended_action: 'none',
           refusal_reasons: [],
-          local_checkout: { branch: 'main', commit_sha: 'current', dirty: false, detached: false },
-          fetched_remote: { remote: 'origin', base_ref: 'main', commit_sha: 'current' },
-          ahead_behind: { ahead: 0, behind: 0 },
+          local_checkout: { branch: 'main', commit_sha: 'local-ahead', dirty: false, detached: false },
+          fetched_remote: { remote: 'origin', base_ref: 'main', commit_sha: 'remote-base' },
+          ahead_behind: { ahead: 1, behind: 0 },
           last_fetch: { result: 'succeeded' }
         }
       })

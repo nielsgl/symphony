@@ -469,6 +469,59 @@ describe('runtime update manager', () => {
     expect(auditEvents.filter((event) => event.event_type === 'update-build-started')).toHaveLength(1);
   });
 
+  it('does not report local-ahead-only history as a remote update candidate', async () => {
+    const { local } = await makeRepoPair();
+    await writeFile(path.join(local, 'local-only.txt'), 'local only\n');
+    git(local, ['add', '.']);
+    git(local, ['commit', '-m', 'local only update']);
+    git(local, ['fetch', 'origin', 'main']);
+
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      }
+    });
+
+    const readiness = manager.readUpdateReadiness();
+    const prepared = await manager.prepareUpdate();
+
+    expect(readiness).toMatchObject({
+      state: 'build_current',
+      attention_required: false,
+      drain_required: false,
+      recommended_action: 'none',
+      ahead_behind: { ahead: 1, behind: 0 },
+      prepared: false,
+      apply_ready: false
+    });
+    expect(prepared).toMatchObject({
+      success: false,
+      status: 'refused',
+      step: 'prepare',
+      reason_code: REASON_CODES.runtimeUpdateNotActionable,
+      recommended_action: 'none',
+      readiness: {
+        state: 'build_current',
+        attention_required: false,
+        drain_required: false,
+        prepared: false,
+        apply_ready: false
+      }
+    });
+    expect(auditEvents.map((event) => event.event_type)).not.toContain('update-prepare-requested');
+    expect(auditEvents.map((event) => event.event_type)).not.toContain('update-pull-started');
+    expect(git(local, ['status', '--porcelain=v1'])).toBe('');
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
   it('refuses prepare and apply for a current build without entering the command sequence', async () => {
     const { local } = await makeRepoPair();
     const auditEvents: any[] = [];
