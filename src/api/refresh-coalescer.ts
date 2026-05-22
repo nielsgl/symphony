@@ -42,6 +42,13 @@ export class RefreshCoalescer {
     };
   }
 
+  close(): void {
+    if (this.scheduled) {
+      clearTimeout(this.scheduled);
+      this.scheduled = null;
+    }
+  }
+
   private scheduleFlush(): void {
     if (this.scheduled) {
       return;

@@ -521,6 +521,8 @@ describe('CodexRunner transcript fallback', () => {
   });
 
   it('prioritizes the active fallback transcript directory before newer sibling noise under discovery budget', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_TEST_NOW);
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
@@ -566,30 +568,35 @@ describe('CodexRunner transcript fallback', () => {
       'utf8'
     );
 
-    const runner = new CodexRunner({ spawnProcess: () => fake });
-    const promise = runner.startSessionAndRunTurn(
-      makeStartInput(workspaceCwd, {
-        commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 1000
-      })
-    );
+    try {
+      const runner = new CodexRunner({ spawnProcess: () => fake });
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          commandEnv: { CODEX_HOME: codexHome },
+          turnTimeoutMs: 1000
+        })
+      );
 
-    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
-    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-sibling-priority"}}}\n');
-    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-sibling-priority"}}}\n');
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-sibling-priority"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-sibling-priority"}}}\n');
+      await vi.advanceTimersByTimeAsync(TRANSCRIPT_SCAN_INTERVAL_MS);
 
-    await expect(promise).resolves.toMatchObject({
-      status: 'completed',
-      thread_id: 'thread-sibling-priority',
-      turn_id: 'turn-sibling-priority',
-      terminal_source: 'session_transcript',
-      last_agent_message: 'active sibling directory won',
-      transcript_lookup: expect.objectContaining({
-        source: 'fallback',
-        candidate_count: 1,
-        exhausted: false
+      await expect(promise).resolves.toMatchObject({
+        status: 'completed',
+        thread_id: 'thread-sibling-priority',
+        turn_id: 'turn-sibling-priority',
+        terminal_source: 'session_transcript',
+        last_agent_message: 'active sibling directory won',
+        transcript_lookup: expect.objectContaining({
+          source: 'fallback',
+          candidate_count: 1,
+          exhausted: false
+        })
       })
-    });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rescans after an initial empty fallback lookup when the active transcript appears later', async () => {
@@ -772,10 +779,12 @@ describe('CodexRunner transcript fallback', () => {
   });
 
   it('finds filename-matched transcripts beyond the fallback probe budget', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_TEST_NOW);
     const fake = new FakeProcess();
     const workspaceCwd = makeWorkspace();
     const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-codex-home-'));
-    const now = new Date();
+    const now = FIXED_TEST_NOW;
     const sessionsDir = path.join(
       codexHome,
       'sessions',
@@ -810,33 +819,38 @@ describe('CodexRunner transcript fallback', () => {
       'utf8'
     );
 
-    const runner = new CodexRunner({ spawnProcess: () => fake });
-    const promise = runner.startSessionAndRunTurn(
-      makeStartInput(workspaceCwd, {
-        commandEnv: { CODEX_HOME: codexHome },
-        turnTimeoutMs: 1000
-      })
-    );
+    try {
+      const runner = new CodexRunner({ spawnProcess: () => fake });
+      const promise = runner.startSessionAndRunTurn(
+        makeStartInput(workspaceCwd, {
+          commandEnv: { CODEX_HOME: codexHome },
+          turnTimeoutMs: 1000
+        })
+      );
 
-    fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
-    fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-filename-budget"}}}\n');
-    fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-filename-budget"}}}\n');
+      fake.emitStdout('{"id":1,"result":{"ok":true}}\n');
+      fake.emitStdout('{"id":2,"result":{"thread":{"id":"thread-filename-budget"}}}\n');
+      fake.emitStdout('{"id":3,"result":{"turn":{"id":"turn-filename-budget"}}}\n');
+      await vi.advanceTimersByTimeAsync(TRANSCRIPT_SCAN_INTERVAL_MS);
 
-    await expect(promise).resolves.toMatchObject({
-      status: 'completed',
-      thread_id: 'thread-filename-budget',
-      turn_id: 'turn-filename-budget',
-      terminal_source: 'session_transcript',
-      last_agent_message: 'filename lookup found active transcript',
-      transcript_lookup: expect.objectContaining({
-        source: 'filename',
-        candidate_count: 1,
-        files_considered: 61,
-        files_parsed: 0,
-        bytes_read: 0,
-        exhausted: false
+      await expect(promise).resolves.toMatchObject({
+        status: 'completed',
+        thread_id: 'thread-filename-budget',
+        turn_id: 'turn-filename-budget',
+        terminal_source: 'session_transcript',
+        last_agent_message: 'filename lookup found active transcript',
+        transcript_lookup: expect.objectContaining({
+          source: 'filename',
+          candidate_count: 1,
+          files_considered: 61,
+          files_parsed: 0,
+          bytes_read: 0,
+          exhausted: false
+        })
       })
-    });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps wrong-lineage transcript task_complete diagnostic-only until protocol completion', async () => {

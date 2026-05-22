@@ -3,14 +3,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+
+const GIT_INTEGRATION_TIMEOUT_MS = 20_000;
 
 const SCRIPT_PATH = path.resolve(process.cwd(), 'scripts/worktree_bootstrap.py');
 
 function run(cmd: string, args: string[], cwd: string): void {
   const result = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
   if (result.status !== 0) {
-    throw new Error(`${cmd} ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+    throw new Error(`${cmd} ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }
 }
 
@@ -22,8 +24,17 @@ function runBootstrap(args: string[], cwd: string) {
 }
 
 describe('worktree_bootstrap.py', () => {
+  const cleanupPaths: string[] = [];
+
+  afterEach(() => {
+    for (const targetPath of cleanupPaths.splice(0)) {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+    }
+  });
+
   it('auto-resolves source from sibling worktree when --source is omitted', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-worktree-bootstrap-'));
+    cleanupPaths.push(root);
     const primary = path.join(root, 'primary');
     const target = path.join(root, 'target');
     fs.mkdirSync(primary, { recursive: true });
@@ -46,10 +57,11 @@ describe('worktree_bootstrap.py', () => {
     const result = runBootstrap(['--allow-sensitive'], target);
     expect(result.status).toBe(0);
     expect(fs.existsSync(path.join(target, '.cache', 'artifact.txt'))).toBe(true);
-  });
+  }, GIT_INTEGRATION_TIMEOUT_MS);
 
   it('uses current working directory as default target', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-worktree-bootstrap-'));
+    cleanupPaths.push(root);
     const source = path.join(root, 'source');
     const target = path.join(root, 'target');
     fs.mkdirSync(source, { recursive: true });
@@ -75,6 +87,7 @@ describe('worktree_bootstrap.py', () => {
 
   it('does not overcount copied files when destination already exists', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-worktree-bootstrap-'));
+    cleanupPaths.push(root);
     const source = path.join(root, 'source');
     const target = path.join(root, 'target');
     fs.mkdirSync(source, { recursive: true });

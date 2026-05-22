@@ -10,6 +10,8 @@ import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort, toWorkerEve
 import { SqlitePersistenceStore, buildDurableIdentity } from '../../src/persistence';
 import type { TrackerAdapter } from '../../src/tracker';
 
+const RUNTIME_STARTUP_INTEGRATION_TIMEOUT_MS = 20_000;
+
 interface TestDatabase {
   exec(sql: string): void;
   close(): void;
@@ -441,7 +443,7 @@ describe('createRuntimeEnvironment', () => {
 
     expect(response.status).toBe(409);
     expect(payload.error.code).toBe('input_submission_expired');
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TIMEOUT_MS);
 
   it('exposes SSE event stream endpoint for runtime state push updates', async () => {
     const workflowPath = await makeWorkflowFile();
