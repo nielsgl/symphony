@@ -368,6 +368,303 @@ describe('runtime update manager', () => {
     ]));
   }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
+  it('requests a supervisor-backed restart after successful guided update apply', async () => {
+    const { root, local } = await makeRepoPair();
+    await pushRemoteUpdate(root);
+    const auditEvents: any[] = [];
+    const restartRequests: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      restartCommand: ['npm', 'run', 'start:dashboard'],
+      restartController: {
+        capability: () => ({
+          mode: 'supervisor_available',
+          available: true,
+          reason_code: REASON_CODES.runtimeUpdateRestartSupervisorAvailable,
+          detail: 'test supervisor available'
+        }),
+        requestRestart: async (request) => {
+          restartRequests.push(request);
+          return {
+            accepted: true,
+            reason_code: REASON_CODES.runtimeUpdateRestartRequested,
+            old_child_pid: 12345
+          };
+        }
+      }
+    });
+
+    await manager.prepareUpdate();
+    const applied = await manager.applyUpdate();
+
+    expect(applied).toMatchObject({
+      success: true,
+      status: 'ready_to_restart',
+      step: 'restart',
+      recommended_action: 'reconnect_dashboard',
+      restart: {
+        mode: 'wrapper',
+        status: 'restarting',
+        reason_code: REASON_CODES.runtimeUpdateRestartStarted
+      }
+    });
+    expect(restartRequests).toHaveLength(1);
+    const replay = await manager.applyUpdate();
+    expect(replay).toMatchObject({
+      success: true,
+      status: 'ready_to_restart',
+      idempotent_replay: true,
+      restart: { attempt_id: applied.restart?.attempt_id }
+    });
+    expect(restartRequests).toHaveLength(1);
+    expect(restartRequests[0]).toMatchObject({
+      old_commit_sha: expect.any(String),
+      target_commit_sha: expect.any(String)
+    });
+    expect(manager.readRestartStatus()).toMatchObject({
+      capability: { mode: 'supervisor_available', available: true },
+      phase: 'restarting',
+      old_child_pid: 12345,
+      target_commit_sha: restartRequests[0].target_commit_sha
+    });
+    expect(auditEvents.map((event) => event.event_type)).toEqual(expect.arrayContaining([
+      'update-restart-ready',
+      'update-restart-requested',
+      'update-restart-started',
+      'update-old-child-shutdown-requested'
+    ]));
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('records replacement child readiness from supervisor metadata once', async () => {
+    const { local } = await makeRepoPair();
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => ({
+        process_started_at: '2026-05-21T10:00:00.000Z',
+        process_started_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        running_build: { identity: 'new-sha', commit_sha: 'new-sha', source_timestamp: null, source_timestamp_ms: null },
+        current_build: { identity: 'new-sha', commit_sha: 'new-sha', source_timestamp: null, source_timestamp_ms: null, status: 'available' },
+        status: 'current',
+        health_warning: null
+      }),
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      supervisedRestartMetadata: {
+        attempt_id: 'restart-1',
+        target_commit_sha: 'new-sha',
+        old_child_pid: 111,
+        new_child_pid: 222,
+        started_at: '2026-05-21T09:59:59.000Z'
+      }
+    });
+
+    await manager.recordSupervisedRestartReady();
+    await manager.recordSupervisedRestartReady();
+    await manager.recordReconnectObserved();
+
+    expect(manager.readRestartStatus()).toMatchObject({
+      phase: 'completed',
+      attempt_id: 'restart-1',
+      old_child_pid: 111,
+      new_child_pid: 222,
+      target_commit_sha: 'new-sha',
+      observed_running_commit_sha: 'new-sha'
+    });
+    expect(auditEvents.map((event) => event.event_type)).toEqual([
+      'update-old-child-exited',
+      'update-new-child-spawned',
+      'update-new-child-ready',
+      'update-restart-completed',
+      'update-reconnect-observed'
+    ]);
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('fails replacement child readiness when the running commit does not match the restart target', async () => {
+    const { local } = await makeRepoPair();
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => ({
+        process_started_at: '2026-05-21T10:00:00.000Z',
+        process_started_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        running_build: { identity: 'wrong-sha', commit_sha: 'wrong-sha', source_timestamp: null, source_timestamp_ms: null },
+        current_build: { identity: 'wrong-sha', commit_sha: 'wrong-sha', source_timestamp: null, source_timestamp_ms: null, status: 'available' },
+        status: 'current',
+        health_warning: null
+      }),
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      supervisedRestartMetadata: {
+        attempt_id: 'restart-mismatch',
+        target_commit_sha: 'target-sha',
+        old_child_pid: 111,
+        new_child_pid: 222,
+        started_at: '2026-05-21T09:59:59.000Z'
+      }
+    });
+
+    await expect(manager.recordSupervisedRestartReady()).resolves.toBe(false);
+    await manager.recordReconnectObserved();
+
+    expect(manager.readRestartStatus()).toMatchObject({
+      phase: 'failed',
+      attempt_id: 'restart-mismatch',
+      target_commit_sha: 'target-sha',
+      observed_running_commit_sha: 'wrong-sha',
+      last_error: {
+        reason_code: REASON_CODES.runtimeUpdateRestartIdentityMismatch
+      }
+    });
+    expect(auditEvents.map((event) => event.event_type)).toEqual(['update-restart-failed']);
+    expect(auditEvents[0]).toMatchObject({
+      result: 'failed',
+      result_code: REASON_CODES.runtimeUpdateRestartIdentityMismatch,
+      state_context: expect.objectContaining({
+        attempt_id: 'restart-mismatch',
+        target_commit_sha: 'target-sha',
+        observed_running_commit_sha: 'wrong-sha'
+      })
+    });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('records supervisor failure handoff as durable failed restart state', async () => {
+    const { local } = await makeRepoPair();
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => ({
+        process_started_at: '2026-05-21T10:00:00.000Z',
+        process_started_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        running_build: { identity: 'target-sha', commit_sha: 'target-sha', source_timestamp: null, source_timestamp_ms: null },
+        current_build: { identity: 'target-sha', commit_sha: 'target-sha', source_timestamp: null, source_timestamp_ms: null, status: 'available' },
+        status: 'current',
+        health_warning: null
+      }),
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      supervisedRestartMetadata: {
+        attempt_id: 'restart-timeout',
+        target_commit_sha: 'target-sha',
+        old_child_pid: 111,
+        new_child_pid: 222,
+        started_at: '2026-05-21T09:59:59.000Z'
+      }
+    });
+
+    await manager.recordSupervisedRestartFailure(
+      REASON_CODES.runtimeUpdateRestartFailed,
+      'Supervisor restart failed: child_startup_timeout.'
+    );
+
+    expect(manager.readRestartStatus()).toMatchObject({
+      phase: 'failed',
+      attempt_id: 'restart-timeout',
+      target_commit_sha: 'target-sha',
+      observed_running_commit_sha: 'target-sha',
+      recommended_manual_recovery: 'Restart Symphony manually with npm run start:dashboard and inspect supervisor logs.',
+      last_error: {
+        reason_code: REASON_CODES.runtimeUpdateRestartFailed,
+        message: 'Supervisor restart failed: child_startup_timeout.'
+      }
+    });
+    expect(auditEvents.map((event) => event.event_type)).toEqual(['update-restart-failed']);
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('loads supervisor failure handoff as durable failed restart state on bootstrap', async () => {
+    const { local } = await makeRepoPair();
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => ({
+        process_started_at: '2026-05-21T10:00:00.000Z',
+        process_started_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        running_build: { identity: 'target-sha', commit_sha: 'target-sha', source_timestamp: null, source_timestamp_ms: null },
+        current_build: { identity: 'target-sha', commit_sha: 'target-sha', source_timestamp: null, source_timestamp_ms: null, status: 'available' },
+        status: 'current',
+        health_warning: null
+      }),
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      supervisedRestartFailure: {
+        attempt_id: 'restart-handoff',
+        target_commit_sha: 'target-sha',
+        old_child_pid: 111,
+        new_child_pid: 222,
+        started_at: '2026-05-21T09:59:00.000Z',
+        failed_at: '2026-05-21T09:59:30.000Z',
+        reason_code: REASON_CODES.runtimeUpdateRestartFailed,
+        message: 'Supervisor restart failed: child_startup_timeout.'
+      }
+    });
+
+    expect(manager.readRestartStatus()).toMatchObject({
+      phase: 'failed',
+      attempt_id: 'restart-handoff',
+      failed_at: '2026-05-21T09:59:30.000Z',
+      target_commit_sha: 'target-sha',
+      recommended_manual_recovery: 'Restart Symphony manually with npm run start:dashboard and inspect supervisor logs.',
+      last_error: {
+        reason_code: REASON_CODES.runtimeUpdateRestartFailed,
+        message: 'Supervisor restart failed: child_startup_timeout.'
+      }
+    });
+
+    await manager.recordPendingSupervisedRestartFailure();
+    await manager.recordPendingSupervisedRestartFailure();
+
+    expect(auditEvents.map((event) => event.event_type)).toEqual(['update-restart-failed']);
+    expect(auditEvents[0]).toMatchObject({
+      result: 'failed',
+      result_code: REASON_CODES.runtimeUpdateRestartFailed,
+      state_context: expect.objectContaining({
+        attempt_id: 'restart-handoff',
+        target_commit_sha: 'target-sha',
+        old_child_pid: 111,
+        new_child_pid: 222,
+        message: 'Supervisor restart failed: child_startup_timeout.'
+      })
+    });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
   it('refuses apply when the remote candidate changed after prepare', async () => {
     const { root, local } = await makeRepoPair();
     await pushRemoteUpdate(root);

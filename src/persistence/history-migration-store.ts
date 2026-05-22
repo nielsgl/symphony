@@ -243,6 +243,13 @@ function historyMigrations(): HistoryMigration[] {
       apply: (context) => {
         ensureRuntimeUpdateDrainAuditEventTypes(context.db);
       }
+    },
+    {
+      version: 12,
+      name: 'runtime_restart_drain_audit_events_v1',
+      apply: (context) => {
+        ensureRuntimeUpdateDrainAuditEventTypes(context.db);
+      }
     }
   ];
 }
@@ -254,7 +261,7 @@ function ensureRuntimeUpdateDrainAuditEventTypes(db: PersistenceDatabase): void 
   if (!table) {
     return;
   }
-  if (table.sql.includes('update-manual-restart-required')) {
+  if (table.sql.includes('update-reconnect-observed')) {
     return;
   }
 

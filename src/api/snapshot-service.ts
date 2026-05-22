@@ -293,6 +293,26 @@ export class SnapshotService {
       ...createApiDegradedDiagnostics(null, []),
       runtime_identity: this.projectRuntimeIdentity(state),
       runtime_update: null,
+      runtime_restart: {
+        capability: {
+          mode: 'manual_restart_required',
+          available: false,
+          reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable,
+          detail: 'Symphony is not running under the local restart supervisor.'
+        },
+        phase: 'manual_restart_required',
+        attempt_id: null,
+        requested_at: null,
+        started_at: null,
+        completed_at: null,
+        failed_at: null,
+        old_child_pid: null,
+        new_child_pid: null,
+        target_commit_sha: null,
+        observed_running_commit_sha: null,
+        recommended_manual_recovery: 'Restart Symphony with the supported supervisor command or rerun npm run start:dashboard manually.',
+        last_error: null
+      },
       drain_mode: this.projectDrainMode(state),
       quiescence: this.projectQuiescence(state),
       counts: {

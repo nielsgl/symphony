@@ -35,7 +35,7 @@ import {
 import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
-import { LocalRuntimeUpdateManager } from './update-manager';
+import { LocalRuntimeUpdateManager, type LocalRuntimeUpdateManagerOptions, type RuntimeRestartController } from './update-manager';
 import { WorkflowConfigError } from '../workflow/errors';
 import {
   WorkflowLoader,
@@ -258,6 +258,82 @@ function resolveRuntimeUpdateGithubEligibilityMode(mode: string | undefined): 'r
     return mode;
   }
   return undefined;
+}
+
+function createProcessRestartController(): RuntimeRestartController | undefined {
+  if (process.env.SYMPHONY_RESTART_SUPERVISOR !== '1' || typeof process.send !== 'function') {
+    return undefined;
+  }
+  let requested = false;
+  return {
+    capability: () => ({
+      mode: 'supervisor_available',
+      available: true,
+      reason_code: REASON_CODES.runtimeUpdateRestartSupervisorAvailable,
+      detail: 'The local Symphony restart supervisor owns this dashboard child process.'
+    }),
+    requestRestart: async (request) => {
+      if (requested) {
+        return {
+          accepted: false,
+          reason_code: REASON_CODES.runtimeUpdateRestartDuplicate,
+          message: 'A supervised restart request is already in progress.',
+          old_child_pid: process.pid
+        };
+      }
+      requested = true;
+      process.send?.({
+        type: 'symphony_supervised_restart_request',
+        version: 1,
+        attempt_id: request.attempt_id,
+        target_commit_sha: request.target_commit_sha,
+        old_commit_sha: request.old_commit_sha,
+        requested_at: request.requested_at,
+        child_pid: process.pid
+      });
+      return {
+        accepted: true,
+        reason_code: REASON_CODES.runtimeUpdateRestartRequested,
+        old_child_pid: process.pid
+      };
+    }
+  };
+}
+
+function readSupervisedRestartFailureHandoff(filePath: string | undefined): LocalRuntimeUpdateManagerOptions['supervisedRestartFailure'] {
+  if (!filePath) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+    fs.unlinkSync(filePath);
+    if (parsed.version !== 1 || typeof parsed.attempt_id !== 'string' || !parsed.attempt_id.trim()) {
+      return undefined;
+    }
+    const message = typeof parsed.message === 'string' && parsed.message.trim()
+      ? parsed.message.slice(0, 500)
+      : 'Supervisor reported that child process replacement failed.';
+    return {
+      attempt_id: parsed.attempt_id,
+      target_commit_sha: typeof parsed.target_commit_sha === 'string' && parsed.target_commit_sha.trim()
+        ? parsed.target_commit_sha
+        : null,
+      old_child_pid: typeof parsed.old_child_pid === 'number' && Number.isFinite(parsed.old_child_pid)
+        ? parsed.old_child_pid
+        : null,
+      new_child_pid: typeof parsed.new_child_pid === 'number' && Number.isFinite(parsed.new_child_pid)
+        ? parsed.new_child_pid
+        : null,
+      started_at: typeof parsed.started_at === 'string' && parsed.started_at.trim() ? parsed.started_at : null,
+      failed_at: typeof parsed.failed_at === 'string' && parsed.failed_at.trim() ? parsed.failed_at : null,
+      reason_code: typeof parsed.reason_code === 'string' && parsed.reason_code.trim()
+        ? parsed.reason_code.slice(0, 120)
+        : REASON_CODES.runtimeUpdateRestartFailed,
+      message
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function extractChecklistCheckpoint(issueDescription: string | null): string | null {
@@ -1208,6 +1284,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
   const resolvedHost = options.host ?? effectiveConfig.server?.host ?? '127.0.0.1';
   let stopRuntime: (() => Promise<void>) | null = null;
   const runtimeUpdateSnapshotService = new SnapshotService({ nowMs });
+  const supervisedRestartFailure = readSupervisedRestartFailureHandoff(process.env.SYMPHONY_RESTART_FAILURE_HANDOFF_FILE);
   const runtimeUpdateManager = new LocalRuntimeUpdateManager({
     repoRoot: runtimeIdentityRepoRoot,
     baseRef: effectiveConfig.workspace.provisioner.base_ref ?? 'main',
@@ -1229,8 +1306,40 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             })
         }
       : undefined,
-    restartCommand: ['npm', 'run', 'start:dashboard']
+    restartCommand: ['npm', 'run', 'start:dashboard'],
+    restartController: createProcessRestartController(),
+    supervisedRestartMetadata: process.env.SYMPHONY_RESTART_ATTEMPT_ID
+      ? {
+          attempt_id: process.env.SYMPHONY_RESTART_ATTEMPT_ID,
+          target_commit_sha: process.env.SYMPHONY_RESTART_TARGET_SHA || null,
+          old_child_pid: process.env.SYMPHONY_RESTART_OLD_CHILD_PID ? Number(process.env.SYMPHONY_RESTART_OLD_CHILD_PID) : null,
+          new_child_pid: process.pid,
+          started_at: process.env.SYMPHONY_RESTART_STARTED_AT || null
+        }
+      : undefined,
+    supervisedRestartFailure
   });
+  void runtimeUpdateManager.recordPendingSupervisedRestartFailure();
+  if (process.env.SYMPHONY_RESTART_SUPERVISOR === '1' && typeof process.send === 'function') {
+    process.on('message', (message: unknown) => {
+      if (
+        !message ||
+        typeof message !== 'object' ||
+        (message as { type?: unknown }).type !== 'symphony_supervised_restart_failed'
+      ) {
+        return;
+      }
+      const payload = message as { reason_code?: unknown; message?: unknown };
+      void runtimeUpdateManager.recordSupervisedRestartFailure(
+        typeof payload.reason_code === 'string' && payload.reason_code.trim()
+          ? payload.reason_code
+          : REASON_CODES.runtimeUpdateRestartFailed,
+        typeof payload.message === 'string' && payload.message.trim()
+          ? payload.message
+          : 'Supervisor reported that child process replacement failed.'
+      );
+    });
+  }
   apiServer =
     resolvedPort === undefined
       ? null
@@ -1566,6 +1675,13 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           configured_port: resolvedPort,
           configured_host: resolvedHost
         }
+      });
+      await runtimeUpdateManager.recordSupervisedRestartReady();
+      process.send?.({
+        type: 'symphony_supervised_restart_ready',
+        version: 1,
+        child_pid: process.pid,
+        ready_at: new Date().toISOString()
       });
     } else {
       logger.log({

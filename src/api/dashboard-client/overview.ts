@@ -149,11 +149,13 @@ function isGithubRuntimeUpdateEligible(eligibility: any) {
 function updateRuntimeUpdateButtons(readiness: any, payload: any) {
     const quiescence = payload && payload.quiescence ? payload.quiescence : { safe_to_shutdown: false };
     const drainMode = payload && payload.drain_mode ? payload.drain_mode : { active: false };
+    const restart = payload && payload.runtime_restart ? payload.runtime_restart : null;
+    const restartPhase = restart && restart.phase;
     const actionable = isActionableRuntimeUpdate(readiness);
     const prepared = readiness && readiness.prepared === true;
     const applyReady = readiness && readiness.apply_ready === true;
     const prepareDisabled = !actionable || prepared;
-    const applyDisabled = !actionable || !applyReady || !drainMode.active || !quiescence.safe_to_shutdown;
+    const applyDisabled = !actionable || !applyReady || !drainMode.active || !quiescence.safe_to_shutdown || restartPhase === 'restarting';
     [
       elements.runtimeUpdatePrepareButton,
       elements.runtimeUpdatePreparePanelButton
@@ -188,13 +190,16 @@ export function renderRuntimeUpdate(readiness: any, payload: any) {
     const counts = readiness.ahead_behind || {};
     const fetch = readiness.last_fetch || {};
     const github = readiness.github_eligibility || {};
+    const restart = payload && payload.runtime_restart ? payload.runtime_restart : null;
+    const restartCapability = restart && restart.capability ? restart.capability : null;
     const summaryParts = [
       'state ' + formatRuntimeUpdateLabel(readiness.state),
       'branch ' + (local.branch || 'unknown') + ' -> ' + (remote.remote || 'remote') + '/' + (remote.base_ref || 'unknown'),
       'ahead ' + (counts.ahead === null || counts.ahead === undefined ? 'unknown' : counts.ahead),
       'behind ' + (counts.behind === null || counts.behind === undefined ? 'unknown' : counts.behind),
       'fetch ' + (fetch.result || 'unknown'),
-      'github ' + formatRuntimeUpdateLabel(github.state || 'unknown')
+      'github ' + formatRuntimeUpdateLabel(github.state || 'unknown'),
+      restartCapability ? 'restart ' + formatRuntimeUpdateLabel(restartCapability.mode) : ''
     ];
 
     if (readiness.attention_required) {
@@ -211,6 +216,10 @@ export function renderRuntimeUpdate(readiness: any, payload: any) {
     elements.runtimeUpdateRecommendation.textContent = [
       'Recommended action: ' + formatRuntimeUpdateLabel(readiness.recommended_action),
       'GitHub eligibility: ' + formatRuntimeUpdateLabel(github.state || 'unknown') + '.',
+      restartCapability ? 'Restart capability: ' + formatRuntimeUpdateLabel(restartCapability.mode) + '.' : '',
+      restart && restart.phase ? 'Restart phase: ' + formatRuntimeUpdateLabel(restart.phase) + '.' : '',
+      restart && restart.recommended_manual_recovery ? 'Manual recovery: ' + restart.recommended_manual_recovery : '',
+      restart && restart.last_error ? 'Restart failure: ' + restart.last_error.message : '',
       readiness.drain_required ? 'Drain Mode is required before applying.' : 'Drain Mode is not required.',
       readiness.refusal_reasons && readiness.refusal_reasons.length ? 'Refusal: ' + readiness.refusal_reasons.join(', ') : ''
     ].filter(Boolean).join(' ');
