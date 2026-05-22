@@ -8,9 +8,10 @@ const checks = [
   'scripts/check-api-contract.js',
   'scripts/check-public-api-contract.js',
   'scripts/check-spec-coverage.js',
-  'scripts/check-pr-governance.js',
   'scripts/check-log-context.js'
 ];
+const prGovernanceCheck = 'scripts/check-pr-governance.js';
+const reviewArtifactCheck = 'scripts/check-review-artifact.js';
 const upstreamParityCheck = 'scripts/check-upstream-parity.js';
 
 const UI_PATH_PATTERNS = [
@@ -50,6 +51,13 @@ function runNodeCheck(scriptPath) {
   if (result.status !== 0) {
     process.exit(result.status || 1);
   }
+}
+
+function hasReviewArtifactInput() {
+  return Boolean(
+    String(process.env.SYMPHONY_REVIEW_BODY || '').trim() ||
+    String(process.env.SYMPHONY_REVIEW_BODY_FILE || '').trim()
+  );
 }
 
 function runGit(args) {
@@ -578,6 +586,10 @@ const skipBaseChecks = ['1', 'true', 'yes'].includes(String(process.env.SYMPHONY
 if (!skipBaseChecks) {
   for (const check of checks) {
     runNodeCheck(check);
+  }
+  runNodeCheck(prGovernanceCheck);
+  if (hasReviewArtifactInput()) {
+    runNodeCheck(reviewArtifactCheck);
   }
 }
 

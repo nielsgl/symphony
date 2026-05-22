@@ -421,7 +421,52 @@ Use this only when completion is blocked by missing required tools or missing au
      an existing narrow script-backed path could perform the same issue lookup,
      comment/workpad, state transition, label/status/project, or normal link
      operation.
-7. Run the cross-cutting contract propagation protocol when the diff or issue
+7. Produce an evidence-backed Agent Review artifact before any pass/fail routing.
+   - Use the project-local review lenses in `docs/agents/review-lenses.md`.
+     The workflow owns the review artifact shape; the repository owns the lens
+     vocabulary and trigger rules.
+   - Reconcile prior blocking, P1, and P2 review findings before judging the
+     current PR. State whether each prior finding is fixed, still open, or no
+     longer applicable with evidence.
+   - Write independent invariants before implementation judgment. Do not only
+     restate the PR summary or ticket checklist.
+   - Apply every triggered review lens with concrete evidence. A lens verdict
+     without files, functions, tests, commands, screenshots, runtime paths, or
+     equivalent reviewed evidence is invalid.
+   - A review comment that only summarizes the PR, lists validation commands,
+     or says "no issues" without evidence-backed lens verdicts is invalid.
+   - The review artifact must use this structure:
+
+     ```markdown
+     ## Agent Review
+
+     ### Scope Read
+     - Issue:
+     - PR:
+     - Head SHA:
+     - Prior findings reviewed:
+
+     ### Independent Invariants
+     - ...
+
+     ### Acceptance Criteria Mapping
+     | Criterion | Evidence | Verdict |
+     | --- | --- | --- |
+
+     ### Triggered Review Lenses
+     | Lens | Trigger | Evidence | Verdict |
+     | --- | --- | --- | --- |
+
+     ### Findings
+     - P1/P2/P3 findings, or `No blocking findings`.
+
+     ### Verdict
+     - `Blocked: move to In Progress`
+     - `Reset required: move to Rework`
+     - `Pass: route to Human Review`
+     - `Pass: route to Merging`
+     ```
+8. Run the cross-cutting contract propagation lens when the diff or issue
    introduces or changes any typed contract, lifecycle invariant, state
    machine, persistence/API projection, operator-facing outcome, workflow
    routing rule, or shared runtime behavior.
@@ -446,9 +491,9 @@ Use this only when completion is blocked by missing required tools or missing au
    - A reviewer may stop early only for an immediate P1 safety issue. In that
      case, the review comment must say sibling-gap scanning intentionally
      stopped and name any unreviewed surfaces.
-   - Keep the review comment compact. For triggered changes, the Agent Review
-     comment must include this matrix shape, then list grouped findings below
-     it:
+   - Keep the review comment compact. For triggered propagation changes, the
+     Agent Review artifact should include this matrix in the relevant lens
+     evidence, then list grouped findings below it:
 
      ```markdown
      Propagation matrix:
@@ -460,16 +505,16 @@ Use this only when completion is blocked by missing required tools or missing au
      | Persistence/API/dashboard/forensics | `<records/projections>` | `<pass/finding/N/A>` |
      | Logs/operator UX/tests/real path | `<evidence>` | `<pass/finding/N/A>` |
      ```
-8. If findings are fixable within the current approach, including missing or non-rendering UI evidence:
+9. If findings are fixable within the current approach, including missing or non-rendering UI evidence:
    - Post a normal Linear review findings comment; do not edit the implementation workpad for reviewer findings.
    - Move issue from `Agent Review` to `In Progress`.
-9. If the implementation needs a fresh approach:
+10. If the implementation needs a fresh approach:
    - Post a normal Linear review findings comment that explains the reset-level reason.
    - Move issue from `Agent Review` to `Rework`.
-10. If review passes and UI review, non-UI human review, or the `Human Review` label requirement is present:
+11. If review passes and UI review, non-UI human review, or the `Human Review` label requirement is present:
    - Post a short Linear comment: `Agent Review passed: no blocking findings. Routing: Human Review.`
    - Move issue from `Agent Review` to `Human Review`.
-11. If review passes and none of these are present: UI review, non-UI human review, or the `Human Review` label requirement:
+12. If review passes and none of these are present: UI review, non-UI human review, or the `Human Review` label requirement:
    - Post a short Linear comment: `Agent Review passed: no blocking findings. Routing: Merging.`
    - Move issue from `Agent Review` to `Merging`.
 

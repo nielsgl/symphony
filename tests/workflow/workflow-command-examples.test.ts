@@ -59,7 +59,7 @@ describe('workflow command examples', () => {
     const workflowPath = path.join(process.cwd(), 'WORKFLOW.md');
     const workflow = readFileSync(workflowPath, 'utf8');
 
-    expect(workflow).toContain('Run the cross-cutting contract propagation protocol');
+    expect(workflow).toContain('Run the cross-cutting contract propagation lens');
     expect(workflow).toContain('typed contract, lifecycle invariant, state');
     expect(workflow).toContain('`Propagation matrix: not required`');
     expect(workflow).toContain('Build the matrix from current code reality');
@@ -67,6 +67,24 @@ describe('workflow command examples', () => {
     expect(workflow).toContain('continue adjacent scanning far enough to batch');
     expect(workflow).toContain('immediate P1 safety issue');
     expect(workflow).toContain('| Surface | Checked reality | Result |');
+  });
+
+  it('requires evidence-backed Agent Review lenses', () => {
+    const workflowPath = path.join(process.cwd(), 'WORKFLOW.md');
+    const workflow = readFileSync(workflowPath, 'utf8');
+    const lensesPath = path.join(process.cwd(), 'docs/agents/review-lenses.md');
+    const lenses = readFileSync(lensesPath, 'utf8');
+
+    expect(workflow).toContain('docs/agents/review-lenses.md');
+    expect(workflow).toContain('evidence-backed Agent Review artifact');
+    expect(workflow).toContain('Prior findings reviewed:');
+    expect(workflow).toContain('Independent Invariants');
+    expect(workflow).toContain('Triggered Review Lenses');
+    expect(workflow).toContain('without evidence-backed lens verdicts is invalid');
+    expect(lenses).toContain('### Multi-Phase Mutation');
+    expect(lenses).toContain('### Control-Plane Hot Path');
+    expect(lenses).toContain('### Generated Asset And Freshness');
+    expect(lenses).toContain('### Metric And Telemetry Semantics');
   });
 
   it('keeps SPEC.ext.md aligned with implemented handoff runtime semantics', () => {
