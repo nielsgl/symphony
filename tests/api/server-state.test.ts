@@ -469,6 +469,7 @@ describe('LocalApiServer state API', () => {
 
   it('refuses guided runtime update apply before quiescence by default', async () => {
     const applyUpdate = vi.fn();
+    const auditEvents: any[] = [];
     server = new LocalApiServer({
       snapshotSource: {
         getStateSnapshot: () => makeState({
@@ -490,6 +491,21 @@ describe('LocalApiServer state API', () => {
                 issue_identifiers: ['NIE-1']
               }
             ],
+            warnings: [
+              {
+                category: 'stale_runtime_warning',
+                count: 1,
+                detail: 'running code is stale',
+                source: 'dispatch_safety',
+                recommended_action: 'restart Symphony on the current build'
+              }
+            ],
+            restart_guidance: {
+              safe_to_restart: false,
+              recommended_action: 'wait_for_true_shutdown_blockers',
+              pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }],
+              detail: 'Wait for true shutdown blockers before restarting.'
+            },
             blocker_counts: {
               active_worker: 1,
               live_codex_app_server_process: 0,
@@ -510,6 +526,12 @@ describe('LocalApiServer state API', () => {
         readUpdateReadiness: () => null,
         prepareUpdate: vi.fn(),
         applyUpdate
+      },
+      drainAuditSink: {
+        appendDrainAuditHistory: async (event: any) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
       },
       nowMs: () => Date.parse('2026-05-21T10:02:00.000Z')
     } as any);
@@ -535,6 +557,30 @@ describe('LocalApiServer state API', () => {
     expect(payload.blockers).toContainEqual(expect.objectContaining({
       category: 'active_worker',
       issue_identifiers: ['NIE-1']
+    }));
+    expect(auditEvents).toContainEqual(expect.objectContaining({
+      event_type: 'update-pull-refused',
+      result_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+      state_context: expect.objectContaining({
+        safe_to_shutdown: false,
+        quiescence_state: 'blocked',
+        blocker_counts: expect.objectContaining({ active_worker: 1 }),
+        warnings: [
+          expect.objectContaining({
+            category: 'stale_runtime_warning',
+            source: 'dispatch_safety'
+          })
+        ],
+        restart_guidance: expect.objectContaining({
+          recommended_action: 'wait_for_true_shutdown_blockers',
+          pending_work: [
+            expect.objectContaining({
+              state: 'Agent Review',
+              maintenance_eligible: false
+            })
+          ]
+        })
+      })
     }));
   });
 
@@ -963,17 +1009,10 @@ describe('LocalApiServer state API', () => {
         }
       },
       quiescence: {
-        safe_to_shutdown: false,
-        state: 'blocked',
+        safe_to_shutdown: true,
+        state: 'safe',
         updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
-        blockers: [
-          {
-            category: 'stale_runtime',
-            count: 1,
-            detail: 'Running runtime build runtime-old is stale compared with current-new',
-            issue_identifiers: []
-          }
-        ],
+        blockers: [],
         blocker_counts: {
           active_worker: 0,
           live_codex_app_server_process: 0,
@@ -981,8 +1020,23 @@ describe('LocalApiServer state API', () => {
           in_flight_tracker_write: 0,
           persistence_history_write: 0,
           unknown_degraded_blocker_source_health: 0,
-          stale_runtime: 1,
+          stale_runtime: 0,
           unknown_current_build_identity: 0
+        },
+        warnings: [
+          {
+            category: 'stale_runtime_warning',
+            count: 1,
+            detail: 'Running runtime build runtime-old is stale compared with current-new',
+            source: 'dispatch_safety',
+            recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+          }
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [],
+          detail: 'Runtime is quiescent enough to restart; restart/update Symphony before dispatching normal work.'
         }
       }
     } as any);
@@ -1013,16 +1067,23 @@ describe('LocalApiServer state API', () => {
       code: 'stale_runtime_build',
       recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
     });
-    expect(statePayload.quiescence.safe_to_shutdown).toBe(false);
-    expect(statePayload.quiescence.blocker_counts.stale_runtime).toBe(1);
-    expect(statePayload.quiescence.blockers).toContainEqual({
-      category: 'stale_runtime',
+    expect(statePayload.quiescence.safe_to_shutdown).toBe(true);
+    expect(statePayload.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect(statePayload.quiescence.blockers).toEqual([]);
+    expect(statePayload.quiescence.warnings).toContainEqual({
+      category: 'stale_runtime_warning',
       count: 1,
       detail: 'Running runtime build runtime-old is stale compared with current-new',
-      issue_identifiers: []
+      source: 'dispatch_safety',
+      recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+    });
+    expect(statePayload.quiescence.restart_guidance).toMatchObject({
+      safe_to_restart: true,
+      recommended_action: 'restart_runtime_to_current_build'
     });
     expect(diagnosticsPayload.runtime_identity).toEqual(statePayload.runtime_identity);
-    expect(diagnosticsPayload.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(diagnosticsPayload.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect(diagnosticsPayload.quiescence.warnings).toEqual(statePayload.quiescence.warnings);
   });
 
   it('reports unknown current build identity as degraded but not stale', async () => {
@@ -1049,17 +1110,10 @@ describe('LocalApiServer state API', () => {
         }
       },
       quiescence: {
-        safe_to_shutdown: false,
-        state: 'blocked',
+        safe_to_shutdown: true,
+        state: 'safe',
         updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
-        blockers: [
-          {
-            category: 'unknown_current_build_identity',
-            count: 1,
-            detail: 'Current repository build identity is unavailable',
-            issue_identifiers: []
-          }
-        ],
+        blockers: [],
         blocker_counts: {
           active_worker: 0,
           live_codex_app_server_process: 0,
@@ -1068,7 +1122,22 @@ describe('LocalApiServer state API', () => {
           persistence_history_write: 0,
           unknown_degraded_blocker_source_health: 0,
           stale_runtime: 0,
-          unknown_current_build_identity: 1
+          unknown_current_build_identity: 0
+        },
+        warnings: [
+          {
+            category: 'unknown_current_build_identity_warning',
+            count: 1,
+            detail: 'Current repository build identity is unavailable',
+            source: 'dispatch_safety',
+            recommended_action: 'Validate the repository checkout and rerun build identity detection before dispatching new work.'
+          }
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [],
+          detail: 'Runtime is quiescent enough to restart; restart/update Symphony before dispatching normal work.'
         }
       }
     } as any);
@@ -1096,8 +1165,12 @@ describe('LocalApiServer state API', () => {
       code: 'unknown_current_build_identity',
       severity: 'degraded'
     });
-    expect(payload.quiescence.blocker_counts.unknown_current_build_identity).toBe(1);
+    expect(payload.quiescence.safe_to_shutdown).toBe(true);
+    expect(payload.quiescence.blocker_counts.unknown_current_build_identity).toBe(0);
     expect(payload.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect(payload.quiescence.warnings).toContainEqual(
+      expect.objectContaining({ category: 'unknown_current_build_identity_warning', source: 'dispatch_safety' })
+    );
   });
 
   it('lets operators enter, read, and exit Drain Mode through the API control surface', async () => {
@@ -1531,6 +1604,138 @@ describe('LocalApiServer state API', () => {
       idempotent_replay: true
     });
     expect(shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('records stale-runtime restart guidance in safe-shutdown drain audit history', async () => {
+    const shutdown = vi.fn(async () => undefined);
+    const drainAuditEvents: any[] = [];
+    const state = makeState({
+      drain_mode: {
+        active: true,
+        entered_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        reason: 'operator restart'
+      },
+      runtime_identity: {
+        process_started_at_ms: Date.parse('2026-05-21T09:00:00.000Z'),
+        running_build: {
+          identity: 'runtime-old',
+          commit_sha: 'runtime-old',
+          source_timestamp_ms: Date.parse('2026-05-21T08:55:00.000Z')
+        },
+        current_build: {
+          identity: 'current-new',
+          commit_sha: 'current-new',
+          source_timestamp_ms: Date.parse('2026-05-21T09:30:00.000Z'),
+          status: 'available'
+        },
+        status: 'stale',
+        health_warning: {
+          code: 'stale_runtime_build',
+          severity: 'warning',
+          message: 'Running runtime build runtime-old is stale compared with current-new',
+          recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+        }
+      },
+      quiescence: {
+        safe_to_shutdown: true,
+        state: 'safe',
+        updated_at_ms: Date.parse('2026-05-21T10:01:00.000Z'),
+        blockers: [],
+        blocker_counts: {
+          active_worker: 0,
+          live_codex_app_server_process: 0,
+          pending_retry: 0,
+          in_flight_tracker_write: 0,
+          persistence_history_write: 0,
+          unknown_degraded_blocker_source_health: 0,
+          stale_runtime: 0,
+          unknown_current_build_identity: 0
+        },
+        warnings: [
+          {
+            category: 'stale_runtime_warning',
+            count: 1,
+            detail: 'Running runtime build runtime-old is stale compared with current-new',
+            source: 'dispatch_safety',
+            recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+          },
+          {
+            category: 'persistence_history_degraded',
+            count: 1,
+            detail: 'appendStateTransition.executionGraph: turn_waiting_threshold_exceeded',
+            source: 'audit_health'
+          }
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }],
+          detail: 'Runtime is quiescent enough to restart; restart/update Symphony before dispatching normal work.'
+        }
+      }
+    } as any);
+
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => state
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      shutdownSource: {
+        shutdown
+      },
+      drainAuditSink: {
+        appendDrainAuditHistory: async (params) => {
+          drainAuditEvents.push(params);
+          return `audit-${drainAuditEvents.length}`;
+        }
+      },
+      nowMs: () => Date.parse('2026-05-21T10:02:00.000Z')
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/drain-mode/shutdown`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restart into current build' })
+    });
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      status: 'shutdown_requested',
+      reason: 'quiescent',
+      blockers: []
+    });
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(drainAuditEvents).toHaveLength(1));
+    expect(drainAuditEvents[0]).toMatchObject({
+      event_type: 'safe-shutdown-allowed',
+      actor: 'operator',
+      source: 'api',
+      result: 'accepted',
+      result_code: 'quiescent',
+      state_context: {
+        mode: 'default',
+        safe_to_shutdown: true,
+        quiescence_state: 'safe',
+        blocker_counts: { stale_runtime: 0, persistence_history_write: 0 },
+        warnings: [
+          expect.objectContaining({ category: 'stale_runtime_warning', source: 'dispatch_safety' }),
+          expect.objectContaining({ category: 'persistence_history_degraded', source: 'audit_health' })
+        ],
+        restart_guidance: {
+          safe_to_restart: true,
+          recommended_action: 'restart_runtime_to_current_build',
+          pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }]
+        }
+      },
+      blocker_summaries: []
+    });
   });
 
   it('degrades persistence health when API Drain Mode audit writes fail', async () => {

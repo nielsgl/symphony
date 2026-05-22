@@ -711,6 +711,11 @@ export type DrainQuiescenceBlockerCategory =
   | 'stale_runtime'
   | 'unknown_current_build_identity';
 
+export type DrainQuiescenceWarningCategory =
+  | 'stale_runtime_warning'
+  | 'unknown_current_build_identity_warning'
+  | 'persistence_history_degraded';
+
 export type DrainQuiescenceStateName = 'safe' | 'blocked';
 
 export interface DrainModeState {
@@ -731,12 +736,33 @@ export interface DrainQuiescenceBlocker {
 
 export type DrainQuiescenceBlockerCounts = Record<DrainQuiescenceBlockerCategory, number>;
 
+export interface DrainQuiescenceWarning {
+  category: DrainQuiescenceWarningCategory;
+  count: number;
+  detail: string;
+  source: 'dispatch_safety' | 'audit_health';
+  recommended_action?: string;
+}
+
+export interface DrainQuiescenceRestartGuidance {
+  safe_to_restart: boolean;
+  recommended_action: 'none' | 'wait_for_true_shutdown_blockers' | 'restart_runtime_to_current_build';
+  pending_work: Array<{
+    state: string;
+    count: number;
+    maintenance_eligible: boolean;
+  }>;
+  detail: string;
+}
+
 export interface DrainQuiescenceState {
   safe_to_shutdown: boolean;
   state: DrainQuiescenceStateName;
   updated_at_ms: number;
   blockers: DrainQuiescenceBlocker[];
   blocker_counts: DrainQuiescenceBlockerCounts;
+  warnings?: DrainQuiescenceWarning[];
+  restart_guidance?: DrainQuiescenceRestartGuidance;
 }
 
 export type RuntimeBuildIdentityStatus = 'current' | 'stale' | 'unknown_current';

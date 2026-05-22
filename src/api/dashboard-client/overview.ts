@@ -9,10 +9,16 @@ const DRAIN_BLOCKER_LABELS: Record<string, string> = {
   live_codex_app_server_process: 'Codex app servers',
   pending_retry: 'Pending retries',
   in_flight_tracker_write: 'Tracker writes',
-  persistence_history_write: 'Persistence/history writes',
-  unknown_degraded_blocker_source_health: 'Unknown/degraded source health',
-  stale_runtime: 'Stale runtime',
-  unknown_current_build_identity: 'Unknown current build identity'
+  persistence_history_write: 'Current persistence/history writes',
+  unknown_degraded_blocker_source_health: 'Unknown/degraded current blocker source',
+  stale_runtime: 'Legacy stale-runtime blocker',
+  unknown_current_build_identity: 'Legacy build-identity blocker'
+};
+
+const DRAIN_WARNING_LABELS: Record<string, string> = {
+  stale_runtime_warning: 'Stale runtime warning',
+  unknown_current_build_identity_warning: 'Build identity warning',
+  persistence_history_degraded: 'Audit-health degradation'
 };
 
 const DRAIN_BLOCKER_ORDER = [
@@ -25,6 +31,19 @@ const DRAIN_BLOCKER_ORDER = [
   'stale_runtime',
   'unknown_current_build_identity'
 ];
+
+function formatPendingWorkDetail(entry: any) {
+    const stateName = String(entry && entry.state ? entry.state : 'Unknown');
+    const count = Number(entry && entry.count) || 0;
+    const countLabel = formatNumber(count);
+    if (entry && entry.maintenance_eligible) {
+      return 'Pending ' + stateName + ' maintenance work ' + countLabel + ': maintenance-eligible, not an active agent.';
+    }
+    if (stateName === 'Agent Review') {
+      return 'Pending Agent Review normal review work ' + countLabel + ': blocked until Symphony restarts on the current build, not an active agent.';
+    }
+    return 'Pending ' + stateName + ' normal work ' + countLabel + ': blocked until Symphony restarts on the current build, not an active agent.';
+  }
 
 export function createMetricCard(label: any, value: any) {
     const card = document.createElement('article');
@@ -56,9 +75,15 @@ export function renderOverview(payload: any) {
     const drainBlockerCount = Object.values(quiescence.blocker_counts || {}).reduce(function (total: number, value: any) {
       return total + (Number(value) || 0);
     }, 0);
+    const warningCount = Array.isArray(quiescence.warnings)
+      ? quiescence.warnings.reduce(function (total: number, warning: any) {
+          return total + (Number(warning && warning.count) || 0);
+        }, 0)
+      : 0;
     elements.kpiGrid.replaceChildren(
       createMetricCard('Safe To Shutdown', quiescence.safe_to_shutdown ? 'Yes' : 'No'),
-      createMetricCard('Drain Blockers', formatNumber(drainBlockerCount)),
+      createMetricCard('Shutdown Blockers', formatNumber(drainBlockerCount)),
+      createMetricCard('Restart Warnings', formatNumber(warningCount)),
       createMetricCard('Running', formatNumber(payload.counts.running)),
       createMetricCard('Retrying', formatNumber(payload.counts.retrying)),
       createMetricCard('Blocked', formatNumber(payload.counts.blocked)),
@@ -89,7 +114,7 @@ export function renderOverview(payload: any) {
         : '';
     elements.lastError.textContent = [
       payload.health.last_error ? 'Last error: ' + payload.health.last_error : '',
-      blockerDetail ? 'Quiescence blockers: ' + blockerDetail : ''
+      blockerDetail ? 'Shutdown blockers: ' + blockerDetail : ''
     ].filter(Boolean).join(' • ');
     renderRuntimeIdentityWarning(payload.runtime_identity || null);
     renderRuntimeUpdate(payload.runtime_update || null, payload);
@@ -201,6 +226,8 @@ export function renderDrainModeWorkflow(payload: any) {
     const active = !!drainMode.active;
     const safeToShutdown = !!quiescence.safe_to_shutdown;
     const blockers = Array.isArray(quiescence.blockers) ? quiescence.blockers : [];
+    const warnings = Array.isArray(quiescence.warnings) ? quiescence.warnings : [];
+    const restartGuidance = quiescence.restart_guidance || null;
     const blockerDetails = blockers
       .map(function (blocker: any) {
         return blocker && blocker.detail ? blocker.detail : '';
@@ -215,9 +242,14 @@ export function renderDrainModeWorkflow(payload: any) {
       : 'Drain Mode inactive';
     elements.drainModeBoundary.className = safeToShutdown ? 'drain-boundary drain-boundary-safe' : 'drain-boundary drain-boundary-blocked';
     if (safeToShutdown) {
-      elements.drainModeBoundary.textContent = active
-        ? 'Shutdown/restart is safe: no quiescence blockers are present.'
-        : 'Restart safety is clear, but Drain Mode is not active.';
+      if (restartGuidance && restartGuidance.recommended_action === 'restart_runtime_to_current_build') {
+        elements.drainModeBoundary.textContent =
+          'Shutdown/restart is safe: restart/update Symphony before dispatching pending normal work.';
+      } else {
+        elements.drainModeBoundary.textContent = active
+          ? 'Shutdown/restart is safe: no true shutdown blockers are present.'
+          : 'Restart safety is clear, but Drain Mode is not active.';
+      }
     } else {
       elements.drainModeBoundary.textContent =
         'Restart is not safe yet: ' +
@@ -233,9 +265,9 @@ export function renderDrainModeWorkflow(payload: any) {
       metaParts.push('Updated ' + formatDate(drainMode.updated_at));
     }
     if (warning && warning.code === 'stale_runtime_build') {
-      metaParts.push('Dispatch is unsafe because this runtime is stale; Drain Mode shows when restart is safe.');
+      metaParts.push('Dispatch is unsafe because this runtime is stale; this is a restart warning, not an active worker count.');
     } else if (warning && warning.code === 'unknown_current_build_identity') {
-      metaParts.push('Dispatch is unsafe because current build identity is unknown; Drain Mode shows when restart is safe.');
+      metaParts.push('Dispatch is unsafe because current build identity is unknown; this is a restart warning, not an active worker count.');
     } else {
       metaParts.push(active ? 'New dispatch is stopped while Drain Mode is active.' : 'Use Drain Mode before planned runtime restarts.');
     }
@@ -248,7 +280,7 @@ export function renderDrainModeWorkflow(payload: any) {
       }
       return acc;
     }, {});
-    const nodes = DRAIN_BLOCKER_ORDER.map(function (category) {
+    const blockerNodes = DRAIN_BLOCKER_ORDER.map(function (category) {
       const count = Number(countByCategory[category]) || 0;
       const item = document.createElement('div');
       item.className = 'drain-blocker-item ' + (count > 0 ? 'drain-blocker-active' : 'drain-blocker-clear');
@@ -259,6 +291,33 @@ export function renderDrainModeWorkflow(payload: any) {
       item.append(label, detail);
       return item;
     });
+    const warningNodes = warnings.map(function (warning: any) {
+      const item = document.createElement('div');
+      item.className = 'drain-blocker-item drain-blocker-warning';
+      const label = document.createElement('strong');
+      label.textContent = (DRAIN_WARNING_LABELS[warning.category] || String(warning.category || 'Warning')) + ' ' + formatNumber(Number(warning.count) || 0);
+      const detail = document.createElement('span');
+      detail.textContent = [
+        warning.detail || 'Warning present',
+        warning.recommended_action ? 'Action: ' + warning.recommended_action : ''
+      ].filter(Boolean).join(' ');
+      item.append(label, detail);
+      return item;
+    });
+    const pendingWork = restartGuidance && Array.isArray(restartGuidance.pending_work)
+      ? restartGuidance.pending_work
+      : [];
+    const pendingWorkNodes = pendingWork.map(function (entry: any) {
+      const item = document.createElement('div');
+      item.className = 'drain-blocker-item drain-blocker-pending-work';
+      const label = document.createElement('strong');
+      label.textContent = 'Pending work ' + formatNumber(Number(entry && entry.count) || 0);
+      const detail = document.createElement('span');
+      detail.textContent = formatPendingWorkDetail(entry);
+      item.append(label, detail);
+      return item;
+    });
+    const nodes = [...blockerNodes, ...warningNodes, ...pendingWorkNodes];
     elements.drainBlockersList.replaceChildren(...nodes);
 
     if (elements.drainEnterButton) {

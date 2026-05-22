@@ -658,7 +658,7 @@ describe('dashboard browser client modules', () => {
     expect(elements.healthMessage.textContent).toContain('Drain Mode: active');
     expect(elements.healthMessage.textContent).toContain('restart blocked');
     expect(collectText(elements.kpiGrid)).toContain('Safe To Shutdown No');
-    expect(collectText(elements.kpiGrid)).toContain('Drain Blockers 3');
+    expect(collectText(elements.kpiGrid)).toContain('Shutdown Blockers 3');
     expect(elements.lastError.textContent).toContain('ABC-1 is still running');
   });
 
@@ -696,8 +696,29 @@ describe('dashboard browser client modules', () => {
             in_flight_tracker_write: 1,
             persistence_history_write: 1,
             unknown_degraded_blocker_source_health: 1,
-            stale_runtime: 1,
+            stale_runtime: 0,
             unknown_current_build_identity: 0
+          },
+          warnings: [
+            {
+              category: 'stale_runtime_warning',
+              count: 1,
+              detail: 'running code is stale',
+              source: 'dispatch_safety',
+              recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+            },
+            {
+              category: 'persistence_history_degraded',
+              count: 1,
+              detail: 'historical audit write failed',
+              source: 'audit_health'
+            }
+          ],
+          restart_guidance: {
+            safe_to_restart: false,
+            recommended_action: 'wait_for_true_shutdown_blockers',
+            pending_work: [],
+            detail: 'Wait for true blockers.'
           },
           blockers: [
             { category: 'active_worker', count: 2, detail: 'ABC-1 and ABC-2 are still running', issue_identifiers: ['ABC-1', 'ABC-2'] },
@@ -705,8 +726,7 @@ describe('dashboard browser client modules', () => {
             { category: 'pending_retry', count: 1, detail: 'retry queue has one held item', issue_identifiers: ['ABC-3'] },
             { category: 'in_flight_tracker_write', count: 1, detail: 'tracker mutation is pending', issue_identifiers: ['ABC-4'] },
             { category: 'persistence_history_write', count: 1, detail: 'history write is pending', issue_identifiers: ['ABC-5'] },
-            { category: 'unknown_degraded_blocker_source_health', count: 1, detail: 'blocker source health is degraded', issue_identifiers: [] },
-            { category: 'stale_runtime', count: 1, detail: 'running code is stale', issue_identifiers: [] }
+            { category: 'unknown_degraded_blocker_source_health', count: 1, detail: 'blocker source health is degraded', issue_identifiers: [] }
           ]
         }
       })
@@ -719,14 +739,15 @@ describe('dashboard browser client modules', () => {
     expect(collectText(elements.drainBlockersList)).toContain('Codex app servers 1');
     expect(collectText(elements.drainBlockersList)).toContain('Pending retries 1');
     expect(collectText(elements.drainBlockersList)).toContain('Tracker writes 1');
-    expect(collectText(elements.drainBlockersList)).toContain('Persistence/history writes 1');
-    expect(collectText(elements.drainBlockersList)).toContain('Unknown/degraded source health 1');
-    expect(collectText(elements.drainBlockersList)).toContain('Stale runtime 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Current persistence/history writes 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Unknown/degraded current blocker source 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Stale runtime warning 1');
+    expect(collectText(elements.drainBlockersList)).toContain('Audit-health degradation 1');
     expect(elements.drainEnterButton.disabled).toBe(true);
     expect(elements.drainExitButton.disabled).toBe(true);
     expect(elements.drainWaitButton.disabled).toBe(false);
     expect(elements.drainShutdownButton.disabled).toBe(true);
-    expect(elements.drainModeMeta.textContent).toContain('Dispatch is unsafe because this runtime is stale');
+    expect(elements.drainModeMeta.textContent).toContain('restart warning, not an active worker count');
 
     const fetchMock = vi
       .fn()
@@ -762,6 +783,119 @@ describe('dashboard browser client modules', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' }
     });
+  });
+
+  it('renders pending Agent Review work as normal review work, not active agents', () => {
+    renderOverview(
+      snapshotPayload({
+        counts: { running: 0, retrying: 0, blocked: 0, stopped: 0 },
+        drain_mode: { active: true, reason: 'safe runtime restart' },
+        runtime_identity: {
+          health_warning: {
+            code: 'stale_runtime_build',
+            severity: 'warning',
+            message: 'Running runtime build is stale',
+            recommended_action: 'restart Symphony on the current build'
+          }
+        },
+        quiescence: {
+          safe_to_shutdown: true,
+          state: 'safe',
+          blocker_counts: {
+            active_worker: 0,
+            live_codex_app_server_process: 0,
+            pending_retry: 0,
+            in_flight_tracker_write: 0,
+            persistence_history_write: 0,
+            unknown_degraded_blocker_source_health: 0,
+            stale_runtime: 0,
+            unknown_current_build_identity: 0
+          },
+          warnings: [
+            {
+              category: 'stale_runtime_warning',
+              count: 1,
+              detail: 'running code is stale',
+              source: 'dispatch_safety',
+              recommended_action: 'restart Symphony on the current build'
+            }
+          ],
+          restart_guidance: {
+            safe_to_restart: true,
+            recommended_action: 'restart_runtime_to_current_build',
+            pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }],
+            detail: 'Restart/update Symphony before dispatching pending normal work.'
+          },
+          blockers: []
+        }
+      })
+    );
+
+    const drainText = collectText(elements.drainBlockersList);
+    expect(elements.drainModeBoundary.textContent).toContain('Shutdown/restart is safe');
+    expect(collectText(elements.kpiGrid)).toContain('Running 0');
+    expect(collectText(elements.kpiGrid)).toContain('Shutdown Blockers 0');
+    expect(drainText).toContain('Pending work 1');
+    expect(drainText).toContain('Pending Agent Review normal review work 1');
+    expect(drainText).toContain('not an active agent');
+    expect(drainText).not.toContain('Active workers 1');
+  });
+
+  it('renders pending Merging work as maintenance-eligible, not active agents', () => {
+    renderOverview(
+      snapshotPayload({
+        counts: { running: 0, retrying: 0, blocked: 0, stopped: 0 },
+        drain_mode: { active: true, reason: 'safe runtime restart' },
+        runtime_identity: {
+          health_warning: {
+            code: 'stale_runtime_build',
+            severity: 'warning',
+            message: 'Running runtime build is stale',
+            recommended_action: 'restart Symphony on the current build'
+          }
+        },
+        quiescence: {
+          safe_to_shutdown: true,
+          state: 'safe',
+          blocker_counts: {
+            active_worker: 0,
+            live_codex_app_server_process: 0,
+            pending_retry: 0,
+            in_flight_tracker_write: 0,
+            persistence_history_write: 0,
+            unknown_degraded_blocker_source_health: 0,
+            stale_runtime: 0,
+            unknown_current_build_identity: 0
+          },
+          warnings: [
+            {
+              category: 'stale_runtime_warning',
+              count: 1,
+              detail: 'running code is stale',
+              source: 'dispatch_safety',
+              recommended_action: 'restart Symphony on the current build'
+            }
+          ],
+          restart_guidance: {
+            safe_to_restart: true,
+            recommended_action: 'restart_runtime_to_current_build',
+            pending_work: [{ state: 'Merging', count: 1, maintenance_eligible: true }],
+            detail: 'Restart/update Symphony before dispatching pending normal work.'
+          },
+          blockers: []
+        }
+      })
+    );
+
+    const drainText = collectText(elements.drainBlockersList);
+    expect(elements.drainModeBoundary.textContent).toContain('Shutdown/restart is safe');
+    expect(collectText(elements.kpiGrid)).toContain('Running 0');
+    expect(collectText(elements.kpiGrid)).toContain('Shutdown Blockers 0');
+    expect(drainText).toContain('Pending work 1');
+    expect(drainText).toContain('Pending Merging maintenance work 1');
+    expect(drainText).toContain('maintenance-eligible');
+    expect(drainText).toContain('not an active agent');
+    expect(drainText).not.toContain('Active workers 1');
   });
 
   it('renders a stale runtime warning above the overview', () => {

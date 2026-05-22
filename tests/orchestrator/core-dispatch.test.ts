@@ -464,7 +464,7 @@ describe('OrchestratorCore dispatch and backpressure', () => {
     expect(snapshot.recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.dispatch_skipped');
   });
 
-  it('blocks new dispatch through the drain/quiescence gate when runtime build identity is stale', async () => {
+  it('blocks new dispatch when runtime build identity is stale while still allowing safe restart when otherwise quiescent', async () => {
     const harness = createHarness();
     const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
     runtimeState.runtime_identity = {
@@ -494,14 +494,17 @@ describe('OrchestratorCore dispatch and backpressure', () => {
 
     const snapshot = harness.orchestrator.getStateSnapshot();
     expect(harness.spawned).toEqual([]);
-    expect(snapshot.quiescence.safe_to_shutdown).toBe(false);
-    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(1);
-    expect(snapshot.quiescence.blockers).toContainEqual({
-      category: 'stale_runtime',
-      count: 1,
-      detail: 'Running runtime build runtime-old is stale compared with current-new',
-      issue_identifiers: []
-    });
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(true);
+    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect(snapshot.quiescence.blockers).not.toContainEqual(expect.objectContaining({ category: 'stale_runtime' }));
+    expect((snapshot.quiescence as any).warnings).toContainEqual(
+      expect.objectContaining({
+        category: 'stale_runtime_warning',
+        count: 1,
+        detail: 'Running runtime build runtime-old is stale compared with current-new',
+        recommended_action: 'Enter Drain Mode, wait for quiescence, rebuild, and restart Symphony.'
+      })
+    );
     expect(snapshot.recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.dispatch_skipped');
   });
 
@@ -521,7 +524,14 @@ describe('OrchestratorCore dispatch and backpressure', () => {
     expect(harness.spawned).toEqual([]);
     expect(snapshot.running.has('i-stale-after-startup')).toBe(false);
     expect(snapshot.runtime_identity?.status).toBe('stale');
-    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(1);
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(true);
+    expect(snapshot.quiescence.blocker_counts.stale_runtime).toBe(0);
+    expect((snapshot.quiescence as any).warnings).toContainEqual(
+      expect.objectContaining({
+        category: 'stale_runtime_warning',
+        detail: 'Running runtime build runtime-old is stale compared with current-new'
+      })
+    );
     expect(snapshot.recent_runtime_events.map((event) => event.event)).toContain('runtime.drain.dispatch_skipped');
   });
 
@@ -578,7 +588,7 @@ describe('OrchestratorCore dispatch and backpressure', () => {
     });
   });
 
-  it('computes persistence/history health blockers from the real quiescence source', () => {
+  it('surfaces historical persistence/history degradation as audit health without blocking safe restart', () => {
     const harness = createHarness({
       getPersistenceHealth: () => ({
         enabled: true,
@@ -614,16 +624,132 @@ describe('OrchestratorCore dispatch and backpressure', () => {
     (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
     const snapshot = harness.orchestrator.getStateSnapshot();
 
-    expect(snapshot.quiescence.safe_to_shutdown).toBe(false);
-    expect(snapshot.quiescence.blocker_counts.persistence_history_write).toBe(1);
-    expect(snapshot.quiescence.blockers).toContainEqual(
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(true);
+    expect(snapshot.quiescence.blocker_counts.persistence_history_write).toBe(0);
+    expect(snapshot.quiescence.blockers).not.toContainEqual(expect.objectContaining({ category: 'persistence_history_write' }));
+    expect((snapshot.quiescence as any).warnings).toContainEqual(
       expect.objectContaining({
-        category: 'persistence_history_write',
+        category: 'persistence_history_degraded',
         count: 1,
-        detail: 'history migration failed'
+        detail: 'history migration failed',
+        source: 'audit_health'
       })
     );
   });
+
+  it('reports safe restart guidance for stale Merging maintenance work without dispatching from the stale runtime', async () => {
+    const harness = createHarness({
+      configOverrides: { active_states: ['Todo', 'In Progress', 'Agent Review', 'Merging', 'Rework'] },
+      getPersistenceHealth: () => ({
+        enabled: true,
+        db_path: '/tmp/symphony.db',
+        retention_days: 14,
+        run_count: 1,
+        last_pruned_at: null,
+        last_prune_failure_at: null,
+        last_prune_failure_reason: null,
+        last_prune_failure_detail: null,
+        integrity_ok: false,
+        history_schema: {
+          schema_name: 'project_execution_history',
+          target_version: 4,
+          applied_version: 3,
+          status: 'degraded',
+          degraded_reason_code: 'migration_failed',
+          degraded_detail: 'appendStateTransition.executionGraph: turn_waiting_threshold_exceeded',
+          updated_at: new Date('2026-05-21T12:00:00.000Z').toISOString(),
+          migrations: []
+        },
+        recent_write_failures: [
+          {
+            operation: 'appendStateTransition.executionGraph',
+            reason_code: 'turn_waiting_threshold_exceeded',
+            detail: 'historical write failed',
+            recorded_at: new Date('2026-05-21T12:00:00.000Z').toISOString()
+          }
+        ]
+      })
+    });
+    const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
+    runtimeState.runtime_identity = makeRuntimeIdentity('stale');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-merging', identifier: 'ABC-MERGE', state: 'Merging' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned).toEqual([]);
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(true);
+    expect(snapshot.quiescence.blockers).toEqual([]);
+    expect((snapshot.quiescence as any).warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'stale_runtime_warning' }),
+        expect.objectContaining({ category: 'persistence_history_degraded' })
+      ])
+    );
+    expect((snapshot.quiescence as any).restart_guidance).toMatchObject({
+      safe_to_restart: true,
+      recommended_action: 'restart_runtime_to_current_build',
+      pending_work: [{ state: 'Merging', count: 1, maintenance_eligible: true }]
+    });
+  });
+
+  it('keeps stale Agent Review handoff dispatch blocked while reporting safe restart guidance', async () => {
+    const harness = createHarness({
+      configOverrides: {
+        active_states: ['Todo', 'In Progress', 'Agent Review', 'Merging', 'Rework'],
+        fresh_dispatch_states: ['Agent Review']
+      }
+    });
+    const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
+    runtimeState.runtime_identity = makeRuntimeIdentity('stale');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-stale-review', identifier: 'ABC-REVIEW', state: 'Agent Review' })
+    ]);
+
+    await harness.orchestrator.tick('interval');
+
+    const snapshot = harness.orchestrator.getStateSnapshot();
+    expect(harness.spawned).toEqual([]);
+    expect(snapshot.quiescence.safe_to_shutdown).toBe(true);
+    expect((snapshot.quiescence as any).restart_guidance).toMatchObject({
+      safe_to_restart: true,
+      recommended_action: 'restart_runtime_to_current_build',
+      pending_work: [{ state: 'Agent Review', count: 1, maintenance_eligible: false }]
+    });
+    expect(snapshot.recent_runtime_events).toContainEqual(
+      expect.objectContaining({
+        event: 'runtime.drain.dispatch_skipped',
+        reason_code: 'stale_runtime_build'
+      })
+    );
+  });
+
+  it.each(['Todo', 'In Progress', 'Rework'])(
+    'keeps normal %s candidates blocked by stale runtime dispatch safety',
+    async (stateName) => {
+      const harness = createHarness({
+        configOverrides: { active_states: ['Todo', 'In Progress', 'Agent Review', 'Merging', 'Rework'] }
+      });
+      const runtimeState = (harness.orchestrator as unknown as { state: OrchestratorState }).state;
+      runtimeState.runtime_identity = makeRuntimeIdentity('stale');
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([
+        makeIssue({ id: `i-stale-${stateName}`, identifier: `ABC-${stateName.toUpperCase()}`, state: stateName })
+      ]);
+
+      await harness.orchestrator.tick('interval');
+
+      const snapshot = harness.orchestrator.getStateSnapshot();
+      expect(harness.spawned).toEqual([]);
+      expect(snapshot.quiescence.safe_to_shutdown).toBe(true);
+      expect((snapshot.quiescence as any).restart_guidance.pending_work).toContainEqual({
+        state: stateName,
+        count: 1,
+        maintenance_eligible: false
+      });
+    }
+  );
 
   it('computes in-flight tracker write blockers while tracker mutations are pending', async () => {
     const harness = createHarness();
