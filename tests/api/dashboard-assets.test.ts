@@ -518,6 +518,13 @@ describe('dashboard assets', () => {
     expect(css).toContain('.refresh-now-button:focus-visible {\n  outline: 2px solid #f9a8d4;');
   });
 
+  it('renders the operator control subtitle as outcome-focused copy', () => {
+    const html = renderDashboardHtml();
+
+    expect(html).toContain('Turn every run from first signal to confident handoff.');
+    expect(html).not.toContain('Live orchestration visibility with retry control, issue drilldown, and desktop/browser parity.');
+  });
+
   it('renders client budget display logic for visible status, policy, and stop messages', () => {
     const clientJs = renderDashboardClientJs();
 
