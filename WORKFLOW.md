@@ -62,6 +62,9 @@ codex:
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy: danger-full-access
+runtime_update:
+  github_eligibility:
+    mode: allow_absent_checks
 server:
   port: 3000
 ---
