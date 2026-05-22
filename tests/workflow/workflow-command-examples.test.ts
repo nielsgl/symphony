@@ -55,18 +55,29 @@ describe('workflow command examples', () => {
     expect(workflow).toContain('Routing: Merging');
   });
 
-  it('requires propagation-matrix review for cross-cutting contract changes', () => {
+  it('requires scenario-to-surface review for cross-cutting contract changes', () => {
     const workflowPath = path.join(process.cwd(), 'WORKFLOW.md');
     const workflow = readFileSync(workflowPath, 'utf8');
 
     expect(workflow).toContain('Run the cross-cutting contract propagation lens');
     expect(workflow).toContain('typed contract, lifecycle invariant, state');
     expect(workflow).toContain('`Propagation matrix: not required`');
-    expect(workflow).toContain('Build the matrix from current code reality');
+    expect(workflow).toContain('Build the trace from current code reality');
+    expect(workflow).toContain('Recent Linear comments, review comments, and prior findings that add or');
+    expect(workflow).toContain('### Scope Comments Reviewed');
+    expect(workflow).toContain('### Scenario-To-Surface Trace');
+    expect(workflow).toContain('### Path Census');
+    expect(workflow).toContain('### Invalid Evidence Check');
+    expect(workflow).toContain('API/state/diagnostics');
+    expect(workflow).toContain('Dashboard/operator UI');
+    expect(workflow).toContain('Persistence/history/audit');
+    expect(workflow).toContain('Fixture data is not evidence unless a production consumer assertion proves');
+    expect(workflow).toContain('One representative path is not enough for audit/history/refusal invariants');
+    expect(workflow).toContain('Combined "API/dashboard/persistence pass" verdicts are invalid');
     expect(workflow).toContain('real implementation path behind');
     expect(workflow).toContain('continue adjacent scanning far enough to batch');
     expect(workflow).toContain('immediate P1 safety issue');
-    expect(workflow).toContain('| Surface | Checked reality | Result |');
+    expect(workflow).not.toContain('| Persistence/API/dashboard/forensics | `<records/projections>` | `<pass/finding/N/A>` |');
   });
 
   it('requires evidence-backed Agent Review lenses', () => {
