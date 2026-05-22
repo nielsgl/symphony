@@ -179,6 +179,42 @@ describe('runtime update manager', () => {
     });
   });
 
+  it('caches GitHub eligibility for repeated readiness reads of the same candidate', async () => {
+    const { root, local } = await makeRepoPair();
+    await pushRemoteUpdate(root);
+    let eligibilityCalls = 0;
+
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      discoveryFetchIntervalMs: 60_000,
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      githubEligibilityResolver: (params) => {
+        eligibilityCalls += 1;
+        return {
+          mode: params.mode,
+          state: 'github_verified',
+          provider: 'github',
+          owner: 'nielsgl',
+          repo: 'symphony',
+          base_ref: params.baseRef,
+          candidate_sha: params.candidateSha,
+          checked_at: '2026-05-21T10:00:00.000Z',
+          reason_code: null,
+          check_summary: { total: 1, succeeded: 1, pending: 0, failed: 0, skipped: 0 }
+        };
+      }
+    });
+
+    const first = manager.readUpdateReadiness();
+    const second = manager.readUpdateReadiness();
+
+    expect(first?.github_eligibility.state).toBe('github_verified');
+    expect(second?.github_eligibility.state).toBe('github_verified');
+    expect(eligibilityCalls).toBe(1);
+  });
+
   it.each([
     'github_checks_pending',
     'github_checks_failed',
@@ -328,6 +364,64 @@ describe('runtime update manager', () => {
       'update-build-succeeded',
       'update-manual-restart-required'
     ]));
+  });
+
+  it('refuses apply when the remote candidate changed after prepare', async () => {
+    const { root, local } = await makeRepoPair();
+    await pushRemoteUpdate(root);
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      }
+    });
+
+    const prepared = await manager.prepareUpdate();
+    const preparedCandidate = prepared.readiness?.prepared_update?.candidate_sha;
+    await pushRemoteUpdate(root, 'index.js');
+    const beforeApplyHead = git(local, ['rev-parse', 'HEAD']);
+    const applied = await manager.applyUpdate();
+
+    expect(prepared).toMatchObject({
+      success: true,
+      status: 'draining',
+      readiness: {
+        prepared_update: {
+          remote: 'origin',
+          base_ref: 'main',
+          candidate_sha: preparedCandidate
+        }
+      }
+    });
+    expect(applied).toMatchObject({
+      success: false,
+      status: 'refused',
+      step: 'apply',
+      reason_code: REASON_CODES.runtimeUpdateCandidateChanged,
+      recommended_action: 'prepare_update',
+      command_results: [],
+      readiness: {
+        prepared: false,
+        apply_ready: false,
+        prepared_update: null
+      }
+    });
+    expect(git(local, ['rev-parse', 'HEAD'])).toBe(beforeApplyHead);
+    expect(auditEvents.map((event) => event.event_type)).not.toContain('update-pull-started');
+    const refusal = auditEvents.find((event) => event.result_code === REASON_CODES.runtimeUpdateCandidateChanged);
+    expect(refusal?.state_context).toMatchObject({
+      prepared_update: { candidate_sha: preparedCandidate },
+      fetched_candidate: { remote: 'origin', base_ref: 'main' }
+    });
+    expect(refusal?.state_context.fetched_candidate.candidate_sha).not.toBe(preparedCandidate);
   });
 
   it('returns the completed apply result on repeated apply without rerunning commands', async () => {

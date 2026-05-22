@@ -917,6 +917,14 @@ export interface ApiRuntimeUpdateReadiness {
   recommended_action: ApiRuntimeUpdateRecommendedAction;
   refusal_reasons: string[];
   github_eligibility: ApiRuntimeUpdateGithubEligibility;
+  prepared_update: {
+    remote: string | null;
+    base_ref: string | null;
+    candidate_sha: string | null;
+    local_sha_before_prepare: string | null;
+    prepared_at: string;
+    github_eligibility: ApiRuntimeUpdateGithubEligibility;
+  } | null;
   prepared: boolean;
   apply_ready: boolean;
 }

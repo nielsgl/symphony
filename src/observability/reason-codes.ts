@@ -108,6 +108,7 @@ export const REASON_CODES = {
   runtimeUpdateNotPrepared: 'runtime_update_not_prepared',
   runtimeUpdateRepositoryUnavailable: 'runtime_update_repository_unavailable',
   runtimeUpdateGithubEligibilityRequired: 'runtime_update_github_eligibility_required',
+  runtimeUpdateCandidateChanged: 'runtime_update_candidate_changed',
   runtimeUpdateRestartWrapperUnavailable: 'runtime_update_restart_wrapper_unavailable',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
@@ -966,6 +967,17 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
       'The guided runtime update refused because the candidate commit is not verified by the configured GitHub eligibility policy.',
     expected_transition:
       'GitHub eligibility becomes verified, checks are explicitly allowed absent, or raw git update trust is configured'
+  },
+  [REASON_CODES.runtimeUpdateCandidateChanged]: {
+    reason_code: REASON_CODES.runtimeUpdateCandidateChanged,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Run Prepare update again to review and accept the new remote candidate'],
+    label: 'Runtime Update Candidate Changed',
+    headline: 'Runtime update candidate changed after prepare',
+    detail:
+      'The guided runtime update refused to apply because the fetched remote candidate no longer matches the candidate accepted during Prepare.',
+    expected_transition: 'A new Prepare update cycle pins the current remote candidate before Apply can mutate the checkout'
   },
   [REASON_CODES.runtimeUpdateRestartWrapperUnavailable]: {
     reason_code: REASON_CODES.runtimeUpdateRestartWrapperUnavailable,

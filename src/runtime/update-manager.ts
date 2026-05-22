@@ -28,6 +28,21 @@ interface CommandResult {
   reason_code: string | null;
 }
 
+interface PreparedUpdateIdentity {
+  remote: string | null;
+  base_ref: string | null;
+  candidate_sha: string | null;
+  local_sha_before_prepare: string | null;
+  prepared_at: string;
+  github_eligibility: ApiRuntimeUpdateGithubEligibility;
+}
+
+interface GithubEligibilityCacheEntry {
+  cache_key: string;
+  checked_at_ms: number;
+  result: ApiRuntimeUpdateGithubEligibility;
+}
+
 export interface LocalRuntimeUpdateManagerOptions {
   repoRoot: string | null;
   baseRef: string | null;
@@ -520,7 +535,8 @@ export function detectRuntimeUpdateReadiness(options: {
       last_fetch: fallbackFetch,
       github_eligibility: unresolvedGithubEligibility,
       prepared: false,
-      apply_ready: false
+      apply_ready: false,
+      prepared_update: null
     };
   }
 
@@ -587,7 +603,8 @@ export function detectRuntimeUpdateReadiness(options: {
     last_fetch: lastFetch,
     github_eligibility: unresolvedGithubEligibility,
     prepared: false,
-    apply_ready: false
+    apply_ready: false,
+    prepared_update: null
   } satisfies ApiRuntimeUpdateReadiness;
   const candidateSha = remoteSha ?? localSha;
   const githubResult = remoteUrl.ok && isActionableReadiness(baseReadiness)
@@ -616,7 +633,8 @@ export function detectRuntimeUpdateReadiness(options: {
     refusal_reasons: githubRefusal
       ? [...baseReadiness.refusal_reasons, REASON_CODES.runtimeUpdateGithubEligibilityRequired, githubRefusal]
       : baseReadiness.refusal_reasons,
-    github_eligibility: githubResult
+    github_eligibility: githubResult,
+    prepared_update: null
   };
 }
 
@@ -625,8 +643,10 @@ export class LocalRuntimeUpdateManager {
   private readiness: ApiRuntimeUpdateReadiness | null;
   private prepareStarted = false;
   private prepareAccepted = false;
+  private preparedUpdate: PreparedUpdateIdentity | null = null;
   private applyInFlight: Promise<ApiRuntimeUpdateActionResponse> | null = null;
   private completedApplyResult: ApiRuntimeUpdateActionResponse | null = null;
+  private githubEligibilityCache: GithubEligibilityCacheEntry | null = null;
 
   constructor(options: LocalRuntimeUpdateManagerOptions) {
     this.options = options;
@@ -641,7 +661,7 @@ export class LocalRuntimeUpdateManager {
       baseRef: this.options.baseRef,
       remote: this.options.remote,
       githubEligibilityMode: this.options.githubEligibilityMode,
-      githubEligibilityResolver: this.options.githubEligibilityResolver,
+      githubEligibilityResolver: this.resolveGithubEligibility,
       runtimeIdentity: this.options.runtimeIdentity(),
       nowMs,
       timeoutMs: this.options.commandTimeoutMs,
@@ -660,7 +680,7 @@ export class LocalRuntimeUpdateManager {
       baseRef: this.options.baseRef,
       remote: this.options.remote,
       githubEligibilityMode: this.options.githubEligibilityMode,
-      githubEligibilityResolver: this.options.githubEligibilityResolver,
+      githubEligibilityResolver: this.resolveGithubEligibility,
       runtimeIdentity: this.options.runtimeIdentity(),
       nowMs: this.options.nowMs,
       timeoutMs: this.options.commandTimeoutMs,
@@ -681,6 +701,16 @@ export class LocalRuntimeUpdateManager {
     });
     const actionable = isActionableReadiness(this.readiness) && this.readiness.refusal_reasons.length === 0;
     this.prepareAccepted = actionable;
+    this.preparedUpdate = actionable
+      ? {
+          remote: this.readiness.fetched_remote.remote,
+          base_ref: this.readiness.fetched_remote.base_ref,
+          candidate_sha: this.readiness.fetched_remote.commit_sha ?? this.readiness.local_checkout.commit_sha,
+          local_sha_before_prepare: this.readiness.local_checkout.commit_sha,
+          prepared_at: new Date((this.options.nowMs ?? (() => Date.now()))()).toISOString(),
+          github_eligibility: this.readiness.github_eligibility
+        }
+      : null;
     this.readiness = this.withPreparedState(this.readiness);
     return {
       success: actionable,
@@ -772,7 +802,7 @@ export class LocalRuntimeUpdateManager {
       baseRef: this.options.baseRef,
       remote: this.options.remote,
       githubEligibilityMode: this.options.githubEligibilityMode,
-      githubEligibilityResolver: this.options.githubEligibilityResolver,
+      githubEligibilityResolver: this.resolveGithubEligibility,
       runtimeIdentity: this.options.runtimeIdentity(),
       nowMs: this.options.nowMs,
       timeoutMs,
@@ -799,6 +829,31 @@ export class LocalRuntimeUpdateManager {
         idempotent_replay: idempotentReplay,
         readiness: this.readiness,
         message: 'Runtime update apply refused by readiness checks.'
+      };
+    }
+    const candidateChanged = this.preparedCandidateChanged(this.readiness);
+    if (candidateChanged) {
+      await this.record('update-pull-refused', 'rejected', REASON_CODES.runtimeUpdateCandidateChanged, {
+        prepared_update: this.preparedUpdate,
+        fetched_candidate: {
+          remote: this.readiness.fetched_remote.remote,
+          base_ref: this.readiness.fetched_remote.base_ref,
+          candidate_sha: this.readiness.fetched_remote.commit_sha ?? this.readiness.local_checkout.commit_sha,
+          github_eligibility: this.readiness.github_eligibility
+        }
+      });
+      this.prepareAccepted = false;
+      this.readiness = this.withPreparedState(this.readiness);
+      return {
+        success: false,
+        status: 'refused',
+        step: 'apply',
+        reason_code: REASON_CODES.runtimeUpdateCandidateChanged,
+        recommended_action: 'prepare_update',
+        idempotent_replay: idempotentReplay,
+        readiness: this.readiness,
+        command_results: [],
+        message: 'Runtime update apply refused because the remote candidate changed after Prepare.'
       };
     }
     if (!isActionableReadiness(this.readiness)) {
@@ -885,7 +940,7 @@ export class LocalRuntimeUpdateManager {
       baseRef: this.options.baseRef,
       remote: this.options.remote,
       githubEligibilityMode: this.options.githubEligibilityMode,
-      githubEligibilityResolver: this.options.githubEligibilityResolver,
+      githubEligibilityResolver: this.resolveGithubEligibility,
       runtimeIdentity: this.options.runtimeIdentity(),
       nowMs: this.options.nowMs,
       timeoutMs,
@@ -905,13 +960,53 @@ export class LocalRuntimeUpdateManager {
   }
 
   private withPreparedState(readiness: ApiRuntimeUpdateReadiness): ApiRuntimeUpdateReadiness {
-    const prepared = this.prepareAccepted && isActionableReadiness(readiness) && readiness.refusal_reasons.length === 0;
+    const prepared = this.prepareAccepted
+      && !!this.preparedUpdate
+      && isActionableReadiness(readiness)
+      && readiness.refusal_reasons.length === 0
+      && !this.preparedCandidateChanged(readiness);
     return {
       ...readiness,
       prepared,
-      apply_ready: prepared
+      apply_ready: prepared,
+      prepared_update: prepared ? this.preparedUpdate : null
     };
   }
+
+  private preparedCandidateChanged(readiness: ApiRuntimeUpdateReadiness): boolean {
+    if (!this.preparedUpdate) {
+      return false;
+    }
+    const candidateSha = readiness.fetched_remote.commit_sha ?? readiness.local_checkout.commit_sha;
+    return this.preparedUpdate.remote !== readiness.fetched_remote.remote
+      || this.preparedUpdate.base_ref !== readiness.fetched_remote.base_ref
+      || this.preparedUpdate.candidate_sha !== candidateSha;
+  }
+
+  private resolveGithubEligibility = (params: Parameters<NonNullable<LocalRuntimeUpdateManagerOptions['githubEligibilityResolver']>>[0]): ApiRuntimeUpdateGithubEligibility => {
+    const nowMs = this.options.nowMs ?? (() => Date.now());
+    const ttlMs = this.options.discoveryFetchIntervalMs ?? 60_000;
+    const cacheKey = [
+      params.remoteUrl,
+      params.baseRef,
+      params.candidateSha ?? '',
+      params.mode
+    ].join('|');
+    if (
+      this.githubEligibilityCache
+      && this.githubEligibilityCache.cache_key === cacheKey
+      && nowMs() - this.githubEligibilityCache.checked_at_ms < ttlMs
+    ) {
+      return this.githubEligibilityCache.result;
+    }
+    const result = (this.options.githubEligibilityResolver ?? defaultGithubEligibilityResolver)(params);
+    this.githubEligibilityCache = {
+      cache_key: cacheKey,
+      checked_at_ms: nowMs(),
+      result
+    };
+    return result;
+  };
 
   private failed(
     step: ApiRuntimeUpdateActionResponse['step'],
