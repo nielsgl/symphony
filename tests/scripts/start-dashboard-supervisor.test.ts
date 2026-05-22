@@ -166,7 +166,7 @@ if (!process.env.SYMPHONY_RESTART_ATTEMPT_ID) {
 }
 process.on('SIGTERM', () => {
   write({ type: 'stopping' });
-  process.exit(0);
+  setTimeout(() => process.exit(0), 1000);
 });
 setInterval(() => {}, 1000);
 `,
@@ -319,6 +319,7 @@ setInterval(() => {}, 1000);
       message: expect.stringContaining('Restart Symphony manually')
     });
     expect(handoff.old_child_pid).toEqual(expect.any(Number));
+    expect(handoff.new_child_pid).toBeNull();
     expect(isProcessAlive(handoff.old_child_pid)).toBe(false);
   }, SUPERVISOR_TIMEOUT_MS);
 

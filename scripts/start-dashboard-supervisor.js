@@ -9,7 +9,7 @@ const childArgs = process.argv.slice(2);
 const shutdownTimeoutMs = Number(process.env.SYMPHONY_RESTART_SHUTDOWN_TIMEOUT_MS || 30_000);
 const startupTimeoutMs = Number(process.env.SYMPHONY_RESTART_STARTUP_TIMEOUT_MS || 30_000);
 const killGraceMs = Number(process.env.SYMPHONY_RESTART_KILL_GRACE_MS || 5_000);
-const failureNotifyGraceMs = Number(process.env.SYMPHONY_RESTART_FAILURE_NOTIFY_GRACE_MS || 50);
+const failureNotifyGraceMs = Number(process.env.SYMPHONY_RESTART_FAILURE_NOTIFY_GRACE_MS || 500);
 const failureHandoffFile = process.env.SYMPHONY_RESTART_FAILURE_HANDOFF_FILE || path.join(process.cwd(), '.symphony', 'runtime-restart-failure.json');
 
 let child = null;
@@ -51,7 +51,7 @@ function writeFailureHandoff(reason, metadata) {
     attempt_id: metadata.attempt_id,
     target_commit_sha: metadata.target_commit_sha || null,
     old_child_pid: typeof metadata.old_child_pid === 'number' ? metadata.old_child_pid : null,
-    new_child_pid: child && child.pid ? child.pid : null,
+    new_child_pid: typeof metadata.new_child_pid === 'number' ? metadata.new_child_pid : null,
     started_at: metadata.started_at || null,
     failed_at: new Date().toISOString(),
     reason_code: 'runtime_update_restart_failed',
@@ -114,6 +114,7 @@ function spawnChild(restartMetadata) {
   console.error(`[symphony-supervisor] child spawned pid=${child.pid}`);
 
   if (restartMetadata) {
+    restartMetadata.new_child_pid = child.pid || null;
     startupTimer = setTimeout(() => {
       failRestart('child_startup_timeout', restartMetadata);
     }, startupTimeoutMs);
