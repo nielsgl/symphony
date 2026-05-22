@@ -117,6 +117,21 @@ function isRuntimeUpdateApplyReady(readiness: ApiRuntimeUpdateReadiness | null):
   return isRuntimeUpdateActionable(readiness) && readiness?.apply_ready === true;
 }
 
+function runtimeUpdateCandidateDriftAuditContext(readiness: ApiRuntimeUpdateReadiness | null): Record<string, unknown> {
+  if (!readiness?.refusal_reasons.includes(REASON_CODES.runtimeUpdateCandidateChanged)) {
+    return {};
+  }
+  return {
+    prepared_update: readiness.prepared_update,
+    fetched_candidate: {
+      remote: readiness.fetched_remote.remote,
+      base_ref: readiness.fetched_remote.base_ref,
+      candidate_sha: readiness.fetched_remote.commit_sha ?? readiness.local_checkout.commit_sha,
+      github_eligibility: readiness.github_eligibility
+    }
+  };
+}
+
 export class LocalApiServer {
   private readonly host: string;
   private readonly port: number;
@@ -1261,7 +1276,11 @@ export class LocalApiServer {
                   source: 'api',
                   result: 'rejected',
                   result_code: payload.reason_code,
-                  state_context: { drain_mode_active: true, readiness_state: readiness?.state ?? 'unknown' },
+                  state_context: {
+                    drain_mode_active: true,
+                    readiness_state: readiness?.state ?? 'unknown',
+                    ...runtimeUpdateCandidateDriftAuditContext(readiness)
+                  },
                   blocker_summaries: [],
                   occurred_at: new Date(this.nowMs()).toISOString(),
                   observed_at: new Date(this.nowMs()).toISOString()

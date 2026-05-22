@@ -960,16 +960,23 @@ export class LocalRuntimeUpdateManager {
   }
 
   private withPreparedState(readiness: ApiRuntimeUpdateReadiness): ApiRuntimeUpdateReadiness {
+    const candidateChanged = this.prepareAccepted
+      && !!this.preparedUpdate
+      && this.preparedCandidateChanged(readiness);
+    const refusalReasons = candidateChanged && !readiness.refusal_reasons.includes(REASON_CODES.runtimeUpdateCandidateChanged)
+      ? [...readiness.refusal_reasons, REASON_CODES.runtimeUpdateCandidateChanged]
+      : readiness.refusal_reasons;
     const prepared = this.prepareAccepted
       && !!this.preparedUpdate
       && isActionableReadiness(readiness)
       && readiness.refusal_reasons.length === 0
-      && !this.preparedCandidateChanged(readiness);
+      && !candidateChanged;
     return {
       ...readiness,
+      refusal_reasons: refusalReasons,
       prepared,
       apply_ready: prepared,
-      prepared_update: prepared ? this.preparedUpdate : null
+      prepared_update: prepared || candidateChanged ? this.preparedUpdate : null
     };
   }
 
