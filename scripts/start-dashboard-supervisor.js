@@ -8,13 +8,16 @@ const childScript = process.env.SYMPHONY_SUPERVISOR_CHILD_SCRIPT || path.join(__
 const childArgs = process.argv.slice(2);
 const shutdownTimeoutMs = Number(process.env.SYMPHONY_RESTART_SHUTDOWN_TIMEOUT_MS || 30_000);
 const startupTimeoutMs = Number(process.env.SYMPHONY_RESTART_STARTUP_TIMEOUT_MS || 30_000);
-const failureHandoffFile = process.env.SYMPHONY_RESTART_FAILURE_HANDOFF_FILE || path.join(process.cwd(), '.symphony-runtime-restart-failure.json');
+const killGraceMs = Number(process.env.SYMPHONY_RESTART_KILL_GRACE_MS || 5_000);
+const failureHandoffFile = process.env.SYMPHONY_RESTART_FAILURE_HANDOFF_FILE || path.join(process.cwd(), '.symphony', 'runtime-restart-failure.json');
 
 let child = null;
 let stopping = false;
+let supervisorExitCode = 0;
 let restartInFlight = null;
 let shutdownTimer = null;
 let startupTimer = null;
+let killTimer = null;
 
 function clearTimer(timer) {
   if (timer) {
@@ -67,13 +70,23 @@ function failRestart(reason, metadata) {
   writeFailureHandoff(reason, metadata);
   notifyChildRestartFailed(reason, metadata);
   stopping = true;
-  process.exitCode = 1;
-  setTimeout(() => {
-    if (child && !child.killed) {
-      child.kill('SIGTERM');
+  supervisorExitCode = 1;
+  process.exitCode = supervisorExitCode;
+  if (!child) {
+    process.exit(supervisorExitCode);
+    return;
+  }
+  const childToTerminate = child;
+  if (!childToTerminate.killed) {
+    childToTerminate.kill('SIGTERM');
+  }
+  clearTimer(killTimer);
+  killTimer = setTimeout(() => {
+    if (child === childToTerminate) {
+      console.error(`[symphony-supervisor] restart failure child did not exit after SIGTERM; sending SIGKILL pid=${childToTerminate.pid}`);
+      childToTerminate.kill('SIGKILL');
     }
-    process.exit(1);
-  }, 500).unref();
+  }, killGraceMs);
 }
 
 function spawnChild(restartMetadata) {
@@ -145,8 +158,10 @@ function spawnChild(restartMetadata) {
     shutdownTimer = null;
     clearTimer(startupTimer);
     startupTimer = null;
+    clearTimer(killTimer);
+    killTimer = null;
     if (stopping) {
-      process.exit(code === null ? 0 : code);
+      process.exit(supervisorExitCode);
       return;
     }
     if (!pendingRestart) {
