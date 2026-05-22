@@ -16,7 +16,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     <div class="hero-copy">
       <p class="eyebrow">Symphony Runtime</p>
       <h1>Operator Control Surface</h1>
-      <p class="hero-subtitle">Live orchestration visibility with retry control, issue drilldown, and desktop/browser parity.</p>
+      <p class="hero-subtitle">Turn every run from first signal to confident handoff.</p>
     </div>
     <div class="hero-status-card">
       <div class="status-row">
