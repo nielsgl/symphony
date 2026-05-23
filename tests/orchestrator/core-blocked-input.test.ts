@@ -61,6 +61,34 @@ function makeRuntimeIdentity(status: 'current' | 'stale'): RuntimeBuildIdentityS
 }
 
 describe('OrchestratorCore blocked input', () => {
+  const stalledProgressSignals = async () => ({
+    commit_sha: 'sha-same',
+    checklist_checkpoint: 'chk-same',
+    state_marker: 'marker-same'
+  });
+
+  function createAutomationFaultHarness(options: Parameters<typeof createHarness>[0] = {}): Harness {
+    return createHarness({
+      ...options,
+      configOverrides: {
+        respawn_max_attempts_without_progress: 1,
+        ...options.configOverrides
+      },
+      resolveProgressSignals: options.resolveProgressSignals ?? stalledProgressSignals
+    });
+  }
+
+  async function openAutomationFault(harness: Harness, issue: Issue): Promise<void> {
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit(issue.id, 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get(issue.id)?.callback();
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get(issue.id)).toMatchObject({
+      breaker_active: true
+    });
+  }
+
   it('surfaces pre-session ownership conflicts and filters stale operator action state from fresh runs', async () => {
     let harness: Harness;
     harness = createHarness({
@@ -1129,6 +1157,381 @@ describe('OrchestratorCore blocked input', () => {
     expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get('i-resume-override')).toMatchObject({
       breaker_active: true
     });
+  });
+
+  it('clears circuit-breaker-only automation faults and redispatches when dispatch gates pass', async () => {
+    const persistence = {
+      upsertBreaker: vi.fn(async () => undefined),
+      deleteBreaker: vi.fn(async () => undefined),
+      upsertOperatorActions: vi.fn(async () => undefined),
+      appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+    };
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1 },
+      persistence: persistence as any,
+      resolveProgressSignals: async () => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: 'marker-same'
+      })
+    });
+    const issue = makeIssue({ id: 'i-clear-fault', identifier: 'ABC-CLEAR-FAULT', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-clear-fault', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-clear-fault')?.callback();
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get('i-clear-fault')).toMatchObject({
+      breaker_active: true
+    });
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+    const result = await harness.orchestrator.clearAutomationFault('ABC-CLEAR-FAULT', {
+      actor: 'operator@example.test',
+      reason_note: 'operator fixed dirty checkout'
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      issue_id: 'i-clear-fault',
+      status: 'started',
+      breaker_cleared: true,
+      dispatch_started: true
+    });
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.has('i-clear-fault')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().redispatch_progress?.has('i-clear-fault')).toBe(false);
+    expect(persistence.deleteBreaker).toHaveBeenCalledWith('i-clear-fault');
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-clear-fault')).toHaveLength(2);
+    expect(harness.spawned.at(-1)).toMatchObject({
+      issue_id: 'i-clear-fault',
+      attempt: null,
+      resume_context: 'Operator cleared automation fault and requested redispatch'
+    });
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get('i-clear-fault')?.at(-1)).toMatchObject({
+      action: 'clear_automation_fault',
+      result: 'accepted',
+      result_code: 'dispatch_started',
+      reason_note: 'operator fixed dirty checkout'
+    });
+    expect(harness.orchestrator.getStateSnapshot().recent_runtime_events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: 'orchestration.automation_fault.cleared',
+          issue_identifier: 'ABC-CLEAR-FAULT',
+          reason_code: 'operator_clear_automation_fault'
+        })
+      ])
+    );
+  });
+
+  it('holds automation fault clearing during Drain Mode without deleting breaker state', async () => {
+    const persistence = {
+      upsertBreaker: vi.fn(async () => undefined),
+      deleteBreaker: vi.fn(async () => undefined),
+      upsertOperatorActions: vi.fn(async () => undefined),
+      appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+    };
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1 },
+      persistence: persistence as any,
+      resolveProgressSignals: async () => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: 'marker-same'
+      })
+    });
+    const issue = makeIssue({ id: 'i-clear-drain', identifier: 'ABC-CLEAR-DRAIN', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-clear-drain', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-clear-drain')?.callback();
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+    const result = await harness.orchestrator.clearAutomationFault('ABC-CLEAR-DRAIN', {
+      actor: 'operator@example.test',
+      reason_note: 'operator fixed dirty checkout'
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      issue_id: 'i-clear-drain',
+      status: 'held',
+      result_code: 'drain_mode_active',
+      breaker_cleared: false,
+      dispatch_started: false
+    });
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get('i-clear-drain')).toMatchObject({
+      breaker_active: true
+    });
+    expect(persistence.deleteBreaker).not.toHaveBeenCalled();
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-clear-drain')).toHaveLength(1);
+  });
+
+  it.each([
+    { state: 'Done', result_code: 'not_active' },
+    { state: 'Backlog', result_code: 'not_active' }
+  ])('rejects automation fault clearing when tracker state is $state without deleting breaker state', async ({ state, result_code }) => {
+    const persistence = {
+      upsertBreaker: vi.fn(async () => undefined),
+      deleteBreaker: vi.fn(async () => undefined),
+      upsertOperatorActions: vi.fn(async () => undefined),
+      appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+    };
+    const harness = createAutomationFaultHarness({ persistence: persistence as any });
+    const issue = makeIssue({ id: `i-clear-${state.toLowerCase()}`, identifier: `ABC-CLEAR-${state.toUpperCase()}`, state: 'In Progress' });
+    await openAutomationFault(harness, issue);
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([makeIssue({ ...issue, state })]);
+    const result = await harness.orchestrator.clearAutomationFault(issue.identifier, {
+      actor: 'operator@example.test',
+      reason_note: 'operator fixed dirty checkout'
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      issue_id: issue.id,
+      status: 'held',
+      result_code,
+      breaker_cleared: false,
+      dispatch_started: false
+    });
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get(issue.id)).toMatchObject({
+      breaker_active: true
+    });
+    expect(persistence.deleteBreaker).not.toHaveBeenCalled();
+    expect(harness.spawned.filter((entry) => entry.issue_id === issue.id)).toHaveLength(1);
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get(issue.id)?.at(-1)).toMatchObject({
+      action: 'clear_automation_fault',
+      result: 'rejected',
+      result_code
+    });
+  });
+
+  it('holds automation fault clearing when runtime identity is stale without deleting breaker state', async () => {
+    let runtimeIdentity = makeRuntimeIdentity('current');
+    const persistence = {
+      upsertBreaker: vi.fn(async () => undefined),
+      deleteBreaker: vi.fn(async () => undefined),
+      upsertOperatorActions: vi.fn(async () => undefined),
+      appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+    };
+    const harness = createAutomationFaultHarness({
+      persistence: persistence as any,
+      resolveRuntimeIdentity: () => runtimeIdentity
+    });
+    const issue = makeIssue({ id: 'i-clear-stale-runtime', identifier: 'ABC-CLEAR-STALE', state: 'In Progress' });
+    await openAutomationFault(harness, issue);
+
+    runtimeIdentity = makeRuntimeIdentity('stale');
+    const result = await harness.orchestrator.clearAutomationFault(issue.identifier, {
+      actor: 'operator@example.test',
+      reason_note: 'operator fixed dirty checkout'
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      issue_id: issue.id,
+      status: 'held',
+      result_code: 'runtime_identity_dispatch_blocked',
+      message: 'Running runtime build runtime-old is stale compared with current-new',
+      dispatch_started: false,
+      breaker_cleared: false
+    });
+    expect(harness.tracker.fetch_issue_states_by_ids).not.toHaveBeenCalled();
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get(issue.id)).toMatchObject({
+      breaker_active: true
+    });
+    expect(persistence.deleteBreaker).not.toHaveBeenCalled();
+    expect(harness.spawned.filter((entry) => entry.issue_id === issue.id)).toHaveLength(1);
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get(issue.id)).toEqual([
+      expect.objectContaining({
+        action: 'clear_automation_fault',
+        result: 'rejected',
+        result_code: 'runtime_identity_dispatch_blocked'
+      })
+    ]);
+  });
+
+  it('holds automation fault clearing when dispatch preflight fails without deleting breaker state', async () => {
+    let dispatchAllowed = true;
+    const persistence = {
+      upsertBreaker: vi.fn(async () => undefined),
+      deleteBreaker: vi.fn(async () => undefined),
+      upsertOperatorActions: vi.fn(async () => undefined),
+      appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+    };
+    const harness = createAutomationFaultHarness({
+      persistence: persistence as any,
+      dispatchPreflight: () =>
+        dispatchAllowed ? { dispatch_allowed: true } : { dispatch_allowed: false, reason: 'worktree_dirty_repo' }
+    });
+    const issue = makeIssue({ id: 'i-clear-preflight', identifier: 'ABC-CLEAR-PREFLIGHT', state: 'In Progress' });
+    await openAutomationFault(harness, issue);
+
+    dispatchAllowed = false;
+    const result = await harness.orchestrator.clearAutomationFault(issue.identifier, {
+      actor: 'operator@example.test',
+      reason_note: 'operator fixed dirty checkout'
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      issue_id: issue.id,
+      status: 'held',
+      result_code: 'dispatch_validation_failed',
+      message: 'worktree_dirty_repo',
+      dispatch_started: false,
+      breaker_cleared: false
+    });
+    expect(harness.tracker.fetch_issue_states_by_ids).not.toHaveBeenCalled();
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get(issue.id)).toMatchObject({
+      breaker_active: true
+    });
+    expect(persistence.deleteBreaker).not.toHaveBeenCalled();
+    expect(harness.orchestrator.getStateSnapshot().recent_runtime_events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: CANONICAL_EVENT.orchestration.dispatchValidationFailed,
+          issue_identifier: issue.identifier,
+          detail: 'worktree_dirty_repo'
+        })
+      ])
+    );
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get(issue.id)?.at(-1)).toMatchObject({
+      action: 'clear_automation_fault',
+      result: 'rejected',
+      result_code: 'dispatch_validation_failed'
+    });
+  });
+
+  it('holds automation fault clearing when required GitHub issue link is missing without deleting breaker state', async () => {
+    const persistence = {
+      upsertBreaker: vi.fn(async () => undefined),
+      deleteBreaker: vi.fn(async () => undefined),
+      upsertOperatorActions: vi.fn(async () => undefined),
+      appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+    };
+    const harness = createAutomationFaultHarness({
+      configOverrides: { github_linking_mode: 'required' },
+      persistence: persistence as any
+    });
+    const issue = makeIssue({
+      id: 'i-clear-github-link',
+      identifier: 'ABC-CLEAR-GITHUB',
+      state: 'In Progress',
+      has_github_issue_link: true
+    });
+    await openAutomationFault(harness, issue);
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ ...issue, has_github_issue_link: false })
+    ]);
+    const result = await harness.orchestrator.clearAutomationFault(issue.identifier, {
+      actor: 'operator@example.test',
+      reason_note: 'operator fixed dirty checkout'
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      issue_id: issue.id,
+      status: 'held',
+      result_code: 'github_issue_link_missing',
+      message: 'Issue ABC-CLEAR-GITHUB is missing a linked GitHub issue',
+      dispatch_started: false,
+      breaker_cleared: false
+    });
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get(issue.id)).toMatchObject({
+      breaker_active: true
+    });
+    expect(persistence.deleteBreaker).not.toHaveBeenCalled();
+    expect(harness.spawned.filter((entry) => entry.issue_id === issue.id)).toHaveLength(1);
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get(issue.id)?.at(-1)).toMatchObject({
+      action: 'clear_automation_fault',
+      result: 'rejected',
+      result_code: 'github_issue_link_missing'
+    });
+  });
+
+  it('rejects automation fault clearing for running, retrying, and normal blocked-input states without consuming them', async () => {
+    const cases = ['running', 'retrying', 'blocked'] as const;
+
+    for (const conflictState of cases) {
+      const persistence = {
+        upsertBreaker: vi.fn(async () => undefined),
+        deleteBreaker: vi.fn(async () => undefined),
+        upsertOperatorActions: vi.fn(async () => undefined),
+        appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+      };
+      const harness = createAutomationFaultHarness({ persistence: persistence as any });
+      const issue = makeIssue({
+        id: `i-clear-conflict-${conflictState}`,
+        identifier: `ABC-CLEAR-${conflictState.toUpperCase()}`,
+        state: 'In Progress'
+      });
+
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+      await harness.orchestrator.tick('interval');
+      const originalRunning = (harness.orchestrator as any).state.running.get(issue.id);
+      await harness.orchestrator.onWorkerExit(issue.id, 'abnormal', 'worker exited');
+      const originalRetry = (harness.orchestrator as any).state.retry_attempts.get(issue.id);
+      harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+      await harness.scheduled.get(issue.id)?.callback();
+
+      if (conflictState === 'running') {
+        (harness.orchestrator as any).state.running.set(issue.id, originalRunning);
+      } else if (conflictState === 'retrying') {
+        (harness.orchestrator as any).state.retry_attempts.set(issue.id, originalRetry);
+      } else {
+        (harness.orchestrator as any).state.blocked_inputs.set(issue.id, {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          attempt: 1,
+          worker_host: null,
+          workspace_path: null,
+          provisioner_type: 'none',
+          branch_name: null,
+          repo_root: null,
+          workspace_exists: null,
+          workspace_git_status: null,
+          workspace_provisioned: false,
+          workspace_is_git_worktree: null,
+          stop_reason_code: 'operator_action_required_workspace_conflict',
+          stop_reason_detail: 'workspace conflict',
+          conflict_files: [],
+          resolution_hints: [],
+          previous_thread_id: null,
+          previous_session_id: null,
+          blocked_at_ms: harness.now.value,
+          requires_manual_resume: true,
+          pending_input: null,
+          session_console: []
+        });
+      }
+
+      const result = await harness.orchestrator.clearAutomationFault(issue.identifier, {
+        actor: 'operator@example.test',
+        reason_note: 'operator fixed dirty checkout'
+      });
+      const snapshot = harness.orchestrator.getStateSnapshot();
+
+      expect(result).toEqual({
+        ok: false,
+        code: 'unsupported_transition',
+        message: `Issue ${issue.identifier} is running, retrying, or blocked on operator input`
+      });
+      expect(snapshot.circuit_breakers.get(issue.id)).toMatchObject({ breaker_active: true });
+      expect(snapshot.running.has(issue.id)).toBe(conflictState === 'running');
+      expect(snapshot.retry_attempts.has(issue.id)).toBe(conflictState === 'retrying');
+      expect(snapshot.blocked_inputs.has(issue.id)).toBe(conflictState === 'blocked');
+      expect(persistence.deleteBreaker).not.toHaveBeenCalled();
+      expect(snapshot.operator_actions?.get(issue.id)?.at(-1)).toMatchObject({
+        action: 'clear_automation_fault',
+        result: 'rejected',
+        result_code: 'unsupported_transition'
+      });
+    }
   });
 
   it('cancels blocked issue to Todo/backlog state via dedicated path', async () => {

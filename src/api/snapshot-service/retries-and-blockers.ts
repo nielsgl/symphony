@@ -1,6 +1,11 @@
 import type { CircuitBreakerEntry, OrchestratorState } from '../../orchestrator';
 import { explainOperatorRuntimeState, getReasonCodeDefinition, REASON_CODES, toOperatorExplainerHint } from '../../observability';
-import type { ApiBlockedRootCauseProjection, ApiCurrentOperatorBlockProjection, ApiStateResponse } from '../types';
+import type {
+  ApiAvailableOperatorAction,
+  ApiBlockedRootCauseProjection,
+  ApiCurrentOperatorBlockProjection,
+  ApiStateResponse
+} from '../types';
 import { defaultBudgetProjection } from './budget';
 import { projectOperatorActions } from './operator-actions';
 import { projectTranscriptToolCallDiagnosticSummary } from './transcript-diagnostics';
@@ -47,6 +52,57 @@ export function projectCircuitBreakerMetadata(entry: CircuitBreakerEntry) {
     breaker_first_hit_at: entry.breaker_first_hit_at_ms ? asIsoDate(entry.breaker_first_hit_at_ms) : null,
     breaker_last_hit_at: entry.breaker_last_hit_at_ms ? asIsoDate(entry.breaker_last_hit_at_ms) : null
   };
+}
+
+export function projectBlockedInputActions(issueIdentifier: string): ApiAvailableOperatorAction[] {
+  const encoded = encodeURIComponent(issueIdentifier);
+  return [
+    {
+      id: 'resume',
+      label: 'Mark Acceptance Complete + Resume',
+      endpoint: `/api/v1/issues/${encoded}/resume`,
+      method: 'POST',
+      requires_reason_note: true,
+      destructive: false
+    },
+    {
+      id: 'resume',
+      label: 'Push Commit + Resume',
+      endpoint: `/api/v1/issues/${encoded}/resume`,
+      method: 'POST',
+      requires_reason_note: true,
+      destructive: false
+    },
+    {
+      id: 'cancel',
+      label: 'Cancel to Backlog',
+      endpoint: `/api/v1/issues/${encoded}/cancel`,
+      method: 'POST',
+      requires_reason_note: true,
+      destructive: true
+    },
+    {
+      id: 'requeue',
+      label: 'Requeue',
+      endpoint: `/api/v1/issues/${encoded}/requeue`,
+      method: 'POST',
+      requires_reason_note: true,
+      destructive: false
+    }
+  ];
+}
+
+export function projectAutomationFaultActions(issueIdentifier: string): ApiAvailableOperatorAction[] {
+  return [
+    {
+      id: 'clear_automation_fault',
+      label: 'Clear Fault + Retry',
+      endpoint: `/api/v1/issues/${encodeURIComponent(issueIdentifier)}/clear-automation-fault`,
+      method: 'POST',
+      requires_reason_note: true,
+      destructive: false
+    }
+  ];
 }
 
 export function projectNoProgressCircuitBreakerFault(
@@ -116,6 +172,8 @@ export function projectNoProgressCircuitBreakerFault(
     last_heartbeat_at_ms: observedAtMs,
     ownership_conflict: null,
     operator_actions: projectOperatorActions(state, entry.issue_id),
+    runtime_state_kind: 'automation_fault',
+    available_actions: projectAutomationFaultActions(entry.issue_identifier),
     recovery: null,
     missing_tool_output_recovery: null,
     operator_explainer_hint: toOperatorExplainerHint(

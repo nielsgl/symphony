@@ -46,6 +46,7 @@ export const REASON_CODES = {
   manualResume: 'manual_resume',
   operatorRequeueRequested: 'operator_requeue_requested',
   operatorRetryStepRequested: 'operator_retry_step_requested',
+  operatorClearAutomationFault: 'operator_clear_automation_fault',
   turnTimeout: 'turn_timeout',
   turnInputRequired: 'turn_input_required',
   turnWaitingThresholdExceeded: 'turn_waiting_threshold_exceeded',
@@ -345,6 +346,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Failed step retry was requested',
     detail: 'An operator explicitly retried the last failed or stalled step.',
     expected_transition: 'Automatic retry at the scheduled due time'
+  },
+  [REASON_CODES.operatorClearAutomationFault]: {
+    reason_code: REASON_CODES.operatorClearAutomationFault,
+    classification: 'retrying',
+    actionability: 'recommended',
+    recommended_actions: ['Monitor the redispatched run'],
+    label: 'Operator Cleared Automation Fault',
+    headline: 'Automation fault was cleared by an operator',
+    detail: 'An operator cleared a no-progress automation fault and requested redispatch.',
+    expected_transition: 'Fresh dispatch starts when runtime safety gates pass'
   },
   [REASON_CODES.turnTimeout]: {
     reason_code: REASON_CODES.turnTimeout,

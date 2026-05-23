@@ -381,7 +381,13 @@ export interface StateSnapshotOptions {
   includeTranscriptToolCallDiagnostics?: boolean;
 }
 
-export type OperatorActionType = 'cancel' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
+export type OperatorActionType =
+  | 'cancel'
+  | 'clear_automation_fault'
+  | 'requeue'
+  | 'resume'
+  | 'retry_step'
+  | 'submit_input';
 
 export interface OperatorActionRecord {
   action: OperatorActionType;

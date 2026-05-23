@@ -627,15 +627,6 @@ export function renderBlocked(payload: any) {
         actionOutcome.textContent = 'Last action: ' + lastAction.action + ' ' + lastAction.result + (lastAction.result_code ? ' (' + lastAction.result_code + ')' : '');
         actionsCell.append(actionOutcome);
       }
-      const resumeButton = createActionButton('Mark Acceptance Complete + Resume', 'ghost-button', function () {
-        void resumeBlockedIssue(entry.issue_identifier);
-      });
-      const pushCommitResumeButton = createActionButton('Push Commit + Resume', 'ghost-button', function () {
-        void resumeBlockedIssue(entry.issue_identifier, 'operator_override_push_additional_commit');
-      });
-      const cancelToBacklogButton = createActionButton('Cancel to Backlog', 'ghost-button', function () {
-        void cancelBlockedIssue(entry.issue_identifier, 'operator_cancel_return_to_backlog');
-      });
       const hasPendingInputRequest = Boolean(entry.pending_input && entry.pending_input.request_id);
       let replyButton = null;
       if (hasPendingInputRequest) {
@@ -652,18 +643,50 @@ export function renderBlocked(payload: any) {
       const openJson = createActionButton('JSON', 'ghost-button', function () {
         window.open('/api/v1/' + encodeURIComponent(entry.issue_identifier), '_blank', 'noopener');
       });
-      const requeueButton = createActionButton('Requeue', 'ghost-button', function () {
-        void runOperatorAction(entry.issue_identifier, 'requeue', false);
-      });
       if (replyButton) {
         actionsCell.append(replyButton);
-      } else {
+      } else if (entry.runtime_state_kind !== 'automation_fault') {
         const manualResumeNote = document.createElement('div');
         manualResumeNote.className = 'muted';
         manualResumeNote.textContent = 'Manual resume required; no pending input request.';
         actionsCell.append(manualResumeNote);
       }
-      actionsCell.append(resumeButton, pushCommitResumeButton, cancelToBacklogButton, requeueButton, copyPreviousSession, copyWorkspace, openJson);
+      const availableActions = Array.isArray(entry.available_actions) ? entry.available_actions : [];
+      availableActions.forEach(function (action: any) {
+        if (!action || !action.id || !action.label) {
+          return;
+        }
+        if (action.id === 'submit_input') {
+          return;
+        }
+        const button = createActionButton(action.label, 'ghost-button', function () {
+          if (action.id === 'resume' && action.label === 'Push Commit + Resume') {
+            void resumeBlockedIssue(entry.issue_identifier, 'operator_override_push_additional_commit');
+            return;
+          }
+          if (action.id === 'resume') {
+            void resumeBlockedIssue(entry.issue_identifier);
+            return;
+          }
+          if (action.id === 'cancel') {
+            void cancelBlockedIssue(entry.issue_identifier, 'operator_cancel_return_to_backlog');
+            return;
+          }
+          if (action.id === 'clear_automation_fault') {
+            void runOperatorAction(entry.issue_identifier, 'clear-automation-fault', Boolean(action.destructive));
+            return;
+          }
+          void runOperatorAction(entry.issue_identifier, action.id === 'retry_step' ? 'retry-step' : action.id, Boolean(action.destructive));
+        });
+        actionsCell.append(button);
+      });
+      if (entry.runtime_state_kind === 'automation_fault') {
+        const faultNote = document.createElement('div');
+        faultNote.className = 'muted';
+        faultNote.textContent = 'No-progress redispatch circuit breaker: ' + (entry.breaker_hit_count || 0) + ' hit(s) in ' + (entry.breaker_window_minutes || 0) + 'm.';
+        actionsCell.append(faultNote);
+      }
+      actionsCell.append(copyPreviousSession, copyWorkspace, openJson);
 
       row.append(
         issueCell,

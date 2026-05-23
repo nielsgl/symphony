@@ -64,7 +64,7 @@ import { coordinateWorkerExit, type WorkerExitCoordinatorContext } from './core/
 import { parseDynamicToolCapabilityMismatchDetail } from '../observability/dynamic-tool-capability';
 import { isKnownPhaseMarker, isTerminalPhaseMarker, phaseMarkerOrder, type PhaseMarker, type PhaseMarkerName } from '../observability';
 import { ThroughputTracker } from '../observability/throughput';
-import { computeFailureBackoffMs } from './decisions';
+import { computeFailureBackoffMs, shouldDispatchIssue } from './decisions';
 import {
   applyBudgetBlockedTerminationEvidence,
   applyBudgetTelemetryUnavailable,
@@ -2152,6 +2152,181 @@ export class OrchestratorCore {
     params: { actor?: string | null; reason_note?: string | null } = {}
   ): Promise<{ ok: true; issue_id: string; retry_attempt: number } | { ok: false; code: string; message: string }> {
     return coordinateRetryLastFailedStep(this.operatorControlCoordinatorContext(), issue_identifier, params);
+  }
+
+  async clearAutomationFault(
+    issue_identifier: string,
+    params: { actor?: string | null; reason_note?: string | null } = {}
+  ): Promise<
+    | {
+        ok: true;
+        issue_id: string;
+        status: 'started' | 'held';
+        result_code: string;
+        message: string;
+        dispatch_started: boolean;
+        breaker_cleared: boolean;
+      }
+    | { ok: false; code: string; message: string }
+  > {
+    const reasonNote = typeof params.reason_note === 'string' ? params.reason_note.trim() : '';
+    if (!reasonNote) {
+      return { ok: false, code: 'reason_note_required', message: 'reason_note is required' };
+    }
+
+    const breaker = Array.from(this.state.circuit_breakers.values()).find(
+      (entry) => entry.issue_identifier === issue_identifier && entry.breaker_active
+    );
+    if (!breaker) {
+      return { ok: false, code: 'issue_not_automation_fault', message: `Issue ${issue_identifier} has no active automation fault` };
+    }
+
+    if (
+      this.state.running.has(breaker.issue_id) ||
+      this.state.retry_attempts.has(breaker.issue_id) ||
+      this.state.blocked_inputs.has(breaker.issue_id)
+    ) {
+      const preState = this.describeIssueRuntimeState(breaker.issue_id);
+      this.recordOperatorAction(breaker.issue_id, {
+        action: 'clear_automation_fault',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'unsupported_transition',
+        message: 'existing runtime state must use its normal operator action',
+        actor: params.actor ?? null,
+        reason_note: reasonNote,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(breaker.issue_id)
+      });
+      return {
+        ok: false,
+        code: 'unsupported_transition',
+        message: `Issue ${issue_identifier} is running, retrying, or blocked on operator input`
+      };
+    }
+
+    const preState = this.describeIssueRuntimeState(breaker.issue_id);
+    const hold = (resultCode: string, message: string) => {
+      this.recordOperatorAction(breaker.issue_id, {
+        action: 'clear_automation_fault',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: resultCode,
+        message,
+        actor: params.actor ?? null,
+        reason_note: reasonNote,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(breaker.issue_id)
+      });
+      this.ports.notifyObservers?.();
+      return {
+        ok: true as const,
+        issue_id: breaker.issue_id,
+        status: 'held' as const,
+        result_code: resultCode,
+        message,
+        dispatch_started: false,
+        breaker_cleared: false
+      };
+    };
+
+    const preflight = this.ports.dispatchPreflight();
+    if (!preflight.dispatch_allowed) {
+      this.state.health.dispatch_validation = 'failed';
+      this.state.health.last_error = preflight.reason ?? 'dispatch preflight rejected dispatch';
+      this.recordRuntimeEvent({
+        event: CANONICAL_EVENT.orchestration.dispatchValidationFailed,
+        severity: 'warn',
+        issue_identifier,
+        detail: this.state.health.last_error ?? undefined
+      });
+      return hold('dispatch_validation_failed', this.state.health.last_error ?? 'dispatch validation failed');
+    }
+    this.state.health.dispatch_validation = 'ok';
+    this.state.health.last_error = null;
+
+    const runtimeIdentityBlocker = this.runtimeIdentityDispatchBlockerDetail();
+    if (this.state.drain_mode.active || runtimeIdentityBlocker) {
+      const resultCode = runtimeIdentityBlocker ? 'runtime_identity_dispatch_blocked' : 'drain_mode_active';
+      return hold(resultCode, runtimeIdentityBlocker ?? 'Drain Mode is active; automation fault recovery is held until drain exits');
+    }
+
+    let refreshedIssues: Issue[];
+    try {
+      refreshedIssues = await this.tracker.fetch_issue_states_by_ids([breaker.issue_id]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'failed to refresh issue state';
+      this.recordOperatorAction(breaker.issue_id, {
+        action: 'clear_automation_fault',
+        requested_at_ms: this.nowMs(),
+        result: 'failed',
+        result_code: 'tracker_state_refresh_failed',
+        message,
+        actor: params.actor ?? null,
+        reason_note: reasonNote,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(breaker.issue_id)
+      });
+      return { ok: false, code: 'tracker_state_refresh_failed', message };
+    }
+
+    const issue = refreshedIssues.find((entry) => entry.id === breaker.issue_id);
+    if (!issue) {
+      this.recordOperatorAction(breaker.issue_id, {
+        action: 'clear_automation_fault',
+        requested_at_ms: this.nowMs(),
+        result: 'rejected',
+        result_code: 'issue_not_found',
+        message: `Issue ${issue_identifier} no longer exists in tracker`,
+        actor: params.actor ?? null,
+        reason_note: reasonNote,
+        pre_state: preState,
+        post_state: this.describeIssueRuntimeState(breaker.issue_id)
+      });
+      return { ok: false, code: 'issue_not_found', message: `Issue ${issue_identifier} no longer exists in tracker` };
+    }
+
+    const eligibility = shouldDispatchIssue(issue, this.state, this.config, { skipClaimCheckForIssueId: issue.id });
+    if (!eligibility.eligible) {
+      return hold(eligibility.reason, `Issue ${issue.identifier} is not dispatchable: ${eligibility.reason}`);
+    }
+    if ((this.config.github_linking_mode ?? 'off') === 'required' && issue.has_github_issue_link !== true) {
+      return hold('github_issue_link_missing', `Issue ${issue.identifier} is missing a linked GitHub issue`);
+    }
+
+    await this.clearCircuitBreaker(issue.id);
+    this.state.redispatch_progress?.delete(issue.id);
+    this.state.claimed.delete(issue.id);
+    this.recordRuntimeEvent({
+      event: CANONICAL_EVENT.orchestration.automationFaultCleared,
+      severity: 'info',
+      issue_identifier: issue.identifier,
+      detail: reasonNote,
+      reason_code: REASON_CODES.operatorClearAutomationFault
+    });
+    await this.dispatchIssue(issue, null, 'Operator cleared automation fault and requested redispatch');
+    const resultCode = this.state.running.has(issue.id) ? REASON_CODES.dispatchStarted : REASON_CODES.operatorClearAutomationFault;
+    this.recordOperatorAction(issue.id, {
+      action: 'clear_automation_fault',
+      requested_at_ms: this.nowMs(),
+      result: 'accepted',
+      result_code: resultCode,
+      message: 'automation fault cleared and redispatch requested',
+      actor: params.actor ?? null,
+      reason_note: reasonNote,
+      pre_state: preState,
+      post_state: this.describeIssueRuntimeState(issue.id)
+    });
+    this.ports.notifyObservers?.();
+    return {
+      ok: true,
+      issue_id: issue.id,
+      status: 'started',
+      result_code: resultCode,
+      message: 'automation fault cleared and redispatch requested',
+      dispatch_started: this.state.running.has(issue.id),
+      breaker_cleared: true
+    };
   }
 
   async resumeBlockedIssue(
