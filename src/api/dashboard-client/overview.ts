@@ -1,7 +1,7 @@
 import { OPERATOR_TRANSITION_RULES } from './config';
 import { elements } from './dom';
 import { state } from './state';
-import { formatCanonicalJsonBlock, formatDate, formatElapsedMs, formatNumber, getActionRequiredLabel, isActionRequiredCode, formatOverviewTokenValue } from './formatting';
+import { formatDate, formatElapsedMs, formatNumber, getActionRequiredLabel, isActionRequiredCode, formatOverviewTokenValue } from './formatting';
 import { renderRunning, renderRetry, renderBlocked } from './issues';
 
 const DRAIN_BLOCKER_LABELS: Record<string, string> = {
@@ -170,6 +170,172 @@ function updateRuntimeUpdateButtons(readiness: any, payload: any) {
     });
   }
 
+function shortRuntimeUpdateSha(value: any) {
+    const text = value ? String(value) : '';
+    return text ? text.slice(0, 12) : 'unknown';
+  }
+
+function describeRuntimeUpdateState(readiness: any) {
+    if (readiness && readiness.apply_ready === true) {
+      return 'Prepared update ready';
+    }
+    if (readiness && readiness.prepared === true) {
+      return 'Update prepared';
+    }
+    switch (readiness && readiness.state) {
+      case 'local_checkout_behind':
+      case 'remote_update_available':
+        return 'Update ready to prepare';
+      case 'runtime_stale':
+        return 'Restart required';
+      case 'source_changed_build_not_updated':
+        return 'New build available';
+      case 'build_current':
+        return 'Running the current build';
+      default:
+        return readiness ? formatRuntimeUpdateLabel(readiness.state) : 'Runtime update unavailable';
+    }
+  }
+
+function formatRuntimeUpdateCommitCount(value: any) {
+    if (value === null || value === undefined) {
+      return 'an unknown number of commits';
+    }
+    const count = Number(value);
+    if (!Number.isFinite(count)) {
+      return 'an unknown number of commits';
+    }
+    return count + ' ' + (count === 1 ? 'commit' : 'commits');
+  }
+
+function describeRuntimeUpdateAction(readiness: any, payload: any) {
+    if (!readiness) {
+      return 'The local runtime update detector is not configured.';
+    }
+    const drainMode = payload && payload.drain_mode ? payload.drain_mode : { active: false };
+    const quiescence = payload && payload.quiescence ? payload.quiescence : { safe_to_shutdown: false };
+    const restart = payload && payload.runtime_restart ? payload.runtime_restart : null;
+    const restartCapability = restart && restart.capability ? restart.capability : null;
+    const github = readiness.github_eligibility || {};
+    const refusalReasons = Array.isArray(readiness.refusal_reasons) ? readiness.refusal_reasons : [];
+    if (!readiness.attention_required) {
+      return 'No operator action is needed. Symphony is already running from the expected checkout.';
+    }
+    if (!isGithubRuntimeUpdateEligible(github)) {
+      return 'Wait for GitHub checks to finish before preparing this update.';
+    }
+    if (refusalReasons.length) {
+      return 'Update is paused until this blocker clears: ' + refusalReasons.map(formatRuntimeUpdateLabel).join(', ') + '.';
+    }
+    if (readiness.state === 'runtime_stale') {
+      return restartCapability && restartCapability.mode === 'supervisor_restart_available'
+        ? 'Restart Symphony from this panel once Drain Mode is quiet.'
+        : 'Restart Symphony manually after Drain Mode is quiet.';
+    }
+    if (readiness.apply_ready === true) {
+      if (!drainMode.active) {
+        return 'Enter Drain Mode before applying the prepared update.';
+      }
+      if (!quiescence.safe_to_shutdown) {
+        return 'Wait for active work to drain before applying the prepared update.';
+      }
+      return 'Apply the prepared update now. Symphony will keep restart guidance visible after the pull.';
+    }
+    if (readiness.prepared === true) {
+      return 'Preparation is complete. Keep Drain Mode active until the system is quiet, then apply the update.';
+    }
+    return 'Prepare the update first. Symphony will enter Drain Mode and pin the candidate before anything is applied.';
+  }
+
+function describeRuntimeUpdateBanner(readiness: any, payload: any) {
+    const local = readiness.local_checkout || {};
+    const remote = readiness.fetched_remote || {};
+    const counts = readiness.ahead_behind || {};
+    const branch = local.branch || remote.base_ref || 'current branch';
+    const behind = counts.behind === null || counts.behind === undefined ? 'unknown' : counts.behind;
+    const target = shortRuntimeUpdateSha(remote.commit_sha);
+    const restart = payload && payload.runtime_restart ? payload.runtime_restart : null;
+    const restartCapability = restart && restart.capability ? restart.capability : null;
+    const restartCopy = restartCapability && restartCapability.mode === 'supervisor_restart_available'
+      ? 'supervised restart available'
+      : restartCapability
+        ? 'manual restart may be required'
+        : 'restart guidance pending';
+    if (readiness.state === 'runtime_stale') {
+      return 'The checkout has moved, but this dashboard is still running the older build. ' + restartCopy + '.';
+    }
+    return 'Remote ' + (remote.remote || 'origin') + '/' + (remote.base_ref || branch) + ' has ' + formatRuntimeUpdateCommitCount(behind) + ' ready for ' + branch + '. Target ' + target + '.';
+  }
+
+function describeGithubEligibility(eligibility: any) {
+    if (!eligibility) {
+      return 'GitHub checks: not reported';
+    }
+    const summary = eligibility.check_summary || {};
+    const stateLabel = formatRuntimeUpdateLabel(eligibility.state || 'unknown');
+    if (eligibility.state === 'github_verified') {
+      return 'GitHub checks passed' + (Number.isFinite(summary.succeeded) ? ' (' + summary.succeeded + ' succeeded)' : '');
+    }
+    if (eligibility.state === 'github_checks_pending') {
+      return 'GitHub checks are still running' + (Number.isFinite(summary.pending) ? ' (' + summary.pending + ' pending)' : '');
+    }
+    if (eligibility.state === 'github_checks_absent_allowed') {
+      return 'No GitHub checks were reported; configuration allows the update to continue.';
+    }
+    if (eligibility.state === 'github_trusted_raw_git') {
+      return 'GitHub checks are bypassed by trusted raw-git mode.';
+    }
+    return 'GitHub checks: ' + stateLabel;
+  }
+
+function runtimeUpdateFact(label: string, detail: string) {
+    const item = document.createElement('div');
+    item.className = 'runtime-update-fact';
+    const title = document.createElement('strong');
+    title.textContent = label;
+    const value = document.createElement('span');
+    value.textContent = detail;
+    item.append(title, value);
+    return item;
+  }
+
+function renderRuntimeUpdateFacts(readiness: any, payload: any) {
+    if (!elements.runtimeUpdateDetails) {
+      return;
+    }
+    if (!readiness) {
+      elements.runtimeUpdateDetails.textContent = 'Runtime update details unavailable.';
+      return;
+    }
+    const local = readiness.local_checkout || {};
+    const remote = readiness.fetched_remote || {};
+    const counts = readiness.ahead_behind || {};
+    const fetch = readiness.last_fetch || {};
+    const restart = payload && payload.runtime_restart ? payload.runtime_restart : null;
+    const restartCapability = restart && restart.capability ? restart.capability : null;
+    const facts = [
+      runtimeUpdateFact('Current checkout', (local.branch || 'unknown branch') + ' @ ' + shortRuntimeUpdateSha(local.commit_sha)),
+      runtimeUpdateFact('Available build', (remote.remote || 'origin') + '/' + (remote.base_ref || 'main') + ' @ ' + shortRuntimeUpdateSha(remote.commit_sha)),
+      runtimeUpdateFact('Distance', (counts.behind === null || counts.behind === undefined ? 'unknown' : counts.behind) + ' behind, ' + (counts.ahead === null || counts.ahead === undefined ? 'unknown' : counts.ahead) + ' ahead'),
+      runtimeUpdateFact('Checks', describeGithubEligibility(readiness.github_eligibility)),
+      runtimeUpdateFact('Drain requirement', readiness.drain_required ? 'Drain Mode required before apply' : 'Drain Mode not required'),
+      runtimeUpdateFact('Restart path', restartCapability ? formatRuntimeUpdateLabel(restartCapability.mode) : 'Restart guidance pending')
+    ];
+    if (fetch.result) {
+      facts.push(runtimeUpdateFact('Last fetch', formatRuntimeUpdateLabel(fetch.result)));
+    }
+    if (readiness.prepared_update && readiness.prepared_update.candidate_sha) {
+      facts.push(runtimeUpdateFact('Prepared candidate', shortRuntimeUpdateSha(readiness.prepared_update.candidate_sha)));
+    }
+    if (restart && restart.recommended_manual_recovery) {
+      facts.push(runtimeUpdateFact('Manual recovery', restart.recommended_manual_recovery));
+    }
+    if (restart && restart.last_error && restart.last_error.message) {
+      facts.push(runtimeUpdateFact('Last restart error', restart.last_error.message));
+    }
+    elements.runtimeUpdateDetails.replaceChildren(...facts);
+  }
+
 export function renderRuntimeUpdate(readiness: any, payload: any) {
     if (!elements.runtimeUpdatePanel || !elements.runtimeUpdateState || !elements.runtimeUpdateDetails) {
       return;
@@ -185,45 +351,19 @@ export function renderRuntimeUpdate(readiness: any, payload: any) {
       return;
     }
 
-    const local = readiness.local_checkout || {};
-    const remote = readiness.fetched_remote || {};
-    const counts = readiness.ahead_behind || {};
-    const fetch = readiness.last_fetch || {};
-    const github = readiness.github_eligibility || {};
-    const restart = payload && payload.runtime_restart ? payload.runtime_restart : null;
-    const restartCapability = restart && restart.capability ? restart.capability : null;
-    const summaryParts = [
-      'state ' + formatRuntimeUpdateLabel(readiness.state),
-      'branch ' + (local.branch || 'unknown') + ' -> ' + (remote.remote || 'remote') + '/' + (remote.base_ref || 'unknown'),
-      'ahead ' + (counts.ahead === null || counts.ahead === undefined ? 'unknown' : counts.ahead),
-      'behind ' + (counts.behind === null || counts.behind === undefined ? 'unknown' : counts.behind),
-      'fetch ' + (fetch.result || 'unknown'),
-      'github ' + formatRuntimeUpdateLabel(github.state || 'unknown'),
-      restartCapability ? 'restart ' + formatRuntimeUpdateLabel(restartCapability.mode) : ''
-    ];
-
     if (readiness.attention_required) {
       elements.runtimeUpdateBanner.classList.remove('hidden');
       elements.runtimeUpdateTitle.textContent =
         readiness.state === 'runtime_stale' ? 'Runtime restart required' : 'Runtime update available';
-      elements.runtimeUpdateSummary.textContent = summaryParts.join(' • ');
+      elements.runtimeUpdateSummary.textContent = describeRuntimeUpdateBanner(readiness, payload);
     } else {
       elements.runtimeUpdateBanner.classList.add('hidden');
       elements.runtimeUpdateSummary.textContent = '';
     }
 
-    elements.runtimeUpdateState.textContent = formatRuntimeUpdateLabel(readiness.state);
-    elements.runtimeUpdateRecommendation.textContent = [
-      'Recommended action: ' + formatRuntimeUpdateLabel(readiness.recommended_action),
-      'GitHub eligibility: ' + formatRuntimeUpdateLabel(github.state || 'unknown') + '.',
-      restartCapability ? 'Restart capability: ' + formatRuntimeUpdateLabel(restartCapability.mode) + '.' : '',
-      restart && restart.phase ? 'Restart phase: ' + formatRuntimeUpdateLabel(restart.phase) + '.' : '',
-      restart && restart.recommended_manual_recovery ? 'Manual recovery: ' + restart.recommended_manual_recovery : '',
-      restart && restart.last_error ? 'Restart failure: ' + restart.last_error.message : '',
-      readiness.drain_required ? 'Drain Mode is required before applying.' : 'Drain Mode is not required.',
-      readiness.refusal_reasons && readiness.refusal_reasons.length ? 'Refusal: ' + readiness.refusal_reasons.join(', ') : ''
-    ].filter(Boolean).join(' ');
-    elements.runtimeUpdateDetails.textContent = formatCanonicalJsonBlock('Runtime Update JSON', readiness);
+    elements.runtimeUpdateState.textContent = describeRuntimeUpdateState(readiness);
+    elements.runtimeUpdateRecommendation.textContent = describeRuntimeUpdateAction(readiness, payload);
+    renderRuntimeUpdateFacts(readiness, payload);
   }
 
 export function renderDrainModeWorkflow(payload: any) {

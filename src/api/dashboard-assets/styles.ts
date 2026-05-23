@@ -435,9 +435,45 @@ h3 {
 
 .runtime-update-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
+  grid-template-columns: minmax(260px, 0.75fr) minmax(340px, 1.25fr);
   gap: 14px;
   align-items: start;
+}
+
+.runtime-update-guidance {
+  line-height: 1.45;
+}
+
+.runtime-update-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.runtime-update-fact {
+  min-width: 0;
+  border: 1px solid #d7e0f2;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 9px;
+}
+
+.runtime-update-fact strong,
+.runtime-update-fact span {
+  display: block;
+}
+
+.runtime-update-fact strong {
+  color: #244f95;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.runtime-update-fact span {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 
 .drain-boundary {

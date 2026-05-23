@@ -1096,6 +1096,13 @@ describe('dashboard browser client modules', () => {
     expect(elements.runtimeUpdatePreparePanelButton.disabled).toBe(true);
     expect(elements.runtimeUpdateApplyButton.disabled).toBe(false);
     expect(elements.runtimeUpdateApplyPanelButton.disabled).toBe(false);
+    expect(elements.runtimeUpdateTitle.textContent).toBe('Runtime update available');
+    expect(elements.runtimeUpdateSummary.textContent).toBe('Remote origin/main has 1 commit ready for main. Target new.');
+    expect(elements.runtimeUpdateState.textContent).toBe('Prepared update ready');
+    expect(elements.runtimeUpdateRecommendation.textContent).toContain('Apply the prepared update now');
+    expect(collectText(elements.runtimeUpdateDetails)).toContain('Current checkout main @ old');
+    expect(collectText(elements.runtimeUpdateDetails)).toContain('Available build origin/main @ new');
+    expect(collectText(elements.runtimeUpdateDetails)).toContain('Checks GitHub checks passed (1 succeeded)');
   });
 
   it('blocks guided runtime update controls when GitHub eligibility is not verified', () => {
@@ -1141,8 +1148,11 @@ describe('dashboard browser client modules', () => {
     expect(elements.runtimeUpdateBanner.className).not.toContain('hidden');
     expect(elements.runtimeUpdatePrepareButton.disabled).toBe(true);
     expect(elements.runtimeUpdateApplyButton.disabled).toBe(true);
-    expect(elements.runtimeUpdateSummary.textContent).toContain('github github checks pending');
-    expect(elements.runtimeUpdateRecommendation.textContent).toContain('GitHub eligibility: github checks pending');
+    expect(elements.runtimeUpdateSummary.textContent).toBe('Remote origin/main has 1 commit ready for main. Target new.');
+    expect(elements.runtimeUpdateRecommendation.textContent).toBe('Wait for GitHub checks to finish before preparing this update.');
+    expect(collectText(elements.runtimeUpdateDetails)).toContain('Checks GitHub checks are still running (1 pending)');
+    expect(elements.runtimeUpdateSummary.textContent).not.toContain('github github checks pending');
+    expect(elements.runtimeUpdateRecommendation.textContent).not.toContain('GitHub eligibility: github checks pending');
   });
 
   it('does not offer apply as the first action when Drain Mode is already active', () => {
@@ -1190,6 +1200,7 @@ describe('dashboard browser client modules', () => {
     expect(elements.runtimeUpdatePreparePanelButton.disabled).toBe(false);
     expect(elements.runtimeUpdateApplyButton.disabled).toBe(true);
     expect(elements.runtimeUpdateApplyPanelButton.disabled).toBe(true);
+    expect(elements.runtimeUpdateRecommendation.textContent).toContain('Prepare the update first');
   });
 
   it('renders unknown current build identity as degraded rather than stale', () => {
