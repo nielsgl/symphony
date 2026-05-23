@@ -1418,6 +1418,17 @@ describe('SnapshotService', () => {
       breaker_window_minutes: 30,
       breaker_first_hit_at: '2026-04-10T10:00:00.000Z',
       breaker_last_hit_at: '2026-04-10T10:04:00.000Z',
+      runtime_state_kind: 'automation_fault',
+      available_actions: [
+        {
+          id: 'clear_automation_fault',
+          label: 'Clear Fault + Retry',
+          endpoint: '/api/v1/issues/ABC-BREAKER/clear-automation-fault',
+          method: 'POST',
+          requires_reason_note: true,
+          destructive: false
+        }
+      ],
       operator_explainer_hint: {
         classification: 'failed',
         actionability: 'recommended',
@@ -1461,7 +1472,18 @@ describe('SnapshotService', () => {
       requires_manual_resume: false,
       awaiting_operator: false,
       breaker_active: true,
-      breaker_hit_count: 3
+      breaker_hit_count: 3,
+      runtime_state_kind: 'automation_fault',
+      available_actions: [
+        {
+          id: 'clear_automation_fault',
+          label: 'Clear Fault + Retry',
+          endpoint: '/api/v1/issues/ABC-BREAKER/clear-automation-fault',
+          method: 'POST',
+          requires_reason_note: true,
+          destructive: false
+        }
+      ]
     });
   });
 

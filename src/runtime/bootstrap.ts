@@ -1577,6 +1577,11 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               orchestrator.requeueIssue(issueIdentifier, params),
             retryLastFailedStep: async (issueIdentifier, params) =>
               orchestrator.retryLastFailedStep(issueIdentifier, params),
+            clearAutomationFault: async (issueIdentifier, params) =>
+              orchestrator.clearAutomationFault(issueIdentifier, {
+                actor: params?.actor ?? null,
+                reason_note: params?.reason_note ?? null
+              }),
             resumeBlockedIssue: async (issueIdentifier, params) =>
               orchestrator.resumeBlockedIssue(issueIdentifier, null, params?.resume_override_reason ?? null, {
                 actor: params?.actor ?? null,

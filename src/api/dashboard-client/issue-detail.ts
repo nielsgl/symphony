@@ -441,6 +441,13 @@ export async function loadIssue(identifier: any, options?: any) {
         : 'No phase markers yet.';
       const operatorTimelineRows = deriveOperatorTransitionRows(issueId, payload);
       const operatorActions = Array.isArray(payload.operator_actions) ? payload.operator_actions : [];
+      const availableActions =
+        payload.blocked && Array.isArray(payload.blocked.available_actions) ? payload.blocked.available_actions : [];
+      const availableActionText = availableActions.length
+        ? availableActions.map(function (entry: any) {
+            return (entry.label || entry.id || 'action') + ' | ' + (entry.method || 'POST') + ' ' + (entry.endpoint || 'n/a');
+          }).join('\\n')
+        : 'No backend-advertised issue actions.';
       const operatorActionText = operatorActions.length
         ? operatorActions.map(function (entry: any) {
             return formatDate(entry.requested_at_ms) + ' | ' + (entry.actor || 'operator') + ' | ' + entry.action + ' | ' + entry.result + ' | ' + (entry.result_code || 'n/a') + ' | ' + (entry.reason_note || 'no reason note') + ' | ' + (entry.message || 'n/a');
@@ -474,6 +481,8 @@ export async function loadIssue(identifier: any, options?: any) {
         operatorTimelineText +
         '\\n\\nOperator Action Outcomes\\n' +
         operatorActionText +
+        '\\n\\nAvailable Actions\\n' +
+        availableActionText +
         '\\n\\nExecution Timeline\\n' +
         timelineText +
         '\\n\\nSession Console\\n' +
@@ -493,6 +502,6 @@ export async function loadIssue(identifier: any, options?: any) {
       elements.issueOutput.textContent =
         'Issue load failed: ' +
         String(error) +
-        '\\n\\nFallback message\\nIssue detail payload is unavailable. Available actions remain resume, cancel, refresh, and JSON inspection when the state snapshot contains the issue.';
+        '\\n\\nFallback message\\nIssue detail payload is unavailable. Use only backend-advertised actions from the state snapshot when available.';
     }
   }

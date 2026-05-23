@@ -441,6 +441,20 @@ export function describeIssueRuntimeState(
       reason_code: retry.stop_reason_code
     };
   }
+  const breaker = context.state.circuit_breakers.get(issueId);
+  if (breaker?.breaker_active) {
+    return {
+      runtime_state: 'automation_fault',
+      issue_id: issueId,
+      issue_identifier: breaker.issue_identifier,
+      reason_code: REASON_CODES.operatorNoProgressRedispatchBlocked,
+      breaker_active: true,
+      breaker_hit_count: breaker.breaker_hit_count,
+      breaker_window_minutes: breaker.breaker_window_minutes,
+      breaker_first_hit_at_ms: breaker.breaker_first_hit_at_ms,
+      breaker_last_hit_at_ms: breaker.breaker_last_hit_at_ms
+    };
+  }
   return {
     runtime_state: context.state.completed.has(issueId) ? 'completed' : 'untracked',
     issue_id: issueId

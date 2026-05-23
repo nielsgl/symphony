@@ -37,7 +37,7 @@ export type NotBlockedExplainerCode =
   | null;
 
 export interface OperatorActionProjection {
-  action: 'cancel' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
+  action: 'cancel' | 'clear_automation_fault' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
   requested_at_ms: number;
   result: 'accepted' | 'rejected' | 'failed';
   result_code: string | null;
@@ -55,6 +55,15 @@ export interface OperatorActionProjection {
   };
   pre_state?: Record<string, unknown>;
   post_state?: Record<string, unknown>;
+}
+
+export interface ApiAvailableOperatorAction {
+  id: 'cancel' | 'clear_automation_fault' | 'requeue' | 'resume' | 'retry_step' | 'submit_input';
+  label: string;
+  endpoint: string;
+  method: 'POST';
+  requires_reason_note: boolean;
+  destructive: boolean;
 }
 
 export interface VisibilityProjectionFields {
@@ -726,6 +735,8 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     recovery: import('../orchestrator').MissingToolOutputRecoveryState | null;
     missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
     operator_explainer_hint: OperatorExplainerHint | null;
+    runtime_state_kind: 'blocked_input' | 'automation_fault';
+    available_actions: ApiAvailableOperatorAction[];
   }>;
   stopped_runs: Array<{
     run_id: string;
@@ -1232,6 +1243,8 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     last_phase_at: string | null;
     last_phase_detail: string | null;
     missing_tool_output_recovery: import('./missing-tool-output-recovery').MissingToolOutputRecoveryEvidence | null;
+    runtime_state_kind: 'blocked_input' | 'automation_fault';
+    available_actions: ApiAvailableOperatorAction[];
   }) | null;
   blocked: (ApiBudgetProjection & {
     attempt: number;
@@ -1633,6 +1646,21 @@ export interface LocalApiServerOptions {
       issueIdentifier: string,
       params: { actor?: string; reason_note?: string }
     ) => Promise<{ ok: true; issue_id: string; retry_attempt: number } | { ok: false; code: string; message: string }>;
+    clearAutomationFault?: (
+      issueIdentifier: string,
+      params: { actor?: string; reason_note?: string }
+    ) => Promise<
+      | {
+          ok: true;
+          issue_id: string;
+          status: 'started' | 'held';
+          result_code: string;
+          message: string;
+          dispatch_started: boolean;
+          breaker_cleared: boolean;
+        }
+      | { ok: false; code: string; message: string }
+    >;
     resumeBlockedIssue: (issueIdentifier: string, params?: { resume_override_reason?: string; actor?: string; reason_note?: string }) => Promise<
       { ok: true; issue_id: string } | { ok: false; code: string; message: string }
     >;

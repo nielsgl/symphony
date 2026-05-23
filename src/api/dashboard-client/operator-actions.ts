@@ -245,7 +245,19 @@ export async function runOperatorAction(issueIdentifier: any, actionPath: any, d
         return;
       }
       const payload = await fetchJson('/api/v1/issues/' + encodeURIComponent(issueIdentifier) + '/' + actionPath, buildOperatorActionRequest(reasonNote, destructive));
-      setRefreshStatus('Operator action requested for ' + (payload.issue_identifier || issueIdentifier), false);
+      if (payload && actionPath === 'clear-automation-fault') {
+        setRefreshStatus(
+          'Clear Fault + Retry ' +
+            (payload.status || 'requested') +
+            ' for ' +
+            (payload.issue_identifier || issueIdentifier) +
+            ': ' +
+            (payload.message || payload.result_code || 'request accepted'),
+          payload.status === 'held'
+        );
+      } else {
+        setRefreshStatus('Operator action requested for ' + (payload.issue_identifier || issueIdentifier), false);
+      }
       await loadStateViaPoll();
       if (state.selectedIssue === issueIdentifier) {
         await loadIssue(issueIdentifier);

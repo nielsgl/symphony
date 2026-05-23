@@ -2066,6 +2066,39 @@ export class LocalApiServer {
         ]
       },
       {
+        path: /^\/api\/v1\/issues\/([^/]+)\/clear-automation-fault$/,
+        routes: [
+          {
+            method: 'POST',
+            handler: async (request, response, match) => {
+              if (!this.issueControlSource?.clearAutomationFault) {
+                throw new LocalApiError('clear_automation_fault_failed', 'Issue control source is not configured', 503);
+              }
+              const parsed = parseOperatorActionBody(await readOptionalJsonObject(request, 'invalid_clear_automation_fault_submit'));
+              const reasonNote = requireOperatorReasonNote(parsed);
+              const issueIdentifier = decodeURIComponent(match[1]);
+              const result = await this.issueControlSource.clearAutomationFault(issueIdentifier, {
+                actor: parsed.actor,
+                reason_note: reasonNote
+              });
+              if (!result.ok) {
+                throw new LocalApiError(result.code, result.message, statusForOperatorActionFailure(result.code));
+              }
+              sendJson(response, result.status === 'started' ? 202 : 200, {
+                cleared: result.breaker_cleared,
+                issue_identifier: issueIdentifier,
+                status: result.status,
+                result_code: result.result_code,
+                message: result.message,
+                dispatch_started: result.dispatch_started,
+                breaker_cleared: result.breaker_cleared,
+                requested_at: new Date().toISOString()
+              });
+            }
+          }
+        ]
+      },
+      {
         path: /^\/api\/v1\/issues\/([^/]+)\/resume$/,
         routes: [
           {

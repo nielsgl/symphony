@@ -491,6 +491,80 @@ describe('dashboard browser client modules', () => {
     expect(collectText(elements.blockedRows)).toContain('Reply');
   });
 
+  it('renders blocked-row actions from backend advertised capabilities', () => {
+    renderBlocked({
+      blocked: [
+        {
+          issue_identifier: 'NIE-217',
+          attempt: 1,
+          blocked_at: '2026-05-21T10:00:00.000Z',
+          stop_reason_code: 'turn_input_required',
+          runtime_state_kind: 'blocked_input',
+          pending_input: null,
+          available_actions: [
+            {
+              id: 'resume',
+              label: 'Mark Acceptance Complete + Resume',
+              endpoint: '/api/v1/issues/NIE-217/resume',
+              method: 'POST',
+              requires_reason_note: true,
+              destructive: false
+            },
+            {
+              id: 'cancel',
+              label: 'Cancel to Backlog',
+              endpoint: '/api/v1/issues/NIE-217/cancel',
+              method: 'POST',
+              requires_reason_note: true,
+              destructive: true
+            }
+          ]
+        }
+      ]
+    });
+
+    const text = collectText(elements.blockedRows);
+    expect(text).toContain('Mark Acceptance Complete + Resume');
+    expect(text).toContain('Cancel to Backlog');
+    expect(text).not.toContain('Requeue');
+  });
+
+  it('renders automation-fault recovery action without invalid blocked-input buttons', () => {
+    renderBlocked({
+      blocked: [
+        {
+          issue_identifier: 'NIE-229',
+          attempt: 0,
+          blocked_at: '2026-05-23T11:36:49.000Z',
+          stop_reason_code: 'operator_action_required_no_progress_redispatch_blocked',
+          runtime_state_kind: 'automation_fault',
+          pending_input: null,
+          breaker_active: true,
+          breaker_hit_count: 3,
+          breaker_window_minutes: 30,
+          available_actions: [
+            {
+              id: 'clear_automation_fault',
+              label: 'Clear Fault + Retry',
+              endpoint: '/api/v1/issues/NIE-229/clear-automation-fault',
+              method: 'POST',
+              requires_reason_note: true,
+              destructive: false
+            }
+          ]
+        }
+      ]
+    });
+
+    const text = collectText(elements.blockedRows);
+    expect(text).toContain('Clear Fault + Retry');
+    expect(text).toContain('No-progress redispatch circuit breaker: 3 hit(s) in 30m.');
+    expect(text).not.toContain('Mark Acceptance Complete + Resume');
+    expect(text).not.toContain('Push Commit + Resume');
+    expect(text).not.toContain('Cancel to Backlog');
+    expect(text).not.toContain('Requeue');
+  });
+
   it('renders runtime event empty and filtered states directly', () => {
     renderRuntimeEvents({ recent_runtime_events: [] });
     expect(collectText(elements.runtimeEventsList)).toContain('No runtime events.');

@@ -59,7 +59,7 @@ export function statusForOperatorActionFailure(code: string): number {
   if (code === 'reason_note_required') {
     return 400;
   }
-  if (code === 'issue_not_found' || code === 'issue_not_blocked') {
+  if (code === 'issue_not_found' || code === 'issue_not_blocked' || code === 'issue_not_automation_fault') {
     return 404;
   }
   if (code === 'confirmation_required' || code === 'issue_not_active' || code === 'unsupported_transition') {

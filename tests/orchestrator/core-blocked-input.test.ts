@@ -1131,6 +1131,116 @@ describe('OrchestratorCore blocked input', () => {
     });
   });
 
+  it('clears circuit-breaker-only automation faults and redispatches when dispatch gates pass', async () => {
+    const persistence = {
+      upsertBreaker: vi.fn(async () => undefined),
+      deleteBreaker: vi.fn(async () => undefined),
+      upsertOperatorActions: vi.fn(async () => undefined),
+      appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+    };
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1 },
+      persistence: persistence as any,
+      resolveProgressSignals: async () => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: 'marker-same'
+      })
+    });
+    const issue = makeIssue({ id: 'i-clear-fault', identifier: 'ABC-CLEAR-FAULT', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-clear-fault', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-clear-fault')?.callback();
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get('i-clear-fault')).toMatchObject({
+      breaker_active: true
+    });
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+    const result = await harness.orchestrator.clearAutomationFault('ABC-CLEAR-FAULT', {
+      actor: 'operator@example.test',
+      reason_note: 'operator fixed dirty checkout'
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      issue_id: 'i-clear-fault',
+      status: 'started',
+      breaker_cleared: true,
+      dispatch_started: true
+    });
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.has('i-clear-fault')).toBe(false);
+    expect(harness.orchestrator.getStateSnapshot().redispatch_progress?.has('i-clear-fault')).toBe(false);
+    expect(persistence.deleteBreaker).toHaveBeenCalledWith('i-clear-fault');
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-clear-fault')).toHaveLength(2);
+    expect(harness.spawned.at(-1)).toMatchObject({
+      issue_id: 'i-clear-fault',
+      attempt: null,
+      resume_context: 'Operator cleared automation fault and requested redispatch'
+    });
+    expect(harness.orchestrator.getStateSnapshot().operator_actions?.get('i-clear-fault')?.at(-1)).toMatchObject({
+      action: 'clear_automation_fault',
+      result: 'accepted',
+      result_code: 'dispatch_started',
+      reason_note: 'operator fixed dirty checkout'
+    });
+    expect(harness.orchestrator.getStateSnapshot().recent_runtime_events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: 'orchestration.automation_fault.cleared',
+          issue_identifier: 'ABC-CLEAR-FAULT',
+          reason_code: 'operator_clear_automation_fault'
+        })
+      ])
+    );
+  });
+
+  it('holds automation fault clearing during Drain Mode without deleting breaker state', async () => {
+    const persistence = {
+      upsertBreaker: vi.fn(async () => undefined),
+      deleteBreaker: vi.fn(async () => undefined),
+      upsertOperatorActions: vi.fn(async () => undefined),
+      appendOperatorActionHistory: vi.fn(async () => 'operator-action-1')
+    };
+    const harness = createHarness({
+      configOverrides: { respawn_max_attempts_without_progress: 1 },
+      persistence: persistence as any,
+      resolveProgressSignals: async () => ({
+        commit_sha: 'sha-same',
+        checklist_checkpoint: 'chk-same',
+        state_marker: 'marker-same'
+      })
+    });
+    const issue = makeIssue({ id: 'i-clear-drain', identifier: 'ABC-CLEAR-DRAIN', state: 'In Progress' });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.orchestrator.tick('interval');
+    await harness.orchestrator.onWorkerExit('i-clear-drain', 'abnormal', 'worker exited');
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([issue]);
+    await harness.scheduled.get('i-clear-drain')?.callback();
+    (harness.orchestrator as any).enterDrainMode({ reason: 'safe runtime restart' });
+
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([issue]);
+    const result = await harness.orchestrator.clearAutomationFault('ABC-CLEAR-DRAIN', {
+      actor: 'operator@example.test',
+      reason_note: 'operator fixed dirty checkout'
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      issue_id: 'i-clear-drain',
+      status: 'held',
+      result_code: 'drain_mode_active',
+      breaker_cleared: false,
+      dispatch_started: false
+    });
+    expect(harness.orchestrator.getStateSnapshot().circuit_breakers.get('i-clear-drain')).toMatchObject({
+      breaker_active: true
+    });
+    expect(persistence.deleteBreaker).not.toHaveBeenCalled();
+    expect(harness.spawned.filter((entry) => entry.issue_id === 'i-clear-drain')).toHaveLength(1);
+  });
+
   it('cancels blocked issue to Todo/backlog state via dedicated path', async () => {
     const logs: Array<{ event: string; context?: Record<string, unknown> }> = [];
     const logger: StructuredLogger = {

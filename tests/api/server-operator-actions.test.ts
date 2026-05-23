@@ -419,6 +419,15 @@ describe('LocalApiServer operator actions', () => {
     const cancelCurrentTurn = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
     const requeueIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 2 }));
     const retryLastFailedStep = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 3 }));
+    const clearAutomationFault = vi.fn(async () => ({
+      ok: true as const,
+      issue_id: 'issue-3',
+      status: 'held' as const,
+      result_code: 'drain_mode_active',
+      message: 'Drain Mode is active',
+      dispatch_started: false,
+      breaker_cleared: false
+    }));
     server = new LocalApiServer({
       snapshotSource: {
         getStateSnapshot: () => makeState()
@@ -430,6 +439,7 @@ describe('LocalApiServer operator actions', () => {
         cancelCurrentTurn,
         requeueIssue,
         retryLastFailedStep,
+        clearAutomationFault,
         resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
         cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
         submitBlockedIssueInput: vi.fn(async () => ({
@@ -461,10 +471,16 @@ describe('LocalApiServer operator actions', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'retry failed step' })
     });
+    const clearFaultResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/clear-automation-fault`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'dirty repo fixed' })
+    });
 
     expect(cancelResponse.status).toBe(202);
     expect(requeueResponse.status).toBe(202);
     expect(retryResponse.status).toBe(202);
+    expect(clearFaultResponse.status).toBe(200);
     expect(cancelCurrentTurn).toHaveBeenCalledWith('ABC-3', {
       actor: 'ops@example.test',
       confirmed: true,
@@ -479,12 +495,25 @@ describe('LocalApiServer operator actions', () => {
       actor: 'ops@example.test',
       reason_note: 'retry failed step'
     });
+    expect(clearAutomationFault).toHaveBeenCalledWith('ABC-3', {
+      actor: 'ops@example.test',
+      reason_note: 'dirty repo fixed'
+    });
   });
 
   it('rejects missing or blank reason notes before dispatching operator actions', async () => {
     const cancelCurrentTurn = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
     const requeueIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 2 }));
     const retryLastFailedStep = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', retry_attempt: 3 }));
+    const clearAutomationFault = vi.fn(async () => ({
+      ok: true as const,
+      issue_id: 'issue-3',
+      status: 'held' as const,
+      result_code: 'drain_mode_active',
+      message: 'Drain Mode is active',
+      dispatch_started: false,
+      breaker_cleared: false
+    }));
     const resumeBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' }));
     const cancelBlockedIssue = vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' }));
     const submitBlockedIssueInput = vi.fn(async () => ({
@@ -507,6 +536,7 @@ describe('LocalApiServer operator actions', () => {
         cancelCurrentTurn,
         requeueIssue,
         retryLastFailedStep,
+        clearAutomationFault,
         resumeBlockedIssue,
         cancelBlockedIssue,
         submitBlockedIssueInput
@@ -531,6 +561,11 @@ describe('LocalApiServer operator actions', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({})
       }),
+      fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/clear-automation-fault`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({})
+      }),
       fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/resume`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -550,8 +585,9 @@ describe('LocalApiServer operator actions', () => {
     const responses = await Promise.all(requests);
     const payloads = await Promise.all(responses.map(async (response) => response.json() as Promise<{ error: { code: string } }>));
 
-    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400, 400, 400]);
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400, 400, 400, 400]);
     expect(payloads.map((payload) => payload.error.code)).toEqual([
+      'reason_note_required',
       'reason_note_required',
       'reason_note_required',
       'reason_note_required',
@@ -562,6 +598,7 @@ describe('LocalApiServer operator actions', () => {
     expect(cancelCurrentTurn).not.toHaveBeenCalled();
     expect(requeueIssue).not.toHaveBeenCalled();
     expect(retryLastFailedStep).not.toHaveBeenCalled();
+    expect(clearAutomationFault).not.toHaveBeenCalled();
     expect(resumeBlockedIssue).not.toHaveBeenCalled();
     expect(cancelBlockedIssue).not.toHaveBeenCalled();
     expect(submitBlockedIssueInput).not.toHaveBeenCalled();
