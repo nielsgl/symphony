@@ -65,6 +65,11 @@ codex:
 runtime_update:
   github_eligibility:
     mode: allow_absent_checks
+persistence:
+  retention_days: 365
+logging:
+  max_bytes: 26214400
+  max_files: 50
 server:
   port: 3000
 ---
