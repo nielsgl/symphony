@@ -1,14 +1,16 @@
 import type { DashboardClientConfig } from './types';
 
 export function renderDashboardHtml(_config?: DashboardClientConfig): string {
+  const revision = encodeURIComponent(_config?.asset_revision || 'dev');
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="symphony-dashboard-asset-revision" content="${revision}" />
   <title>Symphony Operator Control</title>
-  <link rel="stylesheet" href="/dashboard/styles.css" />
-  <script src="/dashboard/client.js" defer></script>
+  <link rel="stylesheet" href="/dashboard/styles.css?v=${revision}" />
+  <script src="/dashboard/client.js?v=${revision}" defer></script>
 </head>
 <body>
   <div class="backdrop"></div>

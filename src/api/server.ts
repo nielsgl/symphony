@@ -31,6 +31,7 @@ import {
 } from './thread-diagnostics';
 import type {
   ApiDiagnosticsResponse,
+  ApiDashboardAssetVerification,
   ApiDrainControlBlocker,
   ApiDrainShutdownResponse,
   ApiDrainWaitResponse,
@@ -102,6 +103,19 @@ interface TimedStateSnapshot {
   snapshotErrorCode: ApiStateErrorResponse['error']['code'] | null;
 }
 
+function cloneStateSnapshot(snapshot: TimedStateSnapshot): TimedStateSnapshot {
+  return JSON.parse(JSON.stringify(snapshot)) as TimedStateSnapshot;
+}
+
+function snapshotGeneratedAtMs(payload: ApiStateSnapshotResponse): number | null {
+  if ('error' in payload) {
+    return null;
+  }
+  return typeof payload.snapshot_generated_at_ms === 'number' && Number.isFinite(payload.snapshot_generated_at_ms)
+    ? payload.snapshot_generated_at_ms
+    : Date.parse(payload.generated_at);
+}
+
 function isRuntimeUpdateActionable(readiness: ApiRuntimeUpdateReadiness | null): boolean {
   return !!readiness && [
     'local_checkout_behind',
@@ -171,6 +185,7 @@ export class LocalApiServer {
   private readonly workflowControlSource?: LocalApiServerOptions['workflowControlSource'];
   private readonly issueControlSource?: LocalApiServerOptions['issueControlSource'];
   private readonly dashboardConfig: NonNullable<LocalApiServerOptions['dashboardConfig']>;
+  private readonly dashboardAssetRevision: string | null;
   private readonly logger?: StructuredLogger;
   private readonly codexStateDbPath: string;
   private readonly nowMs: () => number;
@@ -187,6 +202,8 @@ export class LocalApiServer {
   private readonly streamDiagnostics: StreamDiagnosticsState;
   private readonly liveTokenFallbackCache: Map<string, LiveTokenFallbackCacheEntry>;
   private shutdownOutcome: ApiDrainShutdownResponse | null;
+  private lastGoodStateSnapshot: TimedStateSnapshot | null;
+  private stateProjectionInProgress: boolean;
 
   constructor(options: LocalApiServerOptions) {
     this.host = options.host ?? '127.0.0.1';
@@ -200,11 +217,15 @@ export class LocalApiServer {
     this.runtimeUpdateSource = options.runtimeUpdateSource;
     this.workflowControlSource = options.workflowControlSource;
     this.issueControlSource = options.issueControlSource;
-    this.dashboardConfig = options.dashboardConfig ?? {
-      dashboard_enabled: true,
-      refresh_ms: 4000,
-      render_interval_ms: 1000,
-      phase_stale_warn_ms: 45000
+    this.dashboardAssetRevision = options.dashboardConfig?.asset_revision ?? null;
+    this.dashboardConfig = {
+      ...(options.dashboardConfig ?? {
+        dashboard_enabled: true,
+        refresh_ms: 4000,
+        render_interval_ms: 1000,
+        phase_stale_warn_ms: 45000
+      }),
+      asset_revision: this.dashboardAssetRevision
     };
     this.logger = options.logger;
     this.nowMs = options.nowMs ?? (() => Date.now());
@@ -225,6 +246,8 @@ export class LocalApiServer {
     this.lastHealthSignature = null;
     this.liveTokenFallbackCache = new Map();
     this.shutdownOutcome = null;
+    this.lastGoodStateSnapshot = null;
+    this.stateProjectionInProgress = false;
     this.streamDiagnostics = createStreamDiagnosticsState();
 
     this.server = http.createServer((req, res) => {
@@ -400,18 +423,65 @@ export class LocalApiServer {
     });
   }
 
-  private buildStateSnapshotResponse(): TimedStateSnapshot {
+  private cachedStateSnapshot(reasonCode: 'control_plane_degraded' | 'projection_in_progress' | 'snapshot_error'): TimedStateSnapshot | null {
+    if (!this.lastGoodStateSnapshot) {
+      return null;
+    }
+    const snapshot = cloneStateSnapshot(this.lastGoodStateSnapshot);
+    const generatedAtMs = snapshotGeneratedAtMs(snapshot.payload);
+    if (!('error' in snapshot.payload)) {
+      snapshot.payload.api_degraded_mode = true;
+      snapshot.payload.api_degraded_reason_code = 'upstream_unavailable';
+      snapshot.payload.api_degraded_routes = ['/api/v1/state'];
+      if (generatedAtMs !== null) {
+        snapshot.payload.snapshot_age_ms = Math.max(0, this.nowMs() - generatedAtMs);
+        snapshot.snapshotAgeMs = snapshot.payload.snapshot_age_ms;
+        snapshot.payload.snapshot_freshness_state = 'stale';
+        snapshot.snapshotFreshnessState = 'stale';
+      }
+    }
+    this.logger?.log({
+      level: reasonCode === 'snapshot_error' ? 'warn' : 'info',
+      event: CANONICAL_EVENT.api.stateSnapshotFallbackServed,
+      message: 'served last-good state snapshot',
+      context: {
+        reason_code: reasonCode,
+        snapshot_age_ms: snapshot.snapshotAgeMs,
+        snapshot_freshness_state: snapshot.snapshotFreshnessState
+      }
+    });
+    return snapshot;
+  }
+
+  private buildStateSnapshotResponse(options: { allowControlPlaneFallback?: boolean } = {}): TimedStateSnapshot {
+    if (this.stateProjectionInProgress) {
+      const cached = this.cachedStateSnapshot('projection_in_progress');
+      if (cached) {
+        return cached;
+      }
+    }
+    if (options.allowControlPlaneFallback !== false && this.lastGoodStateSnapshot) {
+      const controlPlane = this.controlPlaneHealth.summarize(this.nowMs());
+      if (controlPlane.worst_health === 'degraded') {
+        const cached = this.cachedStateSnapshot('control_plane_degraded');
+        if (cached) {
+          return cached;
+        }
+      }
+    }
     const projectionStartedAtMs = this.nowMs();
+    this.stateProjectionInProgress = true;
     try {
       const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
       const payload = this.snapshotService.projectState(state);
+      payload.dashboard_asset_revision = this.dashboardAssetRevision;
       payload.runtime_update = this.runtimeUpdateSource?.readUpdateReadiness() ?? null;
       payload.runtime_restart = this.runtimeUpdateSource?.readRestartStatus?.() ?? manualRestartStatus();
       const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
       const enrichmentStartedAtMs = this.nowMs();
       const enrichment = this.enrichLiveTokenFallbackState(payload);
       const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
-      return {
+      const snapshot = {
         payload,
         projectionDurationMs,
         enrichmentDurationMs,
@@ -422,6 +492,8 @@ export class LocalApiServer {
         snapshotFreshnessState: payload.snapshot_freshness_state,
         snapshotErrorCode: null
       };
+      this.lastGoodStateSnapshot = cloneStateSnapshot(snapshot);
+      return snapshot;
     } catch (error) {
       const code: ApiStateErrorResponse['error']['code'] =
         error instanceof LocalApiError && error.code === 'snapshot_timeout'
@@ -437,6 +509,10 @@ export class LocalApiServer {
           detail: error instanceof Error ? error.message : 'unknown'
         }
       });
+      const cached = this.cachedStateSnapshot('snapshot_error');
+      if (cached) {
+        return cached;
+      }
       return {
         payload: {
           generated_at: new Date(this.nowMs()).toISOString(),
@@ -454,64 +530,13 @@ export class LocalApiServer {
         snapshotFreshnessState: null,
         snapshotErrorCode: code
       };
+    } finally {
+      this.stateProjectionInProgress = false;
     }
   }
 
   private buildBoundedStateSnapshotResponse(): TimedStateSnapshot {
-    const projectionStartedAtMs = this.nowMs();
-    try {
-      const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
-      const payload = this.snapshotService.projectState(state);
-      payload.runtime_update = this.runtimeUpdateSource?.readUpdateReadiness() ?? null;
-      payload.runtime_restart = this.runtimeUpdateSource?.readRestartStatus?.() ?? manualRestartStatus();
-      const projectionDurationMs = this.nowMs() - projectionStartedAtMs;
-      const enrichmentStartedAtMs = this.nowMs();
-      const enrichment = this.enrichLiveTokenFallbackState(payload);
-      const enrichmentDurationMs = this.nowMs() - enrichmentStartedAtMs;
-      return {
-        payload,
-        projectionDurationMs,
-        enrichmentDurationMs,
-        enrichmentStatus: enrichment.status,
-        enrichmentDegraded: enrichment.degraded,
-        enrichmentReasonCode: enrichment.reason_code,
-        snapshotAgeMs: payload.snapshot_age_ms,
-        snapshotFreshnessState: payload.snapshot_freshness_state,
-        snapshotErrorCode: null
-      };
-    } catch (error) {
-      const code: ApiStateErrorResponse['error']['code'] =
-        error instanceof LocalApiError && error.code === 'snapshot_timeout'
-          ? 'snapshot_timeout'
-          : 'snapshot_unavailable';
-      const message = code === 'snapshot_timeout' ? 'Snapshot timed out' : 'Snapshot unavailable';
-      this.logger?.log({
-        level: 'warn',
-        event: CANONICAL_EVENT.api.stateSnapshotUnavailable,
-        message,
-        context: {
-          code,
-          detail: error instanceof Error ? error.message : 'unknown'
-        }
-      });
-      return {
-        payload: {
-          generated_at: new Date(this.nowMs()).toISOString(),
-          error: {
-            code,
-            message
-          }
-        },
-        projectionDurationMs: this.nowMs() - projectionStartedAtMs,
-        enrichmentDurationMs: null,
-        enrichmentStatus: null,
-        enrichmentDegraded: null,
-        enrichmentReasonCode: null,
-        snapshotAgeMs: null,
-        snapshotFreshnessState: null,
-        snapshotErrorCode: code
-      };
-    }
+    return this.buildStateSnapshotResponse({ allowControlPlaneFallback: true });
   }
 
   private readTelemetryStateSnapshot(): OrchestratorState | ApiStateErrorResponse {
@@ -534,6 +559,13 @@ export class LocalApiServer {
 
   private broadcastStateSnapshot(source: string): void {
     const startedAtMs = this.nowMs();
+    if (this.eventClients.size === 0) {
+      this.streamDiagnostics.lastSnapshotBroadcastAtMs = this.nowMs();
+      this.streamDiagnostics.lastSnapshotBroadcastLatencyMs = this.nowMs() - startedAtMs;
+      this.streamDiagnostics.lastSnapshotBroadcastStatus = 'no_clients';
+      this.streamDiagnostics.lastSnapshotBroadcastError = null;
+      return;
+    }
     const snapshot = this.buildBoundedStateSnapshotResponse();
     const payload = snapshot.payload;
     if (!('error' in payload)) {
@@ -545,13 +577,6 @@ export class LocalApiServer {
         });
       }
       this.lastHealthSignature = healthSignature;
-    }
-    if (this.eventClients.size === 0) {
-      this.streamDiagnostics.lastSnapshotBroadcastAtMs = this.nowMs();
-      this.streamDiagnostics.lastSnapshotBroadcastLatencyMs = this.nowMs() - startedAtMs;
-      this.streamDiagnostics.lastSnapshotBroadcastStatus = 'no_clients';
-      this.streamDiagnostics.lastSnapshotBroadcastError = null;
-      return;
     }
     const serializationStartedAtMs = this.nowMs();
     const serialized = this.serializeEvent('state_snapshot', {
@@ -862,7 +887,7 @@ export class LocalApiServer {
   }
 
   private buildDiagnosticsPayload(): TimedDiagnosticsPayload {
-    return buildDiagnosticsPayload({
+    const diagnostics = buildDiagnosticsPayload({
       diagnosticsSource: this.diagnosticsSource,
       snapshotSource: this.snapshotSource,
       snapshotService: this.snapshotService,
@@ -873,6 +898,85 @@ export class LocalApiServer {
       enrichLiveTokenFallbackState: (payload) => this.enrichLiveTokenFallbackState(payload),
       readUpdateReadiness: () => this.runtimeUpdateSource?.readUpdateReadiness() ?? null,
       readRestartStatus: () => this.runtimeUpdateSource?.readRestartStatus?.() ?? manualRestartStatus()
+    });
+    diagnostics.payload.dashboard_asset_revision = this.dashboardAssetRevision;
+    return diagnostics;
+  }
+
+  async verifyDashboardAssets(timeoutMs = 2_000): Promise<ApiDashboardAssetVerification> {
+    const address = this.address();
+    const revision = this.dashboardAssetRevision;
+    const checkedAt = new Date(this.nowMs()).toISOString();
+    const paths = [
+      '/',
+      `/dashboard/client.js?v=${encodeURIComponent(revision || 'dev')}`,
+      `/dashboard/styles.css?v=${encodeURIComponent(revision || 'dev')}`
+    ];
+    const checks = await Promise.all(paths.map((pathName) => this.verifyDashboardAssetPath(address.host, address.port, pathName, revision, timeoutMs)));
+    const failed = checks.find((check) => check.error || check.status_code !== 200 || !/no-store/i.test(check.cache_control ?? '') || !check.body_contains_revision);
+    return {
+      ok: !failed,
+      checked_at: checkedAt,
+      revision,
+      reason_code: failed ? REASON_CODES.runtimeUpdateDashboardAssetVerificationFailed : null,
+      detail: failed
+        ? `${failed.path} did not return the expected dashboard asset revision/cache contract`
+        : null,
+      checks
+    };
+  }
+
+  private verifyDashboardAssetPath(
+    host: string,
+    port: number,
+    pathName: string,
+    revision: string | null,
+    timeoutMs: number
+  ): Promise<ApiDashboardAssetVerification['checks'][number]> {
+    const startedAtMs = this.nowMs();
+    const requestHost = host === '::' || host === '0.0.0.0' ? '127.0.0.1' : host;
+    return new Promise((resolve) => {
+      const request = http.request(
+        {
+          host: requestHost,
+          port,
+          path: pathName,
+          method: 'GET',
+          timeout: timeoutMs
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          });
+          response.on('end', () => {
+            const body = Buffer.concat(chunks).toString('utf8');
+            const expected = revision || 'dev';
+            resolve({
+              path: pathName,
+              status_code: response.statusCode ?? null,
+              duration_ms: Math.max(0, this.nowMs() - startedAtMs),
+              cache_control: typeof response.headers['cache-control'] === 'string' ? response.headers['cache-control'] : null,
+              body_contains_revision: body.includes(expected),
+              error: null
+            });
+          });
+        }
+      );
+      request.on('timeout', () => {
+        request.destroy(new Error('dashboard_asset_timeout'));
+      });
+      request.on('error', (error) => {
+        resolve({
+          path: pathName,
+          status_code: null,
+          duration_ms: Math.max(0, this.nowMs() - startedAtMs),
+          cache_control: null,
+          body_contains_revision: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+      request.end();
     });
   }
 
@@ -933,7 +1037,11 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (_request, response) => {
               setLocalDashboardAssetCacheHeaders(response);
-              sendScript(response, 200, renderDashboardClientJs(this.dashboardConfig));
+              sendScript(
+                response,
+                200,
+                `/* symphony-dashboard-asset-revision ${this.dashboardAssetRevision ?? 'dev'} */\n${renderDashboardClientJs(this.dashboardConfig)}`
+              );
             }
           }
         ]
@@ -945,7 +1053,11 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (_request, response) => {
               setLocalDashboardAssetCacheHeaders(response);
-              sendCss(response, 200, renderDashboardStylesCss());
+              sendCss(
+                response,
+                200,
+                `/* symphony-dashboard-asset-revision ${this.dashboardAssetRevision ?? 'dev'} */\n${renderDashboardStylesCss()}`
+              );
             }
           }
         ]

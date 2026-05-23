@@ -8,6 +8,7 @@ import {
   path,
   SqlitePersistenceStore
 } from './store-test-harness';
+import { RetentionHealthStore } from '../../src/persistence/retention-health-store';
 
 describe('SqlitePersistenceStore retention and health', () => {
   const { dirs, stores, identity, openDatabase, tableNames, withLegacyProjectKey, cleanup } = createStoreTestHarness();
@@ -237,6 +238,111 @@ describe('SqlitePersistenceStore retention and health', () => {
       last_prune_failure_reason: 'retention_prune_failed',
       last_prune_failure_detail: 'token=***REDACTED*** prune exploded'
     });
+  });
+
+  it('keeps fast health off sqlite integrity checks and deep health refreshes cached integrity metadata', () => {
+    let now = Date.parse('2026-04-11T12:00:00.000Z');
+    let integrityChecks = 0;
+    let integrityResult = 'ok';
+    const db = {
+      prepare(sql: string) {
+        return {
+          get(value?: string) {
+            if (sql.includes('sqlite_master')) {
+              return value === 'history_identity_projection' ? { name: value } : undefined;
+            }
+            if (sql.includes('COUNT(DISTINCT')) {
+              return { count: 2 };
+            }
+            if (sql.includes('COUNT(*) AS count FROM runs')) {
+              return { count: 3 };
+            }
+            if (sql.includes('PRAGMA integrity_check')) {
+              integrityChecks += 1;
+              return { integrity_check: integrityResult };
+            }
+            if (sql.includes('SELECT value FROM meta')) {
+              return undefined;
+            }
+            throw new Error(`unexpected query: ${sql}`);
+          }
+        };
+      }
+    };
+    const store = new RetentionHealthStore({
+      db: db as any,
+      dbPath: '/tmp/runtime.sqlite',
+      retentionDays: 365,
+      nowMs: () => now,
+      transaction: (fn) => fn(),
+      readHistorySchemaHealth: () =>
+        ({
+          status: 'healthy',
+          target_version: 8,
+          applied_version: 8,
+          degraded_reason_code: null,
+          degraded_detail: null,
+          migrations: []
+        }) as any,
+      recordHistoryHealthMetadata: () => {},
+      listHistoryWriteFailures: () => [],
+      integrityCheckTtlMs: 1_000
+    });
+
+    expect(store.health({ depth: 'fast' })).toMatchObject({
+      integrity_ok: true,
+      health_depth: 'fast',
+      integrity_check: {
+        status: 'unknown',
+        freshness: 'unknown',
+        checked_at: null
+      }
+    });
+    expect(store.health({ depth: 'fast' }).integrity_ok).toBe(true);
+    expect(integrityChecks).toBe(0);
+
+    expect(store.health({ depth: 'deep', integrity_check_source: 'manual' })).toMatchObject({
+      integrity_ok: true,
+      health_depth: 'deep',
+      integrity_check: {
+        status: 'ok',
+        freshness: 'fresh',
+        checked_at: '2026-04-11T12:00:00.000Z',
+        source: 'manual'
+      }
+    });
+    expect(integrityChecks).toBe(1);
+
+    integrityResult = 'database disk image is malformed';
+    now += 1_001;
+    expect(store.health({ depth: 'fast' })).toMatchObject({
+      integrity_ok: true,
+      integrity_check: {
+        status: 'ok',
+        freshness: 'stale'
+      }
+    });
+    expect(integrityChecks).toBe(1);
+
+    expect(store.health({ depth: 'deep', integrity_check_source: 'scheduled' })).toMatchObject({
+      integrity_ok: false,
+      integrity_check: {
+        status: 'failed',
+        freshness: 'fresh',
+        source: 'scheduled',
+        detail: 'database disk image is malformed'
+      }
+    });
+    expect(integrityChecks).toBe(2);
+
+    expect(store.health({ depth: 'fast' })).toMatchObject({
+      integrity_ok: false,
+      integrity_check: {
+        status: 'failed',
+        freshness: 'fresh'
+      }
+    });
+    expect(integrityChecks).toBe(2);
   });
 
 

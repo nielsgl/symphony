@@ -60,6 +60,60 @@ function makeRuntimeIdentity(status: 'current' | 'stale'): RuntimeBuildIdentityS
 }
 
 describe('OrchestratorCore dispatch and backpressure', () => {
+  it('keeps state snapshot reads free of persistence health and runtime identity refresh side effects', () => {
+    let persistenceHealthReads = 0;
+    let runtimeIdentityReads = 0;
+    const harness = createHarness({
+      getPersistenceHealth: () => {
+        persistenceHealthReads += 1;
+        return {
+          enabled: true,
+          db_path: '/tmp/runtime.sqlite',
+          retention_days: 365,
+          health_depth: 'fast',
+          run_count: 0,
+          last_pruned_at: null,
+          last_prune_failure_at: null,
+          last_prune_failure_reason: null,
+          last_prune_failure_detail: null,
+          integrity_ok: true,
+          integrity_check: {
+            status: 'unknown',
+            freshness: 'unknown',
+            checked_at: null,
+            checked_at_ms: null,
+            duration_ms: null,
+            source: null,
+            detail: null
+          }
+        };
+      },
+      resolveRuntimeIdentity: () => {
+        runtimeIdentityReads += 1;
+        return makeRuntimeIdentity('stale');
+      }
+    });
+
+    runtimeIdentityReads = 0;
+    harness.orchestrator.getStateSnapshot();
+    harness.orchestrator.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
+
+    expect(persistenceHealthReads).toBe(0);
+    expect(runtimeIdentityReads).toBe(0);
+
+    harness.orchestrator.enterDrainMode({ reason: 'runtime update' });
+
+    expect(persistenceHealthReads).toBe(1);
+    expect(runtimeIdentityReads).toBe(1);
+    expect(harness.orchestrator.getStateSnapshot().quiescence.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'stale_runtime_warning'
+        })
+      ])
+    );
+  });
+
   it('records Drain Mode audit history through orchestrator control paths', async () => {
     const drainAuditEvents: Array<Parameters<NonNullable<OrchestratorPersistencePort['appendDrainAuditHistory']>>[0]> = [];
     const persistence: OrchestratorPersistencePort = {

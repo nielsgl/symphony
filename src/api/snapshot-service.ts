@@ -303,6 +303,7 @@ export class SnapshotService {
       ...freshness,
       ...createApiDegradedDiagnostics(null, []),
       runtime_identity: this.projectRuntimeIdentity(state),
+      dashboard_asset_revision: null,
       runtime_update: null,
       runtime_restart: {
         capability: {

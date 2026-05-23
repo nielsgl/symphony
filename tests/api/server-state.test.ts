@@ -76,6 +76,61 @@ function pushRuntimeUpdate(root: string, contents: string) {
 }
 
 describe('LocalApiServer state API', () => {
+  it('does not project SSE state snapshots when there are no connected clients', async () => {
+    let snapshotReads = 0;
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => {
+          snapshotReads += 1;
+          return makeState();
+        }
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    server.notifyStateChanged('test-no-clients');
+
+    expect(snapshotReads).toBe(0);
+  });
+
+  it('serves a marked last-good state snapshot when projection fails', async () => {
+    let snapshotReads = 0;
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => {
+          snapshotReads += 1;
+          if (snapshotReads > 1) {
+            throw new Error('snapshot source overloaded');
+          }
+          return makeState();
+        }
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const first = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const firstPayload = await first.json();
+    expect(first.status).toBe(200);
+    expect(firstPayload.api_degraded_mode).toBe(false);
+
+    const second = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const secondPayload = await second.json();
+
+    expect(second.status).toBe(200);
+    expect(secondPayload.error).toBeUndefined();
+    expect(secondPayload.api_degraded_mode).toBe(true);
+    expect(secondPayload.api_degraded_reason_code).toBe('upstream_unavailable');
+    expect(secondPayload.api_degraded_routes).toContain('/api/v1/state');
+    expect(snapshotReads).toBe(2);
+  });
+
   it('serves runtime update readiness on state and diagnostics without mutating the repository', async () => {
     const state = makeState({
       runtime_identity: {

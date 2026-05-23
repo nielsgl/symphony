@@ -119,6 +119,8 @@ export const REASON_CODES = {
   runtimeUpdateRestartCompleted: 'runtime_update_restart_completed',
   runtimeUpdateRestartFailed: 'runtime_update_restart_failed',
   runtimeUpdateRestartIdentityMismatch: 'runtime_update_restart_identity_mismatch',
+  runtimeUpdateDashboardAssetsVerified: 'runtime_update_dashboard_assets_verified',
+  runtimeUpdateDashboardAssetVerificationFailed: 'runtime_update_dashboard_asset_verification_failed',
   runtimeUpdateReconnectObserved: 'runtime_update_reconnect_observed',
   unknownRuntimeReason: 'unknown_runtime_reason'
 } as const;
@@ -1088,6 +1090,26 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'Restarted runtime does not match update target',
     detail: 'The replacement child started, but its running build identity does not match the guided update target commit.',
     expected_transition: 'Manual recovery starts Symphony from the updated checkout and verifies the runtime identity'
+  },
+  [REASON_CODES.runtimeUpdateDashboardAssetsVerified]: {
+    reason_code: REASON_CODES.runtimeUpdateDashboardAssetsVerified,
+    classification: 'healthy',
+    actionability: 'none',
+    recommended_actions: [],
+    label: 'Runtime Update Dashboard Assets Verified',
+    headline: 'Dashboard assets verified after restart',
+    detail: 'The replacement child served the expected dashboard HTML, JavaScript, and CSS asset revision.',
+    expected_transition: 'The browser can load the updated dashboard without a manual cache bypass'
+  },
+  [REASON_CODES.runtimeUpdateDashboardAssetVerificationFailed]: {
+    reason_code: REASON_CODES.runtimeUpdateDashboardAssetVerificationFailed,
+    classification: 'failed',
+    actionability: 'required',
+    recommended_actions: ['Restart Symphony manually with npm run start:dashboard and verify dashboard asset responses'],
+    label: 'Runtime Update Dashboard Asset Verification Failed',
+    headline: 'Restarted dashboard assets did not verify',
+    detail: 'The replacement child started, but the local dashboard did not serve the expected asset revision/cache contract.',
+    expected_transition: 'Manual recovery verifies the server is serving the updated dashboard build'
   },
   [REASON_CODES.runtimeUpdateReconnectObserved]: {
     reason_code: REASON_CODES.runtimeUpdateReconnectObserved,

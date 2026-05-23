@@ -35,6 +35,8 @@ export const DRAIN_AUDIT_EVENT_TYPES = [
   'update-old-child-exited',
   'update-new-child-spawned',
   'update-new-child-ready',
+  'update-dashboard-assets-verified',
+  'update-dashboard-assets-failed',
   'update-reconnect-observed',
   'update-restart-completed',
   'update-restart-failed',
