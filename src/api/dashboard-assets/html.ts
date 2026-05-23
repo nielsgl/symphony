@@ -18,12 +18,17 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
       <h1>Operator Control Surface</h1>
       <p class="hero-subtitle">Turn every run from first signal to confident handoff.</p>
     </div>
-    <div class="hero-status-card">
-      <div class="status-row">
+    <div class="hero-status-card" aria-label="Runtime status">
+      <div class="status-row hero-status-topline">
+        <span class="status-kicker">Runtime signal</span>
         <span id="connection-badge" class="badge badge-live">Live</span>
-        <span id="connection-detail" class="muted">Streaming updates connected</span>
       </div>
-      <p id="last-updated" class="muted">Last update: --</p>
+      <strong class="hero-status-title">Control surface ready</strong>
+      <p id="connection-detail" class="hero-status-detail">Live updates are connected.</p>
+      <div class="hero-status-meta">
+        <span>Snapshot</span>
+        <span id="last-updated">Waiting for first snapshot</span>
+      </div>
       <div class="hero-actions">
         <button id="refresh-button" class="refresh-now-button" type="button">Refresh Now</button>
         <span id="refresh-status" aria-live="polite"></span>
