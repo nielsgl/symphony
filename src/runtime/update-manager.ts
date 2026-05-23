@@ -4,6 +4,7 @@ import path from 'node:path';
 import { REASON_CODES } from '../observability';
 import type {
   ApiRuntimeBuildIdentityProjection,
+  ApiDashboardAssetVerification,
   ApiRuntimeRestartStatus,
   ApiRuntimeUpdateActionResponse,
   ApiRuntimeUpdateGithubEligibility,
@@ -80,6 +81,7 @@ export interface LocalRuntimeUpdateManagerOptions {
   commandTimeoutMs?: number;
   discoveryFetchIntervalMs?: number;
   runtimeIdentity: () => ApiRuntimeBuildIdentityProjection | null;
+  verifyDashboardAssets?: () => Promise<ApiDashboardAssetVerification>;
   auditSink?: LocalApiServerOptions['drainAuditSink'];
   restartCommand?: string[];
   restartController?: RuntimeRestartController;
@@ -718,6 +720,7 @@ export class LocalRuntimeUpdateManager {
         new_child_pid: failure.new_child_pid,
         target_commit_sha: failure.target_commit_sha,
         observed_running_commit_sha: this.options.runtimeIdentity()?.running_build.commit_sha ?? null,
+        dashboard_asset_verification: null,
         recommended_manual_recovery: 'Restart Symphony manually with npm run start:dashboard and inspect supervisor logs.',
         last_error: {
           reason_code: failure.reason_code,
@@ -738,6 +741,7 @@ export class LocalRuntimeUpdateManager {
         new_child_pid: metadata.new_child_pid,
         target_commit_sha: metadata.target_commit_sha,
         observed_running_commit_sha: this.options.runtimeIdentity()?.running_build.commit_sha ?? null,
+        dashboard_asset_verification: null,
         recommended_manual_recovery: null,
         last_error: null
       };
@@ -754,6 +758,7 @@ export class LocalRuntimeUpdateManager {
       new_child_pid: null,
       target_commit_sha: null,
       observed_running_commit_sha: this.options.runtimeIdentity()?.running_build.commit_sha ?? null,
+      dashboard_asset_verification: null,
       recommended_manual_recovery: capability.available
         ? null
         : 'Restart Symphony with the supported supervisor command or rerun npm run start:dashboard manually.',
@@ -766,6 +771,12 @@ export class LocalRuntimeUpdateManager {
       ...this.restartStatus,
       capability: { ...this.restartStatus.capability },
       last_error: this.restartStatus.last_error ? { ...this.restartStatus.last_error } : null,
+      dashboard_asset_verification: this.restartStatus.dashboard_asset_verification
+        ? {
+            ...this.restartStatus.dashboard_asset_verification,
+            checks: this.restartStatus.dashboard_asset_verification.checks.map((check) => ({ ...check }))
+          }
+        : null,
       observed_running_commit_sha: this.options.runtimeIdentity()?.running_build.commit_sha ?? this.restartStatus.observed_running_commit_sha
     };
   }
@@ -843,12 +854,32 @@ export class LocalRuntimeUpdateManager {
       );
       return false;
     }
+    const dashboardAssetVerification = this.options.verifyDashboardAssets
+      ? await this.options.verifyDashboardAssets()
+      : null;
+    if (dashboardAssetVerification && !dashboardAssetVerification.ok) {
+      this.restartStatus = {
+        ...this.restartStatus,
+        dashboard_asset_verification: dashboardAssetVerification
+      };
+      await this.recordSupervisedRestartFailure(
+        REASON_CODES.runtimeUpdateDashboardAssetVerificationFailed,
+        dashboardAssetVerification.detail ?? 'Dashboard assets did not verify after supervised restart.'
+      );
+      await this.record('update-dashboard-assets-failed', 'failed', REASON_CODES.runtimeUpdateDashboardAssetVerificationFailed, {
+        attempt_id: this.restartStatus.attempt_id,
+        target_commit_sha: this.restartStatus.target_commit_sha,
+        dashboard_asset_verification: dashboardAssetVerification
+      });
+      return false;
+    }
     this.startupRestartAuditRecorded = true;
     this.restartStatus = {
       ...this.restartStatus,
       phase: 'completed',
       completed_at: new Date((this.options.nowMs ?? (() => Date.now()))()).toISOString(),
       failed_at: null,
+      dashboard_asset_verification: dashboardAssetVerification,
       recommended_manual_recovery: null,
       last_error: null
     };
@@ -862,6 +893,12 @@ export class LocalRuntimeUpdateManager {
     await this.record('update-old-child-exited', 'observed', REASON_CODES.runtimeUpdateRestartStarted, context);
     await this.record('update-new-child-spawned', 'observed', REASON_CODES.runtimeUpdateRestartStarted, context);
     await this.record('update-new-child-ready', 'accepted', REASON_CODES.runtimeUpdateRestartCompleted, context);
+    if (dashboardAssetVerification) {
+      await this.record('update-dashboard-assets-verified', 'accepted', REASON_CODES.runtimeUpdateDashboardAssetsVerified, {
+        ...context,
+        dashboard_asset_verification: dashboardAssetVerification
+      });
+    }
     await this.record('update-restart-completed', 'accepted', REASON_CODES.runtimeUpdateRestartCompleted, context);
     return true;
   }

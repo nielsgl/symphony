@@ -1138,11 +1138,12 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
       getControlPlaneHealth: () => controlPlaneHealth.summarize(nowMs()),
       getPersistenceHealth: () =>
         persistenceStore
-          ? persistenceStore.health()
+          ? persistenceStore.health({ depth: 'fast', integrity_check_source: 'api' })
           : {
               enabled: false,
               db_path: null,
               retention_days: effectiveConfig.persistence.retention_days,
+              health_depth: 'fast',
               run_count: 0,
               last_pruned_at: null,
               last_prune_failure_at: null,
@@ -1291,6 +1292,19 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
     remote: 'origin',
     githubEligibilityMode: resolveRuntimeUpdateGithubEligibilityMode(effectiveConfig.runtime_update?.github_eligibility.mode),
     nowMs,
+    verifyDashboardAssets: async () => {
+      if (!apiServer) {
+        return {
+          ok: false,
+          checked_at: new Date(nowMs()).toISOString(),
+          revision: runtimeBuildIdentity.identity ?? null,
+          reason_code: REASON_CODES.runtimeUpdateDashboardAssetVerificationFailed,
+          detail: 'Local API server is not available for dashboard asset verification.',
+          checks: []
+        };
+      }
+      return apiServer.verifyDashboardAssets();
+    },
     runtimeIdentity: () => runtimeUpdateSnapshotService.projectRuntimeIdentity(
       orchestrator.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false })
     ),
@@ -1382,11 +1396,12 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             getActiveProfile: () => activeProfile,
             getPersistenceHealth: () =>
               persistenceStore
-                ? persistenceStore.health()
+                ? persistenceStore.health({ depth: 'fast', integrity_check_source: 'diagnostics' })
                 : {
                     enabled: false,
                     db_path: null,
                     retention_days: effectiveConfig.persistence.retention_days,
+                    health_depth: 'fast',
                     run_count: 0,
                     last_pruned_at: null,
                     last_prune_failure_at: null,
@@ -1606,7 +1621,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
             dashboard_enabled: effectiveConfig.observability?.dashboard_enabled ?? true,
             refresh_ms: effectiveConfig.observability?.refresh_ms ?? 4000,
             render_interval_ms: effectiveConfig.observability?.render_interval_ms ?? 1000,
-            phase_stale_warn_ms: effectiveConfig.observability?.phase_stale_warn_ms ?? 45000
+            phase_stale_warn_ms: effectiveConfig.observability?.phase_stale_warn_ms ?? 45000,
+            asset_revision: runtimeBuildIdentity.identity ?? runtimeBuildIdentity.commit_sha ?? null
           },
           codexStateDbPath: path.join(effectiveConfig.codex.effective_codex_home ?? `${process.env.HOME ?? ''}/.codex`, 'state_5.sqlite'),
           logger,
@@ -1712,7 +1728,7 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
           }
         });
       } catch (error) {
-        const health = persistenceStore.health();
+        const health = persistenceStore.health({ depth: 'deep', integrity_check_source: 'prune_failure' });
         logger.log({
           level: 'warn',
           event: CANONICAL_EVENT.persistence.pruneFailed,

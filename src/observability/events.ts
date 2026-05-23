@@ -158,6 +158,8 @@ export const CANONICAL_EVENT = {
     stateRequested: 'api.state.requested',
     stateSnapshotUnavailable: 'api.state.snapshot.unavailable',
     stateSnapshotDegraded: 'api.state.snapshot.degraded',
+    stateSnapshotCacheHit: 'api.state.snapshot.cache_hit',
+    stateSnapshotFallbackServed: 'api.state.snapshot.fallback_served',
     refreshRequested: 'api.refresh.requested',
     issueRequested: 'api.issue.requested',
     routeNotFound: 'api.route.not_found',
@@ -169,6 +171,8 @@ export const CANONICAL_EVENT = {
   },
   persistence: {
     pruned: 'persistence.pruned',
+    healthFastServed: 'persistence.health.fast_served',
+    healthDeepCheckCompleted: 'persistence.health.deep_check.completed',
     pruneFailed: 'persistence.prune.failed',
     recordSessionFailed: 'persistence.session.record_failed',
     recordEventFailed: 'persistence.event.record_failed',

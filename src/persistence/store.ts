@@ -45,6 +45,7 @@ import type {
   PersistedBlockedInputRecord,
   PersistedOperatorActionsRecord,
   PersistenceHealth,
+  PersistenceHealthOptions,
   ProjectHistoryTicketSummaryPage,
   RunTerminalStatus,
   StateTransitionRecord,
@@ -64,6 +65,7 @@ interface PersistenceStoreOptions {
   nowMs?: () => number;
   migrationFailureForTest?: string;
   pruneFailureForTest?: string;
+  integrityCheckTtlMs?: number;
 }
 
 function asIso(timestampMs: number): string {
@@ -151,7 +153,8 @@ export class SqlitePersistenceStore {
       readHistorySchemaHealth: () => this.readHistorySchemaHealth(),
       recordHistoryHealthMetadata: (status, reasonCode, detail) => this.recordHistoryHealthMetadata(status, reasonCode, detail),
       listHistoryWriteFailures: (limit) => this.listHistoryWriteFailures(limit),
-      pruneFailureForTest: this.pruneFailureForTest
+      pruneFailureForTest: this.pruneFailureForTest,
+      integrityCheckTtlMs: options.integrityCheckTtlMs
     });
     this.projectHistoryReader = new ProjectHistoryReader({
       db: this.db
@@ -504,8 +507,8 @@ export class SqlitePersistenceStore {
     return this.retentionHealthStore.pruneExpiredRuns();
   }
 
-  health(): PersistenceHealth {
-    return this.retentionHealthStore.health();
+  health(options: PersistenceHealthOptions = {}): PersistenceHealth {
+    return this.retentionHealthStore.health(options);
   }
 
   private transaction<T>(fn: () => T): T {

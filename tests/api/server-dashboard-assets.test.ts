@@ -47,6 +47,12 @@ describe('LocalApiServer dashboard assets', () => {
       },
       refreshSource: {
         tick: vi.fn(async () => undefined)
+      },
+      dashboardConfig: {
+        dashboard_enabled: true,
+        refresh_ms: 4000,
+        render_interval_ms: 1000,
+        asset_revision: 'asset-rev-test'
       }
     });
 
@@ -61,8 +67,9 @@ describe('LocalApiServer dashboard assets', () => {
     expect(response.headers.get('pragma')).toBe('no-cache');
     expect(response.headers.get('expires')).toBe('0');
     expect(payload).toContain('Symphony Operator Control');
-    expect(payload).toContain('/dashboard/client.js');
-    expect(payload).toContain('/dashboard/styles.css');
+    expect(payload).toContain('symphony-dashboard-asset-revision');
+    expect(payload).toContain('/dashboard/client.js?v=asset-rev-test');
+    expect(payload).toContain('/dashboard/styles.css?v=asset-rev-test');
   });
 
   it('serves shared dashboard script and styles assets', async () => {
@@ -72,19 +79,26 @@ describe('LocalApiServer dashboard assets', () => {
       },
       refreshSource: {
         tick: vi.fn(async () => undefined)
+      },
+      dashboardConfig: {
+        dashboard_enabled: true,
+        refresh_ms: 4000,
+        render_interval_ms: 1000,
+        asset_revision: 'asset-rev-test'
       }
     });
 
     await server.listen();
     const address = server.address();
 
-    const scriptResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/client.js`);
+    const scriptResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/client.js?v=asset-rev-test`);
     const scriptPayload = await scriptResponse.text();
     expect(scriptResponse.status).toBe(200);
     expect(scriptResponse.headers.get('content-type')).toContain('application/javascript');
     expect(scriptResponse.headers.get('cache-control')).toBe(LOCAL_DASHBOARD_ASSET_CACHE_CONTROL);
     expect(scriptResponse.headers.get('pragma')).toBe('no-cache');
     expect(scriptResponse.headers.get('expires')).toBe('0');
+    expect(scriptPayload).toContain('symphony-dashboard-asset-revision asset-rev-test');
     expect(scriptPayload).toContain('/api/v1/state');
     expect(scriptPayload).toContain('/api/v1/refresh');
     expect(scriptPayload).toContain('/api/v1/events');
@@ -101,15 +115,46 @@ describe('LocalApiServer dashboard assets', () => {
     expect(scriptPayload).toMatch(/formatApiError\(payload, ["']Request failed["']\)/);
     expect(scriptPayload).toContain('setInterval(updateRuntimeClock, DASHBOARD_CONFIG.render_interval_ms)');
 
-    const cssResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/styles.css`);
+    const cssResponse = await fetch(`http://127.0.0.1:${address.port}/dashboard/styles.css?v=asset-rev-test`);
     const cssPayload = await cssResponse.text();
     expect(cssResponse.status).toBe(200);
     expect(cssResponse.headers.get('content-type')).toContain('text/css');
     expect(cssResponse.headers.get('cache-control')).toBe(LOCAL_DASHBOARD_ASSET_CACHE_CONTROL);
     expect(cssResponse.headers.get('pragma')).toBe('no-cache');
     expect(cssResponse.headers.get('expires')).toBe('0');
+    expect(cssPayload).toContain('symphony-dashboard-asset-revision asset-rev-test');
     expect(cssPayload).toContain('.layout');
     expect(cssPayload).toContain('.panel');
+  });
+
+  it('verifies dashboard asset revision and cache contract through local HTTP routes', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      dashboardConfig: {
+        dashboard_enabled: true,
+        refresh_ms: 4000,
+        render_interval_ms: 1000,
+        asset_revision: 'asset-rev-test'
+      }
+    });
+
+    await server.listen();
+
+    await expect(server.verifyDashboardAssets()).resolves.toMatchObject({
+      ok: true,
+      revision: 'asset-rev-test',
+      reason_code: null,
+      checks: [
+        expect.objectContaining({ path: '/', status_code: 200, body_contains_revision: true }),
+        expect.objectContaining({ path: '/dashboard/client.js?v=asset-rev-test', status_code: 200, body_contains_revision: true }),
+        expect.objectContaining({ path: '/dashboard/styles.css?v=asset-rev-test', status_code: 200, body_contains_revision: true })
+      ]
+    });
   });
 
   it('does not apply the dashboard asset cache policy to unrelated API responses', async () => {

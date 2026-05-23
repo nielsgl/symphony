@@ -461,6 +461,23 @@ describe('runtime update manager', () => {
         status: 'current',
         health_warning: null
       }),
+      verifyDashboardAssets: async () => ({
+        ok: true,
+        checked_at: '2026-05-21T10:00:00.000Z',
+        revision: 'new-sha',
+        reason_code: null,
+        detail: null,
+        checks: [
+          {
+            path: '/',
+            status_code: 200,
+            duration_ms: 5,
+            cache_control: 'no-store, max-age=0',
+            body_contains_revision: true,
+            error: null
+          }
+        ]
+      }),
       auditSink: {
         appendDrainAuditHistory: async (event) => {
           auditEvents.push(event);
@@ -486,14 +503,87 @@ describe('runtime update manager', () => {
       old_child_pid: 111,
       new_child_pid: 222,
       target_commit_sha: 'new-sha',
-      observed_running_commit_sha: 'new-sha'
+      observed_running_commit_sha: 'new-sha',
+      dashboard_asset_verification: {
+        ok: true,
+        revision: 'new-sha'
+      }
     });
     expect(auditEvents.map((event) => event.event_type)).toEqual([
       'update-old-child-exited',
       'update-new-child-spawned',
       'update-new-child-ready',
+      'update-dashboard-assets-verified',
       'update-restart-completed',
       'update-reconnect-observed'
+    ]);
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('fails replacement child readiness when dashboard assets do not verify', async () => {
+    const { local } = await makeRepoPair();
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => ({
+        process_started_at: '2026-05-21T10:00:00.000Z',
+        process_started_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+        running_build: { identity: 'new-sha', commit_sha: 'new-sha', source_timestamp: null, source_timestamp_ms: null },
+        current_build: { identity: 'new-sha', commit_sha: 'new-sha', source_timestamp: null, source_timestamp_ms: null, status: 'available' },
+        status: 'current',
+        health_warning: null
+      }),
+      verifyDashboardAssets: async () => ({
+        ok: false,
+        checked_at: '2026-05-21T10:00:00.000Z',
+        revision: 'new-sha',
+        reason_code: REASON_CODES.runtimeUpdateDashboardAssetVerificationFailed,
+        detail: 'dashboard client asset timed out',
+        checks: [
+          {
+            path: '/dashboard/client.js?v=new-sha',
+            status_code: null,
+            duration_ms: 2000,
+            cache_control: null,
+            body_contains_revision: false,
+            error: 'dashboard_asset_timeout'
+          }
+        ]
+      }),
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      supervisedRestartMetadata: {
+        attempt_id: 'restart-asset-failure',
+        target_commit_sha: 'new-sha',
+        old_child_pid: 111,
+        new_child_pid: 222,
+        started_at: '2026-05-21T09:59:59.000Z'
+      }
+    });
+
+    await expect(manager.recordSupervisedRestartReady()).resolves.toBe(false);
+
+    expect(manager.readRestartStatus()).toMatchObject({
+      phase: 'failed',
+      attempt_id: 'restart-asset-failure',
+      dashboard_asset_verification: {
+        ok: false,
+        revision: 'new-sha'
+      },
+      last_error: {
+        reason_code: REASON_CODES.runtimeUpdateDashboardAssetVerificationFailed,
+        message: 'dashboard client asset timed out'
+      }
+    });
+    expect(auditEvents.map((event) => event.event_type)).toEqual([
+      'update-restart-failed',
+      'update-dashboard-assets-failed'
     ]);
   }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 

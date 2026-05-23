@@ -3,4 +3,5 @@ export interface DashboardClientConfig {
   refresh_ms: number;
   render_interval_ms: number;
   phase_stale_warn_ms?: number;
+  asset_revision?: string | null;
 }

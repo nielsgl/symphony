@@ -678,6 +678,7 @@ export class OrchestratorCore {
         enabled: true,
         db_path: null,
         retention_days: 0,
+        health_depth: 'fast',
         run_count: 0,
         last_pruned_at: null,
         last_prune_failure_at: null,
@@ -697,6 +698,9 @@ export class OrchestratorCore {
     }
     if (health.history_schema?.status === 'degraded') {
       return health.history_schema.degraded_detail ?? health.history_schema.degraded_reason_code ?? 'history schema is degraded';
+    }
+    if (health.last_prune_failure_at) {
+      return health.last_prune_failure_detail ?? health.last_prune_failure_reason ?? 'history retention pruning is degraded';
     }
     if (health.recent_write_failures?.length) {
       const latest = health.recent_write_failures[0];
@@ -748,7 +752,6 @@ export class OrchestratorCore {
   }
 
   getStateSnapshot(options: StateSnapshotOptions = {}): OrchestratorState {
-    this.refreshQuiescenceState();
     const snapshotOptions: Required<StateSnapshotOptions> = {
       includeTranscriptToolCallDiagnostics: options.includeTranscriptToolCallDiagnostics ?? true
     };

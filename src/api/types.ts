@@ -17,6 +17,7 @@ import type {
   DrainAuditEventRecord,
   ExecutionGraphThreadLineage,
   PersistenceHealth,
+  PersistenceHealthOptions,
   ProjectHistoryTicketSummaryPage,
   TicketTimelineRecord,
   UiContinuityState
@@ -103,7 +104,7 @@ export interface RefreshTickSource {
 
 export interface DiagnosticsSource {
   getActiveProfile(): SecurityProfile;
-  getPersistenceHealth(): PersistenceHealth;
+  getPersistenceHealth(options?: PersistenceHealthOptions): PersistenceHealth;
   listRunHistory(limit?: number): DurableRunHistoryRecord[];
   reconstructThreadLineage?: (threadId: string) => ExecutionGraphThreadLineage | null;
   reconstructLatestThreadLineageByIssueIdentifier?: (issueIdentifier: string) => ExecutionGraphThreadLineage | null;
@@ -414,6 +415,7 @@ export interface ApiCodexSessionTranscriptScanBudget {
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
   runtime_identity: ApiRuntimeBuildIdentityProjection | null;
+  dashboard_asset_revision?: string | null;
   runtime_update: ApiRuntimeUpdateReadiness | null;
   runtime_restart: ApiRuntimeRestartStatus;
   drain_mode: ApiDrainModeProjection;
@@ -952,6 +954,22 @@ export type ApiRuntimeRestartPhase =
   | 'failed'
   | 'manual_restart_required';
 
+export interface ApiDashboardAssetVerification {
+  ok: boolean;
+  checked_at: string;
+  revision: string | null;
+  reason_code: string | null;
+  detail: string | null;
+  checks: Array<{
+    path: string;
+    status_code: number | null;
+    duration_ms: number;
+    cache_control: string | null;
+    body_contains_revision: boolean;
+    error: string | null;
+  }>;
+}
+
 export interface ApiRuntimeRestartStatus {
   capability: {
     mode: ApiRuntimeRestartCapabilityMode;
@@ -969,6 +987,7 @@ export interface ApiRuntimeRestartStatus {
   new_child_pid: number | null;
   target_commit_sha: string | null;
   observed_running_commit_sha: string | null;
+  dashboard_asset_verification?: ApiDashboardAssetVerification | null;
   recommended_manual_recovery: string | null;
   last_error: {
     reason_code: string;
@@ -1588,6 +1607,8 @@ export interface LocalApiServerOptions {
         | 'update-old-child-exited'
         | 'update-new-child-spawned'
         | 'update-new-child-ready'
+        | 'update-dashboard-assets-verified'
+        | 'update-dashboard-assets-failed'
         | 'update-reconnect-observed'
         | 'update-restart-completed'
         | 'update-restart-failed'
@@ -1691,6 +1712,7 @@ export interface LocalApiServerOptions {
     refresh_ms: number;
     render_interval_ms: number;
     phase_stale_warn_ms?: number;
+    asset_revision?: string | null;
   };
   nowMs?: () => number;
   requestTimingNowMs?: () => number;
@@ -1706,6 +1728,7 @@ export interface LocalApiServerOptions {
 
 export interface ApiDiagnosticsResponse {
   runtime_identity: ApiRuntimeBuildIdentityProjection | null;
+  dashboard_asset_revision?: string | null;
   runtime_update: ApiRuntimeUpdateReadiness | null;
   runtime_restart: ApiRuntimeRestartStatus;
   drain_mode: ApiDrainModeProjection;

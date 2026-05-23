@@ -245,6 +245,8 @@ export type DrainAuditEventType =
   | 'update-old-child-exited'
   | 'update-new-child-spawned'
   | 'update-new-child-ready'
+  | 'update-dashboard-assets-verified'
+  | 'update-dashboard-assets-failed'
   | 'update-reconnect-observed'
   | 'update-restart-completed'
   | 'update-restart-failed'
@@ -540,6 +542,7 @@ export interface PersistenceHealth {
   enabled: boolean;
   db_path: string | null;
   retention_days: number;
+  health_depth?: PersistenceHealthDepth;
   run_count: number;
   ticket_count?: number;
   last_pruned_at: string | null;
@@ -547,8 +550,27 @@ export interface PersistenceHealth {
   last_prune_failure_reason: string | null;
   last_prune_failure_detail: string | null;
   integrity_ok: boolean;
+  integrity_check?: PersistenceIntegrityCheckStatus;
   history_schema?: HistorySchemaHealth;
   recent_write_failures?: HistoryWriteFailureRecord[];
+}
+
+export type PersistenceHealthDepth = 'fast' | 'deep';
+
+export interface PersistenceHealthOptions {
+  depth?: PersistenceHealthDepth;
+  integrity_check_source?: 'api' | 'diagnostics' | 'manual' | 'prune_failure' | 'scheduled' | 'startup';
+  force_integrity_check?: boolean;
+}
+
+export interface PersistenceIntegrityCheckStatus {
+  status: 'ok' | 'failed' | 'unknown';
+  freshness: 'fresh' | 'stale' | 'unknown';
+  checked_at: string | null;
+  checked_at_ms: number | null;
+  duration_ms: number | null;
+  source: PersistenceHealthOptions['integrity_check_source'] | null;
+  detail: string | null;
 }
 
 export type HistorySchemaStatus = 'healthy' | 'degraded';

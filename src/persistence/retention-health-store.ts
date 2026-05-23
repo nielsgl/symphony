@@ -2,7 +2,15 @@ import { createHash } from 'node:crypto';
 
 import { redactUnknown } from '../security/redaction';
 import type { PersistenceDatabase } from './store-context';
-import type { ExecutionGraphEntityStatus, HistorySchemaHealth, HistoryWriteFailureRecord, PersistenceHealth, RunTerminalStatus } from './types';
+import type {
+  ExecutionGraphEntityStatus,
+  HistorySchemaHealth,
+  HistoryWriteFailureRecord,
+  PersistenceHealth,
+  PersistenceHealthOptions,
+  PersistenceIntegrityCheckStatus,
+  RunTerminalStatus
+} from './types';
 
 export interface RetentionHealthStoreDependencies {
   db: PersistenceDatabase;
@@ -14,6 +22,7 @@ export interface RetentionHealthStoreDependencies {
   recordHistoryHealthMetadata: (status: 'healthy' | 'degraded', reasonCode: string | null, detail: string | null) => void;
   listHistoryWriteFailures: (limit: number) => HistoryWriteFailureRecord[];
   pruneFailureForTest?: string;
+  integrityCheckTtlMs?: number;
 }
 
 function asIso(timestampMs: number): string {
@@ -31,6 +40,8 @@ function asExecutionGraphId(kind: string, parts: Array<string | number | null | 
 }
 
 export class RetentionHealthStore {
+  private static readonly DEFAULT_INTEGRITY_CHECK_TTL_MS = 5 * 60 * 1000;
+
   private readonly db: PersistenceDatabase;
   private readonly dbPath: string;
   private readonly retentionDays: number;
@@ -40,6 +51,14 @@ export class RetentionHealthStore {
   private readonly recordHistoryHealthMetadata: (status: 'healthy' | 'degraded', reasonCode: string | null, detail: string | null) => void;
   private readonly listHistoryWriteFailures: (limit: number) => HistoryWriteFailureRecord[];
   private readonly pruneFailureForTest: string | undefined;
+  private readonly integrityCheckTtlMs: number;
+  private integrityCheckCache: {
+    checkedAtMs: number;
+    ok: boolean;
+    durationMs: number;
+    source: PersistenceHealthOptions['integrity_check_source'];
+    detail: string | null;
+  } | null = null;
 
   constructor(dependencies: RetentionHealthStoreDependencies) {
     this.db = dependencies.db;
@@ -51,6 +70,10 @@ export class RetentionHealthStore {
     this.recordHistoryHealthMetadata = dependencies.recordHistoryHealthMetadata;
     this.listHistoryWriteFailures = dependencies.listHistoryWriteFailures;
     this.pruneFailureForTest = dependencies.pruneFailureForTest;
+    this.integrityCheckTtlMs =
+      typeof dependencies.integrityCheckTtlMs === 'number' && dependencies.integrityCheckTtlMs >= 0
+        ? dependencies.integrityCheckTtlMs
+        : RetentionHealthStore.DEFAULT_INTEGRITY_CHECK_TTL_MS;
   }
 
   pruneExpiredRuns(): number {
@@ -146,7 +169,8 @@ export class RetentionHealthStore {
     }
   }
 
-  health(): PersistenceHealth {
+  health(options: PersistenceHealthOptions = {}): PersistenceHealth {
+    const depth = options.depth ?? 'fast';
     const runCountRow = this.db.prepare('SELECT COUNT(*) AS count FROM runs').get() as { count: number };
     const ticketCountRow = this.hasTable('history_identity_projection')
       ? (this.db
@@ -156,7 +180,6 @@ export class RetentionHealthStore {
           )
           .get() as { count: number })
       : { count: 0 };
-    const integrityRow = this.db.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
     const pruneRow = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('last_pruned_at') as
       | { value: string }
       | undefined;
@@ -171,7 +194,8 @@ export class RetentionHealthStore {
       | undefined;
 
     const historySchema = this.readHistorySchemaHealth();
-    const integrityOk = integrityRow.integrity_check === 'ok' && historySchema.status === 'healthy';
+    const integrityCheck = this.readIntegrityCheckStatus(options);
+    const healthOk = integrityCheck.status !== 'failed' && historySchema.status === 'healthy';
     try {
       this.recordHistoryHealthMetadata(historySchema.status, historySchema.degraded_reason_code, historySchema.degraded_detail);
     } catch {
@@ -183,16 +207,66 @@ export class RetentionHealthStore {
       enabled: true,
       db_path: this.dbPath,
       retention_days: this.retentionDays,
+      health_depth: depth,
       run_count: runCountRow.count,
       ticket_count: ticketCountRow.count,
       last_pruned_at: pruneRow?.value ?? null,
       last_prune_failure_at: pruneFailureAtRow?.value ?? null,
       last_prune_failure_reason: pruneFailureReasonRow?.value ?? null,
       last_prune_failure_detail: pruneFailureDetailRow?.value ?? null,
-      integrity_ok: integrityOk,
+      integrity_ok: healthOk,
+      integrity_check: integrityCheck,
       history_schema: historySchema,
       recent_write_failures: this.listHistoryWriteFailures(5)
     };
+  }
+
+  private readIntegrityCheckStatus(options: PersistenceHealthOptions): PersistenceIntegrityCheckStatus {
+    const depth = options.depth ?? 'fast';
+    if (depth === 'deep' || options.force_integrity_check) {
+      return this.runIntegrityCheck(options.integrity_check_source ?? 'diagnostics');
+    }
+    return this.cachedIntegrityCheckStatus();
+  }
+
+  private cachedIntegrityCheckStatus(): PersistenceIntegrityCheckStatus {
+    const now = this.nowMs();
+    if (!this.integrityCheckCache) {
+      return {
+        status: 'unknown',
+        freshness: 'unknown',
+        checked_at: null,
+        checked_at_ms: null,
+        duration_ms: null,
+        source: null,
+        detail: null
+      };
+    }
+    const fresh = now - this.integrityCheckCache.checkedAtMs < this.integrityCheckTtlMs;
+    return {
+      status: this.integrityCheckCache.ok ? 'ok' : 'failed',
+      freshness: fresh ? 'fresh' : 'stale',
+      checked_at: asIso(this.integrityCheckCache.checkedAtMs),
+      checked_at_ms: this.integrityCheckCache.checkedAtMs,
+      duration_ms: this.integrityCheckCache.durationMs,
+      source: this.integrityCheckCache.source ?? null,
+      detail: this.integrityCheckCache.detail
+    };
+  }
+
+  private runIntegrityCheck(source: PersistenceHealthOptions['integrity_check_source']): PersistenceIntegrityCheckStatus {
+    const startedAtMs = this.nowMs();
+    const integrityRow = this.db.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
+    const checkedAtMs = this.nowMs();
+    const ok = integrityRow.integrity_check === 'ok';
+    this.integrityCheckCache = {
+      checkedAtMs,
+      ok,
+      durationMs: Math.max(0, checkedAtMs - startedAtMs),
+      source,
+      detail: ok ? null : integrityRow.integrity_check
+    };
+    return this.cachedIntegrityCheckStatus();
   }
 
   private expiredCompletedRuns(cutoff: string): Array<{
