@@ -603,7 +603,8 @@ describe('dashboard assets', () => {
     expect(clientJs).toContain('/api/v1/runtime-update/prepare');
     expect(clientJs).toContain('/api/v1/runtime-update/apply');
     expect(clientJs).toContain('Restart command: ');
-    expect(clientJs).toContain('Runtime Update JSON');
+    expect(clientJs).toContain('Apply the prepared update now.');
+    expect(clientJs).toContain('runtime-update-fact');
   });
 
   it('lazy-loads issue diagnostics only for opened detail surfaces', () => {

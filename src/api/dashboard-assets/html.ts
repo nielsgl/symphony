@@ -113,10 +113,10 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
       <div class="runtime-update-grid">
         <div>
           <strong id="runtime-update-state">No update action required</strong>
-          <p id="runtime-update-recommendation" class="muted">Runtime update readiness has not been evaluated yet.</p>
+          <p id="runtime-update-recommendation" class="runtime-update-guidance muted">Runtime update readiness has not been evaluated yet.</p>
           <p id="runtime-update-status" class="muted"></p>
         </div>
-        <pre id="runtime-update-details" class="code-block">Runtime update details unavailable.</pre>
+        <div id="runtime-update-details" class="runtime-update-details">Runtime update details unavailable.</div>
       </div>
     </section>
 
