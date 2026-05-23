@@ -228,7 +228,7 @@ function describeRuntimeUpdateAction(readiness: any, payload: any) {
       return 'Update is paused until this blocker clears: ' + refusalReasons.map(formatRuntimeUpdateLabel).join(', ') + '.';
     }
     if (readiness.state === 'runtime_stale') {
-      return restartCapability && restartCapability.mode === 'supervisor_restart_available'
+      return restartCapability && restartCapability.mode === 'supervisor_available'
         ? 'Restart Symphony from this panel once Drain Mode is quiet.'
         : 'Restart Symphony manually after Drain Mode is quiet.';
     }
@@ -256,7 +256,7 @@ function describeRuntimeUpdateBanner(readiness: any, payload: any) {
     const target = shortRuntimeUpdateSha(remote.commit_sha);
     const restart = payload && payload.runtime_restart ? payload.runtime_restart : null;
     const restartCapability = restart && restart.capability ? restart.capability : null;
-    const restartCopy = restartCapability && restartCapability.mode === 'supervisor_restart_available'
+    const restartCopy = restartCapability && restartCapability.mode === 'supervisor_available'
       ? 'supervised restart available'
       : restartCapability
         ? 'manual restart may be required'

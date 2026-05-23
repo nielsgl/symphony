@@ -1155,6 +1155,68 @@ describe('dashboard browser client modules', () => {
     expect(elements.runtimeUpdateRecommendation.textContent).not.toContain('GitHub eligibility: github checks pending');
   });
 
+  it('uses supervised restart guidance for supervisor-backed runtime restarts', () => {
+    renderOverview(
+      snapshotPayload({
+        drain_mode: {
+          active: true,
+          entered_at: '2026-05-21T10:00:00.000Z',
+          entered_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          updated_at: '2026-05-21T10:00:00.000Z',
+          updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+          reason: 'runtime_update_prepare'
+        },
+        quiescence: { safe_to_shutdown: true, blocker_counts: {}, blockers: [] },
+        runtime_restart: {
+          required: true,
+          status: 'required',
+          reason_code: 'stale_runtime_build',
+          capability: {
+            mode: 'supervisor_available',
+            supervisor_attempt_id: 'restart-attempt-1',
+            supervisor_target_sha: 'new',
+            manual_reason: null
+          },
+          active_attempt: null,
+          last_attempt: null,
+          recommended_manual_recovery: null
+        },
+        runtime_update: {
+          state: 'runtime_stale',
+          attention_required: true,
+          drain_required: true,
+          recommended_action: 'restart_runtime',
+          prepared: false,
+          apply_ready: false,
+          refusal_reasons: [],
+          local_checkout: { branch: 'main', commit_sha: 'new', dirty: false, detached: false },
+          fetched_remote: { remote: 'origin', base_ref: 'main', commit_sha: 'new' },
+          ahead_behind: { ahead: 0, behind: 0 },
+          last_fetch: { result: 'succeeded' },
+          github_eligibility: {
+            mode: 'required',
+            state: 'github_verified',
+            provider: 'github',
+            owner: 'nielsgl',
+            repo: 'symphony',
+            base_ref: 'main',
+            candidate_sha: 'new',
+            checked_at: '2026-05-21T10:00:00.000Z',
+            reason_code: null,
+            check_summary: { total: 1, succeeded: 1, pending: 0, failed: 0, skipped: 0 }
+          }
+        }
+      })
+    );
+
+    expect(elements.runtimeUpdateState.textContent).toBe('Restart required');
+    expect(elements.runtimeUpdateSummary.textContent).toContain('supervised restart available');
+    expect(elements.runtimeUpdateRecommendation.textContent).toBe(
+      'Restart Symphony from this panel once Drain Mode is quiet.'
+    );
+    expect(elements.runtimeUpdateRecommendation.textContent).not.toContain('manually');
+  });
+
   it('does not offer apply as the first action when Drain Mode is already active', () => {
     renderOverview(
       snapshotPayload({
