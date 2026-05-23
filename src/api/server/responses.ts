@@ -4,6 +4,8 @@ import { redactUnknown } from '../../security/redaction';
 import { LocalApiError } from '../errors';
 import type { LocalApiErrorEnvelope } from '../types';
 
+export const LOCAL_DASHBOARD_ASSET_CACHE_CONTROL = 'no-store, max-age=0';
+
 export function serializeJsonPayload(payload: unknown): { body: string; bytes: number } {
   const body = JSON.stringify(redactUnknown(payload));
   return {
@@ -38,6 +40,12 @@ export function sendCss(res: ServerResponse, statusCode: number, css: string): v
   res.statusCode = statusCode;
   res.setHeader('content-type', 'text/css; charset=utf-8');
   res.end(css);
+}
+
+export function setLocalDashboardAssetCacheHeaders(res: ServerResponse): void {
+  res.setHeader('cache-control', LOCAL_DASHBOARD_ASSET_CACHE_CONTROL);
+  res.setHeader('pragma', 'no-cache');
+  res.setHeader('expires', '0');
 }
 
 export function sendError(res: ServerResponse, statusCode: number, code: string, message: string): void {

@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { LOCAL_DASHBOARD_ASSET_CACHE_CONTROL } from '../../src/api/server/responses';
 import {
   CANONICAL_EVENT,
   EVENT_VOCABULARY_VERSION,
@@ -56,6 +57,9 @@ describe('LocalApiServer dashboard assets', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
+    expect(response.headers.get('cache-control')).toBe(LOCAL_DASHBOARD_ASSET_CACHE_CONTROL);
+    expect(response.headers.get('pragma')).toBe('no-cache');
+    expect(response.headers.get('expires')).toBe('0');
     expect(payload).toContain('Symphony Operator Control');
     expect(payload).toContain('/dashboard/client.js');
     expect(payload).toContain('/dashboard/styles.css');
@@ -78,6 +82,9 @@ describe('LocalApiServer dashboard assets', () => {
     const scriptPayload = await scriptResponse.text();
     expect(scriptResponse.status).toBe(200);
     expect(scriptResponse.headers.get('content-type')).toContain('application/javascript');
+    expect(scriptResponse.headers.get('cache-control')).toBe(LOCAL_DASHBOARD_ASSET_CACHE_CONTROL);
+    expect(scriptResponse.headers.get('pragma')).toBe('no-cache');
+    expect(scriptResponse.headers.get('expires')).toBe('0');
     expect(scriptPayload).toContain('/api/v1/state');
     expect(scriptPayload).toContain('/api/v1/refresh');
     expect(scriptPayload).toContain('/api/v1/events');
@@ -98,7 +105,33 @@ describe('LocalApiServer dashboard assets', () => {
     const cssPayload = await cssResponse.text();
     expect(cssResponse.status).toBe(200);
     expect(cssResponse.headers.get('content-type')).toContain('text/css');
+    expect(cssResponse.headers.get('cache-control')).toBe(LOCAL_DASHBOARD_ASSET_CACHE_CONTROL);
+    expect(cssResponse.headers.get('pragma')).toBe('no-cache');
+    expect(cssResponse.headers.get('expires')).toBe('0');
     expect(cssPayload).toContain('.layout');
     expect(cssPayload).toContain('.panel');
+  });
+
+  it('does not apply the dashboard asset cache policy to unrelated API responses', async () => {
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    await response.arrayBuffer();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(response.headers.get('cache-control')).not.toBe(LOCAL_DASHBOARD_ASSET_CACHE_CONTROL);
+    expect(response.headers.get('pragma')).toBeNull();
+    expect(response.headers.get('expires')).toBeNull();
   });
 });

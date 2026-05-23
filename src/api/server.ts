@@ -54,7 +54,8 @@ import {
   sendScript,
   parseBoundedPositiveInteger,
   parseNonNegativeInteger,
-  serializeJsonPayload
+  serializeJsonPayload,
+  setLocalDashboardAssetCacheHeaders
 } from './server/responses';
 import {
   ISSUE_DETAIL_ROUTES,
@@ -919,6 +920,7 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
+              setLocalDashboardAssetCacheHeaders(response);
               sendHtml(response, 200, renderDashboardHtml(this.dashboardConfig));
             }
           }
@@ -930,6 +932,7 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
+              setLocalDashboardAssetCacheHeaders(response);
               sendScript(response, 200, renderDashboardClientJs(this.dashboardConfig));
             }
           }
@@ -941,6 +944,7 @@ export class LocalApiServer {
           {
             method: 'GET',
             handler: async (_request, response) => {
+              setLocalDashboardAssetCacheHeaders(response);
               sendCss(response, 200, renderDashboardStylesCss());
             }
           }
