@@ -1,7 +1,7 @@
 import { DASHBOARD_CONFIG } from './config';
 import { elements } from './dom';
 import { state } from './state';
-import { formatApiError, formatCanonicalJsonBlock, formatDate, formatDurationFromEpochMs, formatDurationFromIso } from './formatting';
+import { formatApiError, formatCanonicalJsonBlock, formatDate, formatDurationFromIso } from './formatting';
 import { renderActionRequiredBanner, renderApiDegradedBanner, renderOverview } from './overview';
 import { renderThroughput, renderRuntimeEvents, renderRuntimeResolution, renderSnapshotError, clearSnapshotError } from './runtime';
 import { renderRunning, renderRetry, renderBlocked } from './issues';
@@ -37,15 +37,15 @@ export function getConnectionClass(mode: any) {
 
 export function describeStreamFallback() {
     if (state.streamConnected && !state.streamSnapshotHealthy) {
-      return 'SSE connected; waiting for first state_snapshot';
+      return 'Stream connected; waiting for the first snapshot.';
     }
     if (state.streamFallbackReason === 'error') {
-      return 'SSE disconnected after stream error; polling fallback live';
+      return 'Stream paused; polling is keeping this view current.';
     }
     if (state.streamFallbackReason === 'connecting') {
-      return 'SSE connecting; polling fallback live';
+      return 'Connecting to live updates; polling is active.';
     }
-    return 'SSE disconnected; polling fallback live';
+    return 'Live stream unavailable; polling is active.';
   }
 
 export function setConnectionStatus(mode: any, detail: any) {
@@ -55,13 +55,48 @@ export function setConnectionStatus(mode: any, detail: any) {
     elements.connectionDetail.textContent = detail;
   }
 
-export function setLastUpdated(value: any) {
-    const generatedAtMs = state.payload && typeof state.payload.snapshot_generated_at_ms === 'number'
-      ? state.payload.snapshot_generated_at_ms
+export function formatHeroSnapshotAge(ageMs: any) {
+    if (!Number.isFinite(ageMs)) {
+      return null;
+    }
+    const seconds = Math.max(0, Math.floor(Number(ageMs) / 1000));
+    if (seconds < 60) {
+      return 'Updated just now';
+    }
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) {
+      return 'Updated ' + minutes + 'm ago';
+    }
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return 'Updated ' + hours + 'h' + (remainingMinutes ? ' ' + remainingMinutes + 'm' : '') + ' ago';
+  }
+
+export function formatHeroSnapshotFreshness(value: any) {
+    const payload = state.payload;
+    const generatedAtMs = payload && typeof payload.snapshot_generated_at_ms === 'number'
+      ? payload.snapshot_generated_at_ms
       : Date.parse(value || '');
-    const ageText = Number.isFinite(generatedAtMs) ? ' • age ' + formatDurationFromEpochMs(generatedAtMs) : '';
-    const freshness = state.payload && state.payload.snapshot_freshness_state ? ' • ' + state.payload.snapshot_freshness_state : '';
-    elements.lastUpdated.textContent = 'Last update: ' + formatDate(value) + ageText + freshness;
+    if (!Number.isFinite(generatedAtMs)) {
+      return { text: 'Waiting for first snapshot', title: '' };
+    }
+    const snapshotAgeMs = payload && typeof payload.snapshot_age_ms === 'number'
+      ? payload.snapshot_age_ms
+      : Date.now() - generatedAtMs;
+    const ageText = formatHeroSnapshotAge(snapshotAgeMs) || 'Snapshot time available';
+    const freshness = payload && payload.snapshot_freshness_state
+      ? String(payload.snapshot_freshness_state).replace(/_/g, ' ')
+      : '';
+    return {
+      text: ageText + (freshness ? ' • Snapshot ' + freshness : ''),
+      title: 'Snapshot generated at ' + formatDate(value)
+    };
+  }
+
+export function setLastUpdated(value: any) {
+    const freshness = formatHeroSnapshotFreshness(value);
+    elements.lastUpdated.textContent = freshness.text;
+    elements.lastUpdated.title = freshness.title;
   }
 
 export function setRefreshStatus(message: any, isError: any) {
@@ -113,7 +148,7 @@ export function applyPayload(payload: any, source: any) {
       state.streamSnapshotHealthy = true;
       state.streamStatus = 'streaming';
       state.streamFallbackReason = null;
-      setConnectionStatus('streaming', 'SSE streaming live state_snapshot updates');
+      setConnectionStatus('streaming', 'Live updates are flowing.');
       state.pollDelayMs = DASHBOARD_CONFIG.refresh_ms;
       clearPollTimer();
     }
@@ -145,7 +180,7 @@ export async function loadStateViaPoll() {
       const payload = await fetchJson('/api/v1/state');
       const usablePayload = applyPayload(payload, 'poll');
       if (isStreamHealthy()) {
-        setConnectionStatus('streaming', 'SSE streaming live state_snapshot updates');
+        setConnectionStatus('streaming', 'Live updates are flowing.');
       } else if (usablePayload) {
         setConnectionStatus('polling', describeStreamFallback());
       } else {
@@ -337,7 +372,7 @@ export function connectStream() {
     state.eventSource = stream;
     state.streamStatus = 'connecting';
     state.streamFallbackReason = 'connecting';
-    setConnectionStatus('connecting', 'SSE connecting; polling fallback active until first snapshot');
+    setConnectionStatus('connecting', 'Connecting to live updates; polling is active.');
 
     stream.onopen = function () {
       state.streamConnected = true;
@@ -345,7 +380,7 @@ export function connectStream() {
       state.streamStatus = 'connected_waiting_snapshot';
       state.streamFallbackReason = 'waiting_first_snapshot';
       state.streamRetryMs = 1000;
-      setConnectionStatus('connecting', 'SSE connected; waiting for first state_snapshot');
+      setConnectionStatus('connecting', 'Stream connected; waiting for the first snapshot.');
     };
 
     function handleStreamMessage(event: any) {
@@ -365,7 +400,7 @@ export function connectStream() {
       state.streamSnapshotHealthy = false;
       state.streamStatus = 'error';
       state.streamFallbackReason = 'error';
-      setConnectionStatus('connecting', 'SSE disconnected after stream error; polling fallback active');
+      setConnectionStatus('connecting', 'Stream paused; polling is keeping this view current.');
       stream.close();
       state.eventSource = null;
       void loadStateViaPoll();

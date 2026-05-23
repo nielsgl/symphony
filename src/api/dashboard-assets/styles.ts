@@ -7,6 +7,8 @@ export function renderDashboardStylesCss(): string {
   --muted: #5f7265;
   --accent: #145f4b;
   --accent-soft: #d8ede5;
+  --pink: #d83f87;
+  --pink-soft: #ffe4f1;
   --warn: #a04f1e;
   --warn-soft: #feeede;
   --danger: #aa3728;
@@ -70,17 +72,42 @@ h1 {
 
 .hero-status-card {
   min-width: 310px;
+  max-width: 380px;
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 12px;
-  background: var(--panel);
-  box-shadow: 0 12px 28px var(--glow);
+  border-radius: 8px;
+  padding: 14px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(255, 244, 249, 0.9)),
+    var(--panel);
+  box-shadow: 0 16px 38px rgba(20, 95, 75, 0.12);
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-status-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--pink));
+}
+
+.hero-status-topline {
+  justify-content: space-between;
 }
 
 .status-row {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.status-kicker {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .badge {
@@ -110,6 +137,42 @@ h1 {
 .badge-offline {
   background: #fee2e2;
   color: #b91c1c;
+}
+
+.hero-status-title {
+  display: block;
+  margin-top: 12px;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.hero-status-detail {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.hero-status-meta {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid rgba(216, 63, 135, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 228, 241, 0.48);
+  display: grid;
+  gap: 3px;
+}
+
+.hero-status-meta span:first-child {
+  color: var(--pink);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.hero-status-meta span:last-child {
+  color: var(--ink);
+  font-weight: 700;
 }
 
 .hero-actions {

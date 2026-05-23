@@ -14,6 +14,7 @@ import {
   getTurnControlLabel
 } from '../../src/api/dashboard-client/formatting';
 import {
+  formatHeroSnapshotFreshness,
   getConnectionClass,
   getConnectionLabel,
   handleSseEnvelope,
@@ -375,6 +376,22 @@ describe('dashboard browser client modules', () => {
     expect(formatElapsedMs(Number.NaN)).toBe('n/a');
     expect(getConnectionLabel('streaming')).toBe('Streaming');
     expect(getConnectionClass('polling')).toBe('badge badge-polling');
+    state.payload = snapshotPayload({
+      snapshot_generated_at_ms: Date.parse('2026-05-21T09:59:12.000Z'),
+      snapshot_age_ms: 48_000,
+      snapshot_freshness_state: 'fresh'
+    });
+    expect(formatHeroSnapshotFreshness('2026-05-21T09:59:12.000Z')).toMatchObject({
+      text: 'Updated just now • Snapshot fresh'
+    });
+    state.payload = snapshotPayload({
+      snapshot_generated_at_ms: Date.parse('2026-05-21T09:54:00.000Z'),
+      snapshot_age_ms: 360_000,
+      snapshot_freshness_state: 'stale'
+    });
+    expect(formatHeroSnapshotFreshness('2026-05-21T09:54:00.000Z')).toMatchObject({
+      text: 'Updated 6m ago • Snapshot stale'
+    });
     expect(getTurnControlLabel('blocked_manual_resume')).toBe('Manual Resume Required');
     expect(getProgressSignalLabel('stalled_waiting')).toBe('Stalled Waiting');
     expect(getRetryStateLabel({ due_state: 'overdue' })).toBe('Retry Overdue');

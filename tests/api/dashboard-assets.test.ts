@@ -631,13 +631,13 @@ describe('dashboard assets', () => {
     expect(harness.stateFetchCount()).toBe(1);
     harness.stream().onopen?.();
     expect(harness.document.getElementById('connection-badge').textContent).toBe('Connecting');
-    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE connected; waiting for first state_snapshot');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Stream connected; waiting for the first snapshot.');
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();
 
     expect(harness.stateFetchCount()).toBe(2);
     expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
-    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE connected; waiting for first state_snapshot');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Stream connected; waiting for the first snapshot.');
   });
 
   it('suspends routine polling after a healthy stream state snapshot arrives', async () => {
@@ -654,7 +654,8 @@ describe('dashboard assets', () => {
 
     expect(harness.stateFetchCount()).toBe(1);
     expect(harness.document.getElementById('connection-badge').textContent).toBe('Streaming');
-    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE streaming live state_snapshot updates');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Live updates are flowing.');
+    expect(harness.document.getElementById('last-updated').textContent).toBe('Updated just now • Snapshot fresh');
   });
 
   it('handles named symphony SSE events from the server', async () => {
@@ -680,7 +681,7 @@ describe('dashboard assets', () => {
 
     expect(harness.stateFetchCount()).toBe(2);
     expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
-    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE disconnected after stream error; polling fallback live');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Stream paused; polling is keeping this view current.');
     expect(harness.document.getElementById('connection-badge').textContent).not.toBe('Offline');
   });
 
@@ -769,7 +770,7 @@ describe('dashboard assets', () => {
     await flushPromises();
 
     expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
-    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE connecting; polling fallback live');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Connecting to live updates; polling is active.');
   });
 
   it('renders phase age and Codex thread activity as separate clocks', async () => {
@@ -1080,7 +1081,7 @@ describe('dashboard assets', () => {
     await flushPromises();
     expect(harness.stateFetchCount()).toBe(2);
     expect(harness.document.getElementById('connection-badge').textContent).toBe('Polling');
-    expect(harness.document.getElementById('connection-detail').textContent).toBe('SSE disconnected after stream error; polling fallback live');
+    expect(harness.document.getElementById('connection-detail').textContent).toBe('Stream paused; polling is keeping this view current.');
 
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();
