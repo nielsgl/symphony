@@ -196,6 +196,7 @@ export function createHarness(options: {
   getHostLoad?: OrchestratorPorts['getHostLoad'];
   getPersistenceHealth?: () => PersistenceHealth;
   resolveRuntimeIdentity?: OrchestratorPorts['resolveRuntimeIdentity'];
+  dispatchPreflight?: OrchestratorPorts['dispatchPreflight'];
 } = {}): Harness {
   const tracker = makeTracker();
   const now = { value: 1_000_000 };
@@ -245,7 +246,7 @@ export function createHarness(options: {
     config,
     ports: {
       tracker,
-      dispatchPreflight: () => ({ dispatch_allowed: true }),
+      dispatchPreflight: options.dispatchPreflight ?? (() => ({ dispatch_allowed: true })),
       getControlPlaneHealth: options.getControlPlaneHealth,
       getHostLoad: options.getHostLoad,
       getPersistenceHealth: options.getPersistenceHealth,

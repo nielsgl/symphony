@@ -476,11 +476,27 @@ describe('LocalApiServer operator actions', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'dirty repo fixed' })
     });
+    const clearFaultPayload = (await clearFaultResponse.json()) as {
+      cleared: boolean;
+      issue_identifier: string;
+      status: string;
+      result_code: string;
+      dispatch_started: boolean;
+      breaker_cleared: boolean;
+    };
 
     expect(cancelResponse.status).toBe(202);
     expect(requeueResponse.status).toBe(202);
     expect(retryResponse.status).toBe(202);
     expect(clearFaultResponse.status).toBe(200);
+    expect(clearFaultPayload).toMatchObject({
+      cleared: false,
+      issue_identifier: 'ABC-3',
+      status: 'held',
+      result_code: 'drain_mode_active',
+      dispatch_started: false,
+      breaker_cleared: false
+    });
     expect(cancelCurrentTurn).toHaveBeenCalledWith('ABC-3', {
       actor: 'ops@example.test',
       confirmed: true,
@@ -495,6 +511,74 @@ describe('LocalApiServer operator actions', () => {
       actor: 'ops@example.test',
       reason_note: 'retry failed step'
     });
+    expect(clearAutomationFault).toHaveBeenCalledWith('ABC-3', {
+      actor: 'ops@example.test',
+      reason_note: 'dirty repo fixed'
+    });
+  });
+
+  it('returns structured started payloads for clear automation fault requests', async () => {
+    const clearAutomationFault = vi.fn(async () => ({
+      ok: true as const,
+      issue_id: 'issue-3',
+      status: 'started' as const,
+      result_code: 'dispatch_started',
+      message: 'automation fault cleared and redispatch requested',
+      dispatch_started: true,
+      breaker_cleared: true
+    }));
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => makeState()
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      issueControlSource: {
+        clearAutomationFault,
+        resumeBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3' })),
+        cancelBlockedIssue: vi.fn(async () => ({ ok: true as const, issue_id: 'issue-3', moved_to_state: 'Todo' })),
+        submitBlockedIssueInput: vi.fn(async () => ({
+          ok: true as const,
+          issue_id: 'issue-3',
+          request_id: 'req-1',
+          resume_mode: 'fallback' as const,
+          resume_reason_code: 'transport_unsupported',
+          requested_at: '2026-05-04T00:00:00.000Z',
+          request_lineage: { previous_thread_id: null, previous_session_id: null }
+        }))
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/issues/ABC-3/clear-automation-fault`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actor: 'ops@example.test', reason_note: 'dirty repo fixed' })
+    });
+    const payload = (await response.json()) as {
+      cleared: boolean;
+      issue_identifier: string;
+      status: string;
+      result_code: string;
+      message: string;
+      dispatch_started: boolean;
+      breaker_cleared: boolean;
+      requested_at: string;
+    };
+
+    expect(response.status).toBe(202);
+    expect(payload).toMatchObject({
+      cleared: true,
+      issue_identifier: 'ABC-3',
+      status: 'started',
+      result_code: 'dispatch_started',
+      message: 'automation fault cleared and redispatch requested',
+      dispatch_started: true,
+      breaker_cleared: true
+    });
+    expect(typeof payload.requested_at).toBe('string');
     expect(clearAutomationFault).toHaveBeenCalledWith('ABC-3', {
       actor: 'ops@example.test',
       reason_note: 'dirty repo fixed'
