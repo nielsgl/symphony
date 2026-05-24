@@ -1,10 +1,16 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import { EventEmitter } from 'node:events';
 
 import { describe, expect, it } from 'vitest';
 
-import { runCommandRouter, type DashboardLaunchContext } from '../../src/runtime/command-router';
+import {
+  bindDashboardSupervisorSignalForwarding,
+  runCommandRouter,
+  type DashboardLaunchContext,
+  type DashboardSupervisorSignal
+} from '../../src/runtime/command-router';
 
 function createHarness(overrides: { packageVersion?: string; repoRoot?: string } = {}) {
   let stdout = '';
@@ -335,5 +341,52 @@ describe('local symphony command router', () => {
     expect(harness.dashboardCalls).toEqual([]);
     expect(harness.envFileLoads).toEqual([]);
     expect(harness.stderr).toContain('cli workflow requires a value');
+  });
+
+  it('forwards wrapper termination signals to the active dashboard supervisor child', () => {
+    const signalSource = new EventEmitter() as EventEmitter & {
+      once(signal: DashboardSupervisorSignal, listener: () => void): EventEmitter;
+      removeListener(signal: DashboardSupervisorSignal, listener: () => void): EventEmitter;
+    };
+    const forwardedSignals: DashboardSupervisorSignal[] = [];
+    const child = {
+      killed: false,
+      kill: (signal: DashboardSupervisorSignal) => {
+        forwardedSignals.push(signal);
+        child.killed = true;
+        return true;
+      }
+    };
+
+    const binding = bindDashboardSupervisorSignalForwarding(child, signalSource);
+
+    signalSource.emit('SIGTERM');
+    signalSource.emit('SIGINT');
+    binding.cleanup();
+
+    expect(forwardedSignals).toEqual(['SIGTERM']);
+    expect(binding.forwardedSignal()).toBe('SIGTERM');
+    expect(signalSource.listenerCount('SIGINT')).toBe(0);
+    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
+  });
+
+  it('cleans dashboard supervisor signal listeners when no signal was forwarded', () => {
+    const signalSource = new EventEmitter() as EventEmitter & {
+      once(signal: DashboardSupervisorSignal, listener: () => void): EventEmitter;
+      removeListener(signal: DashboardSupervisorSignal, listener: () => void): EventEmitter;
+    };
+    const child = {
+      killed: false,
+      kill: () => {
+        throw new Error('signal should not be forwarded');
+      }
+    };
+
+    const binding = bindDashboardSupervisorSignalForwarding(child, signalSource);
+    binding.cleanup();
+
+    expect(binding.forwardedSignal()).toBeNull();
+    expect(signalSource.listenerCount('SIGINT')).toBe(0);
+    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
   });
 });

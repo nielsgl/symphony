@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import dotenv from 'dotenv';
 
 import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local-command-resolver';
@@ -33,6 +33,23 @@ export interface RunCommandRouterOptions {
   deps?: Partial<CommandRouterDependencies>;
 }
 
+export type DashboardSupervisorSignal = 'SIGINT' | 'SIGTERM';
+
+interface DashboardSupervisorSignalTarget {
+  killed?: boolean;
+  kill(signal: DashboardSupervisorSignal): unknown;
+}
+
+interface DashboardSupervisorSignalSource {
+  once(signal: DashboardSupervisorSignal, listener: () => void): unknown;
+  removeListener(signal: DashboardSupervisorSignal, listener: () => void): unknown;
+}
+
+export interface DashboardSupervisorSignalBinding {
+  cleanup: () => void;
+  forwardedSignal: () => DashboardSupervisorSignal | null;
+}
+
 const SUPPORTED_COMMANDS = ['dashboard', 'doctor', 'setup', 'profile', 'init', 'link-local'] as const;
 
 const NOT_IMPLEMENTED_COMMANDS = new Set(['doctor', 'setup']);
@@ -62,6 +79,49 @@ function readPackageVersion(repoRoot: string): string {
   }
 }
 
+export function bindDashboardSupervisorSignalForwarding(
+  child: DashboardSupervisorSignalTarget,
+  signalSource: DashboardSupervisorSignalSource = process
+): DashboardSupervisorSignalBinding {
+  let forwarded: DashboardSupervisorSignal | null = null;
+
+  const handlers: Record<DashboardSupervisorSignal, () => void> = {
+    SIGINT: () => {
+      if (forwarded) {
+        return;
+      }
+      forwarded = 'SIGINT';
+      if (!child.killed) {
+        child.kill('SIGINT');
+      }
+    },
+    SIGTERM: () => {
+      if (forwarded) {
+        return;
+      }
+      forwarded = 'SIGTERM';
+      if (!child.killed) {
+        child.kill('SIGTERM');
+      }
+    }
+  };
+
+  signalSource.once('SIGINT', handlers.SIGINT);
+  signalSource.once('SIGTERM', handlers.SIGTERM);
+
+  return {
+    cleanup: () => {
+      signalSource.removeListener('SIGINT', handlers.SIGINT);
+      signalSource.removeListener('SIGTERM', handlers.SIGTERM);
+    },
+    forwardedSignal: () => forwarded
+  };
+}
+
+function signalExitCode(signal: DashboardSupervisorSignal): number {
+  return signal === 'SIGINT' ? 130 : 143;
+}
+
 function runDashboardSupervisor(
   argv: readonly string[],
   context: DashboardLaunchContext
@@ -74,24 +134,40 @@ function runDashboardSupervisor(
   };
 
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [supervisorScript, ...argv], {
+    const child: ChildProcess = spawn(process.execPath, [supervisorScript, ...argv], {
       cwd: context.cwd,
       env,
       stdio: 'inherit'
     });
+    const signalBinding = bindDashboardSupervisorSignalForwarding(child);
+    let settled = false;
+
+    const settle = (exitCode: number) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signalBinding.cleanup();
+      resolve(exitCode);
+    };
 
     child.on('error', (error) => {
       process.stderr.write(`Failed to start dashboard supervisor: ${error.message}\n`);
-      resolve(1);
+      settle(1);
     });
 
     child.on('exit', (code, signal) => {
+      const forwardedSignal = signalBinding.forwardedSignal();
+      if (forwardedSignal) {
+        settle(signalExitCode(forwardedSignal));
+        return;
+      }
       if (typeof code === 'number') {
-        resolve(code);
+        settle(code);
         return;
       }
       process.stderr.write(`Dashboard supervisor exited from signal ${signal || 'unknown'}\n`);
-      resolve(1);
+      settle(1);
     });
   });
 }
