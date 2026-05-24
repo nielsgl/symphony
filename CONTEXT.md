@@ -157,7 +157,7 @@ The later diagnostic extension for **Project Execution History** storage, schema
 _Avoid_: Doctor MVP
 
 **Safe Runtime Upgrade**:
-The **Improve Work** capability for draining active work, reaching quiescence, and restarting/upgrading the Symphony runtime without manually timing around active agents.
+The **Improve Work** capability for draining active work, reaching quiescence, applying an operator-approved runtime update, and restarting/upgrading the Symphony runtime without manually timing around active agents.
 _Avoid_: In-process code hot swap
 
 **Drain Mode**:
@@ -169,8 +169,8 @@ The **Drain Mode** condition where Symphony can be safely stopped or upgraded be
 _Avoid_: All tickets complete
 
 **Upgrade Script Integration**:
-A later capability that composes drain, source update, dependency install/build, and process restart for a specific local deployment setup.
-_Avoid_: Drain Mode v1
+A later capability that packages the implemented safe runtime upgrade flow for a specific local deployment setup or installer surface.
+_Avoid_: Automatic update without operator initiation
 
 **Project-Owned Customization**:
 Future versioned project-owned Symphony skills and prompt fragments, likely under `.symphony/skills/` and `.symphony/prompts/`.
@@ -224,7 +224,8 @@ _Avoid_: MVP profile materialization
 - The first **Understand Work** implementation slice is **Project Execution History** MVP with **Ticket Orchestration Ledger** as the first view.
 - **Safe Runtime Upgrade** is an early **Improve Work** priority after **Project Execution History**; v1 uses **Drain Mode** and safe restart, not in-process code hot swapping.
 - **Drain Mode** stops new dispatch immediately, waits by default for active runs to reach **Quiescence**, and reports active blockers preventing safe restart.
-- **Drain Mode** v1 exposes safe drain/status/shutdown controls but does not run `git pull`, install/build, or restart automation; **Upgrade Script Integration** is later.
+- **Safe Runtime Upgrade** exposes drain/status/wait/shutdown controls plus a guided operator-approved update path: prepare enters **Drain Mode**, apply requires **Quiescence**, fast-forwards the prepared update, runs guarded install/build when needed, and uses supported supervisor restart when available.
+- **Safe Runtime Upgrade** still does not do in-process hot swapping or automatic update behavior just because a remote ref moved; an operator must initiate prepare/apply.
 - **Validation Ledger**, **Phase Handoff Packet**, and repair-loop policy depend on **Project Execution History** and should not be folded into the MVP.
 - **Validation Ledger** starts with **Advisory Validation Reuse** and fails closed when identity or freshness is incomplete.
 - **Simple Task Fast Path** depends on **Advisory Validation Reuse**, not fully automatic validation skipping.

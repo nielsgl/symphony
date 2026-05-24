@@ -5,12 +5,12 @@ const DEFAULT_PORT = process.env.SYMPHONY_PORT || '3030';
 
 function usage() {
   return [
-    'Usage: node scripts/drain-mode-control.js <wait|shutdown> [options]',
+    'Usage: node scripts/drain-mode-control.js <status|enter|exit|wait|shutdown> [options]',
     '',
     'Options:',
     '  --url <url>              Base local API URL, default http://127.0.0.1:3030',
     '  --timeout-ms <number>    Wait timeout in milliseconds',
-    '  --reason <text>          Operator reason for shutdown',
+    '  --reason <text>          Operator reason for enter, exit, or shutdown',
     '  --override              Request non-default shutdown override while blocked'
   ].join('\n');
 }
@@ -56,11 +56,16 @@ async function postJson(url, body) {
   return { response, payload };
 }
 
-async function main(argv = process.argv.slice(2)) {
+async function getJson(url) {
+  const response = await fetch(url);
+  const payload = await response.json();
+  return { response, payload };
+}
+
+function buildRequest(argv = process.argv.slice(2)) {
   const command = argv[0];
-  if (command !== 'wait' && command !== 'shutdown') {
-    process.stderr.write(`${usage()}\n`);
-    return 2;
+  if (!['status', 'enter', 'exit', 'wait', 'shutdown'].includes(command)) {
+    throw new Error('invalid_command');
   }
 
   const apiUrl = baseUrl(argv);
@@ -68,14 +73,46 @@ async function main(argv = process.argv.slice(2)) {
   const reason = readFlagValue(argv, '--reason');
   const override = argv.includes('--override');
 
-  const body = {
-    ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }),
-    ...(reason === undefined ? {} : { reason }),
-    ...(override ? { override: true } : {})
-  };
+  if (command === 'status') {
+    return {
+      method: 'GET',
+      url: `${apiUrl}/api/v1/drain-mode`,
+      body: null
+    };
+  }
 
-  const endpoint = command === 'wait' ? '/api/v1/drain-mode/wait' : '/api/v1/drain-mode/shutdown';
-  const { response, payload } = await postJson(`${apiUrl}${endpoint}`, body);
+  const endpoint = {
+    enter: '/api/v1/drain-mode/enter',
+    exit: '/api/v1/drain-mode/exit',
+    wait: '/api/v1/drain-mode/wait',
+    shutdown: '/api/v1/drain-mode/shutdown'
+  }[command];
+  const body = {
+    ...(command === 'wait' && timeoutMs !== undefined ? { timeout_ms: timeoutMs } : {}),
+    ...(['enter', 'exit', 'shutdown'].includes(command) && reason !== undefined ? { reason } : {}),
+    ...(command === 'shutdown' && override ? { override: true } : {})
+  };
+  return {
+    method: 'POST',
+    url: `${apiUrl}${endpoint}`,
+    body
+  };
+}
+
+async function main(argv = process.argv.slice(2)) {
+  let request;
+  try {
+    request = buildRequest(argv);
+  } catch (error) {
+    if (error instanceof Error && error.message !== 'invalid_command') {
+      throw error;
+    }
+    process.stderr.write(`${usage()}\n`);
+    return 2;
+  }
+
+  const { response, payload } =
+    request.method === 'GET' ? await getJson(request.url) : await postJson(request.url, request.body);
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   return response.ok ? 0 : 1;
 }
@@ -93,5 +130,6 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildRequest,
   main
 };
