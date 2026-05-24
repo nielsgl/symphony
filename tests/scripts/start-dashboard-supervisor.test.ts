@@ -166,7 +166,7 @@ if (!process.env.SYMPHONY_RESTART_ATTEMPT_ID) {
 }
 process.on('SIGTERM', () => {
   write({ type: 'stopping' });
-  setTimeout(() => process.exit(0), 1000);
+  setTimeout(() => process.exit(0), 100);
 });
 setInterval(() => {}, 1000);
 `,
@@ -178,7 +178,7 @@ setInterval(() => {}, 1000);
       env: {
         ...process.env,
         SYMPHONY_SUPERVISOR_CHILD_SCRIPT: childScript,
-        SYMPHONY_RESTART_STARTUP_TIMEOUT_MS: '80',
+        SYMPHONY_RESTART_STARTUP_TIMEOUT_MS: '750',
         SYMPHONY_RESTART_FAILURE_HANDOFF_FILE: handoffPath,
         SUPERVISOR_TEST_EVENTS: eventsPath
       },
@@ -186,6 +186,7 @@ setInterval(() => {}, 1000);
     });
     children.push(supervisor);
 
+    await waitForEvent(eventsPath, (event) => event.type === 'started' && event.attempt_id === 'attempt-timeout');
     const failed = await waitForEvent(eventsPath, (event) => event.type === 'restart_failed');
 
     expect(failed).toMatchObject({
