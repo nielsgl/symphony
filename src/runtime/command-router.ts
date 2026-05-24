@@ -1,16 +1,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import dotenv from 'dotenv';
 
 import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local-command-resolver';
 import { LocalCommandResolutionError, resolveLocalCommand } from './local-command-resolver';
-import { runDashboardCli } from './cli-runner';
+import { GUARDRAIL_ACK_FLAG } from './cli';
 import { runLocalLinkCommand } from './local-link';
+
+export interface DashboardLaunchContext {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  envFilePath: string;
+  repoRoot: string;
+}
 
 export interface CommandRouterDependencies {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
-  runDashboard: (argv: readonly string[]) => Promise<number>;
+  runDashboard: (argv: readonly string[], context: DashboardLaunchContext) => Promise<number>;
   runLinkLocal: (argv: readonly string[]) => Promise<number>;
   resolveLocalCommand: (options: ResolveLocalCommandOptions) => LocalCommandResolution;
   loadEnvFile: (envFilePath: string) => void;
@@ -54,12 +62,46 @@ function readPackageVersion(repoRoot: string): string {
   }
 }
 
+function runDashboardSupervisor(
+  argv: readonly string[],
+  context: DashboardLaunchContext
+): Promise<number> {
+  const supervisorScript = path.join(context.repoRoot, 'scripts', 'start-dashboard-supervisor.js');
+  const env = {
+    ...process.env,
+    ...context.env,
+    SYMPHONY_ENV_FILE: context.envFilePath
+  };
+
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [supervisorScript, ...argv], {
+      cwd: context.cwd,
+      env,
+      stdio: 'inherit'
+    });
+
+    child.on('error', (error) => {
+      process.stderr.write(`Failed to start dashboard supervisor: ${error.message}\n`);
+      resolve(1);
+    });
+
+    child.on('exit', (code, signal) => {
+      if (typeof code === 'number') {
+        resolve(code);
+        return;
+      }
+      process.stderr.write(`Dashboard supervisor exited from signal ${signal || 'unknown'}\n`);
+      resolve(1);
+    });
+  });
+}
+
 function defaultDependencies(): CommandRouterDependencies {
   const repoRoot = defaultRepoRoot();
   return {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
-    runDashboard: (argv) => runDashboardCli(argv),
+    runDashboard: (argv, context) => runDashboardSupervisor(argv, context),
     runLinkLocal: (argv) => runLocalLinkCommand({ argv, deps: { repoRoot } }),
     resolveLocalCommand,
     loadEnvFile: (envFilePath) => {
@@ -70,6 +112,21 @@ function defaultDependencies(): CommandRouterDependencies {
     cwd: process.cwd(),
     env: process.env
   };
+}
+
+function renderDashboardResolution(resolved: LocalCommandResolution): string {
+  const consentSource = resolved.dashboardArgv.includes(GUARDRAIL_ACK_FLAG) ? 'flag' : 'missing';
+  return [
+    'Symphony dashboard startup context:',
+    `  project root: ${resolved.currentProjectRoot} (${resolved.sources.projectRoot})`,
+    `  workflow: ${resolved.workflowPath} (${resolved.sources.workflowPath})`,
+    `  env file: ${resolved.envFilePath} (${resolved.sources.envFilePath})`,
+    `  profile: ${resolved.profile.name} (${resolved.profile.source})`,
+    `  host: ${resolved.host.host} (${resolved.host.source})`,
+    `  port: ${resolved.port.port} (${resolved.port.source})`,
+    `  consent: ${consentSource}`,
+    ''
+  ].join('\n');
 }
 
 function renderHelp(): string {
@@ -208,7 +265,13 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
       return 1;
     }
     deps.loadEnvFile(resolved.envFilePath);
-    return deps.runDashboard(resolved.dashboardArgv);
+    deps.stdout(renderDashboardResolution(resolved));
+    return deps.runDashboard(resolved.dashboardArgv, {
+      cwd: deps.cwd,
+      env: deps.env,
+      envFilePath: resolved.envFilePath,
+      repoRoot: deps.repoRoot
+    });
   }
 
   if (command === 'profile') {

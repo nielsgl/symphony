@@ -4,12 +4,13 @@ import os from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
-import { runCommandRouter } from '../../src/runtime/command-router';
+import { runCommandRouter, type DashboardLaunchContext } from '../../src/runtime/command-router';
 
 function createHarness(overrides: { packageVersion?: string; repoRoot?: string } = {}) {
   let stdout = '';
   let stderr = '';
   const dashboardCalls: string[][] = [];
+  const dashboardContexts: Array<{ cwd: string; envFilePath: string; repoRoot: string }> = [];
   const linkLocalCalls: string[][] = [];
   const envFileLoads: string[] = [];
 
@@ -21,6 +22,7 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       return stderr;
     },
     dashboardCalls,
+    dashboardContexts,
     linkLocalCalls,
     envFileLoads,
     deps: {
@@ -30,8 +32,13 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       stderr: (text: string) => {
         stderr += text;
       },
-      runDashboard: async (argv: readonly string[]) => {
+      runDashboard: async (argv: readonly string[], context: DashboardLaunchContext) => {
         dashboardCalls.push([...argv]);
+        dashboardContexts.push({
+          cwd: context.cwd,
+          envFilePath: context.envFilePath,
+          repoRoot: context.repoRoot
+        });
         return 27;
       },
       runLinkLocal: async (argv: readonly string[]) => {
@@ -195,8 +202,22 @@ describe('local symphony command router', () => {
         '--port=0'
       ]
     ]);
+    expect(harness.dashboardContexts).toEqual([
+      {
+        cwd: projectRoot,
+        envFilePath: path.join(projectRoot, '.env'),
+        repoRoot: '/repo/symphony'
+      }
+    ]);
     expect(harness.envFileLoads).toEqual([path.join(projectRoot, '.env')]);
-    expect(harness.stdout).toBe('');
+    expect(harness.stdout).toContain('Symphony dashboard startup context:');
+    expect(harness.stdout).toContain(`project root: ${projectRoot} (project)`);
+    expect(harness.stdout).toContain(`workflow: ${path.join(projectRoot, 'WORKFLOW.md')} (project)`);
+    expect(harness.stdout).toContain(`env file: ${path.join(projectRoot, '.env')} (project)`);
+    expect(harness.stdout).toContain('profile: project (default)');
+    expect(harness.stdout).toContain('host: 127.0.0.1 (default)');
+    expect(harness.stdout).toContain('port: 0 (cli)');
+    expect(harness.stdout).toContain('consent: missing');
     expect(harness.stderr).toBe('');
   });
 
@@ -231,6 +252,13 @@ describe('local symphony command router', () => {
 
     expect(exitCode).toBe(27);
     expect(harness.envFileLoads).toEqual([path.join(explicitProject, '.env')]);
+    expect(harness.dashboardContexts).toEqual([
+      {
+        cwd: cwdProject,
+        envFilePath: path.join(explicitProject, '.env'),
+        repoRoot: '/repo/symphony'
+      }
+    ]);
     expect(harness.dashboardCalls).toEqual([
       [
         `--workflow=${path.join(explicitProject, 'WORKFLOW.md')}`,
@@ -238,6 +266,57 @@ describe('local symphony command router', () => {
         '--port=0'
       ]
     ]);
+    expect(harness.stdout).toContain(`project root: ${explicitProject} (cli)`);
+    expect(harness.stdout).toContain(`workflow: ${path.join(explicitProject, 'WORKFLOW.md')} (cli)`);
+    expect(harness.stdout).toContain(`env file: ${path.join(explicitProject, '.env')} (project)`);
+    expect(harness.stdout).toContain('host: 203.0.113.7 (env)');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('routes the symphony-internal profile through the checkout workflow and preserves consent flag', async () => {
+    const externalProject = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-external-')));
+    await fs.writeFile(path.join(externalProject, 'WORKFLOW.md'), 'external workflow\n', 'utf8');
+    const repoRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-repo-')));
+    await fs.writeFile(path.join(repoRoot, 'WORKFLOW.md'), 'repo workflow\n', 'utf8');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = externalProject;
+
+    const exitCode = await runCommandRouter({
+      argv: [
+        'dashboard',
+        '--profile',
+        'symphony-internal',
+        '--host',
+        '0.0.0.0',
+        '--port',
+        '0',
+        '--i-understand-that-this-will-be-running-without-the-usual-guardrails'
+      ],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(27);
+    expect(harness.envFileLoads).toEqual([path.join(repoRoot, '.env')]);
+    expect(harness.dashboardContexts).toEqual([
+      {
+        cwd: externalProject,
+        envFilePath: path.join(repoRoot, '.env'),
+        repoRoot
+      }
+    ]);
+    expect(harness.dashboardCalls).toEqual([
+      [
+        '--i-understand-that-this-will-be-running-without-the-usual-guardrails',
+        `--workflow=${path.join(repoRoot, 'WORKFLOW.md')}`,
+        '--host=0.0.0.0',
+        '--port=0'
+      ]
+    ]);
+    expect(harness.stdout).toContain(`project root: ${repoRoot} (profile)`);
+    expect(harness.stdout).toContain(`workflow: ${path.join(repoRoot, 'WORKFLOW.md')} (profile)`);
+    expect(harness.stdout).toContain('profile: symphony-internal (cli)');
+    expect(harness.stdout).toContain('host: 0.0.0.0 (cli)');
+    expect(harness.stdout).toContain('consent: flag');
     expect(harness.stderr).toBe('');
   });
 
