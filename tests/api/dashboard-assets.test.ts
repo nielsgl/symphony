@@ -525,6 +525,18 @@ describe('dashboard assets', () => {
     expect(html).not.toContain('Live orchestration visibility with retry control, issue drilldown, and desktop/browser parity.');
   });
 
+  it('places rate limits below runtime overview and renders a visual container', () => {
+    const html = renderDashboardHtml();
+    const css = renderDashboardStylesCss();
+
+    expect(html.indexOf('<h2>Runtime Overview</h2>')).toBeLessThan(html.indexOf('<h2>Rate Limits</h2>'));
+    expect(html.indexOf('<h2>Rate Limits</h2>')).toBeLessThan(html.indexOf('<h2>Drain Mode</h2>'));
+    expect(html).toContain('id="rate-limits" class="rate-limit-grid"');
+    expect(html).not.toContain('<pre id="rate-limits"');
+    expect(css).toContain('.rate-limit-card');
+    expect(css).toContain('.rate-limit-meter-fill');
+  });
+
   it('renders client budget display logic for visible status, policy, and stop messages', () => {
     const clientJs = renderDashboardClientJs();
 

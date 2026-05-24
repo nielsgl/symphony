@@ -53,7 +53,8 @@ import {
   describeTransition,
   renderActionRequiredBanner,
   renderApiDegradedBanner,
-  renderOverview
+  renderOverview,
+  renderRateLimits
 } from '../../src/api/dashboard-client/overview';
 import {
   createFactBadges,
@@ -707,6 +708,76 @@ describe('dashboard browser client modules', () => {
         detail: 'resumed'
       }
     ]);
+  });
+
+  it('renders rate limits as visual cards instead of raw JSON', () => {
+    vi.setSystemTime(new Date('2026-05-24T08:00:00.000Z'));
+
+    renderRateLimits(null);
+    expect(collectText(elements.rateLimits)).toContain('No rate limits reported');
+    expect(collectText(elements.rateLimits)).toContain('idle');
+
+    renderRateLimits({
+      primary: {
+        remaining: 8,
+        limit: 10,
+        resetAt: '2026-05-24T09:00:00.000Z',
+        window_minutes: 300,
+        updatedAt: '2026-05-24T07:55:00.000Z'
+      },
+      secondary_pool: {
+        remaining: 8,
+        limit: 100,
+        used_percent: 92,
+        resetAt: '2026-05-31T08:00:00.000Z',
+        window_seconds: 604800,
+        policy: 'burst'
+      }
+    });
+
+    const rendered = collectText(elements.rateLimits);
+    expect(rendered.match(/Latest snapshot/g)).toHaveLength(1);
+    expect(rendered).toContain('Primary');
+    expect(rendered).toContain('Remaining 8');
+    expect(rendered).toContain('Used 20%');
+    expect(rendered).toContain('Capacity used 20%');
+    expect(rendered).toContain('Window progress 80%');
+    expect(rendered).toContain('Limit 10');
+    expect(rendered).toContain('UTC 2026-05-24T09:00:00.000Z');
+    expect(rendered).toContain('Resets in: 1h 0m');
+    expect(rendered).toContain('Window: 5h 0m');
+    expect(rendered).toContain('Schedule on schedule');
+    expect(rendered).toContain('Balance Surplus +6');
+    expect(rendered).toContain('Projection Run-out in 16h 0m');
+    expect(rendered).toContain('Latest snapshot:');
+    expect(rendered).toContain('Secondary Pool');
+    expect(rendered).toContain('near limit');
+    expect(rendered).toContain('Schedule deficit');
+    expect(rendered).toContain('Balance Deficit -92');
+    expect(rendered).toContain('Current pace runs out before reset.');
+    expect(rendered).not.toContain('{');
+    expect(elements.rateLimits.children[1].children[1].children[0].style.width).toBe('20%');
+    expect(elements.rateLimits.children[1].children[1].children[1].style.left).toBe('80%');
+    expect(elements.rateLimits.children[2].className).toContain('rate-limit-card-critical');
+  });
+
+  it('renders partial rate-limit payloads without exposing JSON', () => {
+    renderRateLimits({
+      session_window: {
+        remaining: 120,
+        resetInSeconds: 1800
+      }
+    });
+
+    const rendered = collectText(elements.rateLimits);
+    expect(rendered).toContain('Session Window');
+    expect(rendered).toContain('Remaining 120');
+    expect(rendered).toContain('Used n/a');
+    expect(rendered).toContain('Limit n/a');
+    expect(rendered).toContain('Schedule schedule unknown');
+    expect(rendered).toContain('Surplus n/a');
+    expect(rendered).toContain('Window progress n/a');
+    expect(rendered).not.toContain('{');
   });
 
   it('renders Drain Mode and quiescence status prominently in the overview', () => {

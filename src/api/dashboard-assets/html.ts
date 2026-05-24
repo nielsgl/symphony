@@ -81,6 +81,13 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
       <div id="retry-status-summary" class="retry-status-summary hidden" aria-live="polite"></div>
     </section>
 
+    <section class="panel panel-wide">
+      <div class="panel-head">
+        <h2>Rate Limits</h2>
+      </div>
+      <div id="rate-limits" class="rate-limit-grid" aria-live="polite"></div>
+    </section>
+
     <section id="drain-mode-panel" class="panel panel-wide drain-mode-panel" aria-live="polite">
       <div class="panel-head">
         <h2>Drain Mode</h2>
@@ -118,13 +125,6 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
         </div>
         <div id="runtime-update-details" class="runtime-update-details">Runtime update details unavailable.</div>
       </div>
-    </section>
-
-    <section class="panel panel-wide">
-      <div class="panel-head">
-        <h2>Rate Limits</h2>
-      </div>
-      <pre id="rate-limits" class="code-block">No rate limits reported.</pre>
     </section>
 
     <section class="panel panel-wide">

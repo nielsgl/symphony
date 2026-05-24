@@ -399,6 +399,218 @@ h3 {
   border-left-color: var(--danger);
 }
 
+.rate-limit-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.rate-limit-card {
+  flex: 1 1 300px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fcf7;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.rate-limit-card-warning {
+  border-color: #d58a44;
+  background: #fff8ef;
+}
+
+.rate-limit-card-critical {
+  border-color: var(--danger);
+  background: #fff7f5;
+}
+
+.rate-limit-empty {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.rate-limit-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.rate-limit-name {
+  font-weight: 800;
+}
+
+.rate-limit-status {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.rate-limit-card-warning .rate-limit-status {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.rate-limit-card-critical .rate-limit-status {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.rate-limit-meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5eee2;
+  position: relative;
+}
+
+.rate-limit-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--pink));
+}
+
+.rate-limit-time-marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  border-radius: 999px;
+  background: #1b2d21;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.82), 0 0 0 4px rgba(20, 95, 75, 0.28);
+  transform: translateX(-1px);
+}
+
+.rate-limit-meter-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.rate-limit-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.rate-limit-metric {
+  min-width: 0;
+}
+
+.rate-limit-metric span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rate-limit-metric strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 18px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.rate-limit-detail-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rate-limit-chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.rate-limit-forecast {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(86px, 1fr));
+}
+
+.rate-limit-marker {
+  border: 1px solid rgba(95, 114, 101, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 8px;
+  min-width: 0;
+}
+
+.rate-limit-marker-positive {
+  border-color: rgba(20, 95, 75, 0.22);
+  background: rgba(216, 237, 229, 0.58);
+}
+
+.rate-limit-marker-deficit {
+  border-color: rgba(170, 55, 40, 0.25);
+  background: rgba(253, 234, 230, 0.7);
+}
+
+.rate-limit-marker span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rate-limit-marker strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.rate-limit-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.rate-limit-summary {
+  flex: 1 0 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(20, 95, 75, 0.14);
+  border-radius: 8px;
+  background: rgba(216, 237, 229, 0.38);
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rate-limit-summary span {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rate-limit-summary strong {
+  color: var(--ink);
+  text-align: right;
+}
+
 .drain-mode-panel {
   border-color: #b6c9b8;
 }
