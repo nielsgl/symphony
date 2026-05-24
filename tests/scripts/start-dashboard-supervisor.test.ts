@@ -121,6 +121,83 @@ setInterval(() => {}, 1000);
     });
   }, SUPERVISOR_TIMEOUT_MS);
 
+  it('scrubs inherited restart metadata from the initial child only', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-supervisor-inherited-env-test-'));
+    const eventsPath = path.join(dir, 'events.jsonl');
+    const childScript = path.join(dir, 'child.js');
+    await fs.writeFile(
+      childScript,
+      `
+const fs = require('node:fs');
+const eventsPath = process.env.SUPERVISOR_TEST_EVENTS;
+function write(event) {
+  fs.appendFileSync(eventsPath, JSON.stringify({ ...event, pid: process.pid }) + '\\n');
+}
+write({
+  type: 'started',
+  attempt_id: process.env.SYMPHONY_RESTART_ATTEMPT_ID || null,
+  target: process.env.SYMPHONY_RESTART_TARGET_SHA || null,
+  old_child_pid: process.env.SYMPHONY_RESTART_OLD_CHILD_PID || null,
+  started_at: process.env.SYMPHONY_RESTART_STARTED_AT || null
+});
+if (!process.env.SYMPHONY_RESTART_ATTEMPT_ID) {
+  setTimeout(() => {
+    process.send({
+      type: 'symphony_supervised_restart_request',
+      version: 1,
+      attempt_id: 'attempt-from-clean-initial-child',
+      target_commit_sha: 'target-sha',
+      old_commit_sha: 'old-sha',
+      requested_at: '2026-05-22T10:00:00.000Z',
+      child_pid: process.pid
+    });
+  }, 20);
+}
+process.on('SIGTERM', () => {
+  write({ type: 'stopping' });
+  process.exit(0);
+});
+setInterval(() => {}, 1000);
+`,
+      'utf8'
+    );
+
+    const supervisor = spawn(process.execPath, ['scripts/start-dashboard-supervisor.js'], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: {
+        ...process.env,
+        SYMPHONY_SUPERVISOR_CHILD_SCRIPT: childScript,
+        SYMPHONY_RESTART_ATTEMPT_ID: 'stale-inherited-attempt',
+        SYMPHONY_RESTART_TARGET_SHA: 'stale-target',
+        SYMPHONY_RESTART_OLD_CHILD_PID: '99999',
+        SYMPHONY_RESTART_STARTED_AT: '2026-05-20T10:00:00.000Z',
+        SUPERVISOR_TEST_EVENTS: eventsPath
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    children.push(supervisor);
+
+    const restarted = await waitForEvent(
+      eventsPath,
+      (event) => event.type === 'started' && event.attempt_id === 'attempt-from-clean-initial-child'
+    );
+    const events = await readEvents(eventsPath);
+    const initial = events.find((event) => event.type === 'started' && event.attempt_id === null);
+
+    expect(initial).toMatchObject({
+      attempt_id: null,
+      target: null,
+      old_child_pid: null,
+      started_at: null
+    });
+    expect(restarted).toMatchObject({
+      attempt_id: 'attempt-from-clean-initial-child',
+      target: 'target-sha',
+      old_child_pid: expect.stringMatching(/^\d+$/),
+      started_at: expect.any(String)
+    });
+  }, SUPERVISOR_TIMEOUT_MS);
+
   it('reports startup timeout failure to the replacement child before exiting', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-supervisor-timeout-test-'));
     const eventsPath = path.join(dir, 'events.jsonl');

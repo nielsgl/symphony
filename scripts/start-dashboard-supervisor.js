@@ -98,6 +98,10 @@ function spawnChild(restartMetadata) {
     SYMPHONY_RESTART_SUPERVISOR: '1',
     SYMPHONY_RESTART_FAILURE_HANDOFF_FILE: failureHandoffFile
   };
+  delete env.SYMPHONY_RESTART_ATTEMPT_ID;
+  delete env.SYMPHONY_RESTART_TARGET_SHA;
+  delete env.SYMPHONY_RESTART_OLD_CHILD_PID;
+  delete env.SYMPHONY_RESTART_STARTED_AT;
   if (restartMetadata) {
     env.SYMPHONY_RESTART_ATTEMPT_ID = restartMetadata.attempt_id;
     env.SYMPHONY_RESTART_TARGET_SHA = restartMetadata.target_commit_sha || '';
