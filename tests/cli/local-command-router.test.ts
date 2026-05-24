@@ -1,4 +1,6 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
@@ -8,6 +10,7 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
   let stdout = '';
   let stderr = '';
   const dashboardCalls: string[][] = [];
+  const envFileLoads: string[] = [];
 
   return {
     get stdout() {
@@ -17,6 +20,7 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       return stderr;
     },
     dashboardCalls,
+    envFileLoads,
     deps: {
       stdout: (text: string) => {
         stdout += text;
@@ -28,8 +32,13 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
         dashboardCalls.push([...argv]);
         return 27;
       },
+      loadEnvFile: (envFilePath: string) => {
+        envFileLoads.push(envFilePath);
+      },
       packageVersion: overrides.packageVersion ?? '9.8.7',
-      repoRoot: overrides.repoRoot ?? '/repo/symphony'
+      repoRoot: overrides.repoRoot ?? '/repo/symphony',
+      cwd: process.cwd(),
+      env: {}
     }
   };
 }
@@ -129,7 +138,10 @@ describe('local symphony command router', () => {
   });
 
   it('fails recognized but not-yet-implemented commands', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-reserved-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
     const harness = createHarness();
+    harness.deps.cwd = projectRoot;
 
     const exitCode = await runCommandRouter({ argv: ['doctor'], deps: harness.deps });
 
@@ -139,8 +151,29 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toBe('');
   });
 
-  it('delegates dashboard arguments to the existing dashboard runner', async () => {
+  it('runs local context resolution for reserved setup and doctor flows', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-doctor-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
     const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--profile', 'unknown'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain("Unknown Symphony profile 'unknown'");
+    expect(harness.stderr).not.toContain("Command 'doctor' is recognized but not implemented");
+    expect(harness.stdout).toBe('');
+  });
+
+  it('resolves dashboard local context before delegating to the existing dashboard runner', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-project-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    await fs.writeFile(path.join(projectRoot, '.env'), 'SYMPHONY_TEST_VALUE=1\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
 
     const exitCode = await runCommandRouter({
       argv: ['dashboard', '--port=0', '--offline'],
@@ -148,7 +181,15 @@ describe('local symphony command router', () => {
     });
 
     expect(exitCode).toBe(27);
-    expect(harness.dashboardCalls).toEqual([['--port=0', '--offline']]);
+    expect(harness.dashboardCalls).toEqual([
+      [
+        '--offline',
+        path.join('--workflow=' + projectRoot, 'WORKFLOW.md'),
+        '--host=127.0.0.1',
+        '--port=0'
+      ]
+    ]);
+    expect(harness.envFileLoads).toEqual([path.join(projectRoot, '.env')]);
     expect(harness.stdout).toBe('');
     expect(harness.stderr).toBe('');
   });
