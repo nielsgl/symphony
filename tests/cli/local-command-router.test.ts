@@ -11,6 +11,31 @@ import {
   type DashboardLaunchContext,
   type DashboardSupervisorSignal
 } from '../../src/runtime/command-router';
+import type { SetupConsentStore, SetupConsentStorePayload, WorkflowPosture } from '../../src/runtime/setup-consent';
+
+function createMemoryConsentStore(storePath = path.join(os.tmpdir(), 'symphony-user-state', 'setup-consent.json')) {
+  let payload: SetupConsentStorePayload = { version: 1, records: [] };
+  const store: SetupConsentStore = {
+    path: storePath,
+    read: () => payload,
+    write: (next) => {
+      payload = next;
+    }
+  };
+  return {
+    store,
+    records: () => payload.records
+  };
+}
+
+const HIGH_TRUST_POSTURE: WorkflowPosture = {
+  posture: 'high-trust',
+  reason: 'workflow effective codex sandbox posture requires danger-full-access local execution',
+  evidence: {
+    thread_sandbox: 'danger-full-access',
+    turn_sandbox_policy: 'danger-full-access'
+  }
+};
 
 function createHarness(overrides: { packageVersion?: string; repoRoot?: string } = {}) {
   let stdout = '';
@@ -19,6 +44,7 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
   const dashboardContexts: Array<{ cwd: string; envFilePath: string; repoRoot: string }> = [];
   const linkLocalCalls: string[][] = [];
   const envFileLoads: string[] = [];
+  const consent = createMemoryConsentStore();
 
   return {
     get stdout() {
@@ -31,6 +57,7 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
     dashboardContexts,
     linkLocalCalls,
     envFileLoads,
+    consent,
     deps: {
       stdout: (text: string) => {
         stdout += text;
@@ -54,6 +81,10 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       loadEnvFile: (envFilePath: string) => {
         envFileLoads.push(envFilePath);
       },
+      setupConsentStore: consent.store,
+      resolveWorkflowPosture: () => HIGH_TRUST_POSTURE,
+      promptSetupConsent: async () => false,
+      clock: () => new Date('2026-05-24T20:00:00.000Z'),
       packageVersion: overrides.packageVersion ?? '9.8.7',
       repoRoot: overrides.repoRoot ?? '/repo/symphony',
       cwd: process.cwd(),
@@ -185,6 +216,105 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toContain("Unknown Symphony profile 'unknown'");
     expect(harness.stderr).not.toContain("Command 'doctor' is recognized but not implemented");
     expect(harness.stdout).toBe('');
+  });
+
+  it('records explicit setup consent in user-local state for the resolved workflow identity', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-setup-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Symphony setup high-trust consent:');
+    expect(harness.stdout).toContain(`project root: ${projectRoot} (project)`);
+    expect(harness.stdout).toContain('required posture: high-trust');
+    expect(harness.stdout).toContain('Setup consent recorded for identity');
+    expect(harness.stderr).toBe('');
+    expect(harness.consent.records()).toHaveLength(1);
+    const [record] = harness.consent.records();
+    expect(record.evidence.project_root).toBe(projectRoot);
+    expect(record.evidence.workflow_path).toBe(path.join(projectRoot, 'WORKFLOW.md'));
+    expect(record.evidence.project_root_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(record.evidence.workflow_path_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(record)).not.toContain('workflow\\n');
+  });
+
+  it('fails setup safely when explicit consent is not available', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-setup-refuse-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({ argv: ['setup'], deps: harness.deps });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain('Setup consent was not recorded');
+    expect(harness.consent.records()).toEqual([]);
+  });
+
+  it('refuses to persist setup consent inside the project checkout', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-project-state-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    const projectStore = createMemoryConsentStore(path.join(projectRoot, '.symphony', 'setup-consent.json'));
+    harness.deps.setupConsentStore = projectStore.store;
+
+    const exitCode = await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain('Refusing to store setup consent under the project checkout');
+    expect(projectStore.records()).toEqual([]);
+  });
+
+  it('uses valid setup consent as the dashboard guardrail acknowledgement source', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-setup-dashboard-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    expect(await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps })).toBe(0);
+    const exitCode = await runCommandRouter({ argv: ['dashboard', '--port=0'], deps: harness.deps });
+
+    expect(exitCode).toBe(27);
+    expect(harness.dashboardCalls.at(-1)).toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
+    expect(harness.stdout).toContain('consent: setup');
+  });
+
+  it('does not treat workflow declarations as setup consent authority', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-project-file-')));
+    await fs.writeFile(
+      path.join(projectRoot, 'WORKFLOW.md'),
+      ['---', 'local_high_trust_consent: true', '---', 'workflow'].join('\n'),
+      'utf8'
+    );
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({ argv: ['dashboard', '--port=0'], deps: harness.deps });
+
+    expect(exitCode).toBe(27);
+    expect(harness.dashboardCalls.at(-1)).not.toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
+    expect(harness.stdout).toContain('consent: missing');
+  });
+
+  it('bypasses old setup consent when the workflow identity changes', async () => {
+    const projectA = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-identity-a-')));
+    const projectB = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-identity-b-')));
+    await fs.writeFile(path.join(projectA, 'WORKFLOW.md'), 'workflow a\n', 'utf8');
+    await fs.writeFile(path.join(projectB, 'WORKFLOW.md'), 'workflow b\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectA;
+    expect(await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps })).toBe(0);
+
+    harness.deps.cwd = projectB;
+    const exitCode = await runCommandRouter({ argv: ['dashboard', '--port=0'], deps: harness.deps });
+
+    expect(exitCode).toBe(27);
+    expect(harness.dashboardCalls.at(-1)).not.toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
+    expect(harness.stdout).toContain('consent: missing');
   });
 
   it('resolves dashboard local context before delegating to the existing dashboard runner', async () => {

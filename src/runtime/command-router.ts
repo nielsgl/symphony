@@ -7,6 +7,17 @@ import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local
 import { LocalCommandResolutionError, resolveLocalCommand } from './local-command-resolver';
 import { GUARDRAIL_ACK_FLAG } from './cli';
 import { runLocalLinkCommand } from './local-link';
+import {
+  buildSetupConsentRecord,
+  createFileSetupConsentStore,
+  findValidSetupConsent,
+  persistSetupConsent,
+  promptSetupConsent,
+  resolveWorkflowPosture,
+  type SetupConsentSource,
+  type SetupConsentStore,
+  type WorkflowPosture
+} from './setup-consent';
 
 export interface DashboardLaunchContext {
   cwd: string;
@@ -21,7 +32,11 @@ export interface CommandRouterDependencies {
   runDashboard: (argv: readonly string[], context: DashboardLaunchContext) => Promise<number>;
   runLinkLocal: (argv: readonly string[]) => Promise<number>;
   resolveLocalCommand: (options: ResolveLocalCommandOptions) => LocalCommandResolution;
+  resolveWorkflowPosture: (workflowPath: string, env?: NodeJS.ProcessEnv) => WorkflowPosture;
+  setupConsentStore: SetupConsentStore;
+  promptSetupConsent: typeof promptSetupConsent;
   loadEnvFile: (envFilePath: string) => void;
+  clock: () => Date;
   packageVersion: string;
   repoRoot: string;
   cwd: string;
@@ -180,9 +195,13 @@ function defaultDependencies(): CommandRouterDependencies {
     runDashboard: (argv, context) => runDashboardSupervisor(argv, context),
     runLinkLocal: (argv) => runLocalLinkCommand({ argv, deps: { repoRoot } }),
     resolveLocalCommand,
+    resolveWorkflowPosture,
+    setupConsentStore: createFileSetupConsentStore(),
+    promptSetupConsent,
     loadEnvFile: (envFilePath) => {
       dotenv.config({ path: envFilePath });
     },
+    clock: () => new Date(),
     packageVersion: readPackageVersion(repoRoot),
     repoRoot,
     cwd: process.cwd(),
@@ -190,8 +209,7 @@ function defaultDependencies(): CommandRouterDependencies {
   };
 }
 
-function renderDashboardResolution(resolved: LocalCommandResolution): string {
-  const consentSource = resolved.dashboardArgv.includes(GUARDRAIL_ACK_FLAG) ? 'flag' : 'missing';
+function renderDashboardResolution(resolved: LocalCommandResolution, consentSource: SetupConsentSource): string {
   return [
     'Symphony dashboard startup context:',
     `  project root: ${resolved.currentProjectRoot} (${resolved.sources.projectRoot})`,
@@ -224,6 +242,98 @@ function renderHelp(): string {
     '',
     'Run `symphony <command> --help` for command-specific help.'
   ].join('\n');
+}
+
+function renderSetupHelp(): string {
+  return [
+    'Symphony setup',
+    '',
+    'Usage:',
+    '  symphony setup [--yes] [resolver options]',
+    '',
+    'Records explicit user-local consent for the resolved project/workflow identity.',
+    'Project files can declare required posture, but they cannot grant consent.'
+  ].join('\n');
+}
+
+function isWithinPath(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function hasExplicitSetupConsentArg(argv: readonly string[]): boolean {
+  return argv.includes('--yes') || argv.includes('--accept-high-trust-local-run');
+}
+
+function renderSetupSummary(params: {
+  resolved: LocalCommandResolution;
+  posture: WorkflowPosture;
+  storePath: string;
+}): string {
+  return [
+    'Symphony setup high-trust consent:',
+    `  project root: ${params.resolved.currentProjectRoot} (${params.resolved.sources.projectRoot})`,
+    `  workflow: ${params.resolved.workflowPath} (${params.resolved.sources.workflowPath})`,
+    `  identity key: ${params.resolved.projectIdentity.key}`,
+    `  required posture: ${params.posture.posture}`,
+    `  reason: ${params.posture.reason}`,
+    `  consent store: ${params.storePath}`,
+    '',
+    'Consent is user-local and scoped to this exact project/workflow identity.',
+    'WORKFLOW.md can explain the required posture, but it cannot grant consent.',
+    ''
+  ].join('\n');
+}
+
+async function runSetupCommand(
+  argv: readonly string[],
+  deps: CommandRouterDependencies
+): Promise<number> {
+  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
+    deps.stdout(`${renderSetupHelp()}\n`);
+    return 0;
+  }
+
+  let resolved: LocalCommandResolution;
+  try {
+    resolved = deps.resolveLocalCommand({
+      command: 'setup',
+      argv,
+      cwd: deps.cwd,
+      env: deps.env,
+      symphonyCheckoutRoot: deps.repoRoot
+    });
+  } catch (error) {
+    const message =
+      error instanceof LocalCommandResolutionError || error instanceof Error ? error.message : String(error);
+    deps.stderr(`${message}\n`);
+    return 1;
+  }
+
+  if (isWithinPath(resolved.currentProjectRoot, deps.setupConsentStore.path)) {
+    deps.stderr('Refusing to store setup consent under the project checkout; choose a user-local state path.\n');
+    return 1;
+  }
+
+  const posture = deps.resolveWorkflowPosture(resolved.workflowPath, deps.env);
+  deps.stdout(renderSetupSummary({ resolved, posture, storePath: deps.setupConsentStore.path }));
+
+  const approved =
+    hasExplicitSetupConsentArg(argv) ||
+    (await deps.promptSetupConsent({ resolved, posture, input: process.stdin, output: process.stdout }));
+  if (!approved) {
+    deps.stderr('Setup consent was not recorded because explicit approval was not provided.\n');
+    return 1;
+  }
+
+  const record = buildSetupConsentRecord({
+    resolved,
+    posture,
+    approvedAt: deps.clock().toISOString()
+  });
+  persistSetupConsent(deps.setupConsentStore, record);
+  deps.stdout(`Setup consent recorded for identity ${record.identity_key}.\n`);
+  return 0;
 }
 
 function renderInitHelp(): string {
@@ -340,9 +450,19 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
       deps.stderr(`${message}\n`);
       return 1;
     }
+    let dashboardArgv = resolved.dashboardArgv;
+    let consentSource: SetupConsentSource = dashboardArgv.includes(GUARDRAIL_ACK_FLAG) ? 'flag' : 'missing';
+    if (consentSource === 'missing') {
+      const posture = deps.resolveWorkflowPosture(resolved.workflowPath, deps.env);
+      const consent = findValidSetupConsent({ store: deps.setupConsentStore, resolved, posture });
+      if (consent) {
+        dashboardArgv = [...dashboardArgv, GUARDRAIL_ACK_FLAG];
+        consentSource = 'setup';
+      }
+    }
     deps.loadEnvFile(resolved.envFilePath);
-    deps.stdout(renderDashboardResolution(resolved));
-    return deps.runDashboard(resolved.dashboardArgv, {
+    deps.stdout(renderDashboardResolution(resolved, consentSource));
+    return deps.runDashboard(dashboardArgv, {
       cwd: deps.cwd,
       env: deps.env,
       envFilePath: resolved.envFilePath,
@@ -362,7 +482,11 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
     return deps.runLinkLocal(rest);
   }
 
-  if (command === 'doctor' || command === 'setup') {
+  if (command === 'setup') {
+    return runSetupCommand(rest, deps);
+  }
+
+  if (command === 'doctor') {
     try {
       deps.resolveLocalCommand({
         command,
