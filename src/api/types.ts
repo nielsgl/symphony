@@ -449,6 +449,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
       last_phase: PhaseMarkerName | null;
     }>;
   };
+  worker_event_pressure: ApiWorkerEventPressure;
   running: Array<ApiBudgetProjection & {
     issue_id: string;
     issue_identifier: string;
@@ -1861,4 +1862,20 @@ export interface ApiDiagnosticsResponse {
     last_snapshot_broadcast_error: string | null;
   };
   control_plane: ControlPlaneHealthSummary;
+  worker_event_pressure: ApiWorkerEventPressure;
+}
+
+export interface ApiWorkerEventPressure {
+  active_worker_count: number;
+  waiting_worker_count: number;
+  stalled_waiting_worker_count: number;
+  rate_limited_worker_count: number;
+  recent_worker_event_count: number;
+  recent_planning_event_count: number;
+  recent_waiting_event_count: number;
+  recent_rate_limit_event_count: number;
+  last_worker_event_at: string | null;
+  last_worker_event_at_ms: number | null;
+  degraded: boolean;
+  reason_code: string | null;
 }

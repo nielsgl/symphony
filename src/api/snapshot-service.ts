@@ -20,6 +20,7 @@ import { toStateRunningRow, explainRunningEntry, redactPromptPreview } from './s
 import { asIsoDate } from './snapshot-service/time';
 import { projectCodexSessionTranscriptScanBudget, projectCodexThreadActivity, projectPhaseTiming, resolveStateFreshness } from './snapshot-service/state-projection';
 import { buildPageMetadata, normalizeDiagnosticPageOptions, projectMissingToolOutput, projectToolCallLedger, projectTranscriptToolCallDiagnostics, projectTranscriptToolCallDiagnosticSummary, type RuntimeDiagnosticPageOptions } from './snapshot-service/transcript-diagnostics';
+import { projectWorkerEventPressure } from './snapshot-service/worker-event-pressure';
 import {
   createApiDegradedDiagnostics,
   resolveBlockedProgressSignal,
@@ -338,6 +339,7 @@ export class SnapshotService {
           .length
       },
       retry_status: retryStatus,
+      worker_event_pressure: projectWorkerEventPressure(state.running.values()),
       running,
       retrying,
       blocked,

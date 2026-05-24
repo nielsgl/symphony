@@ -101,6 +101,7 @@ export const REASON_CODES = {
   projectHistoryAppServerLiteDegraded: 'project_history_app_server_lite_degraded',
   projectHistoryPayloadRedacted: 'project_history_payload_redacted',
   projectHistoryPayloadTruncated: 'project_history_payload_truncated',
+  workerEventPressure: 'worker_event_pressure',
   liveTokenFallbackNotOnHotPath: 'live_token_fallback_not_on_hot_path',
   stateProjectionUnavailable: 'state_projection_unavailable',
   runtimeUpdateDrainModeRequired: 'runtime_update_drain_mode_required',
@@ -906,6 +907,16 @@ export const CANONICAL_REASON_CODE_REGISTRY = {
     headline: 'History payload was truncated',
     detail: 'A project history fact is available only through bounded detail because the original payload exceeded excerpt limits.',
     expected_transition: 'No automatic transition; truncated detail is the durable history contract'
+  },
+  [REASON_CODES.workerEventPressure]: {
+    reason_code: REASON_CODES.workerEventPressure,
+    classification: 'stalled_waiting',
+    actionability: 'recommended',
+    recommended_actions: ['Inspect worker-event pressure diagnostics before relying on shell access'],
+    label: 'Worker Event Pressure',
+    headline: 'Worker event pressure observed',
+    detail: 'Multiple active workers are emitting waiting, heartbeat, planning, or rate-limit events while control-plane reads remain bounded.',
+    expected_transition: 'State, diagnostics, and SSE snapshots remain available with compact worker-pressure diagnostics'
   },
   [REASON_CODES.liveTokenFallbackNotOnHotPath]: {
     reason_code: REASON_CODES.liveTokenFallbackNotOnHotPath,

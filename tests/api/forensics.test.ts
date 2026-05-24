@@ -297,6 +297,20 @@ function makeApiDiagnostics(): ApiDiagnosticsResponse {
       worst_health: 'ok',
       event_loop: null,
       endpoints: []
+    },
+    worker_event_pressure: {
+      active_worker_count: 0,
+      waiting_worker_count: 0,
+      stalled_waiting_worker_count: 0,
+      rate_limited_worker_count: 0,
+      recent_worker_event_count: 0,
+      recent_planning_event_count: 0,
+      recent_waiting_event_count: 0,
+      recent_rate_limit_event_count: 0,
+      last_worker_event_at: null,
+      last_worker_event_at_ms: null,
+      degraded: false,
+      reason_code: null
     }
   };
 }
