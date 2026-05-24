@@ -129,12 +129,38 @@ function isSafeRepoRoot(repoRoot: string | null): repoRoot is string {
   return !!repoRoot && path.isAbsolute(repoRoot);
 }
 
+const QUIESCENCE_BLOCKER_CATEGORIES: Array<keyof ApiDrainQuiescenceProjection['blocker_counts']> = [
+  'active_worker',
+  'live_codex_app_server_process',
+  'pending_retry',
+  'in_flight_tracker_write',
+  'persistence_history_write',
+  'unknown_degraded_blocker_source_health',
+  'stale_runtime',
+  'unknown_current_build_identity'
+];
+
 function isSafeQuiescenceProjection(value: unknown): value is ApiDrainQuiescenceProjection {
   if (!value || typeof value !== 'object') {
     return false;
   }
   const projection = value as Partial<ApiDrainQuiescenceProjection>;
-  return projection.safe_to_shutdown === true && projection.state === 'safe';
+  if (projection.safe_to_shutdown !== true || projection.state !== 'safe') {
+    return false;
+  }
+  if (typeof projection.updated_at !== 'string' || !Number.isFinite(Date.parse(projection.updated_at))) {
+    return false;
+  }
+  if (typeof projection.updated_at_ms !== 'number' || !Number.isFinite(projection.updated_at_ms)) {
+    return false;
+  }
+  if (!Array.isArray(projection.blockers) || projection.blockers.length > 0) {
+    return false;
+  }
+  if (!projection.blocker_counts || typeof projection.blocker_counts !== 'object') {
+    return false;
+  }
+  return QUIESCENCE_BLOCKER_CATEGORIES.every((category) => projection.blocker_counts?.[category] === 0);
 }
 
 function normalizeBaseRef(baseRef: string | null | undefined, remote: string): string {

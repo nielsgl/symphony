@@ -502,8 +502,14 @@ describe('runtime update manager', () => {
         state: 'blocked'
       }
     });
+    const safeLookingMalformed = await manager.applyUpdate({
+      quiescence: {
+        safe_to_shutdown: true,
+        state: 'safe'
+      }
+    });
 
-    for (const result of [missing, unsafe, malformed]) {
+    for (const result of [missing, unsafe, malformed, safeLookingMalformed]) {
       expect(result).toMatchObject({
         success: false,
         status: 'refused',
