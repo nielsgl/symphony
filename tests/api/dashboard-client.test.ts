@@ -53,7 +53,8 @@ import {
   describeTransition,
   renderActionRequiredBanner,
   renderApiDegradedBanner,
-  renderOverview
+  renderOverview,
+  renderRateLimits
 } from '../../src/api/dashboard-client/overview';
 import {
   createFactBadges,
@@ -707,6 +708,38 @@ describe('dashboard browser client modules', () => {
         detail: 'resumed'
       }
     ]);
+  });
+
+  it('renders rate limits as visual cards instead of raw JSON', () => {
+    renderRateLimits(null);
+    expect(collectText(elements.rateLimits)).toContain('No rate limits reported');
+    expect(collectText(elements.rateLimits)).toContain('idle');
+
+    renderRateLimits({
+      primary: {
+        remaining: 8,
+        limit: 10,
+        resetAt: '2026-05-24T09:00:00.000Z',
+        window_minutes: 300
+      },
+      secondary_pool: {
+        used_percent: 92,
+        window_seconds: 60,
+        policy: 'burst'
+      }
+    });
+
+    const rendered = collectText(elements.rateLimits);
+    expect(rendered).toContain('Primary');
+    expect(rendered).toContain('Remaining 8');
+    expect(rendered).toContain('Used 20%');
+    expect(rendered).toContain('Limit 10');
+    expect(rendered).toContain('Reset: 2026-05-24T09:00:00.000Z');
+    expect(rendered).toContain('Secondary Pool');
+    expect(rendered).toContain('near limit');
+    expect(rendered).not.toContain('{');
+    expect(elements.rateLimits.children[0].children[1].children[0].style.width).toBe('20%');
+    expect(elements.rateLimits.children[1].className).toContain('rate-limit-card-critical');
   });
 
   it('renders Drain Mode and quiescence status prominently in the overview', () => {

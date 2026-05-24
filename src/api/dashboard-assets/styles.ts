@@ -399,6 +399,122 @@ h3 {
   border-left-color: var(--danger);
 }
 
+.rate-limit-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.rate-limit-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fcf7;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.rate-limit-card-warning {
+  border-color: #d58a44;
+  background: #fff8ef;
+}
+
+.rate-limit-card-critical {
+  border-color: var(--danger);
+  background: #fff7f5;
+}
+
+.rate-limit-empty {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.rate-limit-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.rate-limit-name {
+  font-weight: 800;
+}
+
+.rate-limit-status {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.rate-limit-card-warning .rate-limit-status {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.rate-limit-card-critical .rate-limit-status {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.rate-limit-meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5eee2;
+}
+
+.rate-limit-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--pink));
+}
+
+.rate-limit-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.rate-limit-metric {
+  min-width: 0;
+}
+
+.rate-limit-metric span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rate-limit-metric strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.rate-limit-detail-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rate-limit-chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .drain-mode-panel {
   border-color: #b6c9b8;
 }
