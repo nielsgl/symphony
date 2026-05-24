@@ -7,6 +7,7 @@ import type {
   ApiRuntimeRestartStatus,
   ApiStateErrorResponse,
   ApiStateResponse,
+  ApiWorkerEventPressure,
   LocalApiServerOptions
 } from '../types';
 import type { StreamDiagnosticsState } from './event-stream';
@@ -90,6 +91,20 @@ export function buildDiagnosticsPayload(options: {
     }
   };
   let runtimeIdentity: ApiDiagnosticsResponse['runtime_identity'] = null;
+  let workerEventPressure: ApiWorkerEventPressure = {
+    active_worker_count: 0,
+    waiting_worker_count: 0,
+    stalled_waiting_worker_count: 0,
+    rate_limited_worker_count: 0,
+    recent_worker_event_count: 0,
+    recent_planning_event_count: 0,
+    recent_waiting_event_count: 0,
+    recent_rate_limit_event_count: 0,
+    last_worker_event_at: null,
+    last_worker_event_at_ms: null,
+    degraded: false,
+    reason_code: null
+  };
   let projectionDurationMs: number | null = null;
   let enrichmentDurationMs: number | null = null;
   try {
@@ -98,6 +113,7 @@ export function buildDiagnosticsPayload(options: {
     runtimeIdentity = projected.runtime_identity;
     drainMode = options.snapshotService.projectDrainMode(snapshot);
     quiescence = options.snapshotService.projectQuiescence(snapshot);
+    workerEventPressure = projected.worker_event_pressure;
     projectionDurationMs = options.nowMs() - projectionStartedAtMs;
     const enrichmentStartedAtMs = options.nowMs();
     tokenEnrichment = options.enrichLiveTokenFallbackState(projected);
@@ -200,6 +216,7 @@ export function buildDiagnosticsPayload(options: {
       last_snapshot_broadcast_error: options.streamDiagnostics.lastSnapshotBroadcastError
     },
     control_plane: options.controlPlaneSummary(),
+    worker_event_pressure: workerEventPressure,
     runtime_resolution: {
       ...runtimeResolution,
       effective_codex_home: runtimeResolution.effective_codex_home ?? null,
