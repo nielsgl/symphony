@@ -209,7 +209,11 @@ function defaultDependencies(): CommandRouterDependencies {
   };
 }
 
-function renderDashboardResolution(resolved: LocalCommandResolution, consentSource: SetupConsentSource): string {
+function renderDashboardResolution(
+  resolved: LocalCommandResolution,
+  posture: WorkflowPosture,
+  consentSource: SetupConsentSource
+): string {
   return [
     'Symphony dashboard startup context:',
     `  project root: ${resolved.currentProjectRoot} (${resolved.sources.projectRoot})`,
@@ -218,6 +222,8 @@ function renderDashboardResolution(resolved: LocalCommandResolution, consentSour
     `  profile: ${resolved.profile.name} (${resolved.profile.source})`,
     `  host: ${resolved.host.host} (${resolved.host.source})`,
     `  port: ${resolved.port.port} (${resolved.port.source})`,
+    `  required posture: ${posture.posture}`,
+    `  reason: ${posture.reason}`,
     `  consent: ${consentSource}`,
     ''
   ].join('\n');
@@ -451,9 +457,9 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
       return 1;
     }
     let dashboardArgv = resolved.dashboardArgv;
+    const posture = deps.resolveWorkflowPosture(resolved.workflowPath, deps.env);
     let consentSource: SetupConsentSource = dashboardArgv.includes(GUARDRAIL_ACK_FLAG) ? 'flag' : 'missing';
     if (consentSource === 'missing') {
-      const posture = deps.resolveWorkflowPosture(resolved.workflowPath, deps.env);
       const consent = findValidSetupConsent({ store: deps.setupConsentStore, resolved, posture });
       if (consent) {
         dashboardArgv = [...dashboardArgv, GUARDRAIL_ACK_FLAG];
@@ -461,7 +467,7 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
       }
     }
     deps.loadEnvFile(resolved.envFilePath);
-    deps.stdout(renderDashboardResolution(resolved, consentSource));
+    deps.stdout(renderDashboardResolution(resolved, posture, consentSource));
     return deps.runDashboard(dashboardArgv, {
       cwd: deps.cwd,
       env: deps.env,

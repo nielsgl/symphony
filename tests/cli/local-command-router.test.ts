@@ -280,6 +280,10 @@ describe('local symphony command router', () => {
 
     expect(exitCode).toBe(27);
     expect(harness.dashboardCalls.at(-1)).toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
+    expect(harness.stdout).toContain('required posture: high-trust');
+    expect(harness.stdout).toContain(
+      'reason: workflow effective codex sandbox posture requires danger-full-access local execution'
+    );
     expect(harness.stdout).toContain('consent: setup');
   });
 
@@ -297,6 +301,10 @@ describe('local symphony command router', () => {
 
     expect(exitCode).toBe(27);
     expect(harness.dashboardCalls.at(-1)).not.toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
+    expect(harness.stdout).toContain('required posture: high-trust');
+    expect(harness.stdout).toContain(
+      'reason: workflow effective codex sandbox posture requires danger-full-access local execution'
+    );
     expect(harness.stdout).toContain('consent: missing');
   });
 
