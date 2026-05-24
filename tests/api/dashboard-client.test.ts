@@ -736,9 +736,12 @@ describe('dashboard browser client modules', () => {
     });
 
     const rendered = collectText(elements.rateLimits);
+    expect(rendered.match(/Latest snapshot/g)).toHaveLength(1);
     expect(rendered).toContain('Primary');
     expect(rendered).toContain('Remaining 8');
     expect(rendered).toContain('Used 20%');
+    expect(rendered).toContain('Capacity used 20%');
+    expect(rendered).toContain('Window progress 80%');
     expect(rendered).toContain('Limit 10');
     expect(rendered).toContain('UTC 2026-05-24T09:00:00.000Z');
     expect(rendered).toContain('Resets in: 1h 0m');
@@ -753,8 +756,9 @@ describe('dashboard browser client modules', () => {
     expect(rendered).toContain('Balance Deficit -92');
     expect(rendered).toContain('Current pace runs out before reset.');
     expect(rendered).not.toContain('{');
-    expect(elements.rateLimits.children[0].children[1].children[0].style.width).toBe('20%');
-    expect(elements.rateLimits.children[1].className).toContain('rate-limit-card-critical');
+    expect(elements.rateLimits.children[1].children[1].children[0].style.width).toBe('20%');
+    expect(elements.rateLimits.children[1].children[1].children[1].style.left).toBe('80%');
+    expect(elements.rateLimits.children[2].className).toContain('rate-limit-card-critical');
   });
 
   it('renders partial rate-limit payloads without exposing JSON', () => {
@@ -772,6 +776,7 @@ describe('dashboard browser client modules', () => {
     expect(rendered).toContain('Limit n/a');
     expect(rendered).toContain('Schedule schedule unknown');
     expect(rendered).toContain('Surplus n/a');
+    expect(rendered).toContain('Window progress n/a');
     expect(rendered).not.toContain('{');
   });
 

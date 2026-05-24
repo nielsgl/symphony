@@ -400,12 +400,13 @@ h3 {
 }
 
 .rate-limit-grid {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .rate-limit-card {
+  flex: 1 1 300px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #f8fcf7;
@@ -465,12 +466,33 @@ h3 {
   overflow: hidden;
   border-radius: 999px;
   background: #e5eee2;
+  position: relative;
 }
 
 .rate-limit-meter-fill {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--accent), var(--pink));
+}
+
+.rate-limit-time-marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  border-radius: 999px;
+  background: #1b2d21;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.82), 0 0 0 4px rgba(20, 95, 75, 0.28);
+  transform: translateX(-1px);
+}
+
+.rate-limit-meter-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .rate-limit-metrics {
@@ -496,6 +518,7 @@ h3 {
   display: block;
   margin-top: 2px;
   font-size: 18px;
+  line-height: 1.1;
   overflow-wrap: anywhere;
 }
 
@@ -518,7 +541,7 @@ h3 {
 .rate-limit-forecast {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(86px, 1fr));
 }
 
 .rate-limit-marker {
@@ -561,6 +584,31 @@ h3 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.rate-limit-summary {
+  flex: 1 0 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(20, 95, 75, 0.14);
+  border-radius: 8px;
+  background: rgba(216, 237, 229, 0.38);
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rate-limit-summary span {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rate-limit-summary strong {
+  color: var(--ink);
+  text-align: right;
 }
 
 .drain-mode-panel {

@@ -183,6 +183,15 @@ function describeRateLimitProjection(entry: Record<string, any>, remaining: numb
     };
   }
 
+function rateLimitWindowProgressPercent(resetAtMs: number | null, windowSeconds: number | null) {
+    if (resetAtMs === null || windowSeconds === null || windowSeconds <= 0) {
+      return null;
+    }
+    const secondsToReset = Math.max(0, (resetAtMs - Date.now()) / 1000);
+    const elapsedSeconds = Math.max(0, Math.min(windowSeconds, windowSeconds - secondsToReset));
+    return Math.max(0, Math.min(100, (elapsedSeconds / windowSeconds) * 100));
+  }
+
 function percentFromRateLimit(entry: Record<string, any>, remaining: number | null, limit: number | null) {
     const explicit = numberFromFields(entry, ['used_percent', 'usedPercent', 'usage_percent', 'usagePercent', 'percent_used', 'percentUsed']);
     if (explicit !== null) {
@@ -249,6 +258,28 @@ function createRateLimitMarker(label: string, value: string, tone = '') {
     return marker;
   }
 
+function createRateLimitSummary(entries: [string, Record<string, any>][]) {
+    const summary = document.createElement('div');
+    summary.className = 'rate-limit-summary';
+    const label = document.createElement('span');
+    label.textContent = 'Latest snapshot:';
+    const uniqueSnapshots = Array.from(new Set(entries.map(function ([, entry]) {
+      return valueFromFields(entry, ['updated_at', 'updatedAt', 'observed_at', 'observedAt', 'reported_at', 'reportedAt']);
+    }).filter(function (value) {
+      return value !== null;
+    }).map(function (value) {
+      return formatRateLimitDetailValue(value);
+    })));
+    const value = document.createElement('strong');
+    value.textContent = uniqueSnapshots.length === 0
+      ? 'current API state'
+      : uniqueSnapshots.length === 1
+        ? uniqueSnapshots[0]
+        : uniqueSnapshots.length + ' reported times';
+    summary.append(label, value);
+    return summary;
+  }
+
 function rateLimitEntries(rateLimits: any) {
     if (!isRecord(rateLimits)) {
       return [];
@@ -286,6 +317,7 @@ export function renderRateLimits(rateLimits: any) {
       return;
     }
 
+    const summary = createRateLimitSummary(entries);
     const cards = entries.map(function ([name, entry]) {
       const remaining = numberFromFields(entry, ['remaining', 'remaining_requests', 'remainingRequests']);
       const limit = numberFromFields(entry, ['limit', 'total', 'total_limit', 'totalLimit']);
@@ -293,8 +325,8 @@ export function renderRateLimits(rateLimits: any) {
       const used = remaining !== null && limit !== null ? Math.max(0, limit - remaining) : null;
       const resetAtMs = resetTimestampFromRateLimit(entry);
       const windowSeconds = windowSecondsFromRateLimit(entry);
-      const updatedAt = valueFromFields(entry, ['updated_at', 'updatedAt', 'observed_at', 'observedAt', 'reported_at', 'reportedAt']);
       const projection = describeRateLimitProjection(entry, remaining, limit, resetAtMs, windowSeconds);
+      const windowProgressPercent = rateLimitWindowProgressPercent(resetAtMs, windowSeconds);
       const card = document.createElement('article');
       card.className = 'rate-limit-card' + rateLimitStatusClass(usedPercent);
 
@@ -314,6 +346,21 @@ export function renderRateLimits(rateLimits: any) {
       fill.className = 'rate-limit-meter-fill';
       fill.style.width = (usedPercent === null ? 0 : usedPercent).toFixed(0) + '%';
       meter.append(fill);
+      if (windowProgressPercent !== null) {
+        const timeMarker = document.createElement('div');
+        timeMarker.className = 'rate-limit-time-marker';
+        timeMarker.style.left = windowProgressPercent.toFixed(0) + '%';
+        timeMarker.title = 'Window progress ' + windowProgressPercent.toFixed(0) + '%';
+        meter.append(timeMarker);
+      }
+
+      const meterLegend = document.createElement('div');
+      meterLegend.className = 'rate-limit-meter-legend';
+      const usageLegend = document.createElement('span');
+      usageLegend.textContent = usedPercent === null ? 'Capacity used n/a' : 'Capacity used ' + Math.round(usedPercent) + '%';
+      const progressLegend = document.createElement('span');
+      progressLegend.textContent = windowProgressPercent === null ? 'Window progress n/a' : 'Window progress ' + Math.round(windowProgressPercent) + '%';
+      meterLegend.append(usageLegend, progressLegend);
 
       const metrics = document.createElement('div');
       metrics.className = 'rate-limit-metrics';
@@ -346,16 +393,16 @@ export function renderRateLimits(rateLimits: any) {
 
       const caption = document.createElement('p');
       caption.className = 'rate-limit-caption';
-      caption.textContent = projection.detail + ' Latest snapshot: ' + (updatedAt ? formatRateLimitDetailValue(updatedAt) : 'current API state.');
+      caption.textContent = projection.detail;
 
-      card.append(title, meter, metrics);
+      card.append(title, meter, meterLegend, metrics);
       if (details.children.length) {
         card.append(details);
       }
       card.append(forecast, caption);
       return card;
     });
-    elements.rateLimits.replaceChildren(...cards);
+    elements.rateLimits.replaceChildren(summary, ...cards);
   }
 
 export function createMetricCard(label: any, value: any) {
