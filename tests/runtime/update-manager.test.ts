@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
+import type { ApiDrainQuiescenceProjection } from '../../src/api/types';
 import { REASON_CODES } from '../../src/observability';
 import { detectRuntimeUpdateReadiness, LocalRuntimeUpdateManager } from '../../src/runtime/update-manager';
 
@@ -45,6 +46,26 @@ async function pushRemoteUpdate(root: string, fileName = 'index.js') {
   git(remoteWork, ['add', '.']);
   git(remoteWork, ['commit', '-m', 'remote update']);
   git(remoteWork, ['push', 'origin', 'main']);
+}
+
+function safeQuiescence(): ApiDrainQuiescenceProjection {
+  return {
+    safe_to_shutdown: true,
+    state: 'safe',
+    updated_at: '2026-05-21T10:00:00.000Z',
+    updated_at_ms: Date.parse('2026-05-21T10:00:00.000Z'),
+    blockers: [],
+    blocker_counts: {
+      active_worker: 0,
+      live_codex_app_server_process: 0,
+      pending_retry: 0,
+      in_flight_tracker_write: 0,
+      persistence_history_write: 0,
+      unknown_degraded_blocker_source_health: 0,
+      stale_runtime: 0,
+      unknown_current_build_identity: 0
+    }
+  };
 }
 
 describe('runtime update manager', () => {
@@ -339,7 +360,7 @@ describe('runtime update manager', () => {
       prepared: true,
       apply_ready: true
     });
-    const applied = await manager.applyUpdate();
+    const applied = await manager.applyUpdate({ quiescence: safeQuiescence() });
 
     expect(applied).toMatchObject({
       success: true,
@@ -405,7 +426,7 @@ describe('runtime update manager', () => {
     });
 
     await manager.prepareUpdate();
-    const applied = await manager.applyUpdate();
+    const applied = await manager.applyUpdate({ quiescence: safeQuiescence() });
 
     expect(applied).toMatchObject({
       success: true,
@@ -419,7 +440,7 @@ describe('runtime update manager', () => {
       }
     });
     expect(restartRequests).toHaveLength(1);
-    const replay = await manager.applyUpdate();
+    const replay = await manager.applyUpdate({ quiescence: safeQuiescence() });
     expect(replay).toMatchObject({
       success: true,
       status: 'ready_to_restart',
@@ -443,6 +464,60 @@ describe('runtime update manager', () => {
       'update-restart-started',
       'update-old-child-shutdown-requested'
     ]));
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('refuses apply before commands when quiescence is missing, unsafe, or malformed', async () => {
+    const { root, local } = await makeRepoPair();
+    await pushRemoteUpdate(root);
+    const auditEvents: any[] = [];
+    const manager = new LocalRuntimeUpdateManager({
+      repoRoot: local,
+      baseRef: 'main',
+      githubEligibilityMode: 'trust_raw_git',
+      nowMs: () => Date.parse('2026-05-21T10:00:00.000Z'),
+      runtimeIdentity: () => null,
+      auditSink: {
+        appendDrainAuditHistory: async (event) => {
+          auditEvents.push(event);
+          return `audit-${auditEvents.length}`;
+        }
+      },
+      restartCommand: ['npm', 'run', 'start:dashboard']
+    });
+
+    await manager.prepareUpdate();
+    const eventCountBeforeApply = auditEvents.length;
+    const beforeApplyHead = git(local, ['rev-parse', 'HEAD']);
+    const missing = await manager.applyUpdate();
+    const unsafe = await manager.applyUpdate({
+      quiescence: {
+        ...safeQuiescence(),
+        safe_to_shutdown: false,
+        state: 'blocked'
+      }
+    });
+    const malformed = await manager.applyUpdate({
+      quiescence: {
+        ...safeQuiescence(),
+        state: 'blocked'
+      }
+    });
+
+    for (const result of [missing, unsafe, malformed]) {
+      expect(result).toMatchObject({
+        success: false,
+        status: 'refused',
+        step: 'apply',
+        reason_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+        recommended_action: 'wait_for_quiescence',
+        command_results: []
+      });
+    }
+    const applyEvents = auditEvents.slice(eventCountBeforeApply).map((event) => event.event_type);
+    expect(git(local, ['rev-parse', 'HEAD'])).toBe(beforeApplyHead);
+    expect(applyEvents).not.toContain('update-fetch-started');
+    expect(applyEvents).not.toContain('update-pull-started');
+    expect(applyEvents).not.toContain('update-build-started');
   }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('records replacement child readiness from supervisor metadata once', async () => {
@@ -777,7 +852,7 @@ describe('runtime update manager', () => {
     const preparedCandidate = prepared.readiness?.prepared_update?.candidate_sha;
     await pushRemoteUpdate(root, 'index.js');
     const beforeApplyHead = git(local, ['rev-parse', 'HEAD']);
-    const applied = await manager.applyUpdate();
+    const applied = await manager.applyUpdate({ quiescence: safeQuiescence() });
 
     expect(prepared).toMatchObject({
       success: true,
@@ -841,8 +916,8 @@ describe('runtime update manager', () => {
     });
 
     await manager.prepareUpdate();
-    const first = await manager.applyUpdate();
-    const second = await manager.applyUpdate();
+    const first = await manager.applyUpdate({ quiescence: safeQuiescence() });
+    const second = await manager.applyUpdate({ quiescence: safeQuiescence() });
 
     expect(first.success).toBe(true);
     expect(second).toMatchObject({
@@ -927,7 +1002,7 @@ describe('runtime update manager', () => {
     });
 
     const prepare = await manager.prepareUpdate();
-    const apply = await manager.applyUpdate();
+    const apply = await manager.applyUpdate({ quiescence: safeQuiescence() });
 
     expect(prepare).toMatchObject({
       success: false,

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { REASON_CODES } from '../observability';
 import type {
+  ApiDrainQuiescenceProjection,
   ApiRuntimeBuildIdentityProjection,
   ApiDashboardAssetVerification,
   ApiRuntimeRestartStatus,
@@ -126,6 +127,14 @@ function truncate(value: string): string {
 
 function isSafeRepoRoot(repoRoot: string | null): repoRoot is string {
   return !!repoRoot && path.isAbsolute(repoRoot);
+}
+
+function isSafeQuiescenceProjection(value: unknown): value is ApiDrainQuiescenceProjection {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const projection = value as Partial<ApiDrainQuiescenceProjection>;
+  return projection.safe_to_shutdown === true && projection.state === 'safe';
 }
 
 function normalizeBaseRef(baseRef: string | null | undefined, remote: string): string {
@@ -976,7 +985,7 @@ export class LocalRuntimeUpdateManager {
     };
   }
 
-  async applyUpdate(_params?: { quiescence: unknown }): Promise<ApiRuntimeUpdateActionResponse> {
+  async applyUpdate(params?: { quiescence: unknown }): Promise<ApiRuntimeUpdateActionResponse> {
     if (!isSafeRepoRoot(this.options.repoRoot)) {
       return {
         success: false,
@@ -1008,6 +1017,19 @@ export class LocalRuntimeUpdateManager {
         readiness,
         command_results: [],
         message: 'Runtime update apply refused because no actionable prepared update is available.'
+      };
+    }
+    if (!isSafeQuiescenceProjection(params?.quiescence)) {
+      return {
+        success: false,
+        status: 'refused',
+        step: 'apply',
+        reason_code: REASON_CODES.runtimeUpdateQuiescenceRequired,
+        recommended_action: 'wait_for_quiescence',
+        idempotent_replay: false,
+        readiness,
+        command_results: [],
+        message: 'Runtime update apply refused because Symphony is not quiescent.'
       };
     }
     if (this.applyInFlight) {
