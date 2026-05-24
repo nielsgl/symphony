@@ -45,6 +45,366 @@ function formatPendingWorkDetail(entry: any) {
     return 'Pending ' + stateName + ' normal work ' + countLabel + ': blocked until Symphony restarts on the current build, not an active agent.';
   }
 
+function isRecord(value: any): value is Record<string, any> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  }
+
+function humanizeRateLimitKey(value: string) {
+    return String(value || 'Rate limit')
+      .replace(/[_-]/g, ' ')
+      .replace(/\b\w/g, function (character) {
+        return character.toUpperCase();
+      });
+  }
+
+function numberFromFields(source: Record<string, any>, keys: string[]) {
+    for (const key of keys) {
+      const value = Number(source[key]);
+      if (Number.isFinite(value)) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+function formatRateLimitValue(value: number | null) {
+    return value === null ? 'n/a' : formatNumber(value);
+  }
+
+function valueFromFields(source: Record<string, any>, keys: string[]) {
+    for (const key of keys) {
+      const value = source[key];
+      if (value !== undefined && value !== null && value !== '') {
+        return value;
+      }
+    }
+    return null;
+  }
+
+function formatRateLimitDetailValue(value: any) {
+    if (value === null || value === undefined || value === '') {
+      return 'n/a';
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      if (value > 1_000_000_000_000) {
+        return formatDate(value);
+      }
+      return formatNumber(value);
+    }
+    return String(value);
+  }
+
+function parseRateLimitDate(value: any) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const timestamp = value > 1_000_000_000_000 ? value : value * 1000;
+      return Number.isFinite(timestamp) ? timestamp : null;
+    }
+    const parsed = Date.parse(String(value));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+function formatCompactDuration(seconds: number | null) {
+    if (seconds === null || !Number.isFinite(seconds)) {
+      return 'n/a';
+    }
+    const rounded = Math.max(0, Math.round(seconds));
+    const days = Math.floor(rounded / 86400);
+    const hours = Math.floor((rounded % 86400) / 3600);
+    const minutes = Math.floor((rounded % 3600) / 60);
+    if (days > 0) {
+      return days + 'd ' + hours + 'h';
+    }
+    if (hours > 0) {
+      return hours + 'h ' + minutes + 'm';
+    }
+    return minutes + 'm';
+  }
+
+function windowSecondsFromRateLimit(entry: Record<string, any>) {
+    const seconds = numberFromFields(entry, ['window_seconds', 'windowSeconds', 'reset_seconds', 'resetSeconds']);
+    if (seconds !== null) {
+      return seconds;
+    }
+    const minutes = numberFromFields(entry, ['window_minutes', 'windowMinutes']);
+    if (minutes !== null) {
+      return minutes * 60;
+    }
+    const hours = numberFromFields(entry, ['window_hours', 'windowHours']);
+    if (hours !== null) {
+      return hours * 3600;
+    }
+    const days = numberFromFields(entry, ['window_days', 'windowDays']);
+    if (days !== null) {
+      return days * 86400;
+    }
+    return null;
+  }
+
+function resetTimestampFromRateLimit(entry: Record<string, any>) {
+    const direct = valueFromFields(entry, ['reset_at', 'resetAt', 'resets_at', 'resetsAt', 'reset_time', 'resetTime']);
+    const parsed = parseRateLimitDate(direct);
+    if (parsed !== null) {
+      return parsed;
+    }
+    const resetInSeconds = numberFromFields(entry, ['reset_in_seconds', 'resetInSeconds', 'resets_in_seconds', 'resetsInSeconds']);
+    if (resetInSeconds !== null) {
+      return Date.now() + resetInSeconds * 1000;
+    }
+    return null;
+  }
+
+function describeRateLimitProjection(entry: Record<string, any>, remaining: number | null, limit: number | null, resetAtMs: number | null, windowSeconds: number | null) {
+    if (remaining === null || limit === null || limit <= 0 || resetAtMs === null || windowSeconds === null || windowSeconds <= 0) {
+      return {
+        status: 'schedule unknown',
+        detail: 'Add reset and window data to project depletion.',
+        surplusLabel: 'Surplus n/a',
+        runwayLabel: 'Run-out n/a'
+      };
+    }
+    const secondsToReset = Math.max(0, (resetAtMs - Date.now()) / 1000);
+    const expectedRemaining = limit * Math.min(1, secondsToReset / windowSeconds);
+    const delta = Math.round(remaining - expectedRemaining);
+    const used = Math.max(0, limit - remaining);
+    const elapsed = Math.max(0, windowSeconds - secondsToReset);
+    const burnPerSecond = elapsed > 0 ? used / elapsed : 0;
+    const secondsToEmpty = burnPerSecond > 0 ? remaining / burnPerSecond : null;
+    const onSchedule = delta >= 0 || (secondsToEmpty !== null && secondsToEmpty >= secondsToReset);
+    return {
+      status: onSchedule ? 'on schedule' : 'deficit',
+      detail: onSchedule
+        ? 'Current pace lasts through reset.'
+        : 'Current pace runs out before reset.',
+      surplusLabel: (delta >= 0 ? 'Surplus +' : 'Deficit ') + formatNumber(delta),
+      runwayLabel: secondsToEmpty === null ? 'Run-out not projected' : 'Run-out in ' + formatCompactDuration(secondsToEmpty)
+    };
+  }
+
+function rateLimitWindowProgressPercent(resetAtMs: number | null, windowSeconds: number | null) {
+    if (resetAtMs === null || windowSeconds === null || windowSeconds <= 0) {
+      return null;
+    }
+    const secondsToReset = Math.max(0, (resetAtMs - Date.now()) / 1000);
+    const elapsedSeconds = Math.max(0, Math.min(windowSeconds, windowSeconds - secondsToReset));
+    return Math.max(0, Math.min(100, (elapsedSeconds / windowSeconds) * 100));
+  }
+
+function percentFromRateLimit(entry: Record<string, any>, remaining: number | null, limit: number | null) {
+    const explicit = numberFromFields(entry, ['used_percent', 'usedPercent', 'usage_percent', 'usagePercent', 'percent_used', 'percentUsed']);
+    if (explicit !== null) {
+      return Math.max(0, Math.min(100, explicit));
+    }
+    if (remaining !== null && limit !== null && limit > 0) {
+      return Math.max(0, Math.min(100, ((limit - remaining) / limit) * 100));
+    }
+    return null;
+  }
+
+function rateLimitStatusClass(usedPercent: number | null) {
+    if (usedPercent === null) {
+      return '';
+    }
+    if (usedPercent >= 90) {
+      return ' rate-limit-card-critical';
+    }
+    if (usedPercent >= 70) {
+      return ' rate-limit-card-warning';
+    }
+    return '';
+  }
+
+function rateLimitStatusLabel(usedPercent: number | null) {
+    if (usedPercent === null) {
+      return 'reported';
+    }
+    if (usedPercent >= 90) {
+      return 'near limit';
+    }
+    if (usedPercent >= 70) {
+      return 'watch';
+    }
+    return 'healthy';
+  }
+
+function createRateLimitMetric(label: string, value: string) {
+    const metric = document.createElement('div');
+    metric.className = 'rate-limit-metric';
+    const labelNode = document.createElement('span');
+    labelNode.textContent = label;
+    const valueNode = document.createElement('strong');
+    valueNode.textContent = value;
+    metric.append(labelNode, valueNode);
+    return metric;
+  }
+
+function createRateLimitChip(label: string, value: any) {
+    const chip = document.createElement('span');
+    chip.className = 'rate-limit-chip';
+    chip.textContent = label + ': ' + formatRateLimitDetailValue(value);
+    return chip;
+  }
+
+function createRateLimitMarker(label: string, value: string, tone = '') {
+    const marker = document.createElement('div');
+    marker.className = 'rate-limit-marker' + (tone ? ' rate-limit-marker-' + tone : '');
+    const labelNode = document.createElement('span');
+    labelNode.textContent = label;
+    const valueNode = document.createElement('strong');
+    valueNode.textContent = value;
+    marker.append(labelNode, valueNode);
+    return marker;
+  }
+
+function createRateLimitSummary(entries: [string, Record<string, any>][]) {
+    const summary = document.createElement('div');
+    summary.className = 'rate-limit-summary';
+    const label = document.createElement('span');
+    label.textContent = 'Latest snapshot:';
+    const uniqueSnapshots = Array.from(new Set(entries.map(function ([, entry]) {
+      return valueFromFields(entry, ['updated_at', 'updatedAt', 'observed_at', 'observedAt', 'reported_at', 'reportedAt']);
+    }).filter(function (value) {
+      return value !== null;
+    }).map(function (value) {
+      return formatRateLimitDetailValue(value);
+    })));
+    const value = document.createElement('strong');
+    value.textContent = uniqueSnapshots.length === 0
+      ? 'current API state'
+      : uniqueSnapshots.length === 1
+        ? uniqueSnapshots[0]
+        : uniqueSnapshots.length + ' reported times';
+    summary.append(label, value);
+    return summary;
+  }
+
+function rateLimitEntries(rateLimits: any) {
+    if (!isRecord(rateLimits)) {
+      return [];
+    }
+    const hasDirectLimitShape = ['remaining', 'limit', 'used_percent', 'usedPercent', 'reset_at', 'resetAt', 'resets_at', 'resetsAt'].some(function (key) {
+      return key in rateLimits;
+    });
+    if (hasDirectLimitShape) {
+      return [['Current', rateLimits]] as [string, Record<string, any>][];
+    }
+    return Object.entries(rateLimits).filter(function (entry): entry is [string, Record<string, any>] {
+      return isRecord(entry[1]);
+    });
+  }
+
+export function renderRateLimits(rateLimits: any) {
+    const entries = rateLimitEntries(rateLimits);
+    if (!entries.length) {
+      const empty = document.createElement('article');
+      empty.className = 'rate-limit-card rate-limit-empty';
+      const title = document.createElement('div');
+      title.className = 'rate-limit-title';
+      const name = document.createElement('strong');
+      name.className = 'rate-limit-name';
+      name.textContent = 'No rate limits reported';
+      const status = document.createElement('span');
+      status.className = 'rate-limit-status';
+      status.textContent = 'idle';
+      title.append(name, status);
+      const detail = document.createElement('p');
+      detail.className = 'muted';
+      detail.textContent = 'No coding-agent rate-limit snapshot has been reported for the current runtime.';
+      empty.append(title, detail);
+      elements.rateLimits.replaceChildren(empty);
+      return;
+    }
+
+    const summary = createRateLimitSummary(entries);
+    const cards = entries.map(function ([name, entry]) {
+      const remaining = numberFromFields(entry, ['remaining', 'remaining_requests', 'remainingRequests']);
+      const limit = numberFromFields(entry, ['limit', 'total', 'total_limit', 'totalLimit']);
+      const usedPercent = percentFromRateLimit(entry, remaining, limit);
+      const used = remaining !== null && limit !== null ? Math.max(0, limit - remaining) : null;
+      const resetAtMs = resetTimestampFromRateLimit(entry);
+      const windowSeconds = windowSecondsFromRateLimit(entry);
+      const projection = describeRateLimitProjection(entry, remaining, limit, resetAtMs, windowSeconds);
+      const windowProgressPercent = rateLimitWindowProgressPercent(resetAtMs, windowSeconds);
+      const card = document.createElement('article');
+      card.className = 'rate-limit-card' + rateLimitStatusClass(usedPercent);
+
+      const title = document.createElement('div');
+      title.className = 'rate-limit-title';
+      const label = document.createElement('strong');
+      label.className = 'rate-limit-name';
+      label.textContent = humanizeRateLimitKey(name);
+      const status = document.createElement('span');
+      status.className = 'rate-limit-status';
+      status.textContent = rateLimitStatusLabel(usedPercent);
+      title.append(label, status);
+
+      const meter = document.createElement('div');
+      meter.className = 'rate-limit-meter';
+      const fill = document.createElement('div');
+      fill.className = 'rate-limit-meter-fill';
+      fill.style.width = (usedPercent === null ? 0 : usedPercent).toFixed(0) + '%';
+      meter.append(fill);
+      if (windowProgressPercent !== null) {
+        const timeMarker = document.createElement('div');
+        timeMarker.className = 'rate-limit-time-marker';
+        timeMarker.style.left = windowProgressPercent.toFixed(0) + '%';
+        timeMarker.title = 'Window progress ' + windowProgressPercent.toFixed(0) + '%';
+        meter.append(timeMarker);
+      }
+
+      const meterLegend = document.createElement('div');
+      meterLegend.className = 'rate-limit-meter-legend';
+      const usageLegend = document.createElement('span');
+      usageLegend.textContent = usedPercent === null ? 'Capacity used n/a' : 'Capacity used ' + Math.round(usedPercent) + '%';
+      const progressLegend = document.createElement('span');
+      progressLegend.textContent = windowProgressPercent === null ? 'Window progress n/a' : 'Window progress ' + Math.round(windowProgressPercent) + '%';
+      meterLegend.append(usageLegend, progressLegend);
+
+      const metrics = document.createElement('div');
+      metrics.className = 'rate-limit-metrics';
+      metrics.append(
+        createRateLimitMetric('Remaining', formatRateLimitValue(remaining)),
+        createRateLimitMetric('Used', usedPercent === null ? formatRateLimitValue(used) : Math.round(usedPercent) + '%'),
+        createRateLimitMetric('Limit', formatRateLimitValue(limit))
+      );
+
+      const details = document.createElement('div');
+      details.className = 'rate-limit-detail-list';
+      [
+        ['Reset', resetAtMs],
+        ['Resets in', resetAtMs === null ? null : formatCompactDuration((resetAtMs - Date.now()) / 1000)],
+        ['Window', windowSeconds === null ? null : formatCompactDuration(windowSeconds)],
+        ['Policy', entry.policy ?? entry.type ?? entry.scope]
+      ].filter(function ([, value]) {
+        return value !== undefined && value !== null && value !== '';
+      }).forEach(function ([detailLabel, value]) {
+        details.append(createRateLimitChip(String(detailLabel), value));
+      });
+
+      const forecast = document.createElement('div');
+      forecast.className = 'rate-limit-forecast';
+      forecast.append(
+        createRateLimitMarker('Schedule', projection.status, projection.status === 'deficit' ? 'deficit' : 'positive'),
+        createRateLimitMarker('Balance', projection.surplusLabel, projection.surplusLabel.startsWith('Deficit') ? 'deficit' : 'positive'),
+        createRateLimitMarker('Projection', projection.runwayLabel, projection.detail.includes('runs out') ? 'deficit' : '')
+      );
+
+      const caption = document.createElement('p');
+      caption.className = 'rate-limit-caption';
+      caption.textContent = projection.detail;
+
+      card.append(title, meter, meterLegend, metrics);
+      if (details.children.length) {
+        card.append(details);
+      }
+      card.append(forecast, caption);
+      return card;
+    });
+    elements.rateLimits.replaceChildren(summary, ...cards);
+  }
+
 export function createMetricCard(label: any, value: any) {
     const card = document.createElement('article');
     card.className = 'kpi-card';
@@ -122,7 +482,7 @@ export function renderOverview(payload: any) {
     renderRetryStatusSummary(payload);
 
     const rateLimits = payload.rate_limits;
-    elements.rateLimits.textContent = rateLimits ? JSON.stringify(rateLimits, null, 2) : 'No rate limits reported.';
+    renderRateLimits(rateLimits);
   }
 
 function formatRuntimeUpdateLabel(value: any) {
