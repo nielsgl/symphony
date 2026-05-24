@@ -42,6 +42,9 @@
     "start:web": "npm run start:dashboard",
     "start:desktop": "npm run build && tauri dev",
     "build:desktop": "tauri build",
+    "drain:status": "node scripts/drain-mode-control.js status",
+    "drain:enter": "node scripts/drain-mode-control.js enter",
+    "drain:exit": "node scripts/drain-mode-control.js exit",
     "drain:wait": "node scripts/drain-mode-control.js wait",
     "drain:shutdown": "node scripts/drain-mode-control.js shutdown",
     "forensics": "npm run build --silent && node scripts/forensics.js"
