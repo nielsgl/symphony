@@ -193,4 +193,48 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toBe('');
     expect(harness.stderr).toBe('');
   });
+
+  it('loads the explicit workflow project env file before delegating dashboard startup', async () => {
+    const cwdProject = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-cwd-')));
+    const explicitProject = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-explicit-')));
+    await fs.writeFile(path.join(cwdProject, 'WORKFLOW.md'), 'cwd workflow\n', 'utf8');
+    await fs.writeFile(path.join(cwdProject, '.env'), 'SYMPHONY_HOST=198.51.100.1\n', 'utf8');
+    await fs.writeFile(path.join(explicitProject, 'WORKFLOW.md'), 'explicit workflow\n', 'utf8');
+    await fs.writeFile(path.join(explicitProject, '.env'), 'SYMPHONY_HOST=203.0.113.7\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = cwdProject;
+
+    const exitCode = await runCommandRouter({
+      argv: ['dashboard', '--workflow', path.join(explicitProject, 'WORKFLOW.md'), '--port', '0'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(27);
+    expect(harness.envFileLoads).toEqual([path.join(explicitProject, '.env')]);
+    expect(harness.dashboardCalls).toEqual([
+      [
+        `--workflow=${path.join(explicitProject, 'WORKFLOW.md')}`,
+        '--host=203.0.113.7',
+        '--port=0'
+      ]
+    ]);
+    expect(harness.stderr).toBe('');
+  });
+
+  it('fails missing resolver-managed values before dashboard startup', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-missing-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['dashboard', '--workflow', '--port', '0'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.dashboardCalls).toEqual([]);
+    expect(harness.envFileLoads).toEqual([]);
+    expect(harness.stderr).toContain('cli workflow requires a value');
+  });
 });

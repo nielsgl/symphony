@@ -62,6 +62,27 @@ describe('local command resolver', () => {
     expect(resolved.dashboardArgv).toContain(`--workflow=${explicitWorkflow}`);
   });
 
+  it('binds project root, default env file, and identity to an explicit cross-project workflow', async () => {
+    const cwdProject = await makeProject('resolver-cwd-project');
+    const explicitProject = await makeProject('resolver-explicit-project');
+
+    const resolved = resolveLocalCommand({
+      command: 'dashboard',
+      argv: ['--workflow', path.join(explicitProject, 'WORKFLOW.md')],
+      cwd: cwdProject,
+      env: {},
+      symphonyCheckoutRoot: cwdProject
+    });
+
+    expect(resolved.currentProjectRoot).toBe(explicitProject);
+    expect(resolved.workflowPath).toBe(path.join(explicitProject, 'WORKFLOW.md'));
+    expect(resolved.envFilePath).toBe(path.join(explicitProject, '.env'));
+    expect(resolved.sources.projectRoot).toBe('cli');
+    expect(resolved.sources.envFilePath).toBe('project');
+    expect(resolved.projectIdentity.project_root).toBe(explicitProject);
+    expect(resolved.projectIdentity.workflow_path).toBe(path.join(explicitProject, 'WORKFLOW.md'));
+  });
+
   it('keeps absolute workflow paths stable in identity collisions', async () => {
     const projectA = await makeProject('resolver-collision-a');
     const projectB = await makeProject('resolver-collision-b');
@@ -228,6 +249,27 @@ describe('local command resolver', () => {
       ).toThrow(/Workflow file is not readable/);
     } finally {
       await fs.chmod(unreadableWorkflow, 0o600);
+    }
+  });
+
+  it('rejects missing values for every resolver-managed value flag', async () => {
+    const projectRoot = await makeProject('resolver-missing-managed-flag');
+
+    for (const argv of [
+      ['--workflow', '--port', '0'],
+      ['--env-file', '--port', '0'],
+      ['--host', '--port', '0'],
+      ['--profile', '--port', '0']
+    ]) {
+      expect(() =>
+        resolveLocalCommand({
+          command: 'dashboard',
+          argv,
+          cwd: projectRoot,
+          env: {},
+          symphonyCheckoutRoot: projectRoot
+        })
+      ).toThrow(/requires a value/);
     }
   });
 

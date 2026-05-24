@@ -49,6 +49,7 @@ export class LocalCommandResolutionError extends Error {
     | 'ambiguous_project_root'
     | 'invalid_port'
     | 'invalid_profile'
+    | 'missing_flag_value'
     | 'missing_project_root'
     | 'missing_workflow'
     | 'unreadable_workflow';
@@ -99,6 +100,20 @@ function readFlagValue(argv: readonly string[], flag: string, options: ReadFlagV
   return { value: splitValue, present: true };
 }
 
+function readRequiredFlagValue(
+  argv: readonly string[],
+  flag: string,
+  label: string,
+  options: ReadFlagValueOptions = {}
+): FlagRead {
+  const flagValue = readFlagValue(argv, flag, options);
+  if (flagValue.present && (flagValue.value === undefined || flagValue.value.trim().length === 0)) {
+    throw new LocalCommandResolutionError('missing_flag_value', `cli ${label} requires a value`);
+  }
+
+  return flagValue;
+}
+
 function readPositionalWorkflowPath(argv: readonly string[]): string | undefined {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -120,6 +135,10 @@ function readPositionalWorkflowPath(argv: readonly string[]): string | undefined
 function parsePortValue(raw: string | undefined, source: LocalScalarSource): { port: number; source: LocalScalarSource } | null {
   if (raw === undefined) {
     return null;
+  }
+
+  if (raw.trim().length === 0) {
+    throw new LocalCommandResolutionError('missing_flag_value', `${source} port requires a value`);
   }
 
   const value = Number(raw);
@@ -176,7 +195,7 @@ function assertReadableWorkflow(workflowPath: string): void {
 }
 
 function resolveProfile(argv: readonly string[], env: NodeJS.ProcessEnv): { name: LocalCommandProfile; source: LocalScalarSource } {
-  const cliProfile = readFlagValue(argv, '--profile').value;
+  const cliProfile = readRequiredFlagValue(argv, '--profile', 'profile').value;
   const rawProfile = cliProfile ?? env.SYMPHONY_PROFILE;
   const source: LocalScalarSource = cliProfile !== undefined ? 'cli' : rawProfile !== undefined ? 'env' : 'default';
   const normalized = (rawProfile ?? 'project').trim();
@@ -191,7 +210,7 @@ function resolveProfile(argv: readonly string[], env: NodeJS.ProcessEnv): { name
 }
 
 function resolveHost(argv: readonly string[], env: NodeJS.ProcessEnv): { host: string; source: LocalScalarSource } {
-  const cliHost = readFlagValue(argv, '--host').value;
+  const cliHost = readRequiredFlagValue(argv, '--host', 'host').value;
   if (cliHost !== undefined && cliHost.trim().length > 0) {
     return { host: cliHost.trim(), source: 'cli' };
   }
@@ -206,7 +225,7 @@ function resolveHost(argv: readonly string[], env: NodeJS.ProcessEnv): { host: s
 function resolvePort(argv: readonly string[], env: NodeJS.ProcessEnv): { port: number; source: LocalScalarSource } {
   const portFlag = readFlagValue(argv, '--port', { allowSingleDashValue: true });
   if (portFlag.present && portFlag.value === undefined) {
-    throw new LocalCommandResolutionError('invalid_port', 'cli port requires a value');
+    throw new LocalCommandResolutionError('missing_flag_value', 'cli port requires a value');
   }
 
   const cliPort = parsePortValue(portFlag.value, 'cli');
@@ -273,9 +292,14 @@ function resolveProjectRoot(params: {
   profile: LocalCommandProfile;
   symphonyCheckoutRoot: string;
   workflowPath?: string;
+  workflowPathSource?: LocalPathSource;
 }): { projectRoot: string; source: LocalPathSource } {
   if (params.profile === 'symphony-internal') {
     return { projectRoot: params.symphonyCheckoutRoot, source: 'profile' };
+  }
+
+  if (params.workflowPath && params.workflowPathSource && params.workflowPathSource !== 'project') {
+    return { projectRoot: realpathIfPresent(path.dirname(params.workflowPath)), source: params.workflowPathSource };
   }
 
   const roots = findProjectWorkflowRoots(params.cwd);
@@ -307,7 +331,7 @@ export function resolveLocalCommand(options: ResolveLocalCommandOptions): LocalC
   const profile = resolveProfile(options.argv, env);
 
   const positionalWorkflowPath = readPositionalWorkflowPath(options.argv);
-  const workflowFlag = readFlagValue(options.argv, '--workflow').value;
+  const workflowFlag = readRequiredFlagValue(options.argv, '--workflow', 'workflow').value;
   const explicitWorkflowPath = positionalWorkflowPath ?? workflowFlag ?? env.SYMPHONY_WORKFLOW_PATH;
   const explicitWorkflowSource: LocalPathSource =
     positionalWorkflowPath || workflowFlag ? 'cli' : env.SYMPHONY_WORKFLOW_PATH ? 'env' : 'project';
@@ -348,9 +372,10 @@ export function resolveLocalCommand(options: ResolveLocalCommandOptions): LocalC
     cwd,
     profile: profile.name,
     symphonyCheckoutRoot,
-    workflowPath
+    workflowPath,
+    workflowPathSource
   });
-  const envFileFlag = readFlagValue(options.argv, '--env-file').value;
+  const envFileFlag = readRequiredFlagValue(options.argv, '--env-file', 'env file').value;
   const rawEnvFilePath = envFileFlag ?? env.SYMPHONY_ENV_FILE ?? path.join(project.projectRoot, '.env');
   const envFileBase = envFileFlag || env.SYMPHONY_ENV_FILE ? cwd : project.projectRoot;
   const envFilePath = realpathIfPresent(resolveInputPath(rawEnvFilePath, envFileBase));
