@@ -5,6 +5,7 @@ import path from 'node:path';
 
 export const LOCAL_SHIM_MARKER = 'symphony-local-shim';
 export const LOCAL_SHIM_VERSION = '1';
+const BUILD_VERIFIED_ENV = 'SYMPHONY_LINK_LOCAL_BUILD_VERIFIED';
 
 export interface LocalLinkDependencies {
   stdout: (text: string) => void;
@@ -279,10 +280,12 @@ export async function runLocalLinkCommand(options: RunLocalLinkOptions): Promise
     return 1;
   }
 
-  const build = runStep(deps, 'npm', ['run', 'build'], 'Failed to build Symphony before linking');
-  if (!build.ok) {
-    deps.stderr(`${build.message}\n`);
-    return 1;
+  if (deps.env[BUILD_VERIFIED_ENV] !== '1') {
+    const build = runStep(deps, 'npm', ['run', 'build'], 'Failed to build Symphony before linking');
+    if (!build.ok) {
+      deps.stderr(`${build.message}\n`);
+      return 1;
+    }
   }
 
   const directVersion = runStep(

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -151,6 +152,25 @@ describe('local checkout linking', () => {
     expect(harness.calls).toEqual([]);
     expect(fs.existsSync(path.join(harness.home, '.local', 'bin', 'symphony'))).toBe(false);
     expect(harness.stderr).toContain('Option `--target` requires a value.');
+  });
+
+  it('rejects the npm workflow --target without a value before build or writes', () => {
+    const home = createTempRoot();
+
+    const result = spawnSync('npm', ['run', 'link:local', '--', '--target'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        HOME: home
+      },
+      encoding: 'utf8'
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain('npm run build');
+    expect(result.stdout).not.toContain('build:dashboard-client');
+    expect(result.stderr).toContain('Option `--target` requires a value.');
+    expect(fs.existsSync(path.join(home, '.local', 'bin', 'symphony'))).toBe(false);
   });
 
   it('re-running updates a stale Symphony-owned shim safely', async () => {
