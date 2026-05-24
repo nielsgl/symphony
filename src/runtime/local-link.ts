@@ -29,6 +29,7 @@ export interface RunLocalLinkOptions {
 interface ExistingShimMetadata {
   owned: boolean;
   repoRoot?: string;
+  verificationError?: string;
 }
 
 function defaultRepoRoot(): string {
@@ -136,12 +137,22 @@ function parseExistingShim(targetPath: string): ExistingShimMetadata {
     return { owned: false };
   }
 
-  const stat = fs.lstatSync(targetPath);
-  if (!stat.isFile()) {
-    return { owned: false };
+  let stat: fs.Stats;
+  let content: string;
+  try {
+    stat = fs.lstatSync(targetPath);
+    if (!stat.isFile()) {
+      return { owned: false };
+    }
+
+    content = fs.readFileSync(targetPath, 'utf8');
+  } catch (error) {
+    return {
+      owned: false,
+      verificationError: (error as Error).message
+    };
   }
 
-  const content = fs.readFileSync(targetPath, 'utf8');
   if (!content.includes(`# ${LOCAL_SHIM_MARKER}`)) {
     return { owned: false };
   }
@@ -237,9 +248,13 @@ export async function runLocalLinkCommand(options: RunLocalLinkOptions): Promise
 
   const existing = parseExistingShim(targetPath);
   if (fs.existsSync(targetPath) && !existing.owned) {
+    const reason = existing.verificationError
+      ? `Cannot verify whether the existing target is Symphony-owned: ${existing.verificationError}`
+      : 'The existing target is not marked as a Symphony local shim.';
     deps.stderr(
       [
-        `Refusing to overwrite existing non-Symphony executable: ${targetPath}`,
+        `Refusing to overwrite existing non-Symphony or unverifiable executable: ${targetPath}`,
+        reason,
         'Move or remove that file, or choose a different target with `--target <path>`.'
       ].join('\n') + '\n'
     );

@@ -138,8 +138,29 @@ describe('local checkout linking', () => {
 
     expect(exitCode).toBe(1);
     expect(harness.calls).toEqual([]);
-    expect(harness.stderr).toContain('Refusing to overwrite existing non-Symphony executable');
+    expect(harness.stderr).toContain('Refusing to overwrite existing non-Symphony or unverifiable executable');
+    expect(harness.stderr).toContain('The existing target is not marked as a Symphony local shim.');
     expect(harness.stderr).toContain('choose a different target with `--target <path>`');
+  });
+
+  it('refuses to overwrite an unverifiable existing executable target', async () => {
+    const harness = createHarness();
+    const shimPath = path.join(harness.home, '.local', 'bin', 'symphony');
+    fs.mkdirSync(path.dirname(shimPath), { recursive: true });
+    fs.writeFileSync(shimPath, '#!/usr/bin/env bash\necho other\n', { mode: 0o755 });
+    fs.chmodSync(shimPath, 0o000);
+
+    try {
+      const exitCode = await runLocalLinkCommand({ argv: [], deps: harness.deps });
+
+      expect(exitCode).toBe(1);
+      expect(harness.calls).toEqual([]);
+      expect(harness.stderr).toContain('Refusing to overwrite existing non-Symphony or unverifiable executable');
+      expect(harness.stderr).toContain('Cannot verify whether the existing target is Symphony-owned');
+      expect(harness.stderr).toContain('choose a different target with `--target <path>`');
+    } finally {
+      fs.chmodSync(shimPath, 0o755);
+    }
   });
 
   it('reports shell-specific PATH guidance without failing the link', async () => {
