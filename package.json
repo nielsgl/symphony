@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Symphony workflow config pipeline",
+  "bin": {
+    "symphony": "scripts/symphony.js"
+  },
   "scripts": {
     "build": "npm run build:dashboard-client && tsc --project tsconfig.json",
     "build:dashboard-client": "node scripts/build-dashboard-client.js",
