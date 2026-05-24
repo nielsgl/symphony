@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import dotenv from 'dotenv';
 
+import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local-command-resolver';
+import { LocalCommandResolutionError, resolveLocalCommand } from './local-command-resolver';
 import { runDashboardCli } from './cli-runner';
 import { runLocalLinkCommand } from './local-link';
 
@@ -9,8 +12,12 @@ export interface CommandRouterDependencies {
   stderr: (text: string) => void;
   runDashboard: (argv: readonly string[]) => Promise<number>;
   runLinkLocal: (argv: readonly string[]) => Promise<number>;
+  resolveLocalCommand: (options: ResolveLocalCommandOptions) => LocalCommandResolution;
+  loadEnvFile: (envFilePath: string) => void;
   packageVersion: string;
   repoRoot: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
 }
 
 export interface RunCommandRouterOptions {
@@ -54,8 +61,14 @@ function defaultDependencies(): CommandRouterDependencies {
     stderr: (text) => process.stderr.write(text),
     runDashboard: (argv) => runDashboardCli(argv),
     runLinkLocal: (argv) => runLocalLinkCommand({ argv, deps: { repoRoot } }),
+    resolveLocalCommand,
+    loadEnvFile: (envFilePath) => {
+      dotenv.config({ path: envFilePath });
+    },
     packageVersion: readPackageVersion(repoRoot),
-    repoRoot
+    repoRoot,
+    cwd: process.cwd(),
+    env: process.env
   };
 }
 
@@ -179,7 +192,23 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
   }
 
   if (command === 'dashboard') {
-    return deps.runDashboard(rest);
+    let resolved: LocalCommandResolution;
+    try {
+      resolved = deps.resolveLocalCommand({
+        command: 'dashboard',
+        argv: rest,
+        cwd: deps.cwd,
+        env: deps.env,
+        symphonyCheckoutRoot: deps.repoRoot
+      });
+    } catch (error) {
+      const message =
+        error instanceof LocalCommandResolutionError || error instanceof Error ? error.message : String(error);
+      deps.stderr(`${message}\n`);
+      return 1;
+    }
+    deps.loadEnvFile(resolved.envFilePath);
+    return deps.runDashboard(resolved.dashboardArgv);
   }
 
   if (command === 'profile') {
@@ -192,6 +221,28 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
 
   if (command === 'link-local') {
     return deps.runLinkLocal(rest);
+  }
+
+  if (command === 'doctor' || command === 'setup') {
+    try {
+      deps.resolveLocalCommand({
+        command,
+        argv: rest,
+        cwd: deps.cwd,
+        env: deps.env,
+        symphonyCheckoutRoot: deps.repoRoot
+      });
+    } catch (error) {
+      const message =
+        error instanceof LocalCommandResolutionError || error instanceof Error ? error.message : String(error);
+      deps.stderr(`${message}\n`);
+      return 1;
+    }
+    return failUnsupported(
+      deps,
+      `Command '${command}' is recognized but not implemented in this PRD.`,
+      renderHelp()
+    );
   }
 
   if (NOT_IMPLEMENTED_COMMANDS.has(command)) {
