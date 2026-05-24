@@ -10,6 +10,7 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
   let stdout = '';
   let stderr = '';
   const dashboardCalls: string[][] = [];
+  const linkLocalCalls: string[][] = [];
   const envFileLoads: string[] = [];
 
   return {
@@ -20,6 +21,7 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       return stderr;
     },
     dashboardCalls,
+    linkLocalCalls,
     envFileLoads,
     deps: {
       stdout: (text: string) => {
@@ -31,6 +33,10 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       runDashboard: async (argv: readonly string[]) => {
         dashboardCalls.push([...argv]);
         return 27;
+      },
+      runLinkLocal: async (argv: readonly string[]) => {
+        linkLocalCalls.push([...argv]);
+        return 28;
       },
       loadEnvFile: (envFilePath: string) => {
         envFileLoads.push(envFilePath);
@@ -190,6 +196,20 @@ describe('local symphony command router', () => {
       ]
     ]);
     expect(harness.envFileLoads).toEqual([path.join(projectRoot, '.env')]);
+    expect(harness.stdout).toBe('');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('delegates link-local arguments to the local linker', async () => {
+    const harness = createHarness();
+
+    const exitCode = await runCommandRouter({
+      argv: ['link-local', '--target', '/tmp/symphony'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(28);
+    expect(harness.linkLocalCalls).toEqual([['--target', '/tmp/symphony']]);
     expect(harness.stdout).toBe('');
     expect(harness.stderr).toBe('');
   });
