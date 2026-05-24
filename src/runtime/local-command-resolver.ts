@@ -65,10 +65,14 @@ interface FlagRead {
   present: boolean;
 }
 
+interface ReadFlagValueOptions {
+  allowSingleDashValue?: boolean;
+}
+
 const FLAGS_WITH_VALUE = new Set(['--workflow', '--port', '--host', '--logs-root', '--profile', '--env-file']);
 const RESOLVER_MANAGED_FLAGS = new Set(['--workflow', '--port', '--host', '--profile', '--env-file']);
 
-function readFlagValue(argv: readonly string[], flag: string): FlagRead {
+function readFlagValue(argv: readonly string[], flag: string, options: ReadFlagValueOptions = {}): FlagRead {
   const equalsPrefix = `${flag}=`;
   const equalsForm = argv.find((arg) => arg.startsWith(equalsPrefix));
   if (equalsForm) {
@@ -84,7 +88,11 @@ function readFlagValue(argv: readonly string[], flag: string): FlagRead {
   }
 
   const splitValue = argv[splitIndex + 1];
-  if (!splitValue || splitValue.startsWith('-')) {
+  if (
+    !splitValue ||
+    splitValue.startsWith('--') ||
+    (splitValue.startsWith('-') && !options.allowSingleDashValue)
+  ) {
     return { value: undefined, present: true };
   }
 
@@ -95,7 +103,9 @@ function readPositionalWorkflowPath(argv: readonly string[]): string | undefined
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (FLAGS_WITH_VALUE.has(token)) {
-      index += 1;
+      if (index + 1 < argv.length && !argv[index + 1].startsWith('-')) {
+        index += 1;
+      }
       continue;
     }
 
@@ -194,7 +204,12 @@ function resolveHost(argv: readonly string[], env: NodeJS.ProcessEnv): { host: s
 }
 
 function resolvePort(argv: readonly string[], env: NodeJS.ProcessEnv): { port: number; source: LocalScalarSource } {
-  const cliPort = parsePortValue(readFlagValue(argv, '--port').value, 'cli');
+  const portFlag = readFlagValue(argv, '--port', { allowSingleDashValue: true });
+  if (portFlag.present && portFlag.value === undefined) {
+    throw new LocalCommandResolutionError('invalid_port', 'cli port requires a value');
+  }
+
+  const cliPort = parsePortValue(portFlag.value, 'cli');
   if (cliPort) {
     return cliPort;
   }

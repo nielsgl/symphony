@@ -178,15 +178,40 @@ describe('local command resolver', () => {
     ).toThrow(/Supported profiles: project, symphony-internal/);
 
     const portRoot = await makeProject('resolver-invalid-port');
+    for (const argv of [
+      ['--port', 'NaN'],
+      ['--port', '-1']
+    ]) {
+      expect(() =>
+        resolveLocalCommand({
+          command: 'dashboard',
+          argv,
+          cwd: portRoot,
+          env: {},
+          symphonyCheckoutRoot: portRoot
+        })
+      ).toThrow(/must be a non-negative integer/);
+    }
+
     expect(() =>
       resolveLocalCommand({
         command: 'dashboard',
-        argv: ['--port', 'NaN'],
+        argv: ['--port'],
         cwd: portRoot,
         env: {},
         symphonyCheckoutRoot: portRoot
       })
-    ).toThrow(/must be a non-negative integer/);
+    ).toThrow(/requires a value/);
+
+    expect(() =>
+      resolveLocalCommand({
+        command: 'dashboard',
+        argv: ['--port', '--host', '127.0.0.1'],
+        cwd: portRoot,
+        env: {},
+        symphonyCheckoutRoot: portRoot
+      })
+    ).toThrow(/requires a value/);
 
     const unreadableRoot = await makeProject('resolver-unreadable');
     const unreadableWorkflow = path.join(unreadableRoot, 'WORKFLOW.md');
