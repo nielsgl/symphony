@@ -289,15 +289,19 @@ Initial scope:
 - API/dashboard status shows active blockers preventing restart.
 - CLI/API controls for enter drain mode, check status, wait, and shutdown when quiescent.
 - Default behavior waits for active runs to finish or hand off.
+- Guided runtime update prepare/apply controls support an operator-approved fast-forward update after Drain Mode and quiescence checks pass.
+- Guarded install/build runs only when package metadata or build scripts require it, and failures are surfaced as refused/failed update steps instead of hidden restart attempts.
+- Supported supervisor-backed restart can request a managed dashboard restart after a successful guided update; deployments without supervisor support fall back to explicit manual restart guidance.
 - Optional timeout can expose cancellation choices, but v1 should not force cancellation by default.
 
 Out of scope:
 
 - In-process Node module hot swap.
-- Automatic `git pull`.
-- Dependency install/build.
-- Process-manager restart automation.
-- Upgrade Script Integration, which is later.
+- Automatic update behavior that runs merely because a remote ref moved.
+- In-process or background update without explicit operator prepare/apply initiation.
+- Arbitrary local setup/package-manager automation beyond the guarded install/build needed for the prepared runtime update.
+- Generic process-manager orchestration outside the supported Symphony supervisor restart path.
+- Broader Local Command and Setup work from `SWP-004`.
 
 ### SWP-004: Local Command and Setup
 
