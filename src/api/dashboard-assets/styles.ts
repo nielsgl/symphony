@@ -515,6 +515,54 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.rate-limit-forecast {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.rate-limit-marker {
+  border: 1px solid rgba(95, 114, 101, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 8px;
+  min-width: 0;
+}
+
+.rate-limit-marker-positive {
+  border-color: rgba(20, 95, 75, 0.22);
+  background: rgba(216, 237, 229, 0.58);
+}
+
+.rate-limit-marker-deficit {
+  border-color: rgba(170, 55, 40, 0.25);
+  background: rgba(253, 234, 230, 0.7);
+}
+
+.rate-limit-marker span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rate-limit-marker strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.rate-limit-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .drain-mode-panel {
   border-color: #b6c9b8;
 }

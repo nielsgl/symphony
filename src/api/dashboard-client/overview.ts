@@ -71,6 +71,16 @@ function formatRateLimitValue(value: number | null) {
     return value === null ? 'n/a' : formatNumber(value);
   }
 
+function valueFromFields(source: Record<string, any>, keys: string[]) {
+    for (const key of keys) {
+      const value = source[key];
+      if (value !== undefined && value !== null && value !== '') {
+        return value;
+      }
+    }
+    return null;
+  }
+
 function formatRateLimitDetailValue(value: any) {
     if (value === null || value === undefined || value === '') {
       return 'n/a';
@@ -82,6 +92,95 @@ function formatRateLimitDetailValue(value: any) {
       return formatNumber(value);
     }
     return String(value);
+  }
+
+function parseRateLimitDate(value: any) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const timestamp = value > 1_000_000_000_000 ? value : value * 1000;
+      return Number.isFinite(timestamp) ? timestamp : null;
+    }
+    const parsed = Date.parse(String(value));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+function formatCompactDuration(seconds: number | null) {
+    if (seconds === null || !Number.isFinite(seconds)) {
+      return 'n/a';
+    }
+    const rounded = Math.max(0, Math.round(seconds));
+    const days = Math.floor(rounded / 86400);
+    const hours = Math.floor((rounded % 86400) / 3600);
+    const minutes = Math.floor((rounded % 3600) / 60);
+    if (days > 0) {
+      return days + 'd ' + hours + 'h';
+    }
+    if (hours > 0) {
+      return hours + 'h ' + minutes + 'm';
+    }
+    return minutes + 'm';
+  }
+
+function windowSecondsFromRateLimit(entry: Record<string, any>) {
+    const seconds = numberFromFields(entry, ['window_seconds', 'windowSeconds', 'reset_seconds', 'resetSeconds']);
+    if (seconds !== null) {
+      return seconds;
+    }
+    const minutes = numberFromFields(entry, ['window_minutes', 'windowMinutes']);
+    if (minutes !== null) {
+      return minutes * 60;
+    }
+    const hours = numberFromFields(entry, ['window_hours', 'windowHours']);
+    if (hours !== null) {
+      return hours * 3600;
+    }
+    const days = numberFromFields(entry, ['window_days', 'windowDays']);
+    if (days !== null) {
+      return days * 86400;
+    }
+    return null;
+  }
+
+function resetTimestampFromRateLimit(entry: Record<string, any>) {
+    const direct = valueFromFields(entry, ['reset_at', 'resetAt', 'resets_at', 'resetsAt', 'reset_time', 'resetTime']);
+    const parsed = parseRateLimitDate(direct);
+    if (parsed !== null) {
+      return parsed;
+    }
+    const resetInSeconds = numberFromFields(entry, ['reset_in_seconds', 'resetInSeconds', 'resets_in_seconds', 'resetsInSeconds']);
+    if (resetInSeconds !== null) {
+      return Date.now() + resetInSeconds * 1000;
+    }
+    return null;
+  }
+
+function describeRateLimitProjection(entry: Record<string, any>, remaining: number | null, limit: number | null, resetAtMs: number | null, windowSeconds: number | null) {
+    if (remaining === null || limit === null || limit <= 0 || resetAtMs === null || windowSeconds === null || windowSeconds <= 0) {
+      return {
+        status: 'schedule unknown',
+        detail: 'Add reset and window data to project depletion.',
+        surplusLabel: 'Surplus n/a',
+        runwayLabel: 'Run-out n/a'
+      };
+    }
+    const secondsToReset = Math.max(0, (resetAtMs - Date.now()) / 1000);
+    const expectedRemaining = limit * Math.min(1, secondsToReset / windowSeconds);
+    const delta = Math.round(remaining - expectedRemaining);
+    const used = Math.max(0, limit - remaining);
+    const elapsed = Math.max(0, windowSeconds - secondsToReset);
+    const burnPerSecond = elapsed > 0 ? used / elapsed : 0;
+    const secondsToEmpty = burnPerSecond > 0 ? remaining / burnPerSecond : null;
+    const onSchedule = delta >= 0 || (secondsToEmpty !== null && secondsToEmpty >= secondsToReset);
+    return {
+      status: onSchedule ? 'on schedule' : 'deficit',
+      detail: onSchedule
+        ? 'Current pace lasts through reset.'
+        : 'Current pace runs out before reset.',
+      surplusLabel: (delta >= 0 ? 'Surplus +' : 'Deficit ') + formatNumber(delta),
+      runwayLabel: secondsToEmpty === null ? 'Run-out not projected' : 'Run-out in ' + formatCompactDuration(secondsToEmpty)
+    };
   }
 
 function percentFromRateLimit(entry: Record<string, any>, remaining: number | null, limit: number | null) {
@@ -139,6 +238,17 @@ function createRateLimitChip(label: string, value: any) {
     return chip;
   }
 
+function createRateLimitMarker(label: string, value: string, tone = '') {
+    const marker = document.createElement('div');
+    marker.className = 'rate-limit-marker' + (tone ? ' rate-limit-marker-' + tone : '');
+    const labelNode = document.createElement('span');
+    labelNode.textContent = label;
+    const valueNode = document.createElement('strong');
+    valueNode.textContent = value;
+    marker.append(labelNode, valueNode);
+    return marker;
+  }
+
 function rateLimitEntries(rateLimits: any) {
     if (!isRecord(rateLimits)) {
       return [];
@@ -181,6 +291,10 @@ export function renderRateLimits(rateLimits: any) {
       const limit = numberFromFields(entry, ['limit', 'total', 'total_limit', 'totalLimit']);
       const usedPercent = percentFromRateLimit(entry, remaining, limit);
       const used = remaining !== null && limit !== null ? Math.max(0, limit - remaining) : null;
+      const resetAtMs = resetTimestampFromRateLimit(entry);
+      const windowSeconds = windowSecondsFromRateLimit(entry);
+      const updatedAt = valueFromFields(entry, ['updated_at', 'updatedAt', 'observed_at', 'observedAt', 'reported_at', 'reportedAt']);
+      const projection = describeRateLimitProjection(entry, remaining, limit, resetAtMs, windowSeconds);
       const card = document.createElement('article');
       card.className = 'rate-limit-card' + rateLimitStatusClass(usedPercent);
 
@@ -212,8 +326,9 @@ export function renderRateLimits(rateLimits: any) {
       const details = document.createElement('div');
       details.className = 'rate-limit-detail-list';
       [
-        ['Reset', entry.reset_at ?? entry.resetAt ?? entry.resets_at ?? entry.resetsAt],
-        ['Window', entry.window_minutes ?? entry.windowMinutes ?? entry.window_seconds ?? entry.windowSeconds],
+        ['Reset', resetAtMs],
+        ['Resets in', resetAtMs === null ? null : formatCompactDuration((resetAtMs - Date.now()) / 1000)],
+        ['Window', windowSeconds === null ? null : formatCompactDuration(windowSeconds)],
         ['Policy', entry.policy ?? entry.type ?? entry.scope]
       ].filter(function ([, value]) {
         return value !== undefined && value !== null && value !== '';
@@ -221,10 +336,23 @@ export function renderRateLimits(rateLimits: any) {
         details.append(createRateLimitChip(String(detailLabel), value));
       });
 
+      const forecast = document.createElement('div');
+      forecast.className = 'rate-limit-forecast';
+      forecast.append(
+        createRateLimitMarker('Schedule', projection.status, projection.status === 'deficit' ? 'deficit' : 'positive'),
+        createRateLimitMarker('Balance', projection.surplusLabel, projection.surplusLabel.startsWith('Deficit') ? 'deficit' : 'positive'),
+        createRateLimitMarker('Projection', projection.runwayLabel, projection.detail.includes('runs out') ? 'deficit' : '')
+      );
+
+      const caption = document.createElement('p');
+      caption.className = 'rate-limit-caption';
+      caption.textContent = projection.detail + ' Latest snapshot: ' + (updatedAt ? formatRateLimitDetailValue(updatedAt) : 'current API state.');
+
       card.append(title, meter, metrics);
       if (details.children.length) {
         card.append(details);
       }
+      card.append(forecast, caption);
       return card;
     });
     elements.rateLimits.replaceChildren(...cards);
