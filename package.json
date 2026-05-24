@@ -45,6 +45,7 @@
     "start:web": "npm run start:dashboard",
     "start:desktop": "npm run build && tauri dev",
     "build:desktop": "tauri build",
+    "link:local": "npm run build && node scripts/symphony.js link-local",
     "drain:status": "node scripts/drain-mode-control.js status",
     "drain:enter": "node scripts/drain-mode-control.js enter",
     "drain:exit": "node scripts/drain-mode-control.js exit",

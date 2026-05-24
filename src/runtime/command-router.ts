@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { runDashboardCli } from './cli-runner';
+import { runLocalLinkCommand } from './local-link';
 
 export interface CommandRouterDependencies {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   runDashboard: (argv: readonly string[]) => Promise<number>;
+  runLinkLocal: (argv: readonly string[]) => Promise<number>;
   packageVersion: string;
   repoRoot: string;
 }
@@ -18,7 +20,7 @@ export interface RunCommandRouterOptions {
 
 const SUPPORTED_COMMANDS = ['dashboard', 'doctor', 'setup', 'profile', 'init', 'link-local'] as const;
 
-const NOT_IMPLEMENTED_COMMANDS = new Set(['doctor', 'setup', 'link-local']);
+const NOT_IMPLEMENTED_COMMANDS = new Set(['doctor', 'setup']);
 
 function defaultRepoRoot(): string {
   let current = __dirname;
@@ -51,6 +53,7 @@ function defaultDependencies(): CommandRouterDependencies {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
     runDashboard: (argv) => runDashboardCli(argv),
+    runLinkLocal: (argv) => runLocalLinkCommand({ argv, deps: { repoRoot } }),
     packageVersion: readPackageVersion(repoRoot),
     repoRoot
   };
@@ -71,7 +74,7 @@ function renderHelp(): string {
     '  setup           Reserved for future local setup consent and configuration',
     '  profile         Inspect bounded local command profiles',
     '  init            Show init help; workflow materialization is not implemented in this PRD',
-    '  link-local      Reserved for future local checkout linking',
+    '  link-local      Link this checkout as a stable local symphony executable',
     '',
     'Run `symphony <command> --help` for command-specific help.'
   ].join('\n');
@@ -185,6 +188,10 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
 
   if (command === 'init') {
     return runInitCommand(rest, deps);
+  }
+
+  if (command === 'link-local') {
+    return deps.runLinkLocal(rest);
   }
 
   if (NOT_IMPLEMENTED_COMMANDS.has(command)) {

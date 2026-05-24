@@ -3,3 +3,4 @@ export * from './cli';
 export * from './cli-runner';
 export * from './command-router';
 export * from './desktop-launcher';
+export * from './local-link';
