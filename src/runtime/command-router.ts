@@ -8,6 +8,7 @@ import { LocalCommandResolutionError, resolveLocalCommand } from './local-comman
 import { GUARDRAIL_ACK_FLAG } from './cli';
 import { runLocalLinkCommand } from './local-link';
 import { runLocalDoctor } from './local-doctor';
+import { isWithinPath } from './path-containment';
 import {
   buildSetupConsentRecord,
   createFileSetupConsentStore,
@@ -276,11 +277,6 @@ function renderDoctorHelp(): string {
     '  1  warning-only findings',
     '  2  blocker findings'
   ].join('\n');
-}
-
-function isWithinPath(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function hasExplicitSetupConsentArg(argv: readonly string[]): boolean {

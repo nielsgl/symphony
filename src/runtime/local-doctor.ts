@@ -7,6 +7,7 @@ import { ConfigResolver, ConfigValidator, WorkflowLoader } from '../workflow';
 import { WorkflowConfigError } from '../workflow/errors';
 import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local-command-resolver';
 import { LocalCommandResolutionError } from './local-command-resolver';
+import { isWithinPath } from './path-containment';
 import {
   buildSetupConsentRecord,
   findValidSetupConsent,
@@ -498,19 +499,30 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       const consent = findValidSetupConsent({ store: deps.setupConsentStore, resolved, posture });
       consentSource = consent ? 'setup' : 'missing';
     }
+    const setupConsentStoreInProject = isWithinPath(resolved.currentProjectRoot, deps.setupConsentStore.path);
     if (consentSource === 'missing' && args.fix && args.yes) {
-      const record = buildSetupConsentRecord({
-        resolved,
-        posture,
-        approvedAt: deps.clock().toISOString()
-      });
-      persistSetupConsent(deps.setupConsentStore, record);
-      consentSource = 'setup';
-      fixes.push({
-        id: 'setup-consent',
-        status: 'applied',
-        summary: `Recorded explicit setup consent for identity ${record.identity_key}.`
-      });
+      if (setupConsentStoreInProject) {
+        fixes.push({
+          id: 'setup-consent',
+          status: 'failed',
+          summary:
+            'Refused to record setup consent because the configured local state path is inside the project checkout.',
+          details: { storeLocation: 'project_checkout' }
+        });
+      } else {
+        const record = buildSetupConsentRecord({
+          resolved,
+          posture,
+          approvedAt: deps.clock().toISOString()
+        });
+        persistSetupConsent(deps.setupConsentStore, record);
+        consentSource = 'setup';
+        fixes.push({
+          id: 'setup-consent',
+          status: 'applied',
+          summary: `Recorded explicit setup consent for identity ${record.identity_key}.`
+        });
+      }
     } else if (consentSource === 'missing' && args.fix) {
       fixes.push({
         id: 'setup-consent',
@@ -529,7 +541,9 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
           : `Setup consent source is ${consentSource} for required posture ${posture.posture}.`,
       remediation:
         consentSource === 'missing'
-          ? 'Run `symphony setup --yes` for this project/workflow, or rerun doctor with `--fix --yes` to record explicit local consent.'
+          ? setupConsentStoreInProject
+            ? 'Choose a user-local Symphony state path outside the project checkout, then rerun `symphony setup --yes` or `symphony doctor --fix --yes`.'
+            : 'Run `symphony setup --yes` for this project/workflow, or rerun doctor with `--fix --yes` to record explicit local consent.'
           : undefined,
       details: { posture: posture.posture, reason: posture.reason, evidence: posture.evidence }
     });

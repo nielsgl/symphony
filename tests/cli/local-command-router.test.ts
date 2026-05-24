@@ -12,7 +12,12 @@ import {
   type DashboardLaunchContext,
   type DashboardSupervisorSignal
 } from '../../src/runtime/command-router';
-import type { SetupConsentStore, SetupConsentStorePayload, WorkflowPosture } from '../../src/runtime/setup-consent';
+import {
+  createFileSetupConsentStore,
+  type SetupConsentStore,
+  type SetupConsentStorePayload,
+  type WorkflowPosture
+} from '../../src/runtime/setup-consent';
 
 function createMemoryConsentStore(storePath = path.join(os.tmpdir(), 'symphony-user-state', 'setup-consent.json')) {
   let payload: SetupConsentStorePayload = { version: 1, records: [] };
@@ -428,6 +433,46 @@ describe('local symphony command router', () => {
     expect(harness.consent.records()).toHaveLength(1);
     expect(harness.linkLocalCalls).toEqual([]);
     expect(harness.stdout).toContain('[applied] setup-consent');
+    expect(harness.dashboardCalls).toEqual([]);
+  });
+
+  it('refuses doctor --fix setup consent when local state is inside the project checkout', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const projectConsentPath = path.join(projectRoot, '.symphony', 'setup-consent.json');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+    harness.deps.setupConsentStore = createFileSetupConsentStore(projectConsentPath);
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--fix', '--yes', '--json'], deps: harness.deps });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(payload.status).toBe('failure');
+    expect(payload.reason).toBe('blockers_present');
+    expect(payload.resolution.consent).toBe('missing');
+    expect(payload.fixes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'setup-consent',
+          status: 'failed',
+          details: { storeLocation: 'project_checkout' }
+        })
+      ])
+    );
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'setup.consent',
+          status: 'failure',
+          reason: 'setup_consent_missing',
+          remediation: expect.stringContaining('outside the project checkout')
+        })
+      ])
+    );
+    await expect(fs.access(projectConsentPath)).rejects.toThrow();
+    expect(harness.stderr).toBe('');
     expect(harness.dashboardCalls).toEqual([]);
   });
 
