@@ -423,7 +423,7 @@ export class LocalApiServer {
     });
   }
 
-  private cachedStateSnapshot(reasonCode: 'control_plane_degraded' | 'projection_in_progress' | 'snapshot_error'): TimedStateSnapshot | null {
+  private cachedStateSnapshot(reasonCode: 'projection_in_progress' | 'snapshot_error'): TimedStateSnapshot | null {
     if (!this.lastGoodStateSnapshot) {
       return null;
     }
@@ -453,20 +453,11 @@ export class LocalApiServer {
     return snapshot;
   }
 
-  private buildStateSnapshotResponse(options: { allowControlPlaneFallback?: boolean } = {}): TimedStateSnapshot {
+  private buildStateSnapshotResponse(): TimedStateSnapshot {
     if (this.stateProjectionInProgress) {
       const cached = this.cachedStateSnapshot('projection_in_progress');
       if (cached) {
         return cached;
-      }
-    }
-    if (options.allowControlPlaneFallback !== false && this.lastGoodStateSnapshot) {
-      const controlPlane = this.controlPlaneHealth.summarize(this.nowMs());
-      if (controlPlane.worst_health === 'degraded') {
-        const cached = this.cachedStateSnapshot('control_plane_degraded');
-        if (cached) {
-          return cached;
-        }
       }
     }
     const projectionStartedAtMs = this.nowMs();
@@ -536,7 +527,7 @@ export class LocalApiServer {
   }
 
   private buildBoundedStateSnapshotResponse(): TimedStateSnapshot {
-    return this.buildStateSnapshotResponse({ allowControlPlaneFallback: true });
+    return this.buildStateSnapshotResponse();
   }
 
   private readTelemetryStateSnapshot(): OrchestratorState | ApiStateErrorResponse {

@@ -131,6 +131,44 @@ describe('LocalApiServer state API', () => {
     expect(snapshotReads).toBe(2);
   });
 
+  it('continues fresh state projection after historical control-plane degradation', async () => {
+    let snapshotReads = 0;
+    server = new LocalApiServer({
+      snapshotSource: {
+        getStateSnapshot: () => {
+          snapshotReads += 1;
+          return makeState();
+        }
+      },
+      refreshSource: {
+        tick: vi.fn(async () => undefined)
+      },
+      controlPlaneHealth: {
+        thresholds: {
+          degraded_payload_bytes: 1
+        }
+      }
+    });
+
+    await server.listen();
+    const address = server.address();
+    const first = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const firstPayload = await first.json();
+    expect(first.status).toBe(200);
+    expect(firstPayload.api_degraded_mode).toBe(false);
+
+    const second = await fetch(`http://127.0.0.1:${address.port}/api/v1/state`);
+    const secondPayload = await second.json();
+
+    expect(second.status).toBe(200);
+    expect(secondPayload.error).toBeUndefined();
+    expect(secondPayload.health.control_plane.worst_health).toBe('degraded');
+    expect(secondPayload.api_degraded_mode).toBe(false);
+    expect(secondPayload.api_degraded_reason_code).toBe(null);
+    expect(secondPayload.api_degraded_routes).toEqual([]);
+    expect(snapshotReads).toBe(2);
+  });
+
   it('serves runtime update readiness on state and diagnostics without mutating the repository', async () => {
     const state = makeState({
       runtime_identity: {
