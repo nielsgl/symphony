@@ -51,7 +51,11 @@ function defaultRepoRoot(): string {
 function defaultWriteFileAtomic(targetPath: string, content: string, mode: number): void {
   const parent = path.dirname(targetPath);
   fs.mkdirSync(parent, { recursive: true, mode: 0o755 });
-  fs.chmodSync(parent, 0o755);
+  const parentStat = fs.statSync(parent);
+  if (!parentStat.isDirectory()) {
+    throw new Error(`Shim parent exists but is not a directory: ${parent}`);
+  }
+  fs.accessSync(parent, fs.constants.W_OK | fs.constants.X_OK);
 
   const tempPath = path.join(parent, `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.tmp`);
   try {
@@ -82,24 +86,30 @@ function defaultDependencies(): LocalLinkDependencies {
   };
 }
 
-function readFlagValue(argv: readonly string[], flag: string): string | undefined {
+type FlagValue =
+  | { present: false }
+  | { present: true; value: string }
+  | { present: true; missingValue: true };
+
+function readFlagValue(argv: readonly string[], flag: string): FlagValue {
   const equalsPrefix = `${flag}=`;
   const equalsForm = argv.find((arg) => arg.startsWith(equalsPrefix));
-  if (equalsForm) {
-    return equalsForm.slice(equalsPrefix.length);
+  if (equalsForm !== undefined) {
+    const value = equalsForm.slice(equalsPrefix.length);
+    return value ? { present: true, value } : { present: true, missingValue: true };
   }
 
   const index = argv.findIndex((arg) => arg === flag);
   if (index === -1) {
-    return undefined;
+    return { present: false };
   }
 
   const value = argv[index + 1];
   if (!value || value.startsWith('-')) {
-    return undefined;
+    return { present: true, missingValue: true };
   }
 
-  return value;
+  return { present: true, value };
 }
 
 function renderHelp(): string {
@@ -166,8 +176,8 @@ function parseExistingShim(targetPath: string): ExistingShimMetadata {
 
 function resolveTargetPath(argv: readonly string[], deps: LocalLinkDependencies): string {
   const target = readFlagValue(argv, '--target');
-  if (target) {
-    return path.resolve(target.replace(/^~(?=$|\/)/, deps.homedir()));
+  if (target.present && 'value' in target) {
+    return path.resolve(target.value.replace(/^~(?=$|\/)/, deps.homedir()));
   }
 
   return path.join(deps.homedir(), '.local', 'bin', 'symphony');
@@ -224,12 +234,14 @@ export async function runLocalLinkCommand(options: RunLocalLinkOptions): Promise
     }
   }
 
-  if (options.argv.includes('--help') || options.argv.includes('-h')) {
+  const argv = options.argv[0] === '--' ? options.argv.slice(1) : options.argv;
+
+  if (argv.includes('--help') || argv.includes('-h')) {
     deps.stdout(`${renderHelp()}\n`);
     return 0;
   }
 
-  const unknownFlag = options.argv.find(
+  const unknownFlag = argv.find(
     (arg) => arg.startsWith('-') && arg !== '--target' && !arg.startsWith('--target=')
   );
   if (unknownFlag) {
@@ -237,7 +249,13 @@ export async function runLocalLinkCommand(options: RunLocalLinkOptions): Promise
     return 1;
   }
 
-  const targetPath = resolveTargetPath(options.argv, deps);
+  const targetFlag = readFlagValue(argv, '--target');
+  if (targetFlag.present && 'missingValue' in targetFlag) {
+    deps.stderr(`Option \`--target\` requires a value.\n\n${renderHelp()}\n`);
+    return 1;
+  }
+
+  const targetPath = resolveTargetPath(argv, deps);
   const binDir = path.dirname(targetPath);
   const entrypoint = path.join(deps.repoRoot, 'scripts', 'symphony.js');
 

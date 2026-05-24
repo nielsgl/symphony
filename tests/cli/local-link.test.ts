@@ -110,6 +110,49 @@ describe('local checkout linking', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('preserves restrictive permissions on an existing local bin directory', async () => {
+    const harness = createHarness();
+    const binDir = path.join(harness.home, '.local', 'bin');
+    fs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(binDir, 0o700);
+
+    const exitCode = await runLocalLinkCommand({ argv: [], deps: harness.deps });
+
+    expect(exitCode).toBe(0);
+    expect(fs.statSync(binDir).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(binDir, 'symphony')).mode & 0o777).toBe(0o755);
+  });
+
+  it('rejects --target without a value before build or writes', async () => {
+    const harness = createHarness({
+      writeFileAtomic: () => {
+        throw new Error('write should not run');
+      }
+    });
+
+    const exitCode = await runLocalLinkCommand({ argv: ['--target'], deps: harness.deps });
+
+    expect(exitCode).toBe(1);
+    expect(harness.calls).toEqual([]);
+    expect(fs.existsSync(path.join(harness.home, '.local', 'bin', 'symphony'))).toBe(false);
+    expect(harness.stderr).toContain('Option `--target` requires a value.');
+  });
+
+  it('rejects npm-style forwarded --target without a value before build or writes', async () => {
+    const harness = createHarness({
+      writeFileAtomic: () => {
+        throw new Error('write should not run');
+      }
+    });
+
+    const exitCode = await runLocalLinkCommand({ argv: ['--', '--target'], deps: harness.deps });
+
+    expect(exitCode).toBe(1);
+    expect(harness.calls).toEqual([]);
+    expect(fs.existsSync(path.join(harness.home, '.local', 'bin', 'symphony'))).toBe(false);
+    expect(harness.stderr).toContain('Option `--target` requires a value.');
+  });
+
   it('re-running updates a stale Symphony-owned shim safely', async () => {
     const harness = createHarness();
     const shimPath = path.join(harness.home, '.local', 'bin', 'symphony');
