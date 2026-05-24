@@ -39,6 +39,17 @@ const HIGH_TRUST_POSTURE: WorkflowPosture = {
 };
 
 const VALID_WORKFLOW = ['---', 'tracker:', '  kind: memory', 'codex:', '  command: codex', '---', 'workflow'].join('\n');
+const ENV_BACKED_LINEAR_WORKFLOW = [
+  '---',
+  'tracker:',
+  '  kind: linear',
+  '  api_key: $DOCTOR_ONLY_LINEAR_TOKEN',
+  '  project_slug: DEMO',
+  'codex:',
+  '  command: codex',
+  '---',
+  'workflow'
+].join('\n');
 
 function createHarness(overrides: { packageVersion?: string; repoRoot?: string } = {}) {
   let stdout = '';
@@ -286,6 +297,36 @@ describe('local symphony command router', () => {
       }
     });
     expect(payload.checks.some((check: { id: string; reason: string }) => check.id === 'setup.consent' && check.reason === 'setup_consent_missing')).toBe(true);
+    expect(harness.stderr).toBe('');
+  });
+
+  it('validates doctor workflow config with values loaded from the resolved project env file', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject(ENV_BACKED_LINEAR_WORKFLOW);
+    await fs.writeFile(path.join(projectRoot, '.env'), 'DOCTOR_ONLY_LINEAR_TOKEN=secret-from-env-file\n', 'utf8');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json'], deps: harness.deps });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'workflow.effective_config',
+          status: 'ok',
+          reason: 'workflow_config_valid'
+        }),
+        expect.objectContaining({
+          id: 'setup.consent',
+          status: 'failure',
+          reason: 'setup_consent_missing'
+        })
+      ])
+    );
+    expect(JSON.stringify(payload)).not.toContain('secret-from-env-file');
     expect(harness.stderr).toBe('');
   });
 

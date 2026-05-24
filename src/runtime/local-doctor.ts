@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import dotenv from 'dotenv';
 
 import { ConfigResolver, ConfigValidator, WorkflowLoader } from '../workflow';
 import { WorkflowConfigError } from '../workflow/errors';
@@ -252,6 +253,14 @@ function canListen(host: string, port: number): Promise<boolean> {
   });
 }
 
+function readEnvFileValues(envFilePath: string): NodeJS.ProcessEnv {
+  try {
+    return dotenv.parse(fs.readFileSync(envFilePath));
+  } catch {
+    return {};
+  }
+}
+
 function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessEnv): DoctorCheck {
   try {
     const definition = new WorkflowLoader().load({ explicitPath: resolved.workflowPath });
@@ -444,7 +453,11 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
         workflowSource: resolved.sources.workflowPath
       }
     });
-    addCheck(checks, validateWorkflow(resolved, deps.env));
+    const dashboardEnv = {
+      ...readEnvFileValues(resolved.envFilePath),
+      ...deps.env
+    };
+    addCheck(checks, validateWorkflow(resolved, dashboardEnv));
     addCheck(checks, {
       id: 'env.path',
       title: 'Project env file path resolved',
@@ -477,7 +490,7 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       details: { host: resolved.host.host, port: resolved.port.port, source: resolved.port.source }
     });
 
-    const posture = deps.resolveWorkflowPosture(resolved.workflowPath, deps.env);
+    const posture = deps.resolveWorkflowPosture(resolved.workflowPath, dashboardEnv);
     consentSource = args.resolverArgv.includes('--i-understand-that-this-will-be-running-without-the-usual-guardrails')
       ? 'flag'
       : 'missing';
