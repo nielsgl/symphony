@@ -28,11 +28,16 @@ export interface DashboardLaunchContext {
   repoRoot: string;
 }
 
+export interface LinkLocalRunOptions {
+  stdout?: (text: string) => void;
+  stderr?: (text: string) => void;
+}
+
 export interface CommandRouterDependencies {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   runDashboard: (argv: readonly string[], context: DashboardLaunchContext) => Promise<number>;
-  runLinkLocal: (argv: readonly string[]) => Promise<number>;
+  runLinkLocal: (argv: readonly string[], options?: LinkLocalRunOptions) => Promise<number>;
   resolveLocalCommand: (options: ResolveLocalCommandOptions) => LocalCommandResolution;
   resolveWorkflowPosture: (workflowPath: string, env?: NodeJS.ProcessEnv) => WorkflowPosture;
   setupConsentStore: SetupConsentStore;
@@ -193,7 +198,15 @@ function defaultDependencies(): CommandRouterDependencies {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
     runDashboard: (argv, context) => runDashboardSupervisor(argv, context),
-    runLinkLocal: (argv) => runLocalLinkCommand({ argv, deps: { repoRoot } }),
+    runLinkLocal: (argv, linkOptions) =>
+      runLocalLinkCommand({
+        argv,
+        deps: {
+          repoRoot,
+          stdout: linkOptions?.stdout,
+          stderr: linkOptions?.stderr
+        }
+      }),
     resolveLocalCommand,
     resolveWorkflowPosture,
     setupConsentStore: createFileSetupConsentStore(),
@@ -510,6 +523,7 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
       deps.stdout(`${renderDoctorHelp()}\n`);
       return 0;
     }
+    const jsonOutput = rest.includes('--json');
     const doctor = await runLocalDoctor({
       argv: rest,
       deps: {
@@ -519,11 +533,20 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
         resolveLocalCommand: deps.resolveLocalCommand,
         resolveWorkflowPosture: deps.resolveWorkflowPosture,
         setupConsentStore: deps.setupConsentStore,
-        runLinkLocal: deps.runLinkLocal,
+        runLinkLocal: (argv) =>
+          deps.runLinkLocal(
+            argv,
+            jsonOutput
+              ? {
+                  stdout: () => undefined,
+                  stderr: () => undefined
+                }
+              : undefined
+          ),
         clock: deps.clock
       }
     });
-    if (rest.includes('--json')) {
+    if (jsonOutput) {
       deps.stdout(`${JSON.stringify(doctor.result, null, 2)}\n`);
     } else {
       deps.stdout(doctor.human);

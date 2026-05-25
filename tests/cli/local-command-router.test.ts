@@ -10,6 +10,7 @@ import {
   bindDashboardSupervisorSignalForwarding,
   runCommandRouter,
   type DashboardLaunchContext,
+  type LinkLocalRunOptions,
   type DashboardSupervisorSignal
 } from '../../src/runtime/command-router';
 import { resolveLocalCommand } from '../../src/runtime/local-command-resolver';
@@ -381,6 +382,52 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('expected');
     expect(harness.stdout).toContain('Checkout does not exist');
     expect(harness.stdout).toContain('Refresh the local link');
+  });
+
+  it('keeps doctor --fix --json output parseable when link-local remediation emits text', async () => {
+    const { repoRoot, binDir, shimPath } = await createDoctorRepo();
+    const missingRoot = path.join(os.tmpdir(), `symphony-missing-${Date.now()}`);
+    await fs.writeFile(
+      shimPath,
+      [
+        '#!/usr/bin/env bash',
+        '# symphony-local-shim',
+        '# symphony-shim-version: 1',
+        `# symphony-repo-root: ${missingRoot}`,
+        `# symphony-entrypoint: ${path.join(missingRoot, 'scripts', 'symphony.js')}`,
+        'exit 0',
+        ''
+      ].join('\n'),
+      { encoding: 'utf8', mode: 0o755 }
+    );
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+    harness.deps.runLinkLocal = async (argv: readonly string[], options?: LinkLocalRunOptions) => {
+      harness.linkLocalCalls.push([...argv]);
+      (options?.stdout ?? harness.deps.stdout)('Updated Symphony local shim\n');
+      return 0;
+    };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--fix', '--yes', '--json'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(harness.stdout).not.toContain('Updated Symphony local shim');
+    expect(payload.fixes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'link-local',
+          status: 'applied'
+        })
+      ])
+    );
+    expect(harness.linkLocalCalls).toEqual([[]]);
+    expect(harness.stderr).toBe('');
   });
 
   it('reports missing and invalid workflows through the local resolver and config validator', async () => {
