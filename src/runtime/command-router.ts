@@ -31,7 +31,14 @@ import {
   type ProfilePack,
   type ProfileResolution
 } from '../workflow/profile-registry';
-import { materializeWorkflowDryRun, renderWorkflowFilePlan } from '../workflow/materializer';
+import {
+  materializeWorkflowPlan as defaultMaterializeWorkflowPlan,
+  renderWorkflowFilePlan,
+  validateWorkflowContent,
+  type WorkflowMaterializationPlan,
+  type WorkflowMaterializerOptions,
+  type WorkflowFilePlanEntry
+} from '../workflow/materializer';
 
 export interface DashboardLaunchContext {
   cwd: string;
@@ -55,6 +62,8 @@ export interface CommandRouterDependencies {
   setupConsentStore: SetupConsentStore;
   promptSetupConsent: typeof promptSetupConsent;
   loadEnvFile: (envFilePath: string) => void;
+  promptInitOverwrite: (conflicts: readonly WorkflowFilePlanEntry[]) => Promise<boolean>;
+  materializeWorkflowPlan: (options: WorkflowMaterializerOptions) => WorkflowMaterializationPlan;
   clock: () => Date;
   packageVersion: string;
   repoRoot: string;
@@ -226,6 +235,8 @@ function defaultDependencies(): CommandRouterDependencies {
     loadEnvFile: (envFilePath) => {
       dotenv.config({ path: envFilePath });
     },
+    promptInitOverwrite: (conflicts) => promptInitOverwrite(conflicts),
+    materializeWorkflowPlan: defaultMaterializeWorkflowPlan,
     clock: () => new Date(),
     packageVersion: readPackageVersion(repoRoot),
     repoRoot,
@@ -268,7 +279,7 @@ function renderHelp(): string {
     '  doctor          Run local command and dashboard adoption readiness checks',
     '  setup           Record user-local setup consent for this workflow',
     '  profile         Inspect bounded local command profiles',
-    '  init            Show init help; workflow materialization is not implemented in this PRD',
+    '  init            Materialize a generated WORKFLOW.md and local runtime ignore plan',
     '  link-local      Link this checkout as a stable local symphony executable',
     '',
     'Run `symphony <command> --help` for command-specific help.'
@@ -414,11 +425,14 @@ function renderInitHelp(): string {
     '',
     'Usage:',
     '  symphony init --help',
+    '  symphony init --bundle memory-generic',
     '  symphony init --dry-run --bundle memory-generic',
+    '  symphony init --force --bundle memory-generic',
     '  symphony init --dry-run --pack tracker:memory --pack workspace:none --pack toolchain:generic --pack workflow:solo-local',
-    '  symphony init --dry-run --tracker memory --workspace none --toolchain generic --workflow solo-local',
+    '  symphony init --tracker memory --workspace none --toolchain generic --workflow solo-local',
     '',
-    'Dry-run renders a complete WORKFLOW.md and supporting file plan without writing files.'
+    'Writes are non-destructive by default. Existing generated targets require',
+    'interactive confirmation or --force. Dry-run renders the same file plan without writing files.'
   ].join('\n');
 }
 
@@ -600,15 +614,20 @@ function runProfileCommand(argv: readonly string[], deps: CommandRouterDependenc
   );
 }
 
-function parseInitSelections(argv: readonly string[]): { dryRun: boolean; selections: string[]; errors: string[] } {
+function parseInitSelections(argv: readonly string[]): { dryRun: boolean; force: boolean; selections: string[]; errors: string[] } {
   const selections: string[] = [];
   const errors: string[] = [];
   let dryRun = false;
+  let force = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--dry-run') {
       dryRun = true;
+      continue;
+    }
+    if (arg === '--force') {
+      force = true;
       continue;
     }
     if (arg === '--bundle' || arg === '--pack') {
@@ -634,7 +653,7 @@ function parseInitSelections(argv: readonly string[]): { dryRun: boolean; select
     errors.push(`Unsupported init option: ${arg}`);
   }
 
-  return { dryRun, selections, errors };
+  return { dryRun, force, selections, errors };
 }
 
 function detectInitProjectFacts(cwd: string): { root: string; packageManager: string | null; existingWorkflowPath: string | null } {
@@ -668,16 +687,77 @@ function findGitWorkTreeRoot(cwd: string): string | null {
   }
 }
 
-function runInitCommand(argv: readonly string[], deps: CommandRouterDependencies): number {
+async function promptInitOverwrite(conflicts: readonly WorkflowFilePlanEntry[]): Promise<boolean> {
+  process.stdout.write(
+    `Overwrite ${conflicts.length} existing Symphony init file${conflicts.length === 1 ? '' : 's'}? Type yes to continue: `
+  );
+  return new Promise((resolve) => {
+    let answer = '';
+    const input = process.stdin;
+    const settle = (approved: boolean) => {
+      input.off('data', onData);
+      input.off('end', onEnd);
+      resolve(approved);
+    };
+    const onEnd = () => settle(false);
+    const onData = (chunk: Buffer | string) => {
+      answer += chunk.toString();
+      if (answer.includes('\n')) {
+        const normalized = answer.trim().toLowerCase();
+        settle(normalized === 'yes' || normalized === 'y');
+      }
+    };
+    input.setEncoding('utf8');
+    input.on('data', onData);
+    input.once('end', onEnd);
+    input.resume();
+  });
+}
+
+function renderInitConflicts(conflicts: readonly WorkflowFilePlanEntry[]): string {
+  return [
+    'Symphony init found existing files that would be overwritten:',
+    ...conflicts.map((file) => `  - ${file.path}`),
+    '',
+    'Re-run interactively and confirm the overwrite, or pass --force when the overwrite is intentional.'
+  ].join('\n');
+}
+
+function writeInitFilePlan(plan: WorkflowMaterializationPlan): void {
+  for (const file of plan.files) {
+    if (!file.wouldWrite || file.action === 'skip') {
+      continue;
+    }
+    const absolutePath = path.join(plan.detectedProjectFacts.root, file.path);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, file.content ?? '', 'utf8');
+  }
+}
+
+function renderInitWriteSummary(plan: WorkflowMaterializationPlan): string {
+  const written = plan.files.filter((file) => file.wouldWrite && file.action !== 'skip');
+  const skipped = plan.files.filter((file) => file.action === 'skip');
+  return [
+    'Symphony init write complete',
+    '',
+    `Selections: ${plan.selections.join(', ') || '(none)'}`,
+    `Project root: ${plan.detectedProjectFacts.root}`,
+    `Writes performed: ${written.length}`,
+    `Skipped unchanged: ${skipped.length}`,
+    `Validation: ${plan.validation.ok ? 'ok' : `failed (${plan.validation.error_code})`}`,
+    '',
+    'Files:',
+    ...plan.files.map((file) => `  - ${file.path}: ${file.action}${file.wouldWrite && file.action !== 'skip' ? ' written' : ''}`)
+  ].join('\n');
+}
+
+async function runInitCommand(argv: readonly string[], deps: CommandRouterDependencies): Promise<number> {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
     deps.stdout(`${renderInitHelp()}\n`);
     return 0;
   }
 
   const parsed = parseInitSelections(argv);
-  if (!parsed.dryRun) {
-    return failUnsupported(deps, 'Only symphony init --dry-run is implemented.', renderInitHelp());
-  }
   if (parsed.errors.length > 0) {
     deps.stderr(`${parsed.errors.join('\n')}\n\n${renderInitHelp()}\n`);
     return 1;
@@ -690,17 +770,39 @@ function runInitCommand(argv: readonly string[], deps: CommandRouterDependencies
   }
 
   try {
-    const plan = materializeWorkflowDryRun({
+    const plan = deps.materializeWorkflowPlan({
       resolution,
       projectFacts: detectInitProjectFacts(deps.cwd),
-      choices: { dryRun: true, selections: parsed.selections },
+      choices: { dryRun: parsed.dryRun, selections: parsed.selections },
       clock: deps.clock
     });
     if (!plan.validation.ok) {
       deps.stderr(`Generated workflow validation failed: ${plan.validation.message}\n`);
       return 1;
     }
-    deps.stdout(renderWorkflowFilePlan(plan));
+
+    if (parsed.dryRun) {
+      deps.stdout(renderWorkflowFilePlan(plan));
+      return 0;
+    }
+
+    const conflicts = plan.files.filter((file) => file.requiresOverwriteApproval);
+    if (conflicts.length > 0 && !parsed.force) {
+      const approved = await deps.promptInitOverwrite(conflicts);
+      if (!approved) {
+        deps.stderr(`${renderInitConflicts(conflicts)}\n`);
+        return 1;
+      }
+    }
+
+    writeInitFilePlan(plan);
+    const workflowPath = path.join(plan.detectedProjectFacts.root, 'WORKFLOW.md');
+    const materializedWorkflowValidation = validateWorkflowContent(fs.readFileSync(workflowPath, 'utf8'), workflowPath);
+    if (!materializedWorkflowValidation.ok) {
+      deps.stderr(`Generated workflow validation failed after write: ${materializedWorkflowValidation.message}\n`);
+      return 1;
+    }
+    deps.stdout(`${renderInitWriteSummary({ ...plan, validation: materializedWorkflowValidation })}\n`);
     return 0;
   } catch (error) {
     deps.stderr(`${error instanceof Error ? error.message : String(error)}\n`);

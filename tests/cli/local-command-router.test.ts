@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
@@ -24,8 +24,10 @@ import {
   type SetupConsentStorePayload,
   type WorkflowPosture
 } from '../../src/runtime/setup-consent';
+import { materializeWorkflowPlan } from '../../src/workflow/materializer';
 
 const execFileAsync = promisify(execFile);
+const realCliScript = path.join(process.cwd(), 'scripts', 'symphony.js');
 
 function createMemoryConsentStore(storePath = path.join(os.tmpdir(), 'symphony-user-state', 'setup-consent.json')) {
   let payload: SetupConsentStorePayload = { version: 1, records: [] };
@@ -108,6 +110,7 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       loadEnvFile: (envFilePath: string) => {
         envFileLoads.push(envFilePath);
       },
+      materializeWorkflowPlan,
       setupConsentStore: consent.store,
       resolveWorkflowPosture: () => HIGH_TRUST_POSTURE,
       promptSetupConsent: async () => false,
@@ -151,6 +154,20 @@ async function createDoctorProject(workflowContent = VALID_WORKFLOW): Promise<st
   await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), workflowContent, 'utf8');
   await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/system/\n', 'utf8');
   return projectRoot;
+}
+
+async function createInitGitRepo(prefix = 'symphony-init-real-cli-'): Promise<string> {
+  const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
+  await execFileAsync('git', ['init'], { cwd: projectRoot });
+  return projectRoot;
+}
+
+function runRealInit(projectRoot: string, argv: string[], input?: string) {
+  return spawnSync(process.execPath, [realCliScript, 'init', ...argv], {
+    cwd: projectRoot,
+    input,
+    encoding: 'utf8'
+  });
 }
 
 function listenOnLocalhost(port = 0): Promise<{ server: net.Server; port: number }> {
@@ -284,8 +301,9 @@ describe('local symphony command router', () => {
 
     expect(exitCode).toBe(0);
     expect(harness.stdout).toContain('symphony init --help');
+    expect(harness.stdout).toContain('symphony init --bundle memory-generic');
     expect(harness.stdout).toContain('symphony init --dry-run --bundle memory-generic');
-    expect(harness.stdout).toContain('without writing files');
+    expect(harness.stdout).toContain('Dry-run renders the same file plan without writing files');
     expect(harness.stderr).toBe('');
   });
 
@@ -305,13 +323,79 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('Bundle provenance: memory-generic -> tracker:memory, workspace:none, toolchain:generic, workflow:solo-local');
     expect(harness.stdout).toContain('Validation: ok');
     expect(harness.stdout).toContain('Writes performed: no');
-    expect(harness.stdout).toContain('would_write: no');
+    expect(harness.stdout).toContain('would_write: yes');
     expect(harness.stdout).toContain('WORKFLOW.md');
     expect(harness.stdout).toContain('<!-- symphony-generated-profile: profile=solo-local; bundle=memory-generic; packs=tracker:memory,workspace:none,toolchain:generic,workflow:solo-local;');
     expect(harness.stdout).not.toContain('workflow:symphony-internal');
     await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
     await expect(fs.access(path.join(projectRoot, '.symphony'))).rejects.toThrow();
     expect(harness.stderr).toBe('');
+  });
+
+  it('writes memory generic init files through the real CLI in a temporary git repository', async () => {
+    const projectRoot = await createInitGitRepo();
+
+    const result = runRealInit(projectRoot, ['--bundle', 'memory-generic']);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('Symphony init write complete');
+    expect(result.stdout).toContain('Validation: ok');
+    expect(await fs.readFile(path.join(projectRoot, 'WORKFLOW.md'), 'utf8')).toContain('symphony-generated-profile');
+    expect(await fs.readFile(path.join(projectRoot, '.symphony', 'system', '.gitignore'), 'utf8')).toBe('*\n!.gitignore\n');
+    expect(await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8')).toBe('.symphony/system/\n');
+    await expect(fs.access(path.join(projectRoot, '.symphony', 'config.yaml'))).rejects.toThrow();
+  });
+
+  it('refuses conflicting real CLI writes by default in a temporary git repository', async () => {
+    const projectRoot = await createInitGitRepo();
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'existing policy\n', 'utf8');
+
+    const result = runRealInit(projectRoot, ['--bundle', 'memory-generic'], '');
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Symphony init found existing files that would be overwritten');
+    expect(result.stderr).toContain('WORKFLOW.md');
+    expect(await fs.readFile(path.join(projectRoot, 'WORKFLOW.md'), 'utf8')).toBe('existing policy\n');
+    await expect(fs.access(path.join(projectRoot, '.symphony'))).rejects.toThrow();
+  });
+
+  it('accepts confirmed real CLI overwrites in a temporary git repository', async () => {
+    const projectRoot = await createInitGitRepo();
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'existing policy\n', 'utf8');
+
+    const result = runRealInit(projectRoot, ['--bundle', 'memory-generic'], 'yes\n');
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('Overwrite 1 existing Symphony init file');
+    expect(await fs.readFile(path.join(projectRoot, 'WORKFLOW.md'), 'utf8')).toContain('symphony-generated-profile');
+  });
+
+  it('accepts forced real CLI overwrites and updates gitignore idempotently', async () => {
+    const projectRoot = await createInitGitRepo();
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'existing policy\n', 'utf8');
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), 'node_modules\n', 'utf8');
+
+    const first = runRealInit(projectRoot, ['--force', '--bundle', 'memory-generic']);
+    const second = runRealInit(projectRoot, ['--force', '--bundle', 'memory-generic']);
+
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8')).toBe('node_modules\n.symphony/system/\n');
+    expect(second.stdout).toContain('.gitignore: skip');
+  });
+
+  it('does not write files during real CLI dry-run in a temporary git repository', async () => {
+    const projectRoot = await createInitGitRepo();
+
+    const result = runRealInit(projectRoot, ['--dry-run', '--bundle', 'memory-generic']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Symphony init dry-run file plan');
+    await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
+    await expect(fs.access(path.join(projectRoot, '.symphony'))).rejects.toThrow();
+    await expect(fs.access(path.join(projectRoot, '.gitignore'))).rejects.toThrow();
   });
 
   it('plans init dry-run files at the Git work tree root from a nested cwd', async () => {
@@ -403,6 +487,30 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toContain('Missing required toolchain pack');
     expect(harness.stderr).toContain('Missing required workflow pack');
     expect(harness.stdout).toBe('');
+  });
+
+  it('blocks write success when generated workflow validation fails', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-validation-failure-')));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    harness.deps.materializeWorkflowPlan = (options) => ({
+      ...materializeWorkflowPlan(options),
+      validation: {
+        ok: false,
+        error_code: 'missing_codex_command',
+        message: 'codex.command is required',
+        at: '2026-05-25T00:00:00.000Z'
+      }
+    });
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain('Generated workflow validation failed: codex.command is required');
+    await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
   });
 
   it('refuses to generate protected symphony-internal init profiles', async () => {
