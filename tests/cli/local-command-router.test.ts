@@ -474,6 +474,111 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('renders Linear Node dry-run workflows with non-interactive tracker inputs', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-linear-node-');
+    await fs.writeFile(path.join(projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'linear-node', '--linear-project-slug', 'SYMPHONY'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Selected packs: tracker:linear, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('Validation: ok');
+    expect(harness.stdout).toContain('.env.example');
+    expect(harness.stdout).toContain('LINEAR_API_KEY=');
+    expect(harness.stdout).toContain('.worktreeinclude');
+    expect(harness.stdout).toContain('project_slug: "SYMPHONY"');
+    expect(harness.stdout).toContain('Package manager: pnpm');
+    expect(harness.stdout).toContain('after_create: "pnpm install"');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('detects GitHub remotes and npm lockfiles for GitHub Node dry-run workflows', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-github-node-');
+    await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:nielsgl/symphony.git'], {
+      cwd: projectRoot
+    });
+    await fs.writeFile(path.join(projectRoot, 'package-lock.json'), '{}\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'github-node'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Selected packs: tracker:github, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('Validation: ok');
+    expect(harness.stdout).toContain('owner: "nielsgl"');
+    expect(harness.stdout).toContain('repo: "symphony"');
+    expect(harness.stdout).toContain('- GitHub owner: nielsgl (detected from git remote)');
+    expect(harness.stdout).toContain('GITHUB_TOKEN=');
+    expect(harness.stdout).toContain('Package manager: npm');
+    expect(harness.stdout).toContain('after_create: "npm install"');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('generates workspace support files only for worktree init selections', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-workspace-files-')));
+
+    const worktree = createHarness();
+    worktree.deps.cwd = projectRoot;
+    expect(
+      await runCommandRouter({
+        argv: [
+          'init',
+          '--dry-run',
+          '--tracker',
+          'memory',
+          '--workspace',
+          'worktree',
+          '--toolchain',
+          'generic',
+          '--workflow',
+          'solo-local'
+        ],
+        deps: worktree.deps
+      })
+    ).toBe(0);
+    expect(worktree.stdout).toContain('.worktreeinclude');
+
+    const clone = createHarness();
+    clone.deps.cwd = projectRoot;
+    expect(
+      await runCommandRouter({
+        argv: [
+          'init',
+          '--dry-run',
+          '--tracker',
+          'memory',
+          '--workspace',
+          'clone',
+          '--toolchain',
+          'generic',
+          '--workflow',
+          'solo-local'
+        ],
+        deps: clone.deps
+      })
+    ).toBe(0);
+    expect(clone.stdout).not.toContain('2. .worktreeinclude');
+
+    const none = createHarness();
+    none.deps.cwd = projectRoot;
+    expect(
+      await runCommandRouter({
+        argv: ['init', '--dry-run', '--bundle', 'memory-generic'],
+        deps: none.deps
+      })
+    ).toBe(0);
+    expect(none.stdout).not.toContain('2. .worktreeinclude');
+  });
+
   it('fails init dry-run when required profile selections are missing', async () => {
     const harness = createHarness();
 

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import dotenv from 'dotenv';
 
 import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local-command-resolver';
@@ -430,6 +430,8 @@ function renderInitHelp(): string {
     '  symphony init --force --bundle memory-generic',
     '  symphony init --dry-run --pack tracker:memory --pack workspace:none --pack toolchain:generic --pack workflow:solo-local',
     '  symphony init --tracker memory --workspace none --toolchain generic --workflow solo-local',
+    '  symphony init --bundle linear-node --linear-project-slug SYMPHONY',
+    '  symphony init --bundle github-node --github-owner octo-org --github-repo octo-repo',
     '',
     'Writes are non-destructive by default. Existing generated targets require',
     'interactive confirmation or --force. Dry-run renders the same file plan without writing files.'
@@ -614,11 +616,22 @@ function runProfileCommand(argv: readonly string[], deps: CommandRouterDependenc
   );
 }
 
-function parseInitSelections(argv: readonly string[]): { dryRun: boolean; force: boolean; selections: string[]; errors: string[] } {
+function parseInitSelections(argv: readonly string[]): {
+  dryRun: boolean;
+  force: boolean;
+  selections: string[];
+  errors: string[];
+  linearProjectSlug: string | null;
+  githubOwner: string | null;
+  githubRepo: string | null;
+} {
   const selections: string[] = [];
   const errors: string[] = [];
   let dryRun = false;
   let force = false;
+  let linearProjectSlug: string | null = null;
+  let githubOwner: string | null = null;
+  let githubRepo: string | null = null;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -650,27 +663,113 @@ function parseInitSelections(argv: readonly string[]): { dryRun: boolean; force:
       }
       continue;
     }
+    if (arg === '--linear-project-slug' || arg === '--linear-project') {
+      const value = argv[index + 1];
+      if (!value) {
+        errors.push(`${arg} requires a value.`);
+      } else {
+        linearProjectSlug = value;
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === '--github-owner') {
+      const value = argv[index + 1];
+      if (!value) {
+        errors.push(`${arg} requires a value.`);
+      } else {
+        githubOwner = value;
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === '--github-repo') {
+      const value = argv[index + 1];
+      if (!value) {
+        errors.push(`${arg} requires a value.`);
+      } else {
+        githubRepo = value;
+        index += 1;
+      }
+      continue;
+    }
     errors.push(`Unsupported init option: ${arg}`);
   }
 
-  return { dryRun, force, selections, errors };
+  return { dryRun, force, selections, errors, linearProjectSlug, githubOwner, githubRepo };
 }
 
-function detectInitProjectFacts(cwd: string): { root: string; packageManager: string | null; existingWorkflowPath: string | null } {
+function detectInitProjectFacts(cwd: string): {
+  root: string;
+  packageManager: string | null;
+  existingWorkflowPath: string | null;
+  githubRepository: { owner: string; repo: string; remote: string } | null;
+} {
   const root = findGitWorkTreeRoot(cwd) ?? fs.realpathSync(cwd);
-  const packageManager = fs.existsSync(path.join(root, 'package-lock.json'))
-    ? 'npm'
-    : fs.existsSync(path.join(root, 'pnpm-lock.yaml'))
-      ? 'pnpm'
-      : fs.existsSync(path.join(root, 'yarn.lock'))
-        ? 'yarn'
-        : null;
+  const packageManager = detectPackageManager(root);
   const workflowPath = path.join(root, 'WORKFLOW.md');
   return {
     root,
     packageManager,
-    existingWorkflowPath: fs.existsSync(workflowPath) ? workflowPath : null
+    existingWorkflowPath: fs.existsSync(workflowPath) ? workflowPath : null,
+    githubRepository: detectGitHubRepository(root)
   };
+}
+
+function detectPackageManager(root: string): string | null {
+  if (fs.existsSync(path.join(root, 'pnpm-lock.yaml'))) {
+    return 'pnpm';
+  }
+  if (fs.existsSync(path.join(root, 'yarn.lock'))) {
+    return 'yarn';
+  }
+  if (fs.existsSync(path.join(root, 'package-lock.json'))) {
+    return 'npm';
+  }
+  if (fs.existsSync(path.join(root, 'package.json'))) {
+    return 'npm';
+  }
+  return null;
+}
+
+function detectGitHubRepository(root: string): { owner: string; repo: string; remote: string } | null {
+  const remoteCandidates = ['origin', 'upstream'];
+  for (const remote of remoteCandidates) {
+    try {
+      const url = execFileSync('git', ['config', '--get', `remote.${remote}.url`], {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim();
+      const parsed = parseGitHubRemoteUrl(url);
+      if (parsed) {
+        return { ...parsed, remote };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function parseGitHubRemoteUrl(url: string): { owner: string; repo: string } | null {
+  const normalized = url.trim().replace(/\.git$/, '');
+  const ssh = /^git@github\.com:([^/]+)\/(.+)$/.exec(normalized);
+  if (ssh) {
+    return { owner: ssh[1], repo: ssh[2] };
+  }
+
+  const https = /^https:\/\/github\.com\/([^/]+)\/(.+)$/.exec(normalized);
+  if (https) {
+    return { owner: https[1], repo: https[2] };
+  }
+
+  const gh = /^gh:([^/]+)\/(.+)$/.exec(normalized);
+  if (gh) {
+    return { owner: gh[1], repo: gh[2] };
+  }
+
+  return null;
 }
 
 function findGitWorkTreeRoot(cwd: string): string | null {
@@ -773,7 +872,13 @@ async function runInitCommand(argv: readonly string[], deps: CommandRouterDepend
     const plan = deps.materializeWorkflowPlan({
       resolution,
       projectFacts: detectInitProjectFacts(deps.cwd),
-      choices: { dryRun: parsed.dryRun, selections: parsed.selections },
+      choices: {
+        dryRun: parsed.dryRun,
+        selections: parsed.selections,
+        linearProjectSlug: parsed.linearProjectSlug,
+        githubOwner: parsed.githubOwner,
+        githubRepo: parsed.githubRepo
+      },
       clock: deps.clock
     });
     if (!plan.validation.ok) {
