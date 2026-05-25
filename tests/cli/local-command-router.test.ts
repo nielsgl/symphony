@@ -164,6 +164,12 @@ function listenOnLocalhost(port = 0): Promise<{ server: net.Server; port: number
   });
 }
 
+function doctorFinding(payload: { findings: Array<{ id: string }> }, id: string) {
+  const found = payload.findings.find((finding) => finding.id === id);
+  expect(found, `missing doctor finding ${id}`).toBeTruthy();
+  return found!;
+}
+
 describe('local symphony command router', () => {
   it('prints top-level help with supported commands', async () => {
     const harness = createHarness();
@@ -297,6 +303,15 @@ describe('local symphony command router', () => {
       status: 'failure',
       reason: 'blockers_present',
       exitCode: 2,
+      exitSemantics: {
+        code: 2,
+        meaning: 'blockers_present',
+        ci: {
+          requested: true,
+          promptsAllowed: false,
+          nonZeroOnBlocker: true
+        }
+      },
       ci: true,
       resolution: {
         projectRoot,
@@ -308,11 +323,124 @@ describe('local symphony command router', () => {
         consent: 'missing'
       }
     });
+    expect(payload.projectContext).toMatchObject({
+      cwd: projectRoot,
+      symphonyCheckoutRoot: repoRoot,
+      projectRoot,
+      workflowPath: path.join(projectRoot, 'WORKFLOW.md'),
+      envFilePath: path.join(projectRoot, '.env'),
+      envFileExists: false,
+      profile: 'project'
+    });
+    expect(payload.findings).toEqual(payload.checks);
+    expect(payload.findings.every((finding: Record<string, unknown>) =>
+      ['id', 'code', 'severity', 'message', 'source', 'remediationInfo', 'safeFix', 'details', 'checkStatus'].every((key) =>
+        Object.prototype.hasOwnProperty.call(finding, key)
+      )
+    )).toBe(true);
+    expect(doctorFinding(payload, 'setup.consent')).toMatchObject({
+      code: 'setup_consent_missing',
+      severity: 'blocker',
+      checkStatus: 'failure',
+      message: expect.stringContaining('No user-local setup consent exists'),
+      source: { category: 'user_local_trust_state', present: false },
+      remediationInfo: { guidance: expect.stringContaining('symphony setup --yes') },
+      safeFix: {
+        available: true,
+        fixId: 'setup-consent',
+        command: 'symphony doctor --fix --yes',
+        requiresYes: true
+      },
+      details: {
+        posture: 'high-trust'
+      }
+    });
+    expect(doctorFinding(payload, 'server.port')).toMatchObject({
+      severity: 'pass',
+      checkStatus: 'ok',
+      source: { category: 'inferred_runtime_default', value: 'default', present: true },
+      safeFix: { available: false }
+    });
+    expect(doctorFinding(payload, 'layout.gitignore_system')).toMatchObject({
+      source: { category: 'layout_inspection' }
+    });
+    expect(doctorFinding(payload, 'workflow.effective_config')).toMatchObject({
+      details: {
+        trackerApiKey: { redacted: true, present: false }
+      }
+    });
     expect(payload.checks.some((check: { id: string; reason: string }) => check.id === 'setup.consent' && check.reason === 'setup_consent_missing')).toBe(true);
     expect(payload.layout).toMatchObject({
       workflow: { path: 'WORKFLOW.md', exists: true, canonical: true },
       runtimeStateRoot: { path: '.symphony/system', owner: 'runtime-state' },
       ignoreAnalysis: { status: 'narrow-system', hasNarrowSystemIgnore: true }
+    });
+    expect(harness.stderr).toBe('');
+  });
+
+  it('normalizes doctor provenance categories and redacts sensitive details', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject(ENV_BACKED_LINEAR_WORKFLOW);
+    await fs.writeFile(path.join(projectRoot, '.env'), 'DOCTOR_ONLY_LINEAR_TOKEN=secret-from-env-file\n', 'utf8');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--port', '0', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(0);
+    expect(doctorFinding(payload, 'resolver.workflow')).toMatchObject({
+      source: { category: 'workflow_value', value: 'project', present: true }
+    });
+    expect(doctorFinding(payload, 'env.path')).toMatchObject({
+      source: { category: 'environment_file', value: 'project', present: true },
+      details: { exists: true }
+    });
+    expect(doctorFinding(payload, 'workflow.effective_config')).toMatchObject({
+      severity: 'pass',
+      source: { category: 'workflow_value', present: true },
+      details: {
+        trackerKind: 'linear',
+        trackerApiKey: { redacted: true, present: true }
+      }
+    });
+    expect(doctorFinding(payload, 'server.port')).toMatchObject({
+      source: { category: 'cli_flag', value: 'cli', present: true }
+    });
+    expect(doctorFinding(payload, 'setup.consent')).toMatchObject({
+      source: { category: 'cli_flag', value: 'guardrail_ack', present: true }
+    });
+    expect(JSON.stringify(payload)).not.toContain('secret-from-env-file');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('reports generated profile provenance for symphony-internal doctor checks', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    await fs.writeFile(path.join(repoRoot, 'WORKFLOW.md'), VALID_WORKFLOW, 'utf8');
+    await fs.writeFile(path.join(repoRoot, '.gitignore'), '.symphony/system/\n', 'utf8');
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--profile', 'symphony-internal', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(0);
+    expect(payload.projectContext).toMatchObject({
+      projectRoot: repoRoot,
+      workflowPath: path.join(repoRoot, 'WORKFLOW.md'),
+      profile: 'symphony-internal'
+    });
+    expect(doctorFinding(payload, 'resolver.workflow')).toMatchObject({
+      source: { category: 'generated_profile', value: 'profile', present: true }
     });
     expect(harness.stderr).toBe('');
   });
