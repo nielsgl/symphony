@@ -125,6 +125,7 @@ async function createDoctorRepo(): Promise<{ repoRoot: string; binDir: string; s
   await fs.writeFile(path.join(repoRoot, 'dist', 'src', 'runtime', 'command-router.js'), 'module.exports = {};\n', 'utf8');
   const binDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-doctor-bin-')));
   const shimPath = path.join(binDir, 'symphony');
+  await fs.writeFile(path.join(binDir, 'codex'), '#!/usr/bin/env bash\nexit 0\n', { encoding: 'utf8', mode: 0o755 });
   await fs.writeFile(
     shimPath,
     [
