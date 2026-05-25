@@ -11,11 +11,19 @@ export interface DetectedProjectFacts {
   root: string;
   packageManager?: string | null;
   existingWorkflowPath?: string | null;
+  githubRepository?: {
+    owner: string;
+    repo: string;
+    remote: string;
+  } | null;
 }
 
 export interface InitUserChoices {
   dryRun: boolean;
   selections: readonly string[];
+  linearProjectSlug?: string | null;
+  githubOwner?: string | null;
+  githubRepo?: string | null;
 }
 
 export type FilePlanAction = 'create' | 'overwrite' | 'skip';
@@ -50,6 +58,11 @@ export interface WorkflowMaterializerOptions {
 }
 
 const WORKFLOW_STATE_GITIGNORE = ['*', '!.gitignore', ''].join('\n');
+const WORKTREE_INCLUDE = ['.env', '.env.local', '.codex/**', ''].join('\n');
+const GENERATED_VALIDATION_ENV = {
+  LINEAR_API_KEY: 'generated-validation-placeholder',
+  GITHUB_TOKEN: 'generated-validation-placeholder'
+};
 
 export function materializeWorkflowPlan(options: WorkflowMaterializerOptions): WorkflowMaterializationPlan {
   if (options.resolution.errors.length > 0) {
@@ -71,6 +84,7 @@ export function materializeWorkflowPlan(options: WorkflowMaterializerOptions): W
         ? ['generated workflow parsed and validated successfully']
         : [`generated workflow validation failed: ${workflowValidation.message}`]
     }),
+    ...buildOptionalSupportFiles(options),
     buildFilePlanEntry({
       root: options.projectFacts.root,
       relativePath: path.join('.symphony', 'system', '.gitignore'),
@@ -152,6 +166,10 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
   const bundle = options.resolution.expandedBundles.map((expansion) => expansion.bundle.id).join(',');
   const packs = options.resolution.packs.map((pack) => pack.id).join(',');
   const packageManager = options.projectFacts.packageManager ?? 'unknown';
+  const trackerConfig = buildTrackerConfig(options, trackerKind);
+  const workspaceConfig = buildWorkspaceConfig(workspaceType);
+  const toolchainConfig = buildToolchainConfig(toolchain.name, packageManager);
+  const codexSandbox = workspaceType === 'worktree' ? 'danger-full-access' : 'read-only';
 
   return [
     '---',
@@ -164,19 +182,31 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '    generated_by: "symphony init"',
     'tracker:',
     `  kind: ${yamlString(trackerKind)}`,
-    ...trackerCredentialLines(trackerKind),
+    ...trackerConfig,
     `  active_states: ${yamlList(activeStates)}`,
     `  terminal_states: ${yamlList(terminalStates)}`,
     ...optionalTrackerStateLines(handoffStates, freshDispatchStates),
     'workspace:',
+    ...workspaceConfig,
     '  provisioner:',
     `    type: ${yamlString(workspaceType)}`,
-    ...workspaceProvisionerLines(workspaceType),
+    ...(workspaceType === 'worktree' ? ['    repo_root: "."'] : []),
+    '    base_ref: "origin/main"',
+    '    branch_template: "feature/{{ issue.identifier }}"',
+    '    teardown_mode: "remove_worktree"',
+    '    allow_dirty_repo: false',
+    '    fallback_to_clone_on_worktree_failure: false',
     'toolchain:',
     `  kind: ${yamlString(toolchain.name)}`,
+    ...toolchainConfig,
+    'hooks:',
+    ...buildHookConfig(toolchain.name, packageManager),
     'codex:',
     '  command: codex app-server',
-    ...codexSandboxLines(workspaceType),
+    `  thread_sandbox: ${yamlString(codexSandbox)}`,
+    `  turn_sandbox_policy: ${yamlString(codexSandbox)}`,
+    '  approval_policy: never',
+    '  user_input_policy: fail_attempt',
     'persistence:',
     '  enabled: true',
     'validation:',
@@ -196,6 +226,15 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '',
     '- Project root: .',
     `- Package manager: ${packageManager}`,
+    `- GitHub repository: ${formatDetectedGitHubRepository(options)}`,
+    '',
+    '## Generated Inputs To Review',
+    '',
+    ...buildGeneratedInputLines(options, trackerKind),
+    '',
+    '## Toolchain Commands',
+    '',
+    ...buildToolchainCommandLines(toolchain.name, packageManager),
     '',
     '## Operator Contract',
     '',
@@ -204,17 +243,6 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '- For dry-run initialization, review this generated file plan before enabling any write path.',
     '- Keep generated runtime state under .symphony/system/ and out of version control.'
   ].join('\n');
-}
-
-function workspaceProvisionerLines(workspaceType: string): string[] {
-  return workspaceType === 'worktree' ? ['    repo_root: "."'] : [];
-}
-
-function codexSandboxLines(workspaceType: string): string[] {
-  if (workspaceType !== 'worktree') {
-    return [];
-  }
-  return ['  thread_sandbox: danger-full-access', '  turn_sandbox_policy: danger-full-access'];
 }
 
 function optionalTrackerStateLines(
@@ -231,13 +259,7 @@ export function validateWorkflowContent(content: string, workflowPath: string): 
   try {
     const workflowDefinition = new WorkflowLoader().parse(content);
     const effectiveConfig = new ConfigResolver({
-      env: {
-        GITHUB_REPOSITORY_NAME: 'example-repo',
-        GITHUB_REPOSITORY_OWNER: 'example-owner',
-        GITHUB_TOKEN: 'validation-token',
-        LINEAR_API_KEY: 'validation-token',
-        LINEAR_PROJECT_SLUG: 'EXAMPLE'
-      },
+      env: GENERATED_VALIDATION_ENV,
       homedir: () => path.dirname(workflowPath)
     }).resolve(workflowDefinition, { workflowPath });
     return new ConfigValidator({ clock: () => new Date('2026-05-25T00:00:00.000Z') }).validate(effectiveConfig);
@@ -273,18 +295,174 @@ function getTerminalStates(trackerKind: string, profileName: string): string[] {
   return profileName === 'team-review' ? ['Done', 'Canceled'] : ['Done'];
 }
 
-function trackerCredentialLines(trackerKind: string): string[] {
-  if (trackerKind === 'linear') {
-    return ['  api_key: "$LINEAR_API_KEY"', '  project_slug: "$LINEAR_PROJECT_SLUG"'];
+function buildOptionalSupportFiles(options: WorkflowMaterializerOptions): WorkflowFilePlanEntry[] {
+  const files: WorkflowFilePlanEntry[] = [];
+  const trackerKind = options.resolution.dimensions.tracker?.name;
+  const workspaceType = options.resolution.dimensions.workspace?.name;
+
+  if (trackerKind === 'linear' || trackerKind === 'github') {
+    files.push(
+      buildFilePlanEntry({
+        root: options.projectFacts.root,
+        relativePath: '.env.example',
+        content: buildEnvExample(trackerKind),
+        notes: [`documents required ${trackerKind} credential variables without secrets`]
+      })
+    );
   }
-  if (trackerKind === 'github') {
+
+  if (workspaceType === 'worktree') {
+    files.push(
+      buildFilePlanEntry({
+        root: options.projectFacts.root,
+        relativePath: '.worktreeinclude',
+        content: WORKTREE_INCLUDE,
+        notes: ['declares ignored local files copied into managed worktrees']
+      })
+    );
+  }
+
+  return files;
+}
+
+function buildEnvExample(trackerKind: string): string {
+  if (trackerKind === 'linear') {
+    return ['# Required by generated tracker:linear workflows.', '# Copy to .env or export in your shell; never commit real secrets.', 'LINEAR_API_KEY=', ''].join('\n');
+  }
+
+  return ['# Required by generated tracker:github workflows.', '# Copy to .env or export in your shell; never commit real secrets.', 'GITHUB_TOKEN=', ''].join('\n');
+}
+
+function buildTrackerConfig(options: WorkflowMaterializerOptions, trackerKind: string): string[] {
+  if (trackerKind === 'linear') {
     return [
-      '  api_key: "$GITHUB_TOKEN"',
-      '  owner: "$GITHUB_REPOSITORY_OWNER"',
-      '  repo: "$GITHUB_REPOSITORY_NAME"'
+      '  endpoint: "https://api.linear.app/graphql"',
+      '  api_key: "$LINEAR_API_KEY"',
+      `  project_slug: ${yamlString(options.choices.linearProjectSlug?.trim() || 'LINEAR_PROJECT_SLUG')}`,
+      '  github_linking:',
+      '    mode: "warn"'
     ];
   }
-  return [];
+
+  if (trackerKind === 'github') {
+    const detected = options.projectFacts.githubRepository;
+    const owner = options.choices.githubOwner?.trim() || detected?.owner || 'GITHUB_OWNER';
+    const repo = options.choices.githubRepo?.trim() || detected?.repo || 'GITHUB_REPO';
+    return [
+      '  endpoint: "https://api.github.com/graphql"',
+      '  api_key: "$GITHUB_TOKEN"',
+      `  owner: ${yamlString(owner)}`,
+      `  repo: ${yamlString(repo)}`,
+      '  github_linking:',
+      '    mode: "off"'
+    ];
+  }
+
+  return ['  endpoint: "memory://local"', '  api_key: ""', '  github_linking:', '    mode: "off"'];
+}
+
+function buildWorkspaceConfig(workspaceType: string): string[] {
+  const copyIgnoredEnabled = workspaceType === 'worktree';
+  return [
+    '  copy_ignored:',
+    `    enabled: ${copyIgnoredEnabled ? 'true' : 'false'}`,
+    '    include_file: ".worktreeinclude"',
+    '    from: "primary_worktree"',
+    '    conflict_policy: "skip"',
+    '    require_gitignored: true',
+    '    max_files: 10000',
+    '    max_total_bytes: 5368709120',
+    '    allow_patterns: []',
+    '    deny_patterns: []'
+  ];
+}
+
+function buildToolchainConfig(toolchainName: string, packageManager: string): string[] {
+  if (toolchainName !== 'node') {
+    return ['  setup_command: ""', '  validation_command: "git diff --check"'];
+  }
+
+  return [
+    `  package_manager: ${yamlString(packageManager === 'unknown' ? 'npm' : packageManager)}`,
+    `  setup_command: ${yamlString(resolveNodeInstallCommand(packageManager))}`,
+    `  validation_command: ${yamlString(resolveNodeTestCommand(packageManager))}`
+  ];
+}
+
+function buildHookConfig(toolchainName: string, packageManager: string): string[] {
+  if (toolchainName !== 'node') {
+    return ['  after_create: ""', '  before_run: ""', '  after_run: ""', '  before_remove: ""', '  timeout_ms: 60000'];
+  }
+
+  return [
+    `  after_create: ${yamlString(resolveNodeInstallCommand(packageManager))}`,
+    '  before_run: ""',
+    '  after_run: ""',
+    '  before_remove: ""',
+    '  timeout_ms: 60000'
+  ];
+}
+
+function buildGeneratedInputLines(options: WorkflowMaterializerOptions, trackerKind: string): string[] {
+  if (trackerKind === 'linear') {
+    return [
+      `- Linear API key: env var LINEAR_API_KEY (see .env.example)`,
+      `- Linear project slug: ${options.choices.linearProjectSlug?.trim() || 'LINEAR_PROJECT_SLUG'}`
+    ];
+  }
+
+  if (trackerKind === 'github') {
+    const detected = options.projectFacts.githubRepository;
+    const owner = options.choices.githubOwner?.trim() || detected?.owner || 'GITHUB_OWNER';
+    const repo = options.choices.githubRepo?.trim() || detected?.repo || 'GITHUB_REPO';
+    return [
+      '- GitHub token: env var GITHUB_TOKEN (see .env.example)',
+      `- GitHub owner: ${owner}${detected && owner === detected.owner ? ' (detected from git remote)' : ''}`,
+      `- GitHub repo: ${repo}${detected && repo === detected.repo ? ' (detected from git remote)' : ''}`
+    ];
+  }
+
+  return ['- Memory tracker: no hosted tracker credentials required.'];
+}
+
+function buildToolchainCommandLines(toolchainName: string, packageManager: string): string[] {
+  if (toolchainName !== 'node') {
+    return ['- Setup: none', '- Validation: git diff --check'];
+  }
+
+  return [
+    `- Package manager: ${packageManager === 'unknown' ? 'npm (default)' : packageManager}`,
+    `- Setup: ${resolveNodeInstallCommand(packageManager)}`,
+    `- Validation: ${resolveNodeTestCommand(packageManager)}`
+  ];
+}
+
+function resolveNodeInstallCommand(packageManager: string): string {
+  if (packageManager === 'pnpm') {
+    return 'pnpm install';
+  }
+  if (packageManager === 'yarn') {
+    return 'yarn install';
+  }
+  return 'npm install';
+}
+
+function resolveNodeTestCommand(packageManager: string): string {
+  if (packageManager === 'pnpm') {
+    return 'pnpm test';
+  }
+  if (packageManager === 'yarn') {
+    return 'yarn test';
+  }
+  return 'npm test';
+}
+
+function formatDetectedGitHubRepository(options: WorkflowMaterializerOptions): string {
+  const detected = options.projectFacts.githubRepository;
+  if (!detected) {
+    return 'not detected';
+  }
+  return `${detected.owner}/${detected.repo} (${detected.remote})`;
 }
 
 function buildFilePlanEntry(params: {
