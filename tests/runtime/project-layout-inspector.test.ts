@@ -239,4 +239,56 @@ describe('project layout inspector', () => {
 
     expect(listProjectFiles(projectRoot)).toEqual(before);
   });
+
+  it('reports a file at .symphony as structured invalid layout state', () => {
+    const projectRoot = makeProject();
+    writeProjectFile(projectRoot, 'WORKFLOW.md', '# workflow\n');
+    writeProjectFile(projectRoot, '.gitignore', '.symphony/system/\n');
+    writeProjectFile(projectRoot, '.symphony', 'not a directory\n');
+    const before = listProjectFiles(projectRoot);
+
+    const result = inspectProjectLayout(projectRoot);
+
+    expect(result.status).toBe('warning');
+    expect(result.legacyRuntimePaths).toEqual([]);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: 'invalid_layout_path',
+        path: '.symphony',
+        remediation:
+          'Move or remove the invalid .symphony path so runtime-owned state can live under .symphony/system/.'
+      })
+    ]);
+    expect(listProjectFiles(projectRoot)).toEqual(before);
+  });
+
+  it('reports a directory at .gitignore as structured unreadable ignore state', () => {
+    const projectRoot = makeProject();
+    writeProjectFile(projectRoot, 'WORKFLOW.md', '# workflow\n');
+    mkdirProject(projectRoot, '.gitignore');
+    const before = listProjectFiles(projectRoot);
+
+    const result = inspectProjectLayout(projectRoot);
+
+    expect(result.status).toBe('warning');
+    expect(result.ignoreAnalysis).toMatchObject({
+      path: '.gitignore',
+      exists: true,
+      status: 'unreadable',
+      patterns: [],
+      hasNarrowSystemIgnore: false,
+      hasBroadSymphonyIgnore: false,
+      hasLegacyRuntimeIgnore: false,
+      remediation: 'Replace .gitignore with a readable file that includes .symphony/system/.'
+    });
+    expect(result.warnings.map((warning) => warning.code).sort()).toEqual([
+      'gitignore_unreadable',
+      'system_ignore_missing'
+    ]);
+    expect(result.warnings.find((warning) => warning.code === 'gitignore_unreadable')).toMatchObject({
+      path: '.gitignore',
+      remediation: 'Replace .gitignore with a readable file that includes .symphony/system/.'
+    });
+    expect(listProjectFiles(projectRoot)).toEqual(before);
+  });
 });

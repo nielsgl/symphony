@@ -9,7 +9,9 @@ export type ProjectLayoutWarningCode =
   | 'system_ignore_missing'
   | 'broad_symphony_ignore'
   | 'legacy_runtime_ignore'
-  | 'legacy_runtime_path_present';
+  | 'legacy_runtime_path_present'
+  | 'invalid_layout_path'
+  | 'gitignore_unreadable';
 
 export interface ProjectLayoutWarning {
   code: ProjectLayoutWarningCode;
@@ -28,7 +30,13 @@ export interface ProjectLayoutPathClassification {
 }
 
 export type ProjectLayoutIgnorePatternKind = 'narrow-system' | 'broad-symphony' | 'legacy-runtime' | 'other';
-export type ProjectLayoutIgnoreStatus = 'missing' | 'narrow-system' | 'broad-symphony' | 'mixed-legacy' | 'unclassified';
+export type ProjectLayoutIgnoreStatus =
+  | 'missing'
+  | 'narrow-system'
+  | 'broad-symphony'
+  | 'mixed-legacy'
+  | 'unclassified'
+  | 'unreadable';
 
 export interface ProjectLayoutIgnorePattern {
   line: number;
@@ -46,6 +54,7 @@ export interface ProjectLayoutIgnoreAnalysis {
   hasBroadSymphonyIgnore: boolean;
   hasLegacyRuntimeIgnore: boolean;
   remediation: string;
+  warnings: ProjectLayoutWarning[];
 }
 
 export interface ProjectLayoutInspection {
@@ -99,6 +108,14 @@ const LEGACY_RUNTIME_PATHS: Array<{ path: string; role: string }> = [
 
 function exists(projectRoot: string, relativePath: string): boolean {
   return fs.existsSync(path.join(projectRoot, relativePath));
+}
+
+function safeStat(fullPath: string): fs.Stats | null {
+  try {
+    return fs.statSync(fullPath);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeProjectPattern(pattern: string): string {
@@ -160,11 +177,57 @@ function analyzeGitignore(projectRoot: string): ProjectLayoutIgnoreAnalysis {
       hasNarrowSystemIgnore: false,
       hasBroadSymphonyIgnore: false,
       hasLegacyRuntimeIgnore: false,
-      remediation: 'Add .symphony/system/ to .gitignore so runtime-owned local state stays uncommitted.'
+      remediation: 'Add .symphony/system/ to .gitignore so runtime-owned local state stays uncommitted.',
+      warnings: []
     };
   }
 
-  const body = fs.readFileSync(gitignorePath, 'utf8');
+  const gitignoreStat = safeStat(gitignorePath);
+  if (!gitignoreStat?.isFile()) {
+    return {
+      path: GITIGNORE_PATH,
+      exists: true,
+      status: 'unreadable',
+      patterns: [],
+      hasNarrowSystemIgnore: false,
+      hasBroadSymphonyIgnore: false,
+      hasLegacyRuntimeIgnore: false,
+      remediation: 'Replace .gitignore with a readable file that includes .symphony/system/.',
+      warnings: [
+        {
+          code: 'gitignore_unreadable',
+          path: GITIGNORE_PATH,
+          message: '.gitignore exists but is not a readable file.',
+          remediation: 'Replace .gitignore with a readable file that includes .symphony/system/.'
+        }
+      ]
+    };
+  }
+
+  let body: string;
+  try {
+    body = fs.readFileSync(gitignorePath, 'utf8');
+  } catch {
+    return {
+      path: GITIGNORE_PATH,
+      exists: true,
+      status: 'unreadable',
+      patterns: [],
+      hasNarrowSystemIgnore: false,
+      hasBroadSymphonyIgnore: false,
+      hasLegacyRuntimeIgnore: false,
+      remediation: 'Make .gitignore readable and include .symphony/system/.',
+      warnings: [
+        {
+          code: 'gitignore_unreadable',
+          path: GITIGNORE_PATH,
+          message: '.gitignore exists but could not be read.',
+          remediation: 'Make .gitignore readable and include .symphony/system/.'
+        }
+      ]
+    };
+  }
+
   const patterns = body
     .split(/\r?\n/)
     .map((rawLine, index) => {
@@ -212,7 +275,8 @@ function analyzeGitignore(projectRoot: string): ProjectLayoutIgnoreAnalysis {
     hasNarrowSystemIgnore,
     hasBroadSymphonyIgnore,
     hasLegacyRuntimeIgnore,
-    remediation
+    remediation,
+    warnings: []
   };
 }
 
@@ -248,6 +312,10 @@ function runtimeSqliteJournalPaths(projectRoot: string): ProjectLayoutPathClassi
     return [];
   }
 
+  if (!safeStat(symphonyRoot)?.isDirectory()) {
+    return [];
+  }
+
   return fs
     .readdirSync(symphonyRoot)
     .filter((entry) => entry.startsWith('runtime.sqlite-'))
@@ -260,6 +328,26 @@ function runtimeSqliteJournalPaths(projectRoot: string): ProjectLayoutPathClassi
       exists: true,
       remediation: 'Move runtime persistence under .symphony/system/ and remove the legacy sidecar after migration.'
     }));
+}
+
+function detectInvalidLayoutPaths(projectRoot: string): ProjectLayoutWarning[] {
+  const symphonyRoot = path.join(projectRoot, '.symphony');
+  if (!fs.existsSync(symphonyRoot)) {
+    return [];
+  }
+
+  if (safeStat(symphonyRoot)?.isDirectory()) {
+    return [];
+  }
+
+  return [
+    {
+      code: 'invalid_layout_path',
+      path: '.symphony',
+      message: '.symphony exists but is not a directory.',
+      remediation: 'Move or remove the invalid .symphony path so runtime-owned state can live under .symphony/system/.'
+    }
+  ];
 }
 
 function classifyLegacyPath(projectRoot: string, item: { path: string; role: string }): ProjectLayoutPathClassification | null {
@@ -299,7 +387,7 @@ export function inspectProjectLayout(projectRoot: string): ProjectLayoutInspecti
     ...runtimeSqliteJournalPaths(resolvedProjectRoot)
   ];
   const ignoreAnalysis = analyzeGitignore(resolvedProjectRoot);
-  const warnings: ProjectLayoutWarning[] = [];
+  const warnings: ProjectLayoutWarning[] = [...ignoreAnalysis.warnings, ...detectInvalidLayoutPaths(resolvedProjectRoot)];
 
   if (!workflowExists) {
     warnings.push({
