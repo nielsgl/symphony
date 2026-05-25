@@ -113,11 +113,11 @@ describe('workflow command examples', () => {
     const spec = readFileSync(specPath, 'utf8');
 
     expect(spec).toContain('Status: v1 reference extension');
-    expect(spec).toContain('## 5. Dispatch and Reconciliation Implications');
-    expect(spec).toContain('### 5.1 Local Worker State-Refresh Order');
-    expect(spec).toContain('### 5.2 Orchestrator Dispatch and Retry Semantics');
-    expect(spec).toContain('### 5.3 Reconciliation and Cleanup Separation');
-    expect(spec).toContain('## 9. Implementation and Test Evidence');
+    expect(spec).toContain('## 6. Dispatch and Reconciliation Implications');
+    expect(spec).toContain('### 6.1 Local Worker State-Refresh Order');
+    expect(spec).toContain('### 6.2 Orchestrator Dispatch and Retry Semantics');
+    expect(spec).toContain('### 6.3 Reconciliation and Cleanup Separation');
+    expect(spec).toContain('## 10. Implementation and Test Evidence');
     expect(spec).toContain('src/orchestrator/local-worker-runner.ts');
     expect(spec).toContain('tests/orchestrator/core-handoff.test.ts');
     expect(spec).toContain('tests/orchestrator/core-reconciliation.test.ts');

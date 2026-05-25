@@ -33,6 +33,7 @@ const UI_EVIDENCE_TRACKED_PATH_PREFIX = 'output/playwright/';
 const UI_EVIDENCE_REFERENCE_PATTERN = /output\/playwright\/[^\s`"')\]}]+/g;
 const HYGIENE_REPO_ARTIFACT_TRACKED_FORBIDDEN = 'hygiene_repo_artifact_tracked_forbidden';
 const HYGIENE_REPO_ARTIFACT_UNEXPECTED_STATE = 'hygiene_repo_artifact_unexpected_state';
+const PROJECT_LAYOUT_IGNORE_POLICY_FAILED = 'project_layout_ignore_policy_failed';
 const FORBIDDEN_REPO_ARTIFACTS = [
   {
     name: 'Playwright output artifact',
@@ -258,6 +259,158 @@ function isTrackedRepoHygieneAllowed() {
 
 function normalizeGitPath(file) {
   return String(file || '').replace(/\\/g, '/').trim();
+}
+
+function stripInlineComment(line) {
+  const marker = line.indexOf(' #');
+  return marker === -1 ? line : line.slice(0, marker);
+}
+
+function normalizeIgnorePattern(pattern) {
+  let normalized = String(pattern || '').trim();
+  if (normalized.startsWith('/')) {
+    normalized = normalized.slice(1);
+  }
+  while (normalized.endsWith('/') && normalized.length > 1) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
+function classifyProjectLayoutIgnorePattern(pattern) {
+  const normalized = normalizeIgnorePattern(pattern);
+
+  if (normalized === '.symphony' || normalized === '.symphony/*' || normalized === '.symphony/**') {
+    return 'broad-symphony';
+  }
+
+  if (
+    normalized === '.symphony/system' ||
+    normalized === '.symphony/system/*' ||
+    normalized === '.symphony/system/**'
+  ) {
+    return 'narrow-system';
+  }
+
+  if (
+    normalized === '.symphony/workspaces' ||
+    normalized === '.symphony/workspaces/*' ||
+    normalized === '.symphony/workspaces/**' ||
+    normalized === '.symphony/log' ||
+    normalized === '.symphony/log/*' ||
+    normalized === '.symphony/log/**' ||
+    normalized === '.symphony/logs' ||
+    normalized === '.symphony/logs/*' ||
+    normalized === '.symphony/logs/**' ||
+    normalized === '.symphony/runtime.sqlite' ||
+    normalized === '.symphony/runtime.sqlite.bak-*' ||
+    normalized === '.symphony/runtime.sqlite-*' ||
+    normalized === '.symphony/state.db' ||
+    normalized === '.symphony/runtime-restart-failure.json' ||
+    normalized === '.symphony/stress-base' ||
+    normalized === '.symphony/stress-base/*' ||
+    normalized === '.symphony/stress-base/**'
+  ) {
+    return 'legacy-runtime';
+  }
+
+  return 'other';
+}
+
+function collectProjectLayoutIgnorePatterns(body) {
+  return body
+    .split(/\r?\n/)
+    .map((rawLine, index) => {
+      const trimmed = stripInlineComment(rawLine).trim();
+      if (trimmed.length === 0 || trimmed.startsWith('#')) {
+        return null;
+      }
+
+      const negated = trimmed.startsWith('!');
+      const pattern = negated ? trimmed.slice(1).trim() : trimmed;
+      return {
+        line: index + 1,
+        pattern,
+        normalized: normalizeIgnorePattern(pattern),
+        negated,
+        kind: classifyProjectLayoutIgnorePattern(pattern),
+        migrationException: /symphony-allow-broad-ignore:\s*migration-exception/.test(rawLine)
+      };
+    })
+    .filter(Boolean);
+}
+
+function emitProjectLayoutIgnorePolicyFailure(violations) {
+  process.stderr.write(`${PROJECT_LAYOUT_IGNORE_POLICY_FAILED}: root .gitignore violates Symphony project layout boundaries.\n`);
+  process.stderr.write('Violations:\n');
+  for (const violation of violations) {
+    process.stderr.write(`  - ${violation}\n`);
+  }
+  process.stderr.write(
+    'Remediation: replace broad .symphony/ ignores with .symphony/system/, keep targeted legacy runtime ignores, and leave .symphony/skills/ plus .symphony/prompts/ visible.\n'
+  );
+}
+
+function enforceProjectLayoutIgnorePolicy() {
+  const gitignorePath = path.join(process.cwd(), '.gitignore');
+  if (!fs.existsSync(gitignorePath)) {
+    emitProjectLayoutIgnorePolicyFailure(['.gitignore is missing; add .symphony/system/ for runtime-owned state.']);
+    process.exit(1);
+  }
+
+  const stat = fs.statSync(gitignorePath);
+  if (!stat.isFile()) {
+    emitProjectLayoutIgnorePolicyFailure(['.gitignore exists but is not a file.']);
+    process.exit(1);
+  }
+
+  const patterns = collectProjectLayoutIgnorePatterns(fs.readFileSync(gitignorePath, 'utf8'));
+  const activePatterns = patterns.filter((pattern) => !pattern.negated);
+  const violations = [];
+  const broadPatterns = activePatterns.filter((pattern) => pattern.kind === 'broad-symphony' && !pattern.migrationException);
+  const narrowSystemPatterns = activePatterns.filter((pattern) => pattern.kind === 'narrow-system');
+  const managedPatterns = activePatterns.filter((pattern) => pattern.kind === 'narrow-system' || pattern.kind === 'legacy-runtime');
+
+  for (const pattern of broadPatterns) {
+    violations.push(`.gitignore:${pattern.line}: broad ${pattern.pattern} hides reserved project-owned customization paths`);
+  }
+
+  if (narrowSystemPatterns.length === 0) {
+    violations.push('.gitignore: missing .symphony/system/ ignore for runtime-owned local state');
+  }
+
+  const managedCounts = new Map();
+  for (const pattern of managedPatterns) {
+    const key = `${pattern.kind}:${pattern.normalized}`;
+    const existing = managedCounts.get(key) || [];
+    existing.push(pattern.line);
+    managedCounts.set(key, existing);
+  }
+  for (const [key, lines] of managedCounts.entries()) {
+    if (lines.length > 1) {
+      violations.push(`.gitignore:${lines.join(',')}: duplicate managed Symphony ignore entry ${key.split(':').slice(1).join(':')}`);
+    }
+  }
+
+  const reservedProjectOwnedPatterns = activePatterns.filter(
+    (pattern) =>
+      pattern.normalized === '.symphony/skills' ||
+      pattern.normalized === '.symphony/skills/*' ||
+      pattern.normalized === '.symphony/skills/**' ||
+      pattern.normalized === '.symphony/prompts' ||
+      pattern.normalized === '.symphony/prompts/*' ||
+      pattern.normalized === '.symphony/prompts/**'
+  );
+  for (const pattern of reservedProjectOwnedPatterns) {
+    violations.push(`.gitignore:${pattern.line}: reserved project-owned path ${pattern.pattern} must remain visible to git`);
+  }
+
+  if (violations.length > 0) {
+    emitProjectLayoutIgnorePolicyFailure(violations);
+    process.exit(1);
+  }
+
+  process.stdout.write('Project layout ignore policy passed.\n');
 }
 
 function forbiddenArtifactForPath(file) {
@@ -605,5 +758,6 @@ if (runUpstreamParity) {
 }
 
 enforceCanonicalReasonLiterals();
+enforceProjectLayoutIgnorePolicy();
 enforceUiEvidenceGate();
 process.stdout.write('Meta checks passed.\n');

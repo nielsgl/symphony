@@ -26,11 +26,12 @@ Conflict rules:
   lifecycle semantics documented here.
 
 This extension defines workflow-config metadata and runtime semantics for
-role-aware handoff states, fresh-dispatch states, and local guided runtime
-update policy. The v1 reference implementation covers typed config resolution,
-validation, local-worker state-refresh handling, orchestrator retry/dispatch
-behavior, terminal cleanup separation, and explicit runtime-update GitHub
-eligibility decisions.
+role-aware handoff states, fresh-dispatch states, local guided runtime update
+policy, and Symphony-local project layout boundaries. The v1 reference
+implementation covers typed config resolution, validation, local-worker
+state-refresh handling, orchestrator retry/dispatch behavior, terminal cleanup
+separation, explicit runtime-update GitHub eligibility decisions, and the
+ignored-runtime-state boundary for project-owned customization paths.
 
 ## 2. Domain Model Extensions
 
@@ -183,7 +184,29 @@ Lifecycle semantics:
   from runtime bootstrap, not an unconfigured internal default or direct
   construction-only test seam.
 
-## 4. Invariants
+## 4. Project Layout Boundary
+
+The root `WORKFLOW.md` remains the committed project contract for local
+Symphony execution. Runtime-owned local state belongs under `.symphony/system/`
+and must be ignored by the repository root `.gitignore`.
+
+During migration, the repository may also keep targeted legacy runtime ignores
+for existing local paths such as `.symphony/workspaces/`, `.symphony/log/`,
+`.symphony/logs/`, `.symphony/runtime.sqlite`,
+`.symphony/runtime.sqlite.bak-*`, `.symphony/runtime.sqlite-*`,
+`.symphony/state.db`, `.symphony/runtime-restart-failure.json`, and
+`.symphony/stress-base/`. These entries are compatibility guards only; new
+runtime state should use `.symphony/system/`.
+
+The repository must not use a broad `.symphony/`, `.symphony/*`, or
+`.symphony/**` ignore rule for normal operation. Broad ignores hide future
+project-owned customization and make those files unreviewable.
+
+`.symphony/skills/` and `.symphony/prompts/` are reserved project-owned
+customization paths. They are intentionally visible to git and intentionally
+not loaded by the runtime in this extension.
+
+## 5. Invariants
 
 Implementations must enforce the following invariants for the typed effective
 workflow config:
@@ -204,10 +227,17 @@ workflow config:
 9. Omitted `runtime_update.github_eligibility.mode` resolves to `required`.
 10. `runtime_update.github_eligibility.mode` must be one of `required`,
     `allow_absent_checks`, or `trust_raw_git`.
+11. The root `.gitignore` must include `.symphony/system/`.
+12. The root `.gitignore` must not include broad `.symphony/`, `.symphony/*`,
+    or `.symphony/**` patterns unless an explicit migration exception is
+    attached to that ignore entry.
+13. `.symphony/skills/` and `.symphony/prompts/` must remain visible to git
+    until a future project-owned customization implementation changes that
+    contract deliberately.
 
 These invariants are config-contract requirements and runtime preconditions.
 
-## 5. Dispatch and Reconciliation Implications
+## 6. Dispatch and Reconciliation Implications
 
 The base `SPEC.md` candidate-selection model remains authoritative:
 
@@ -233,7 +263,7 @@ This extension does not make `Agent Review`, `Human Review`, or any other
 state active by default. Workflows opt into those states by listing them in
 `tracker.active_states` when runtime dispatch should consider them.
 
-### 5.1 Local Worker State-Refresh Order
+### 6.1 Local Worker State-Refresh Order
 
 After each completed Codex turn, the local worker must refresh the issue state
 and apply the first matching rule in this order:
@@ -257,7 +287,7 @@ handoff states must stop the current role before same-thread continuation, and
 fresh-dispatch routing is only meaningful when a fresh-dispatch role moves the
 issue onward.
 
-### 5.2 Orchestrator Dispatch and Retry Semantics
+### 6.2 Orchestrator Dispatch and Retry Semantics
 
 Candidate selection remains `tracker.active_states` plus existing eligibility
 checks. For a configured fresh-dispatch state:
@@ -273,7 +303,7 @@ checks. For a configured fresh-dispatch state:
   rescheduled retry must retain the fresh boundary by keeping inherited
   context cleared.
 
-### 5.3 Reconciliation and Cleanup Separation
+### 6.3 Reconciliation and Cleanup Separation
 
 Runtime reconciliation keeps the base cleanup contract:
 
@@ -286,7 +316,7 @@ Runtime reconciliation keeps the base cleanup contract:
 Handoff and fresh dispatch therefore preserve review evidence and workspaces.
 Only terminal transitions may invoke terminal cleanup.
 
-## 6. Failure Behavior
+## 7. Failure Behavior
 
 Invalid extension config must fail before runtime use with typed workflow config
 errors.
@@ -306,7 +336,7 @@ Required error behavior:
 Implementations should include the invalid field name and offending state value
 in the validation message when one offending value can be identified.
 
-## 7. Compatibility Boundaries
+## 8. Compatibility Boundaries
 
 Existing workflows that omit both extension fields must resolve exactly as they
 did before this extension:
@@ -320,7 +350,7 @@ did before this extension:
 This extension is additive. It must not require workflow authors to configure
 handoff states unless their workflow needs role-aware handoff behavior.
 
-## 8. Implemented Lifecycle Contract
+## 9. Implemented Lifecycle Contract
 
 The bundled `WORKFLOW.md` uses the following v1 lifecycle:
 
@@ -337,7 +367,7 @@ The bundled `WORKFLOW.md` uses the following v1 lifecycle:
   follows the workflow land loop.
 - `Done`, `Closed`, `Canceled`, and `Duplicate` are terminal cleanup states.
 
-## 9. Implementation and Test Evidence
+## 10. Implementation and Test Evidence
 
 The v1 reference implementation evidence is:
 
@@ -370,7 +400,7 @@ Deferred or out-of-scope items:
 - This extension does not make `Human Review` active in the bundled workflow;
   it is a human/product review holding state.
 
-## 10. Example
+## 11. Example
 
 Example workflow shape:
 
@@ -403,7 +433,7 @@ Interpretation:
 - If the two extension fields are omitted, both resolve to `[]` and existing
   workflow behavior is preserved.
 
-## 11. Dynamic Tool Extension Boundary
+## 12. Dynamic Tool Extension Boundary
 
 Symphony's app-server DynamicTool support is intentionally limited to the
 `linear_graphql` extension. This is a local extension boundary, not a general
@@ -445,7 +475,7 @@ Equivalent unsupported-tool failure payload:
 }
 ```
 
-## 12. Unsupported Safety-Sensitive Server Requests
+## 13. Unsupported Safety-Sensitive Server Requests
 
 Symphony handles Codex app-server request methods through an explicit
 allowlist. Command execution and file-change approval requests may be answered
@@ -470,7 +500,7 @@ Conformance extension:
 - Unsupported safety-sensitive requests stop as operator input required unless
   an explicit supported policy exists.
 
-## 13. Project Execution History Persistence Schema
+## 14. Project Execution History Persistence Schema
 
 Project Execution History uses an explicit local SQLite schema named
 `project_execution_history`. The durable schema state lives in
@@ -500,7 +530,7 @@ Migration requirements:
   failing migration row records the redacted error. Persistence health must
   surface this degraded state instead of presenting partial history as complete.
 
-## 14. Project Execution History Write And Flush Contract
+## 15. Project Execution History Write And Flush Contract
 
 Runtime history writes are synchronous SQLite writes on the persistence store
 path. A write is considered flushed only after its store call resolves; queued
@@ -553,7 +583,7 @@ Hot-path constraints:
 - Restart recovery reads the durable SQLite tables. Live memory can enrich the
   current process view, but it is not proof of persisted ticket history.
 
-## 15. Project History Consumer Summary
+## 16. Project History Consumer Summary
 
 The Project History Consumer Summary is a compact read-only projection derived
 from Project Execution History ticket timelines. It exists so review automation
