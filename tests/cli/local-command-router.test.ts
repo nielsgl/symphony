@@ -144,6 +144,7 @@ async function createDoctorRepo(): Promise<{ repoRoot: string; binDir: string; s
 async function createDoctorProject(workflowContent = VALID_WORKFLOW): Promise<string> {
   const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-doctor-project-')));
   await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), workflowContent, 'utf8');
+  await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/system/\n', 'utf8');
   return projectRoot;
 }
 
@@ -307,7 +308,106 @@ describe('local symphony command router', () => {
       }
     });
     expect(payload.checks.some((check: { id: string; reason: string }) => check.id === 'setup.consent' && check.reason === 'setup_consent_missing')).toBe(true);
+    expect(payload.layout).toMatchObject({
+      workflow: { path: 'WORKFLOW.md', exists: true, canonical: true },
+      runtimeStateRoot: { path: '.symphony/system', owner: 'runtime-state' },
+      ignoreAnalysis: { status: 'narrow-system', hasNarrowSystemIgnore: true }
+    });
     expect(harness.stderr).toBe('');
+  });
+
+  it('reports layout checks in doctor human output', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/\n', 'utf8');
+    await fs.mkdir(path.join(projectRoot, '.symphony', 'workspaces'), { recursive: true });
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor'], deps: harness.deps });
+
+    expect(exitCode).toBe(2);
+    expect(harness.stdout).toContain('Root WORKFLOW.md is canonical');
+    expect(harness.stdout).toContain('.symphony/system runtime root is reserved');
+    expect(harness.stdout).toContain('.gitignore covers runtime state root');
+    expect(harness.stdout).toContain('Broad .symphony/ ignores are not hiding project customization');
+    expect(harness.stdout).toContain('Reserved customization paths remain project-owned');
+    expect(harness.stdout).toContain('Legacy runtime paths are absent');
+    expect(harness.stdout).toContain('broad .symphony/ ignore may hide future project-owned customization');
+    expect(harness.stdout).toContain('Found 1 legacy runtime state path');
+    expect(harness.stdout).toContain('doctor will not remove broad ignores');
+    expect(harness.stdout).toContain('Migrate runtime state to .symphony/system/ manually');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('emits stable JSON layout findings and warning-only CI exit behavior', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const setupHarness = createHarness({ repoRoot });
+    setupHarness.deps.cwd = projectRoot;
+    setupHarness.deps.env = { PATH: binDir };
+    expect(await runCommandRouter({ argv: ['setup', '--yes'], deps: setupHarness.deps })).toBe(0);
+    await fs.rm(path.join(projectRoot, '.gitignore'));
+
+    const doctorHarness = createHarness({ repoRoot });
+    doctorHarness.deps.cwd = projectRoot;
+    doctorHarness.deps.env = { PATH: binDir };
+    doctorHarness.deps.setupConsentStore = setupHarness.deps.setupConsentStore;
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json', '--ci'], deps: doctorHarness.deps });
+    const payload = JSON.parse(doctorHarness.stdout);
+
+    expect(exitCode).toBe(1);
+    expect(payload.status).toBe('warning');
+    expect(payload.reason).toBe('warnings_present');
+    expect(payload.layout.ignoreAnalysis).toMatchObject({
+      exists: false,
+      status: 'missing',
+      hasNarrowSystemIgnore: false
+    });
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'layout.gitignore_system',
+          status: 'warning',
+          reason: 'system_ignore_missing'
+        })
+      ])
+    );
+    expect(doctorHarness.stderr).toBe('');
+  });
+
+  it('treats invalid layout paths as CI blockers', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const setupHarness = createHarness({ repoRoot });
+    setupHarness.deps.cwd = projectRoot;
+    setupHarness.deps.env = { PATH: binDir };
+    expect(await runCommandRouter({ argv: ['setup', '--yes'], deps: setupHarness.deps })).toBe(0);
+    await fs.writeFile(path.join(projectRoot, '.symphony'), 'not-a-directory\n', 'utf8');
+
+    const doctorHarness = createHarness({ repoRoot });
+    doctorHarness.deps.cwd = projectRoot;
+    doctorHarness.deps.env = { PATH: binDir };
+    doctorHarness.deps.setupConsentStore = setupHarness.deps.setupConsentStore;
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json', '--ci'], deps: doctorHarness.deps });
+    const payload = JSON.parse(doctorHarness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(payload.status).toBe('failure');
+    expect(payload.reason).toBe('blockers_present');
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'layout.warning.invalid_layout_path',
+          status: 'failure',
+          reason: 'invalid_layout_path'
+        })
+      ])
+    );
+    expect(doctorHarness.stderr).toBe('');
   });
 
   it('validates doctor workflow config with values loaded from the resolved project env file', async () => {
@@ -487,6 +587,47 @@ describe('local symphony command router', () => {
     expect(harness.dashboardCalls).toEqual([]);
   });
 
+  it('doctor --fix --yes can append the runtime-state gitignore entry without removing broad ignores', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/\n', 'utf8');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--fix', '--yes', '--json'], deps: harness.deps });
+    const payload = JSON.parse(harness.stdout);
+    const gitignore = await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8');
+
+    expect(exitCode).toBe(1);
+    expect(gitignore).toBe('.symphony/\n.symphony/system/\n');
+    expect(payload.fixes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'layout.gitignore-system',
+          status: 'applied'
+        }),
+        expect.objectContaining({
+          id: 'setup-consent',
+          status: 'applied'
+        })
+      ])
+    );
+    expect(payload.layout.ignoreAnalysis).toMatchObject({
+      hasBroadSymphonyIgnore: true,
+      hasNarrowSystemIgnore: true
+    });
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'layout.broad_symphony_ignore',
+          status: 'warning'
+        })
+      ])
+    );
+    expect(harness.stderr).toBe('');
+  });
+
   it('refuses doctor --fix setup consent when local state is inside the project checkout', async () => {
     const { repoRoot, binDir } = await createDoctorRepo();
     const projectRoot = await createDoctorProject();
@@ -571,6 +712,7 @@ describe('local symphony command router', () => {
   it('records explicit setup consent in user-local state for the resolved workflow identity', async () => {
     const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-setup-')));
     await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/system/\n', 'utf8');
     const harness = createHarness();
     harness.deps.cwd = projectRoot;
 
@@ -580,6 +722,9 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('Symphony setup high-trust consent:');
     expect(harness.stdout).toContain(`project root: ${projectRoot} (project)`);
     expect(harness.stdout).toContain('required posture: high-trust');
+    expect(harness.stdout).toContain('Project layout:');
+    expect(harness.stdout).toContain('runtime state root: .symphony/system/');
+    expect(harness.stdout).toContain('gitignore: narrow-system');
     expect(harness.stdout).toContain('Setup consent recorded for identity');
     expect(harness.stderr).toBe('');
     expect(harness.consent.records()).toHaveLength(1);
@@ -589,6 +734,41 @@ describe('local symphony command router', () => {
     expect(record.evidence.project_root_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(record.evidence.workflow_path_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(record)).not.toContain('workflow\\n');
+  });
+
+  it('setup --yes safely appends a missing runtime-state gitignore entry', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-setup-layout-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), 'node_modules/\n.symphony/\n', 'utf8');
+    await fs.mkdir(path.join(projectRoot, '.symphony', 'workspaces'), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, '.symphony', 'runtime.sqlite'), 'legacy', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps });
+    const gitignore = await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8');
+
+    expect(exitCode).toBe(0);
+    expect(gitignore).toBe('node_modules/\n.symphony/\n.symphony/system/\n');
+    expect(harness.stdout).toContain('[applied] layout.gitignore-system');
+    expect(harness.stdout).toContain('warning: A broad .symphony/ ignore hides future project-owned customization paths.');
+    expect(await fs.readFile(path.join(projectRoot, '.symphony', 'runtime.sqlite'), 'utf8')).toBe('legacy');
+    await expect(fs.stat(path.join(projectRoot, '.symphony', 'workspaces'))).resolves.toBeTruthy();
+  });
+
+  it('setup --yes avoids duplicate runtime-state gitignore entries', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-setup-layout-dupe-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/system/\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps });
+    const gitignore = await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8');
+
+    expect(exitCode).toBe(0);
+    expect(gitignore).toBe('.symphony/system/\n');
+    expect(harness.stdout).not.toContain('layout.gitignore-system');
   });
 
   it('fails setup safely when explicit consent is not available', async () => {
