@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import net from 'node:net';
 import { EventEmitter } from 'node:events';
 
 import { describe, expect, it } from 'vitest';
@@ -9,9 +10,18 @@ import {
   bindDashboardSupervisorSignalForwarding,
   runCommandRouter,
   type DashboardLaunchContext,
+  type LinkLocalRunOptions,
   type DashboardSupervisorSignal
 } from '../../src/runtime/command-router';
-import type { SetupConsentStore, SetupConsentStorePayload, WorkflowPosture } from '../../src/runtime/setup-consent';
+import { resolveLocalCommand } from '../../src/runtime/local-command-resolver';
+import {
+  buildSetupConsentRecord,
+  createFileSetupConsentStore,
+  persistSetupConsent,
+  type SetupConsentStore,
+  type SetupConsentStorePayload,
+  type WorkflowPosture
+} from '../../src/runtime/setup-consent';
 
 function createMemoryConsentStore(storePath = path.join(os.tmpdir(), 'symphony-user-state', 'setup-consent.json')) {
   let payload: SetupConsentStorePayload = { version: 1, records: [] };
@@ -36,6 +46,19 @@ const HIGH_TRUST_POSTURE: WorkflowPosture = {
     turn_sandbox_policy: 'danger-full-access'
   }
 };
+
+const VALID_WORKFLOW = ['---', 'tracker:', '  kind: memory', 'codex:', '  command: codex', '---', 'workflow'].join('\n');
+const ENV_BACKED_LINEAR_WORKFLOW = [
+  '---',
+  'tracker:',
+  '  kind: linear',
+  '  api_key: $DOCTOR_ONLY_LINEAR_TOKEN',
+  '  project_slug: DEMO',
+  'codex:',
+  '  command: codex',
+  '---',
+  'workflow'
+].join('\n');
 
 function createHarness(overrides: { packageVersion?: string; repoRoot?: string } = {}) {
   let stdout = '';
@@ -91,6 +114,52 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       env: {}
     }
   };
+}
+
+async function createDoctorRepo(): Promise<{ repoRoot: string; binDir: string; shimPath: string }> {
+  const repoRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-doctor-repo-')));
+  await fs.mkdir(path.join(repoRoot, 'scripts'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'dist', 'src', 'runtime'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, 'scripts', 'symphony.js'), '#!/usr/bin/env node\n', 'utf8');
+  await fs.writeFile(path.join(repoRoot, 'scripts', 'start-dashboard-supervisor.js'), '#!/usr/bin/env node\n', 'utf8');
+  await fs.writeFile(path.join(repoRoot, 'dist', 'src', 'runtime', 'command-router.js'), 'module.exports = {};\n', 'utf8');
+  const binDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-doctor-bin-')));
+  const shimPath = path.join(binDir, 'symphony');
+  await fs.writeFile(
+    shimPath,
+    [
+      '#!/usr/bin/env bash',
+      '# symphony-local-shim',
+      '# symphony-shim-version: 1',
+      `# symphony-repo-root: ${repoRoot}`,
+      `# symphony-entrypoint: ${path.join(repoRoot, 'scripts', 'symphony.js')}`,
+      'exit 0',
+      ''
+    ].join('\n'),
+    { encoding: 'utf8', mode: 0o755 }
+  );
+  return { repoRoot, binDir, shimPath };
+}
+
+async function createDoctorProject(workflowContent = VALID_WORKFLOW): Promise<string> {
+  const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-doctor-project-')));
+  await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), workflowContent, 'utf8');
+  return projectRoot;
+}
+
+function listenOnLocalhost(port = 0): Promise<{ server: net.Server; port: number }> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('expected TCP address'));
+        return;
+      }
+      resolve({ server, port: address.port });
+    });
+  });
 }
 
 describe('local symphony command router', () => {
@@ -187,35 +256,315 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toBe('');
   });
 
-  it('fails recognized but not-yet-implemented commands', async () => {
-    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-reserved-')));
-    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
-    const harness = createHarness();
+  it('reports healthy local doctor readiness with a linked shim and setup consent', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
     harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    expect(await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps })).toBe(0);
+    const exitCode = await runCommandRouter({ argv: ['doctor'], deps: harness.deps });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Symphony doctor: ok');
+    expect(harness.stdout).toContain(`project root: ${projectRoot}`);
+    expect(harness.stdout).toContain(`workflow: ${path.join(projectRoot, 'WORKFLOW.md')}`);
+    expect(harness.stdout).toContain(`env file: ${path.join(projectRoot, '.env')}`);
+    expect(harness.stdout).toContain('port: 0 (ephemeral)');
+    expect(harness.stdout).toContain('consent: setup');
+    expect(harness.stdout).not.toContain('SYMPHONY_TEST_VALUE');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('emits stable JSON doctor output and CI blocker exit behavior', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json', '--ci'], deps: harness.deps });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(payload).toMatchObject({
+      version: 1,
+      command: 'doctor',
+      status: 'failure',
+      reason: 'blockers_present',
+      exitCode: 2,
+      ci: true,
+      resolution: {
+        projectRoot,
+        workflowPath: path.join(projectRoot, 'WORKFLOW.md'),
+        envFilePath: path.join(projectRoot, '.env'),
+        host: '127.0.0.1',
+        port: 0,
+        ephemeralPort: true,
+        consent: 'missing'
+      }
+    });
+    expect(payload.checks.some((check: { id: string; reason: string }) => check.id === 'setup.consent' && check.reason === 'setup_consent_missing')).toBe(true);
+    expect(harness.stderr).toBe('');
+  });
+
+  it('validates doctor workflow config with values loaded from the resolved project env file', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject(ENV_BACKED_LINEAR_WORKFLOW);
+    await fs.writeFile(path.join(projectRoot, '.env'), 'DOCTOR_ONLY_LINEAR_TOKEN=secret-from-env-file\n', 'utf8');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json'], deps: harness.deps });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'workflow.effective_config',
+          status: 'ok',
+          reason: 'workflow_config_valid'
+        }),
+        expect.objectContaining({
+          id: 'setup.consent',
+          status: 'failure',
+          reason: 'setup_consent_missing'
+        })
+      ])
+    );
+    expect(JSON.stringify(payload)).not.toContain('secret-from-env-file');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('reports missing link and PATH issues with actionable remediation', async () => {
+    const projectRoot = await createDoctorProject();
+    const repoRoot = (await createDoctorRepo()).repoRoot;
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-empty-path-'))) };
 
     const exitCode = await runCommandRouter({ argv: ['doctor'], deps: harness.deps });
 
-    expect(exitCode).toBe(1);
-    expect(harness.stderr).toContain("Command 'doctor' is recognized but not implemented in this PRD.");
-    expect(harness.stderr).toContain('symphony <command> [options]');
-    expect(harness.stdout).toBe('');
+    expect(exitCode).toBe(2);
+    expect(harness.stdout).toContain('`symphony` was not found on PATH');
+    expect(harness.stdout).toContain('npm run link:local');
+    expect(harness.stderr).toBe('');
   });
 
-  it('runs local context resolution for reserved setup and doctor flows', async () => {
-    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-doctor-')));
-    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
-    const harness = createHarness();
+  it('reports stale shim checkout targets and built CLI refresh guidance', async () => {
+    const { repoRoot, binDir, shimPath } = await createDoctorRepo();
+    const missingRoot = path.join(os.tmpdir(), `symphony-missing-${Date.now()}`);
+    await fs.writeFile(
+      shimPath,
+      [
+        '#!/usr/bin/env bash',
+        '# symphony-local-shim',
+        '# symphony-shim-version: 1',
+        `# symphony-repo-root: ${missingRoot}`,
+        `# symphony-entrypoint: ${path.join(missingRoot, 'scripts', 'symphony.js')}`,
+        'exit 0',
+        ''
+      ].join('\n'),
+      { encoding: 'utf8', mode: 0o755 }
+    );
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
     harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor'], deps: harness.deps });
+
+    expect(exitCode).toBe(2);
+    expect(harness.stdout).toContain('PATH shim points at');
+    expect(harness.stdout).toContain('expected');
+    expect(harness.stdout).toContain('Checkout does not exist');
+    expect(harness.stdout).toContain('Refresh the local link');
+  });
+
+  it('keeps doctor --fix --json output parseable when link-local remediation emits text', async () => {
+    const { repoRoot, binDir, shimPath } = await createDoctorRepo();
+    const missingRoot = path.join(os.tmpdir(), `symphony-missing-${Date.now()}`);
+    await fs.writeFile(
+      shimPath,
+      [
+        '#!/usr/bin/env bash',
+        '# symphony-local-shim',
+        '# symphony-shim-version: 1',
+        `# symphony-repo-root: ${missingRoot}`,
+        `# symphony-entrypoint: ${path.join(missingRoot, 'scripts', 'symphony.js')}`,
+        'exit 0',
+        ''
+      ].join('\n'),
+      { encoding: 'utf8', mode: 0o755 }
+    );
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+    harness.deps.runLinkLocal = async (argv: readonly string[], options?: LinkLocalRunOptions) => {
+      harness.linkLocalCalls.push([...argv]);
+      (options?.stdout ?? harness.deps.stdout)('Updated Symphony local shim\n');
+      return 0;
+    };
 
     const exitCode = await runCommandRouter({
-      argv: ['doctor', '--profile', 'unknown'],
+      argv: ['doctor', '--fix', '--yes', '--json'],
       deps: harness.deps
     });
+    const payload = JSON.parse(harness.stdout);
 
-    expect(exitCode).toBe(1);
-    expect(harness.stderr).toContain("Unknown Symphony profile 'unknown'");
-    expect(harness.stderr).not.toContain("Command 'doctor' is recognized but not implemented");
-    expect(harness.stdout).toBe('');
+    expect(exitCode).toBe(2);
+    expect(harness.stdout).not.toContain('Updated Symphony local shim');
+    expect(payload.fixes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'link-local',
+          status: 'applied'
+        })
+      ])
+    );
+    expect(harness.linkLocalCalls).toEqual([[]]);
+    expect(harness.stderr).toBe('');
+  });
+
+  it('reports missing and invalid workflows through the local resolver and config validator', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const cwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-no-workflow-')));
+    const missingHarness = createHarness({ repoRoot });
+    missingHarness.deps.cwd = cwd;
+    missingHarness.deps.env = { PATH: binDir };
+
+    expect(await runCommandRouter({ argv: ['doctor'], deps: missingHarness.deps })).toBe(2);
+    expect(missingHarness.stdout).toContain('No WORKFLOW.md was found');
+
+    const invalidProject = await createDoctorProject(['---', 'tracker:', '  kind: linear', '---', 'workflow'].join('\n'));
+    const invalidHarness = createHarness({ repoRoot });
+    invalidHarness.deps.cwd = invalidProject;
+    invalidHarness.deps.env = { PATH: binDir };
+
+    expect(await runCommandRouter({ argv: ['doctor'], deps: invalidHarness.deps })).toBe(2);
+    expect(invalidHarness.stdout).toContain('tracker.api_key is required after env resolution');
+  });
+
+  it('reports fixed port unavailability before dashboard startup', async () => {
+    const { server, port } = await listenOnLocalhost();
+    try {
+      const { repoRoot, binDir } = await createDoctorRepo();
+      const projectRoot = await createDoctorProject();
+      const harness = createHarness({ repoRoot });
+      harness.deps.cwd = projectRoot;
+      harness.deps.env = { PATH: binDir };
+      expect(await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps })).toBe(0);
+
+      const exitCode = await runCommandRouter({ argv: ['doctor', '--port', String(port)], deps: harness.deps });
+
+      expect(exitCode).toBe(2);
+      expect(harness.stdout).toContain(`Dashboard cannot bind 127.0.0.1:${port}`);
+      expect(harness.stdout).toContain('Choose a different port');
+      expect(harness.dashboardCalls).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('keeps doctor --fix bounded to link/setup remediation', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--fix', '--yes'], deps: harness.deps });
+
+    expect(exitCode).toBe(0);
+    expect(harness.consent.records()).toHaveLength(1);
+    expect(harness.linkLocalCalls).toEqual([]);
+    expect(harness.stdout).toContain('[applied] setup-consent');
+    expect(harness.dashboardCalls).toEqual([]);
+  });
+
+  it('refuses doctor --fix setup consent when local state is inside the project checkout', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const projectConsentPath = path.join(projectRoot, '.symphony', 'setup-consent.json');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+    harness.deps.setupConsentStore = createFileSetupConsentStore(projectConsentPath);
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--fix', '--yes', '--json'], deps: harness.deps });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(payload.status).toBe('failure');
+    expect(payload.reason).toBe('blockers_present');
+    expect(payload.resolution.consent).toBe('missing');
+    expect(payload.fixes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'setup-consent',
+          status: 'failed',
+          details: { storeLocation: 'project_checkout' }
+        })
+      ])
+    );
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'setup.consent',
+          status: 'failure',
+          reason: 'setup_consent_missing',
+          remediation: expect.stringContaining('outside the project checkout')
+        })
+      ])
+    );
+    await expect(fs.access(projectConsentPath)).rejects.toThrow();
+    expect(harness.stderr).toBe('');
+    expect(harness.dashboardCalls).toEqual([]);
+  });
+
+  it('ignores existing setup consent when local state is inside the project checkout', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const projectConsentPath = path.join(projectRoot, '.symphony', 'setup-consent.json');
+    const userConsentPath = path.join(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-user-state-'))), 'setup-consent.json');
+    const setupHarness = createHarness({ repoRoot });
+    setupHarness.deps.cwd = projectRoot;
+    setupHarness.deps.env = { PATH: binDir };
+    setupHarness.deps.setupConsentStore = createFileSetupConsentStore(userConsentPath);
+
+    const setupExitCode = await runCommandRouter({ argv: ['setup', '--yes'], deps: setupHarness.deps });
+    await fs.mkdir(path.dirname(projectConsentPath), { recursive: true });
+    await fs.copyFile(userConsentPath, projectConsentPath);
+
+    const doctorHarness = createHarness({ repoRoot });
+    doctorHarness.deps.cwd = projectRoot;
+    doctorHarness.deps.env = { PATH: binDir };
+    doctorHarness.deps.setupConsentStore = createFileSetupConsentStore(projectConsentPath);
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json'], deps: doctorHarness.deps });
+    const payload = JSON.parse(doctorHarness.stdout);
+
+    expect(setupExitCode).toBe(0);
+    expect(exitCode).toBe(2);
+    expect(payload.status).toBe('failure');
+    expect(payload.reason).toBe('blockers_present');
+    expect(payload.resolution.consent).toBe('missing');
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'setup.consent',
+          status: 'failure',
+          reason: 'setup_consent_missing',
+          remediation: expect.stringContaining('outside the project checkout')
+        })
+      ])
+    );
+    expect(doctorHarness.stderr).toBe('');
+    expect(doctorHarness.dashboardCalls).toEqual([]);
   });
 
   it('records explicit setup consent in user-local state for the resolved workflow identity', async () => {
@@ -285,6 +634,40 @@ describe('local symphony command router', () => {
       'reason: workflow effective codex sandbox posture requires danger-full-access local execution'
     );
     expect(harness.stdout).toContain('consent: setup');
+  });
+
+  it('does not trust project-contained setup consent for dashboard startup', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-dashboard-project-state-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    const projectStore = createMemoryConsentStore(path.join(projectRoot, '.symphony', 'setup-consent.json'));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    harness.deps.setupConsentStore = projectStore.store;
+
+    const setupExit = await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps });
+    expect(setupExit).toBe(1);
+    const resolved = resolveLocalCommand({
+      command: 'dashboard',
+      argv: ['--port=0'],
+      cwd: projectRoot,
+      env: harness.deps.env,
+      symphonyCheckoutRoot: harness.deps.repoRoot
+    });
+    persistSetupConsent(
+      projectStore.store,
+      buildSetupConsentRecord({
+        resolved,
+        posture: HIGH_TRUST_POSTURE,
+        approvedAt: '2026-05-24T20:00:00.000Z'
+      })
+    );
+
+    const exitCode = await runCommandRouter({ argv: ['dashboard', '--port=0'], deps: harness.deps });
+
+    expect(exitCode).toBe(27);
+    expect(projectStore.records()).toHaveLength(1);
+    expect(harness.dashboardCalls.at(-1)).not.toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
+    expect(harness.stdout).toContain('consent: missing');
   });
 
   it('does not treat workflow declarations as setup consent authority', async () => {

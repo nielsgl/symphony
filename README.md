@@ -107,6 +107,34 @@ or
 SYMPHONY_PORT=5050 npm run start:dashboard -- --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
+### Local Adoption Doctor
+
+Run the local doctor before starting a linked dashboard from a project checkout:
+
+```bash
+symphony doctor
+symphony doctor --json
+symphony doctor --ci
+```
+
+`symphony doctor` checks the PATH-linked `symphony` shim, the referenced
+checkout and built CLI entrypoint, local workflow resolution, effective workflow
+configuration, the `.env` path that would be loaded, host/port readiness,
+high-trust setup consent, and dashboard supervisor prerequisites. It reports
+paths and status only; it does not print `.env` values or consent-store
+contents.
+
+Exit codes are stable for automation:
+
+- `0`: clean, no findings.
+- `1`: warning-only findings.
+- `2`: blocker findings.
+
+Use `--fix` for bounded local-adoption remediation. It can invoke local link
+refresh for link-related findings and can record setup consent only when paired
+with explicit approval (`--fix --yes`). It does not silently change project
+runtime policy.
+
 ### Project Wrapper (Recommended for Multi-Project)
 
 Use the wrapper to run Symphony against another repository's `WORKFLOW.md`

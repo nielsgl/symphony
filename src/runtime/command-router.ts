@@ -7,6 +7,8 @@ import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local
 import { LocalCommandResolutionError, resolveLocalCommand } from './local-command-resolver';
 import { GUARDRAIL_ACK_FLAG } from './cli';
 import { runLocalLinkCommand } from './local-link';
+import { runLocalDoctor } from './local-doctor';
+import { isWithinPath } from './path-containment';
 import {
   buildSetupConsentRecord,
   createFileSetupConsentStore,
@@ -26,11 +28,16 @@ export interface DashboardLaunchContext {
   repoRoot: string;
 }
 
+export interface LinkLocalRunOptions {
+  stdout?: (text: string) => void;
+  stderr?: (text: string) => void;
+}
+
 export interface CommandRouterDependencies {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   runDashboard: (argv: readonly string[], context: DashboardLaunchContext) => Promise<number>;
-  runLinkLocal: (argv: readonly string[]) => Promise<number>;
+  runLinkLocal: (argv: readonly string[], options?: LinkLocalRunOptions) => Promise<number>;
   resolveLocalCommand: (options: ResolveLocalCommandOptions) => LocalCommandResolution;
   resolveWorkflowPosture: (workflowPath: string, env?: NodeJS.ProcessEnv) => WorkflowPosture;
   setupConsentStore: SetupConsentStore;
@@ -66,8 +73,6 @@ export interface DashboardSupervisorSignalBinding {
 }
 
 const SUPPORTED_COMMANDS = ['dashboard', 'doctor', 'setup', 'profile', 'init', 'link-local'] as const;
-
-const NOT_IMPLEMENTED_COMMANDS = new Set(['doctor', 'setup']);
 
 function defaultRepoRoot(): string {
   let current = __dirname;
@@ -193,7 +198,15 @@ function defaultDependencies(): CommandRouterDependencies {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
     runDashboard: (argv, context) => runDashboardSupervisor(argv, context),
-    runLinkLocal: (argv) => runLocalLinkCommand({ argv, deps: { repoRoot } }),
+    runLinkLocal: (argv, linkOptions) =>
+      runLocalLinkCommand({
+        argv,
+        deps: {
+          repoRoot,
+          stdout: linkOptions?.stdout,
+          stderr: linkOptions?.stderr
+        }
+      }),
     resolveLocalCommand,
     resolveWorkflowPosture,
     setupConsentStore: createFileSetupConsentStore(),
@@ -240,7 +253,7 @@ function renderHelp(): string {
     '',
     'Commands:',
     '  dashboard       Start the local Symphony dashboard using the existing runner',
-    '  doctor          Reserved for local adoption readiness checks',
+    '  doctor          Run local command and dashboard adoption readiness checks',
     '  setup           Reserved for future local setup consent and configuration',
     '  profile         Inspect bounded local command profiles',
     '  init            Show init help; workflow materialization is not implemented in this PRD',
@@ -262,9 +275,21 @@ function renderSetupHelp(): string {
   ].join('\n');
 }
 
-function isWithinPath(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+function renderDoctorHelp(): string {
+  return [
+    'Symphony doctor',
+    '',
+    'Usage:',
+    '  symphony doctor [--json] [--ci] [--fix] [--yes] [resolver options]',
+    '',
+    'Checks local command linking, workflow resolution, setup consent, env path,',
+    'host/port readiness, and dashboard supervisor prerequisites.',
+    '',
+    'Exit codes:',
+    '  0  clean',
+    '  1  warning-only findings',
+    '  2  blocker findings'
+  ].join('\n');
 }
 
 function hasExplicitSetupConsentArg(argv: readonly string[]): boolean {
@@ -459,7 +484,8 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
     let dashboardArgv = resolved.dashboardArgv;
     const posture = deps.resolveWorkflowPosture(resolved.workflowPath, deps.env);
     let consentSource: SetupConsentSource = dashboardArgv.includes(GUARDRAIL_ACK_FLAG) ? 'flag' : 'missing';
-    if (consentSource === 'missing') {
+    const setupConsentStoreInProject = isWithinPath(resolved.currentProjectRoot, deps.setupConsentStore.path);
+    if (consentSource === 'missing' && !setupConsentStoreInProject) {
       const consent = findValidSetupConsent({ store: deps.setupConsentStore, resolved, posture });
       if (consent) {
         dashboardArgv = [...dashboardArgv, GUARDRAIL_ACK_FLAG];
@@ -493,33 +519,39 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
   }
 
   if (command === 'doctor') {
-    try {
-      deps.resolveLocalCommand({
-        command,
-        argv: rest,
+    if (rest.length === 1 && (rest[0] === '--help' || rest[0] === '-h')) {
+      deps.stdout(`${renderDoctorHelp()}\n`);
+      return 0;
+    }
+    const jsonOutput = rest.includes('--json');
+    const doctor = await runLocalDoctor({
+      argv: rest,
+      deps: {
         cwd: deps.cwd,
         env: deps.env,
-        symphonyCheckoutRoot: deps.repoRoot
-      });
-    } catch (error) {
-      const message =
-        error instanceof LocalCommandResolutionError || error instanceof Error ? error.message : String(error);
-      deps.stderr(`${message}\n`);
-      return 1;
+        repoRoot: deps.repoRoot,
+        resolveLocalCommand: deps.resolveLocalCommand,
+        resolveWorkflowPosture: deps.resolveWorkflowPosture,
+        setupConsentStore: deps.setupConsentStore,
+        runLinkLocal: (argv) =>
+          deps.runLinkLocal(
+            argv,
+            jsonOutput
+              ? {
+                  stdout: () => undefined,
+                  stderr: () => undefined
+                }
+              : undefined
+          ),
+        clock: deps.clock
+      }
+    });
+    if (jsonOutput) {
+      deps.stdout(`${JSON.stringify(doctor.result, null, 2)}\n`);
+    } else {
+      deps.stdout(doctor.human);
     }
-    return failUnsupported(
-      deps,
-      `Command '${command}' is recognized but not implemented in this PRD.`,
-      renderHelp()
-    );
-  }
-
-  if (NOT_IMPLEMENTED_COMMANDS.has(command)) {
-    return failUnsupported(
-      deps,
-      `Command '${command}' is recognized but not implemented in this PRD.`,
-      renderHelp()
-    );
+    return doctor.result.exitCode;
   }
 
   return failUnsupported(
