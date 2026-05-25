@@ -58,11 +58,20 @@ export interface DoctorFindingRemediation {
   guidance: string | null;
 }
 
+export type DoctorFindingSafeFixMutationScope = 'project_file' | 'user_local_state' | 'local_link';
+
+export interface DoctorFindingSafeFixMutation {
+  scope: DoctorFindingSafeFixMutationScope;
+  path: string;
+  operation: 'append_gitignore_entry' | 'record_setup_consent' | 'refresh_local_shim';
+}
+
 export interface DoctorFindingSafeFix {
   available: boolean;
   fixId: string | null;
   command: string | null;
   requiresYes: boolean;
+  mutates: DoctorFindingSafeFixMutation[];
 }
 
 export interface DoctorFinding {
@@ -196,6 +205,10 @@ interface ShimMetadata {
 
 const DOCTOR_FLAGS = new Set(['--json', '--ci', '--fix', '--yes', '--accept-high-trust-local-run']);
 
+function disabledSafeFix(): DoctorFindingSafeFix {
+  return { available: false, fixId: null, command: null, requiresYes: false, mutates: [] };
+}
+
 function parseDoctorArgs(argv: readonly string[]): DoctorArgs | { error: string } {
   const resolverArgv: string[] = [];
   let json = false;
@@ -276,13 +289,23 @@ function severityForStatus(status: DoctorCheckStatus): DoctorFindingSeverity {
   return 'pass';
 }
 
-function safeFixForFinding(check: Pick<DoctorFindingInput, 'id' | 'status'>): DoctorFindingSafeFix {
+function safeFixForFinding(
+  check: Pick<DoctorFindingInput, 'id' | 'status'>,
+  context: { projectRoot?: string; setupConsentStorePath?: string } = {}
+): DoctorFindingSafeFix {
   if (check.id.startsWith('executable.') || check.id.startsWith('shim_checkout.')) {
     return {
       available: check.status !== 'ok',
       fixId: 'link-local',
       command: 'symphony doctor --fix --yes',
-      requiresYes: true
+      requiresYes: true,
+      mutates: [
+        {
+          scope: 'local_link',
+          path: 'symphony link-local managed shim target',
+          operation: 'refresh_local_shim'
+        }
+      ]
     };
   }
   if (check.id === 'layout.gitignore_system') {
@@ -290,7 +313,14 @@ function safeFixForFinding(check: Pick<DoctorFindingInput, 'id' | 'status'>): Do
       available: check.status !== 'ok',
       fixId: 'layout.gitignore-system',
       command: 'symphony doctor --fix --yes',
-      requiresYes: true
+      requiresYes: true,
+      mutates: [
+        {
+          scope: 'project_file',
+          path: context.projectRoot ? path.join(context.projectRoot, '.gitignore') : '.gitignore',
+          operation: 'append_gitignore_entry'
+        }
+      ]
     };
   }
   if (check.id === 'setup.consent') {
@@ -298,10 +328,17 @@ function safeFixForFinding(check: Pick<DoctorFindingInput, 'id' | 'status'>): Do
       available: check.status !== 'ok',
       fixId: 'setup-consent',
       command: 'symphony doctor --fix --yes',
-      requiresYes: true
+      requiresYes: true,
+      mutates: [
+        {
+          scope: 'user_local_state',
+          path: context.setupConsentStorePath ?? 'user-local setup consent store',
+          operation: 'record_setup_consent'
+        }
+      ]
     };
   }
-  return { available: false, fixId: null, command: null, requiresYes: false };
+  return disabledSafeFix();
 }
 
 function sourceFromPathSource(source: LocalPathSource): DoctorFindingSource {
@@ -511,6 +548,10 @@ function addLayoutChecks(checks: DoctorFinding[], layout: ProjectLayoutInspectio
     remediation: layout.ignoreAnalysis.hasNarrowSystemIgnore
       ? undefined
       : 'Add .symphony/system/ to .gitignore; `symphony doctor --fix --yes` can append it safely.',
+    safeFix: safeFixForFinding(
+      { id: 'layout.gitignore_system', status: layout.ignoreAnalysis.hasNarrowSystemIgnore ? 'ok' : 'warning' },
+      { projectRoot: layout.projectRoot }
+    ),
     details: { ignoreAnalysis: layout.ignoreAnalysis }
   });
   addCheck(checks, {
@@ -1007,16 +1048,24 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
         (check.id.startsWith('executable.') || check.reason === 'build_missing' || check.reason === 'checkout_missing')
     )
   ) {
-    const exitCode = await deps.runLinkLocal([]);
-    addFix(fixes, {
-      id: 'link-local',
-      status: exitCode === 0 ? 'applied' : 'failed',
-      summary:
-        exitCode === 0
-          ? 'Invoked `symphony link-local` remediation. Rerun doctor to verify PATH and shim state.'
-          : `Link-local remediation failed with exit ${exitCode}.`,
-      details: { exitCode }
-    });
+    if (args.ci) {
+      addFix(fixes, {
+        id: 'link-local',
+        status: 'skipped',
+        summary: 'Link-local remediation was not run because `--ci` forbids doctor fix mutations.'
+      });
+    } else {
+      const exitCode = await deps.runLinkLocal([]);
+      addFix(fixes, {
+        id: 'link-local',
+        status: exitCode === 0 ? 'applied' : 'failed',
+        summary:
+          exitCode === 0
+            ? 'Invoked `symphony link-local` remediation. Rerun doctor to verify PATH and shim state.'
+            : `Link-local remediation failed with exit ${exitCode}.`,
+        details: { exitCode }
+      });
+    }
   }
 
   try {
@@ -1066,7 +1115,13 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
     });
 
     layout = inspectProjectLayout(resolved.currentProjectRoot);
-    if (args.fix && args.yes && !layout.ignoreAnalysis.hasNarrowSystemIgnore) {
+    if (args.fix && args.ci && !layout.ignoreAnalysis.hasNarrowSystemIgnore) {
+      addFix(fixes, {
+        id: 'layout.gitignore-system',
+        status: 'skipped',
+        summary: 'Runtime-state gitignore entry was not added because `--ci` forbids doctor fix mutations.'
+      });
+    } else if (args.fix && args.yes && !layout.ignoreAnalysis.hasNarrowSystemIgnore) {
       const fix = ensureSystemGitignoreEntry(resolved.currentProjectRoot);
       addFix(fixes, {
         id: 'layout.gitignore-system',
@@ -1109,7 +1164,13 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       const consent = findValidSetupConsent({ store: deps.setupConsentStore, resolved, posture });
       consentSource = consent ? 'setup' : 'missing';
     }
-    if (consentSource === 'missing' && args.fix && args.yes) {
+    if (consentSource === 'missing' && args.fix && args.ci) {
+      addFix(fixes, {
+        id: 'setup-consent',
+        status: 'skipped',
+        summary: 'Setup consent was not recorded because `--ci` forbids doctor fix mutations.'
+      });
+    } else if (consentSource === 'missing' && args.fix && args.yes) {
       if (setupConsentStoreInProject) {
         addFix(fixes, {
           id: 'setup-consent',
@@ -1154,6 +1215,10 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
             ? 'Choose a user-local Symphony state path outside the project checkout, then rerun `symphony setup --yes` or `symphony doctor --fix --yes`.'
             : 'Run `symphony setup --yes` for this project/workflow, or rerun doctor with `--fix --yes` to record explicit local consent.'
           : undefined,
+      safeFix: safeFixForFinding(
+        { id: 'setup.consent', status: consentSource === 'missing' ? 'failure' : 'ok' },
+        { setupConsentStorePath: deps.setupConsentStore.path }
+      ),
       details: { posture: posture.posture, reason: posture.reason, evidence: posture.evidence }
     });
     addCheck(checks, {
