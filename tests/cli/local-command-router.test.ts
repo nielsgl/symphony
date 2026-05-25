@@ -476,6 +476,47 @@ describe('local symphony command router', () => {
     expect(harness.dashboardCalls).toEqual([]);
   });
 
+  it('ignores existing setup consent when local state is inside the project checkout', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const projectConsentPath = path.join(projectRoot, '.symphony', 'setup-consent.json');
+    const userConsentPath = path.join(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-user-state-'))), 'setup-consent.json');
+    const setupHarness = createHarness({ repoRoot });
+    setupHarness.deps.cwd = projectRoot;
+    setupHarness.deps.env = { PATH: binDir };
+    setupHarness.deps.setupConsentStore = createFileSetupConsentStore(userConsentPath);
+
+    const setupExitCode = await runCommandRouter({ argv: ['setup', '--yes'], deps: setupHarness.deps });
+    await fs.mkdir(path.dirname(projectConsentPath), { recursive: true });
+    await fs.copyFile(userConsentPath, projectConsentPath);
+
+    const doctorHarness = createHarness({ repoRoot });
+    doctorHarness.deps.cwd = projectRoot;
+    doctorHarness.deps.env = { PATH: binDir };
+    doctorHarness.deps.setupConsentStore = createFileSetupConsentStore(projectConsentPath);
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json'], deps: doctorHarness.deps });
+    const payload = JSON.parse(doctorHarness.stdout);
+
+    expect(setupExitCode).toBe(0);
+    expect(exitCode).toBe(2);
+    expect(payload.status).toBe('failure');
+    expect(payload.reason).toBe('blockers_present');
+    expect(payload.resolution.consent).toBe('missing');
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'setup.consent',
+          status: 'failure',
+          reason: 'setup_consent_missing',
+          remediation: expect.stringContaining('outside the project checkout')
+        })
+      ])
+    );
+    expect(doctorHarness.stderr).toBe('');
+    expect(doctorHarness.dashboardCalls).toEqual([]);
+  });
+
   it('records explicit setup consent in user-local state for the resolved workflow identity', async () => {
     const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-setup-')));
     await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');

@@ -495,11 +495,11 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
     consentSource = args.resolverArgv.includes('--i-understand-that-this-will-be-running-without-the-usual-guardrails')
       ? 'flag'
       : 'missing';
-    if (consentSource === 'missing') {
+    const setupConsentStoreInProject = isWithinPath(resolved.currentProjectRoot, deps.setupConsentStore.path);
+    if (consentSource === 'missing' && !setupConsentStoreInProject) {
       const consent = findValidSetupConsent({ store: deps.setupConsentStore, resolved, posture });
       consentSource = consent ? 'setup' : 'missing';
     }
-    const setupConsentStoreInProject = isWithinPath(resolved.currentProjectRoot, deps.setupConsentStore.path);
     if (consentSource === 'missing' && args.fix && args.yes) {
       if (setupConsentStoreInProject) {
         fixes.push({
