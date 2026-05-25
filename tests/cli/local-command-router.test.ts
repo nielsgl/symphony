@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
 
@@ -22,6 +24,8 @@ import {
   type SetupConsentStorePayload,
   type WorkflowPosture
 } from '../../src/runtime/setup-consent';
+
+const execFileAsync = promisify(execFile);
 
 function createMemoryConsentStore(storePath = path.join(os.tmpdir(), 'symphony-user-state', 'setup-consent.json')) {
   let payload: SetupConsentStorePayload = { version: 1, records: [] };
@@ -280,9 +284,149 @@ describe('local symphony command router', () => {
 
     expect(exitCode).toBe(0);
     expect(harness.stdout).toContain('symphony init --help');
-    expect(harness.stdout).toContain('reserved for later workflow materialization work');
-    expect(harness.stdout).toContain('does not generate, copy, or overwrite workflows');
+    expect(harness.stdout).toContain('symphony init --dry-run --bundle memory-generic');
+    expect(harness.stdout).toContain('without writing files');
     expect(harness.stderr).toBe('');
+  });
+
+  it('renders memory generic init dry-run file plan without writing files', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-dry-run-')));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'memory-generic'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Symphony init dry-run file plan');
+    expect(harness.stdout).toContain('Selected packs: tracker:memory, workspace:none, toolchain:generic, workflow:solo-local');
+    expect(harness.stdout).toContain('Bundle provenance: memory-generic -> tracker:memory, workspace:none, toolchain:generic, workflow:solo-local');
+    expect(harness.stdout).toContain('Validation: ok');
+    expect(harness.stdout).toContain('Writes performed: no');
+    expect(harness.stdout).toContain('would_write: no');
+    expect(harness.stdout).toContain('WORKFLOW.md');
+    expect(harness.stdout).toContain('<!-- symphony-generated-profile: profile=solo-local; bundle=memory-generic; packs=tracker:memory,workspace:none,toolchain:generic,workflow:solo-local;');
+    expect(harness.stdout).not.toContain('workflow:symphony-internal');
+    await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
+    await expect(fs.access(path.join(projectRoot, '.symphony'))).rejects.toThrow();
+    expect(harness.stderr).toBe('');
+  });
+
+  it('plans init dry-run files at the Git work tree root from a nested cwd', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-git-root-')));
+    const nestedCwd = path.join(projectRoot, 'packages', 'app');
+    await fs.mkdir(nestedCwd, { recursive: true });
+    await execFileAsync('git', ['init'], { cwd: projectRoot });
+    const harness = createHarness();
+    harness.deps.cwd = nestedCwd;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'memory-generic'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain(`Project root: ${projectRoot}`);
+    expect(harness.stdout).toContain('1. WORKFLOW.md');
+    expect(harness.stdout).toContain(`- Project root: .`);
+    expect(harness.stdout).not.toContain(`Project root: ${nestedCwd}`);
+    expect(harness.stdout).not.toContain(`- Project root: ${nestedCwd}`);
+    await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
+    await expect(fs.access(path.join(nestedCwd, 'WORKFLOW.md'))).rejects.toThrow();
+    await expect(fs.access(path.join(projectRoot, '.symphony'))).rejects.toThrow();
+    expect(harness.stderr).toBe('');
+  });
+
+  it('renders stable init dry-run output for repeated runs', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-idempotent-')));
+    const first = createHarness();
+    first.deps.cwd = projectRoot;
+    const second = createHarness();
+    second.deps.cwd = projectRoot;
+
+    expect(
+      await runCommandRouter({
+        argv: ['init', '--dry-run', '--bundle', 'memory-generic'],
+        deps: first.deps
+      })
+    ).toBe(0);
+    expect(
+      await runCommandRouter({
+        argv: ['init', '--dry-run', '--bundle', 'memory-generic'],
+        deps: second.deps
+      })
+    ).toBe(0);
+
+    expect(second.stdout).toBe(first.stdout);
+  });
+
+  it('supports explicit team-review generic memory dry-run selections', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-team-')));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: [
+        'init',
+        '--dry-run',
+        '--tracker',
+        'memory',
+        '--workspace',
+        'none',
+        '--toolchain',
+        'generic',
+        '--workflow',
+        'team-review'
+      ],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('profile=team-review');
+    expect(harness.stdout).toContain('handoff_states: [\"Agent Review\"]');
+    expect(harness.stdout).toContain('fresh_dispatch_states: [\"Agent Review\"]');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('fails init dry-run when required profile selections are missing', async () => {
+    const harness = createHarness();
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--pack', 'tracker:memory'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain('Missing required workspace pack');
+    expect(harness.stderr).toContain('Missing required toolchain pack');
+    expect(harness.stderr).toContain('Missing required workflow pack');
+    expect(harness.stdout).toBe('');
+  });
+
+  it('refuses to generate protected symphony-internal init profiles', async () => {
+    const harness = createHarness();
+
+    const exitCode = await runCommandRouter({
+      argv: [
+        'init',
+        '--dry-run',
+        '--pack',
+        'tracker:memory',
+        '--pack',
+        'workspace:none',
+        '--pack',
+        'toolchain:generic',
+        '--pack',
+        'workflow:symphony-internal'
+      ],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain('Protected workflow bindings cannot be generated by init');
+    expect(harness.stdout).toBe('');
   });
 
   it('fails unknown commands with actionable help', async () => {
