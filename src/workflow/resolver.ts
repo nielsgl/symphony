@@ -508,8 +508,17 @@ export class ConfigResolver {
       persistence.db_path,
       this.env,
       this.homedir(),
-      workflowScopedPersistencePath
+      workflowScopedPersistencePath,
+      {
+        relativeBaseDir: workflowResolvedPath ? workflowDir : undefined
+      }
     );
+    const persistenceDbPathSource =
+      typeof persistence.db_path === 'string' &&
+      persistence.db_path.trim().length > 0 &&
+      persistenceDbPath.trim().length > 0
+        ? 'workflow'
+        : 'default';
     const defaultLoggingRoot = path.join(defaultSystemStateRoot, 'logs');
     const resolvedLoggingRootCandidate = resolvePathLikeValue(logging.root, this.env, this.homedir(), defaultLoggingRoot);
     const loggingRootSource =
@@ -643,6 +652,7 @@ export class ConfigResolver {
       persistence: {
         enabled: readBoolean(persistence.enabled, true),
         db_path: persistenceDbPath,
+        db_path_source: persistenceDbPathSource,
         retention_days: Math.max(1, readInt(persistence.retention_days, 14))
       },
       observability: {

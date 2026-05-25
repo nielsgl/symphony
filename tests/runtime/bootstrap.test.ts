@@ -53,6 +53,7 @@ async function makeWorkflowFile(options?: {
   loggingRoot?: string;
   omitWorkspaceRoot?: boolean;
   omitPersistencePath?: boolean;
+  persistenceDbPath?: string;
   pollingIntervalMs?: number;
   hooksTimeoutMs?: number;
   codexBlock?: string;
@@ -71,7 +72,7 @@ async function makeWorkflowFile(options?: {
 `;
   const persistencePathBlock = options?.omitPersistencePath
     ? ''
-    : `  db_path: ${JSON.stringify(path.join(dir, 'runtime.sqlite'))}
+    : `  db_path: ${JSON.stringify(options?.persistenceDbPath ?? path.join(dir, 'runtime.sqlite'))}
 `;
   const pollingIntervalMs = options?.pollingIntervalMs ?? 1000;
   const hooksTimeoutMs = options?.hooksTimeoutMs ?? 1000;
@@ -1323,6 +1324,47 @@ describe('createRuntimeEnvironment', () => {
         expect.objectContaining({ path: '.symphony/prompts', loaded_by_runtime: false })
       ])
     );
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('reports explicit workflow persistence overrides even when the path equals the default', async () => {
+    const workflowPath = await makeWorkflowFile({
+      omitWorkspaceRoot: true,
+      persistenceDbPath: '.symphony/system/runtime.sqlite',
+      includeServerPort: true,
+      serverPort: 0
+    });
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    await writeTestFile(path.join(workflowDir, '.gitignore'), '.symphony/system/\n');
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({ workflowPath, trackerAdapter: tracker, port: 0 });
+    runtimes.push(runtime);
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      persistence: { db_path: string | null };
+      project_layout: {
+        effective_persistence_path: { path: string; source: string; explicit_override_source: string | null };
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.persistence.db_path).toBe(path.join(workflowDir, '.symphony', 'system', 'runtime.sqlite'));
+    expect(payload.project_layout.effective_persistence_path).toMatchObject({
+      path: path.join(workflowDir, '.symphony', 'system', 'runtime.sqlite'),
+      source: 'explicit_override',
+      explicit_override_source: 'workflow'
+    });
   }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('reports broad and missing system ignore layout warnings without failing diagnostics', async () => {

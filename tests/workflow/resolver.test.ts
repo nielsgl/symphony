@@ -51,6 +51,7 @@ describe('ConfigResolver', () => {
       phase_stale_warn_ms: 45000
     });
     expect(config.persistence.db_path).toBe(path.normalize('/home/tester/.symphony/system/runtime.sqlite'));
+    expect(config.persistence.db_path_source).toBe('default');
     expect(config.logging.root).toBe(path.normalize('/home/tester/.symphony/system/logs'));
     expect(config.logging.root_source).toBe('default');
     expect(config.logging.max_bytes).toBe(10 * 1024 * 1024);
@@ -718,6 +719,7 @@ describe('ConfigResolver', () => {
     expect(config.codex.security_profile).toBe('balanced');
     expect(config.codex.approval_policy).toBe('on-request');
     expect(config.persistence.db_path).toBe(path.normalize('/home/tester/symphony/runtime.sqlite'));
+    expect(config.persistence.db_path_source).toBe('workflow');
     expect(config.persistence.retention_days).toBe(30);
   });
 
@@ -735,8 +737,54 @@ describe('ConfigResolver', () => {
     expect(config.workspace.root).toBe(path.normalize('/workspace/projects/todo-app/.symphony/system/workspaces'));
     expect(config.workspace.root_source).toBe('default');
     expect(config.persistence.db_path).toBe(path.normalize('/workspace/projects/todo-app/.symphony/system/runtime.sqlite'));
+    expect(config.persistence.db_path_source).toBe('default');
     expect(config.logging.root).toBe(path.normalize('/workspace/projects/todo-app/.symphony/system/logs'));
     expect(config.logging.root_source).toBe('default');
+  });
+
+  it('resolves explicit relative persistence path overrides from the workflow directory', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const config = resolver.resolve(
+      {
+        config: {
+          persistence: { db_path: '.symphony/system/runtime.sqlite' }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.persistence.db_path).toBe(path.normalize('/workspace/projects/todo-app/.symphony/system/runtime.sqlite'));
+    expect(config.persistence.db_path_source).toBe('workflow');
+  });
+
+  it('preserves explicit absolute and home-expanded persistence path overrides', () => {
+    const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
+
+    const absoluteConfig = resolver.resolve(
+      {
+        config: {
+          persistence: { db_path: '/srv/runtime.sqlite' }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+    const homeConfig = resolver.resolve(
+      {
+        config: {
+          persistence: { db_path: '~/runtime.sqlite' }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(absoluteConfig.persistence.db_path).toBe('/srv/runtime.sqlite');
+    expect(absoluteConfig.persistence.db_path_source).toBe('workflow');
+    expect(homeConfig.persistence.db_path).toBe(path.normalize('/home/tester/runtime.sqlite'));
+    expect(homeConfig.persistence.db_path_source).toBe('workflow');
   });
 
   it('preserves explicit workflow path overrides over system state defaults', () => {
@@ -767,6 +815,7 @@ describe('ConfigResolver', () => {
     expect(config.logging.root).toBe('/srv/logs');
     expect(config.logging.root_source).toBe('workflow');
     expect(config.persistence.db_path).toBe('/srv/runtime.sqlite');
+    expect(config.persistence.db_path_source).toBe('workflow');
   });
 
   it('resolves optional server.host with server.port', () => {
