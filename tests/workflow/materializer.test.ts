@@ -29,6 +29,8 @@ describe('workflow materializer', () => {
     });
     expect(plan.files[0].content).toContain('symphony-generated-profile');
     expect(plan.files[0].content).toContain('bundle_provenance=memory-generic->tracker:memory,workspace:none,toolchain:generic,workflow:solo-local');
+    expect(plan.files[0].content).toContain('- Project root: .');
+    expect(plan.files[0].content).not.toContain(`- Project root: ${root}`);
     expect(plan.validation).toMatchObject({ ok: true });
 
     const definition = new WorkflowLoader().parse(plan.files[0].content ?? '');

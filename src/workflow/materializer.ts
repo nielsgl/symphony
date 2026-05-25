@@ -181,7 +181,7 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '',
     '## Detected Project Facts',
     '',
-    `- Project root: ${options.projectFacts.root}`,
+    '- Project root: .',
     `- Package manager: ${packageManager}`,
     '',
     '## Operator Contract',

@@ -638,19 +638,34 @@ function parseInitSelections(argv: readonly string[]): { dryRun: boolean; select
 }
 
 function detectInitProjectFacts(cwd: string): { root: string; packageManager: string | null; existingWorkflowPath: string | null } {
-  const packageManager = fs.existsSync(path.join(cwd, 'package-lock.json'))
+  const root = findGitWorkTreeRoot(cwd) ?? fs.realpathSync(cwd);
+  const packageManager = fs.existsSync(path.join(root, 'package-lock.json'))
     ? 'npm'
-    : fs.existsSync(path.join(cwd, 'pnpm-lock.yaml'))
+    : fs.existsSync(path.join(root, 'pnpm-lock.yaml'))
       ? 'pnpm'
-      : fs.existsSync(path.join(cwd, 'yarn.lock'))
+      : fs.existsSync(path.join(root, 'yarn.lock'))
         ? 'yarn'
         : null;
-  const workflowPath = path.join(cwd, 'WORKFLOW.md');
+  const workflowPath = path.join(root, 'WORKFLOW.md');
   return {
-    root: cwd,
+    root,
     packageManager,
     existingWorkflowPath: fs.existsSync(workflowPath) ? workflowPath : null
   };
+}
+
+function findGitWorkTreeRoot(cwd: string): string | null {
+  let current = fs.realpathSync(cwd);
+  while (true) {
+    if (fs.existsSync(path.join(current, '.git'))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
 }
 
 function runInitCommand(argv: readonly string[], deps: CommandRouterDependencies): number {
