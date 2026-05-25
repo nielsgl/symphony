@@ -9,6 +9,7 @@ import { GUARDRAIL_ACK_FLAG } from './cli';
 import { runLocalLinkCommand } from './local-link';
 import { runLocalDoctor } from './local-doctor';
 import { isWithinPath } from './path-containment';
+import { ensureSystemGitignoreEntry, inspectProjectLayout, type ProjectLayoutInspection } from './project-layout-inspector';
 import {
   buildSetupConsentRecord,
   createFileSetupConsentStore,
@@ -300,7 +301,17 @@ function renderSetupSummary(params: {
   resolved: LocalCommandResolution;
   posture: WorkflowPosture;
   storePath: string;
+  layout: ProjectLayoutInspection;
 }): string {
+  const layoutWarnings =
+    params.layout.warnings.length === 0
+      ? ['  warnings: none']
+      : params.layout.warnings.map((warning) => `  warning: ${warning.message} next: ${warning.remediation}`);
+  const legacySummary =
+    params.layout.legacyRuntimePaths.length === 0
+      ? 'none'
+      : params.layout.legacyRuntimePaths.map((item) => item.path).join(', ');
+
   return [
     'Symphony setup high-trust consent:',
     `  project root: ${params.resolved.currentProjectRoot} (${params.resolved.sources.projectRoot})`,
@@ -309,6 +320,15 @@ function renderSetupSummary(params: {
     `  required posture: ${params.posture.posture}`,
     `  reason: ${params.posture.reason}`,
     `  consent store: ${params.storePath}`,
+    '',
+    'Project layout:',
+    `  status: ${params.layout.status}`,
+    `  workflow root: ${params.layout.workflow.exists ? 'present' : 'missing'} (${params.layout.workflow.path})`,
+    `  runtime state root: ${params.layout.runtimeStateRoot.path}/`,
+    `  gitignore: ${params.layout.ignoreAnalysis.status}`,
+    `  reserved customization: ${params.layout.reservedCustomizationPaths.map((item) => item.path).join(', ')}`,
+    `  legacy runtime paths: ${legacySummary}`,
+    ...layoutWarnings,
     '',
     'Consent is user-local and scoped to this exact project/workflow identity.',
     'WORKFLOW.md can explain the required posture, but it cannot grant consent.',
@@ -347,7 +367,8 @@ async function runSetupCommand(
   }
 
   const posture = deps.resolveWorkflowPosture(resolved.workflowPath, deps.env);
-  deps.stdout(renderSetupSummary({ resolved, posture, storePath: deps.setupConsentStore.path }));
+  let layout = inspectProjectLayout(resolved.currentProjectRoot);
+  deps.stdout(renderSetupSummary({ resolved, posture, storePath: deps.setupConsentStore.path, layout }));
 
   const approved =
     hasExplicitSetupConsentArg(argv) ||
@@ -355,6 +376,15 @@ async function runSetupCommand(
   if (!approved) {
     deps.stderr('Setup consent was not recorded because explicit approval was not provided.\n');
     return 1;
+  }
+
+  if (!layout.ignoreAnalysis.hasNarrowSystemIgnore) {
+    const fix = ensureSystemGitignoreEntry(resolved.currentProjectRoot);
+    deps.stdout(`[${fix.status}] layout.gitignore-system: ${fix.summary}\n`);
+    if (fix.status === 'failed') {
+      return 1;
+    }
+    layout = inspectProjectLayout(resolved.currentProjectRoot);
   }
 
   const record = buildSetupConsentRecord({

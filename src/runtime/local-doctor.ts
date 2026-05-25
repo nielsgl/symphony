@@ -9,6 +9,12 @@ import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local
 import { LocalCommandResolutionError } from './local-command-resolver';
 import { isWithinPath } from './path-containment';
 import {
+  ensureSystemGitignoreEntry,
+  inspectProjectLayout,
+  type ProjectLayoutInspection,
+  type ProjectLayoutWarningCode
+} from './project-layout-inspector';
+import {
   buildSetupConsentRecord,
   findValidSetupConsent,
   persistSetupConsent,
@@ -57,6 +63,7 @@ export interface DoctorJsonResult {
     ephemeralPort: boolean | null;
     consent: SetupConsentSource | null;
   };
+  layout: ProjectLayoutInspection | null;
   checks: DoctorCheck[];
   fixes: DoctorFixAction[];
 }
@@ -192,6 +199,105 @@ function summarizeStatus(checks: readonly DoctorCheck[]): {
     return { status: 'warning', reason: 'warnings_present', exitCode: 1 };
   }
   return { status: 'ok', reason: 'ready', exitCode: 0 };
+}
+
+function layoutWarningSeverity(code: ProjectLayoutWarningCode): DoctorCheckStatus {
+  return code === 'workflow_missing' || code === 'invalid_layout_path' || code === 'gitignore_unreadable'
+    ? 'failure'
+    : 'warning';
+}
+
+function addLayoutChecks(checks: DoctorCheck[], layout: ProjectLayoutInspection): void {
+  addCheck(checks, {
+    id: 'layout.workflow',
+    title: 'Root WORKFLOW.md is canonical',
+    status: layout.workflow.exists ? 'ok' : 'failure',
+    reason: layout.workflow.exists ? 'workflow_root_present' : 'workflow_root_missing',
+    summary: layout.workflow.exists ? 'Root WORKFLOW.md is present.' : 'Root WORKFLOW.md is missing.',
+    remediation: layout.workflow.remediation,
+    details: { workflow: layout.workflow, projectContractPaths: layout.projectContractPaths }
+  });
+  addCheck(checks, {
+    id: 'layout.runtime_state_root',
+    title: '.symphony/system runtime root is reserved',
+    status: 'ok',
+    reason: 'runtime_state_root_reserved',
+    summary: '.symphony/system/ is the runtime-owned local state root.',
+    details: { runtimeStateRoot: layout.runtimeStateRoot, runtimeOwnedPaths: layout.runtimeOwnedPaths }
+  });
+  addCheck(checks, {
+    id: 'layout.gitignore_system',
+    title: '.gitignore covers runtime state root',
+    status: layout.ignoreAnalysis.hasNarrowSystemIgnore
+      ? 'ok'
+      : layout.ignoreAnalysis.status === 'unreadable'
+        ? 'failure'
+        : 'warning',
+    reason: layout.ignoreAnalysis.hasNarrowSystemIgnore
+      ? 'system_ignore_present'
+      : layout.ignoreAnalysis.status === 'unreadable'
+        ? 'gitignore_unreadable'
+        : 'system_ignore_missing',
+    summary: layout.ignoreAnalysis.hasNarrowSystemIgnore
+      ? '.gitignore includes .symphony/system/.'
+      : '.gitignore does not narrowly ignore .symphony/system/.',
+    remediation: layout.ignoreAnalysis.hasNarrowSystemIgnore
+      ? undefined
+      : 'Add .symphony/system/ to .gitignore; `symphony doctor --fix --yes` can append it safely.',
+    details: { ignoreAnalysis: layout.ignoreAnalysis }
+  });
+  addCheck(checks, {
+    id: 'layout.broad_symphony_ignore',
+    title: 'Broad .symphony/ ignores are not hiding project customization',
+    status: layout.ignoreAnalysis.hasBroadSymphonyIgnore ? 'warning' : 'ok',
+    reason: layout.ignoreAnalysis.hasBroadSymphonyIgnore ? 'broad_symphony_ignore_present' : 'no_broad_symphony_ignore',
+    summary: layout.ignoreAnalysis.hasBroadSymphonyIgnore
+      ? 'A broad .symphony/ ignore may hide future project-owned customization.'
+      : 'No broad .symphony/ ignore was found.',
+    remediation: layout.ignoreAnalysis.hasBroadSymphonyIgnore
+      ? 'Migrate broad .symphony/ ignores to .symphony/system/ manually; doctor will not remove broad ignores.'
+      : undefined,
+    details: {
+      patterns: layout.ignoreAnalysis.patterns.filter((pattern) => pattern.kind === 'broad-symphony')
+    }
+  });
+  addCheck(checks, {
+    id: 'layout.reserved_customization',
+    title: 'Reserved customization paths remain project-owned',
+    status: 'ok',
+    reason: 'reserved_customization_reported',
+    summary: 'Reserved .symphony customization paths are reported and are not loaded by runtime.',
+    details: { reservedCustomizationPaths: layout.reservedCustomizationPaths }
+  });
+  addCheck(checks, {
+    id: 'layout.legacy_runtime_paths',
+    title: 'Legacy runtime paths are absent',
+    status: layout.legacyRuntimePaths.length === 0 ? 'ok' : 'warning',
+    reason: layout.legacyRuntimePaths.length === 0 ? 'legacy_runtime_paths_absent' : 'legacy_runtime_paths_present',
+    summary:
+      layout.legacyRuntimePaths.length === 0
+        ? 'No legacy runtime state paths were found.'
+        : `Found ${layout.legacyRuntimePaths.length} legacy runtime state path(s).`,
+    remediation:
+      layout.legacyRuntimePaths.length === 0
+        ? undefined
+        : 'Migrate runtime state to .symphony/system/ manually after verifying no active process uses the legacy paths.',
+    details: { legacyRuntimePaths: layout.legacyRuntimePaths }
+  });
+
+  for (const warning of layout.warnings.filter((item) =>
+    ['invalid_layout_path', 'gitignore_unreadable'].includes(item.code)
+  )) {
+    addCheck(checks, {
+      id: `layout.warning.${warning.code}`,
+      title: `Layout warning: ${warning.code}`,
+      status: layoutWarningSeverity(warning.code),
+      reason: warning.code,
+      summary: warning.message,
+      remediation: warning.remediation,
+      details: { path: warning.path }
+    });
+  }
 }
 
 function checkCheckoutEntrypoint(repoRoot: string, label: string): DoctorCheck {
@@ -352,6 +458,7 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
   const deps = options.deps;
   let resolved: LocalCommandResolution | null = null;
   let consentSource: SetupConsentSource | null = null;
+  let layout: ProjectLayoutInspection | null = null;
 
   if ('error' in parsed) {
     addCheck(checks, {
@@ -475,6 +582,25 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       }
     });
 
+    layout = inspectProjectLayout(resolved.currentProjectRoot);
+    if (args.fix && args.yes && !layout.ignoreAnalysis.hasNarrowSystemIgnore) {
+      const fix = ensureSystemGitignoreEntry(resolved.currentProjectRoot);
+      fixes.push({
+        id: 'layout.gitignore-system',
+        status: fix.status,
+        summary: fix.summary,
+        details: fix.details
+      });
+      layout = inspectProjectLayout(resolved.currentProjectRoot);
+    } else if (args.fix && !layout.ignoreAnalysis.hasNarrowSystemIgnore) {
+      fixes.push({
+        id: 'layout.gitignore-system',
+        status: 'skipped',
+        summary: 'Runtime-state gitignore entry was not added because `--yes` was not provided.'
+      });
+    }
+    addLayoutChecks(checks, layout);
+
     const portAvailable = await canListen(resolved.host.host, resolved.port.port);
     addCheck(checks, {
       id: 'server.port',
@@ -595,6 +721,7 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       ephemeralPort: resolved ? resolved.port.port === 0 : null,
       consent: consentSource
     },
+    layout,
     checks,
     fixes
   };

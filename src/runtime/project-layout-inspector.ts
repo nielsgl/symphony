@@ -83,6 +83,12 @@ export interface ProjectLayoutInspection {
   warnings: ProjectLayoutWarning[];
 }
 
+export interface ProjectLayoutGitignoreFixResult {
+  status: 'applied' | 'skipped' | 'failed';
+  summary: string;
+  details?: Record<string, unknown>;
+}
+
 const WORKFLOW_PATH = 'WORKFLOW.md' as const;
 const RUNTIME_STATE_ROOT = '.symphony/system' as const;
 const GITIGNORE_PATH = '.gitignore' as const;
@@ -490,4 +496,46 @@ export function inspectProjectLayout(projectRoot: string): ProjectLayoutInspecti
     ignoreAnalysis,
     warnings
   };
+}
+
+export function ensureSystemGitignoreEntry(projectRoot: string): ProjectLayoutGitignoreFixResult {
+  const resolvedProjectRoot = path.resolve(projectRoot);
+  const inspection = inspectProjectLayout(resolvedProjectRoot);
+  const gitignorePath = path.join(resolvedProjectRoot, GITIGNORE_PATH);
+
+  if (inspection.ignoreAnalysis.hasNarrowSystemIgnore) {
+    return {
+      status: 'skipped',
+      summary: '.gitignore already includes .symphony/system/.',
+      details: { path: GITIGNORE_PATH }
+    };
+  }
+
+  if (inspection.ignoreAnalysis.exists) {
+    const stat = safeStat(gitignorePath);
+    if (!stat?.isFile()) {
+      return {
+        status: 'failed',
+        summary: '.gitignore exists but is not a writable file.',
+        details: { path: GITIGNORE_PATH, reason: 'gitignore_not_file' }
+      };
+    }
+  }
+
+  try {
+    const current = inspection.ignoreAnalysis.exists ? fs.readFileSync(gitignorePath, 'utf8') : '';
+    const prefix = current.length === 0 ? '' : current.endsWith('\n') ? '' : '\n';
+    fs.writeFileSync(gitignorePath, `${current}${prefix}.symphony/system/\n`, 'utf8');
+    return {
+      status: 'applied',
+      summary: 'Added .symphony/system/ to .gitignore.',
+      details: { path: GITIGNORE_PATH, pattern: '.symphony/system/' }
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      summary: `Could not update .gitignore: ${(error as Error).message}`,
+      details: { path: GITIGNORE_PATH, reason: 'write_failed' }
+    };
+  }
 }
