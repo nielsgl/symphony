@@ -204,8 +204,51 @@ describe('local symphony command router', () => {
     const exitCode = await runCommandRouter({ argv: ['profile', 'list'], deps: harness.deps });
 
     expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Symphony profile registry');
+    expect(harness.stdout).toContain('tracker:linear');
+    expect(harness.stdout).toContain('tracker:github');
+    expect(harness.stdout).toContain('tracker:memory');
+    expect(harness.stdout).toContain('workspace:worktree');
+    expect(harness.stdout).toContain('toolchain:node');
+    expect(harness.stdout).toContain('workflow:team-review');
     expect(harness.stdout).toContain('symphony-internal');
     expect(harness.stdout).toContain('checked-in WORKFLOW.md');
+    expect(harness.stdout).toContain('linear-node');
+    expect(harness.stdout).toContain('expands: tracker:linear, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('github-node');
+    expect(harness.stdout).toContain('Select exactly one pack for each required dimension');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('shows visible bundle expansion and validation metadata', async () => {
+    const harness = createHarness();
+
+    const exitCode = await runCommandRouter({ argv: ['profile', 'show', 'linear-node'], deps: harness.deps });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Bundle: linear-node');
+    expect(harness.stdout).toContain('Expands to: tracker:linear, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('bundle expansions:');
+    expect(harness.stdout).toContain('linear-node -> tracker:linear, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('tracker: tracker:linear');
+    expect(harness.stdout).toContain('errors: none');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('shows pack metadata and required-dimension validation output', async () => {
+    const harness = createHarness();
+
+    const exitCode = await runCommandRouter({ argv: ['profile', 'show', 'tracker:memory'], deps: harness.deps });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Pack: tracker:memory');
+    expect(harness.stdout).toContain('Dimension: tracker');
+    expect(harness.stdout).toContain('Intended use: Local and demo workflows');
+    expect(harness.stdout).toContain('Conflicts: tracker:linear, tracker:github');
+    expect(harness.stdout).toContain('Missing required workspace pack');
+    expect(harness.stdout).toContain('Missing required toolchain pack');
+    expect(harness.stdout).toContain('Missing required workflow pack');
+    expect(harness.stdout).not.toContain('memory-demo');
     expect(harness.stderr).toBe('');
   });
 
@@ -221,9 +264,12 @@ describe('local symphony command router', () => {
     expect(exitCode).toBe(0);
     expect(harness.stdout).toContain('Profile: symphony-internal');
     expect(harness.stdout).toContain('Type: protected');
+    expect(harness.stdout).toContain('Pack: workflow:symphony-internal');
     expect(harness.stdout).toContain(path.join(repoRoot, 'WORKFLOW.md'));
     expect(harness.stdout).toContain('checked-in Symphony WORKFLOW.md');
     expect(harness.stdout).toContain('not a generated workflow template');
+    expect(harness.stdout).toContain('Protected: yes');
+    expect(harness.stdout).toContain('must not generate templates');
     expect(harness.stderr).toBe('');
   });
 

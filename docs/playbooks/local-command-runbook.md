@@ -147,13 +147,18 @@ These commands are intentionally narrow in the Local Command and Setup PRD:
 
 ```bash
 symphony profile list
-symphony profile show symphony-internal
+symphony profile show <pack-or-bundle>
 symphony init --help
 ```
 
-`profile` only exposes the protected `symphony-internal` binding. A general
-profile registry is later work. `init` only prints help and must not generate,
-copy, or overwrite workflows until the init materialization PRD is implemented.
+`profile list` exposes the composable profile registry: tracker, workspace,
+toolchain, and workflow packs plus named bundles such as Linear/Node and
+GitHub/Node. `profile show <pack-or-bundle>` prints registry metadata, intended
+use, bundle expansion, conflict or required-dimension validation output, and
+protected binding behavior. `symphony-internal` remains a protected binding to
+the checked-in `WORKFLOW.md`, not a generated template. `init` only prints help
+and must not generate, copy, or overwrite workflows until the init
+materialization PRD is implemented.
 
 ## Compatibility Entrypoints
 
