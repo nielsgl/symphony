@@ -306,28 +306,52 @@ function classifyReservedPath(
   };
 }
 
-function runtimeSqliteJournalPaths(projectRoot: string): ProjectLayoutPathClassification[] {
+interface LegacyRuntimeSidecarScan {
+  paths: ProjectLayoutPathClassification[];
+  warnings: ProjectLayoutWarning[];
+}
+
+function scanLegacyRuntimeSidecars(projectRoot: string): LegacyRuntimeSidecarScan {
   const symphonyRoot = path.join(projectRoot, '.symphony');
   if (!fs.existsSync(symphonyRoot)) {
-    return [];
+    return { paths: [], warnings: [] };
   }
 
   if (!safeStat(symphonyRoot)?.isDirectory()) {
-    return [];
+    return { paths: [], warnings: [] };
   }
 
-  return fs
-    .readdirSync(symphonyRoot)
-    .filter((entry) => entry.startsWith('runtime.sqlite-'))
-    .sort()
-    .map((entry) => ({
-      path: `.symphony/${entry}`,
-      owner: 'legacy-runtime',
-      role: 'legacy runtime persistence sidecar',
-      status: 'legacy-present',
-      exists: true,
-      remediation: 'Move runtime persistence under .symphony/system/ and remove the legacy sidecar after migration.'
-    }));
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(symphonyRoot);
+  } catch {
+    return {
+      paths: [],
+      warnings: [
+        {
+          code: 'invalid_layout_path',
+          path: '.symphony',
+          message: '.symphony exists but could not be scanned.',
+          remediation: 'Make .symphony readable so legacy runtime state can be inspected and moved under .symphony/system/.'
+        }
+      ]
+    };
+  }
+
+  return {
+    paths: entries
+      .filter((entry) => entry.startsWith('runtime.sqlite-'))
+      .sort()
+      .map((entry) => ({
+        path: `.symphony/${entry}`,
+        owner: 'legacy-runtime',
+        role: 'legacy runtime persistence sidecar',
+        status: 'legacy-present',
+        exists: true,
+        remediation: 'Move runtime persistence under .symphony/system/ and remove the legacy sidecar after migration.'
+      })),
+    warnings: []
+  };
 }
 
 function detectInvalidLayoutPaths(projectRoot: string): ProjectLayoutWarning[] {
@@ -380,14 +404,19 @@ export function inspectProjectLayout(projectRoot: string): ProjectLayoutInspecti
   ];
   const runtimeOwnedPaths = RUNTIME_PATHS.map((item) => classifyExpectedRuntimePath(resolvedProjectRoot, item));
   const reservedCustomizationPaths = RESERVED_CUSTOMIZATION_PATHS.map((item) => classifyReservedPath(resolvedProjectRoot, item));
+  const legacySidecarScan = scanLegacyRuntimeSidecars(resolvedProjectRoot);
   const legacyRuntimePaths = [
     ...LEGACY_RUNTIME_PATHS.map((item) => classifyLegacyPath(resolvedProjectRoot, item)).filter(
       (item): item is ProjectLayoutPathClassification => item !== null
     ),
-    ...runtimeSqliteJournalPaths(resolvedProjectRoot)
+    ...legacySidecarScan.paths
   ];
   const ignoreAnalysis = analyzeGitignore(resolvedProjectRoot);
-  const warnings: ProjectLayoutWarning[] = [...ignoreAnalysis.warnings, ...detectInvalidLayoutPaths(resolvedProjectRoot)];
+  const warnings: ProjectLayoutWarning[] = [
+    ...ignoreAnalysis.warnings,
+    ...detectInvalidLayoutPaths(resolvedProjectRoot),
+    ...legacySidecarScan.warnings
+  ];
 
   if (!workflowExists) {
     warnings.push({

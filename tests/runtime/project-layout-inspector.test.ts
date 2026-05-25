@@ -291,4 +291,37 @@ describe('project layout inspector', () => {
     });
     expect(listProjectFiles(projectRoot)).toEqual(before);
   });
+
+  (process.platform === 'win32' ? it.skip : it)(
+    'reports an unreadable .symphony directory as structured invalid layout state',
+    () => {
+      const projectRoot = makeProject();
+      writeProjectFile(projectRoot, 'WORKFLOW.md', '# workflow\n');
+      writeProjectFile(projectRoot, '.gitignore', '.symphony/system/\n');
+      mkdirProject(projectRoot, '.symphony');
+      const symphonyRoot = path.join(projectRoot, '.symphony');
+      const before = listProjectFiles(projectRoot);
+
+      let result: ReturnType<typeof inspectProjectLayout>;
+      fs.chmodSync(symphonyRoot, 0o000);
+      try {
+        result = inspectProjectLayout(projectRoot);
+      } finally {
+        fs.chmodSync(symphonyRoot, 0o700);
+      }
+
+      expect(result.status).toBe('warning');
+      expect(result.legacyRuntimePaths).toEqual([]);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({
+          code: 'invalid_layout_path',
+          path: '.symphony',
+          message: '.symphony exists but could not be scanned.',
+          remediation:
+            'Make .symphony readable so legacy runtime state can be inspected and moved under .symphony/system/.'
+        })
+      ]);
+      expect(listProjectFiles(projectRoot)).toEqual(before);
+    }
+  );
 });
