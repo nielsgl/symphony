@@ -254,7 +254,7 @@ function renderHelp(): string {
     'Commands:',
     '  dashboard       Start the local Symphony dashboard using the existing runner',
     '  doctor          Run local command and dashboard adoption readiness checks',
-    '  setup           Reserved for future local setup consent and configuration',
+    '  setup           Record user-local setup consent for this workflow',
     '  profile         Inspect bounded local command profiles',
     '  init            Show init help; workflow materialization is not implemented in this PRD',
     '  link-local      Link this checkout as a stable local symphony executable',
