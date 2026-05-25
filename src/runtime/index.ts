@@ -6,3 +6,4 @@ export * from './desktop-launcher';
 export * from './local-command-resolver';
 export * from './local-doctor';
 export * from './local-link';
+export * from './project-layout-inspector';
