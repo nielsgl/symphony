@@ -35,11 +35,11 @@ describe('profile registry', () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: 'linear-node',
-          packs: ['tracker:linear', 'workspace:worktree', 'toolchain:node', 'workflow:team-review']
+          packs: ['tracker:linear', 'workspace:worktree', 'toolchain:node', 'workflow:solo-local']
         }),
         expect.objectContaining({
           id: 'github-node',
-          packs: ['tracker:github', 'workspace:worktree', 'toolchain:node', 'workflow:team-review']
+          packs: ['tracker:github', 'workspace:worktree', 'toolchain:node', 'workflow:solo-local']
         })
       ])
     );
@@ -54,12 +54,12 @@ describe('profile registry', () => {
       'tracker:linear',
       'workspace:worktree',
       'toolchain:node',
-      'workflow:team-review'
+      'workflow:solo-local'
     ]);
     expect(resolution.dimensions.tracker?.id).toBe('tracker:linear');
     expect(resolution.dimensions.workspace?.id).toBe('workspace:worktree');
     expect(resolution.dimensions.toolchain?.id).toBe('toolchain:node');
-    expect(resolution.dimensions.workflow?.id).toBe('workflow:team-review');
+    expect(resolution.dimensions.workflow?.id).toBe('workflow:solo-local');
   });
 
   it('reports actionable conflicts for multiple packs in one dimension', () => {
@@ -107,5 +107,14 @@ describe('profile registry', () => {
     });
     expect(resolution.protectedBindings.map((binding) => binding.id)).toEqual(['workflow:symphony-internal']);
     expect(resolution.warnings.join('\n')).toContain('must not generate templates');
+  });
+
+  it('rejects protected internal workflows combined with generated bundles', () => {
+    const resolution = resolveProfileSelection(['memory-generic', 'workflow:symphony-internal']);
+
+    expect(resolution.protectedBindings.map((binding) => binding.id)).toEqual(['workflow:symphony-internal']);
+    expect(resolution.errors).toContain(
+      'Protected workflow pack workflow:symphony-internal cannot be combined with generated bundles. Select symphony-internal by itself for the checked-in workflow binding.'
+    );
   });
 });

@@ -134,10 +134,10 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
   const trackerKind = tracker.name;
   const workspaceType = workspace.name;
   const profileName = workflow.name;
-  const activeStates = profileName === 'team-review' ? ['Todo', 'In Progress', 'Agent Review'] : ['Todo', 'In Progress'];
-  const handoffStates = profileName === 'team-review' ? ['Agent Review'] : [];
-  const freshDispatchStates = profileName === 'team-review' ? ['Agent Review'] : [];
-  const terminalStates = profileName === 'team-review' ? ['Done', 'Canceled'] : ['Done'];
+  const activeStates = getActiveStates(trackerKind, profileName);
+  const handoffStates = getHandoffStates(trackerKind, profileName);
+  const freshDispatchStates = getFreshDispatchStates(trackerKind, profileName);
+  const terminalStates = getTerminalStates(trackerKind, profileName);
   const bundle = options.resolution.expandedBundles.map((expansion) => expansion.bundle.id).join(',');
   const packs = options.resolution.packs.map((pack) => pack.id).join(',');
   const packageManager = options.projectFacts.packageManager ?? 'unknown';
@@ -153,17 +153,19 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '    generated_by: "symphony init --dry-run"',
     'tracker:',
     `  kind: ${yamlString(trackerKind)}`,
+    ...trackerCredentialLines(trackerKind),
     `  active_states: ${yamlList(activeStates)}`,
     `  terminal_states: ${yamlList(terminalStates)}`,
-    `  handoff_states: ${yamlList(handoffStates)}`,
-    `  fresh_dispatch_states: ${yamlList(freshDispatchStates)}`,
+    ...optionalTrackerStateLines(handoffStates, freshDispatchStates),
     'workspace:',
     '  provisioner:',
     `    type: ${yamlString(workspaceType)}`,
+    ...workspaceProvisionerLines(workspaceType),
     'toolchain:',
     `  kind: ${yamlString(toolchain.name)}`,
     'codex:',
     '  command: codex app-server',
+    ...codexSandboxLines(workspaceType),
     'persistence:',
     '  enabled: true',
     'validation:',
@@ -187,18 +189,45 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '## Operator Contract',
     '',
     '- Work one issue at a time and keep progress evidence in the tracker.',
-    '- Run the validation commands that match the repository before handoff.',
+    '- Run the validation commands that match the repository before sharing results.',
     '- For dry-run initialization, review this generated file plan before enabling any write path.'
   ].join('\n');
+}
+
+function workspaceProvisionerLines(workspaceType: string): string[] {
+  return workspaceType === 'worktree' ? ['    repo_root: "."'] : [];
+}
+
+function codexSandboxLines(workspaceType: string): string[] {
+  if (workspaceType !== 'worktree') {
+    return [];
+  }
+  return ['  thread_sandbox: danger-full-access', '  turn_sandbox_policy: danger-full-access'];
+}
+
+function optionalTrackerStateLines(
+  handoffStates: readonly string[],
+  freshDispatchStates: readonly string[]
+): string[] {
+  if (handoffStates.length === 0 && freshDispatchStates.length === 0) {
+    return [];
+  }
+  return [`  handoff_states: ${yamlList(handoffStates)}`, `  fresh_dispatch_states: ${yamlList(freshDispatchStates)}`];
 }
 
 function validateWorkflowContent(content: string, workflowPath: string): ValidationResult {
   try {
     const workflowDefinition = new WorkflowLoader().parse(content);
-    const effectiveConfig = new ConfigResolver({ env: {}, homedir: () => path.dirname(workflowPath) }).resolve(
-      workflowDefinition,
-      { workflowPath }
-    );
+    const effectiveConfig = new ConfigResolver({
+      env: {
+        GITHUB_REPOSITORY_NAME: 'example-repo',
+        GITHUB_REPOSITORY_OWNER: 'example-owner',
+        GITHUB_TOKEN: 'validation-token',
+        LINEAR_API_KEY: 'validation-token',
+        LINEAR_PROJECT_SLUG: 'EXAMPLE'
+      },
+      homedir: () => path.dirname(workflowPath)
+    }).resolve(workflowDefinition, { workflowPath });
     return new ConfigValidator({ clock: () => new Date('2026-05-25T00:00:00.000Z') }).validate(effectiveConfig);
   } catch (error) {
     return {
@@ -208,6 +237,42 @@ function validateWorkflowContent(content: string, workflowPath: string): Validat
       at: '2026-05-25T00:00:00.000Z'
     };
   }
+}
+
+function getActiveStates(trackerKind: string, profileName: string): string[] {
+  if (trackerKind === 'github') {
+    return ['Open'];
+  }
+  return profileName === 'team-review' ? ['Todo', 'In Progress', 'Agent Review'] : ['Todo', 'In Progress'];
+}
+
+function getHandoffStates(trackerKind: string, profileName: string): string[] {
+  return trackerKind !== 'github' && profileName === 'team-review' ? ['Agent Review'] : [];
+}
+
+function getFreshDispatchStates(trackerKind: string, profileName: string): string[] {
+  return trackerKind !== 'github' && profileName === 'team-review' ? ['Agent Review'] : [];
+}
+
+function getTerminalStates(trackerKind: string, profileName: string): string[] {
+  if (trackerKind === 'github') {
+    return ['Closed'];
+  }
+  return profileName === 'team-review' ? ['Done', 'Canceled'] : ['Done'];
+}
+
+function trackerCredentialLines(trackerKind: string): string[] {
+  if (trackerKind === 'linear') {
+    return ['  api_key: "$LINEAR_API_KEY"', '  project_slug: "$LINEAR_PROJECT_SLUG"'];
+  }
+  if (trackerKind === 'github') {
+    return [
+      '  api_key: "$GITHUB_TOKEN"',
+      '  owner: "$GITHUB_REPOSITORY_OWNER"',
+      '  repo: "$GITHUB_REPOSITORY_NAME"'
+    ];
+  }
+  return [];
 }
 
 function buildFilePlanEntry(params: {
