@@ -361,6 +361,10 @@ describe('local symphony command router', () => {
       source: { category: 'inferred_runtime_default', value: 'default', present: true },
       safeFix: { available: false }
     });
+    expect(doctorFinding(payload, 'env.path')).toMatchObject({
+      source: { category: 'project_default', value: 'project', present: true },
+      details: { exists: false }
+    });
     expect(doctorFinding(payload, 'layout.gitignore_system')).toMatchObject({
       source: { category: 'layout_inspection' }
     });
@@ -415,6 +419,26 @@ describe('local symphony command router', () => {
       source: { category: 'cli_flag', value: 'guardrail_ack', present: true }
     });
     expect(JSON.stringify(payload)).not.toContain('secret-from-env-file');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('reports environment-variable provenance for doctor env overrides', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir, SYMPHONY_PORT: '0' };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json', '--ci'], deps: harness.deps });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(doctorFinding(payload, 'server.port')).toMatchObject({
+      severity: 'pass',
+      checkStatus: 'ok',
+      source: { category: 'environment_variable', value: 'env', present: true },
+      details: { port: 0, source: 'env' }
+    });
     expect(harness.stderr).toBe('');
   });
 
