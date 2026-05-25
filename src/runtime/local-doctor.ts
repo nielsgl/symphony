@@ -7,7 +7,12 @@ import dotenv from 'dotenv';
 import { ConfigResolver, ConfigValidator, WorkflowLoader } from '../workflow';
 import { WorkflowConfigError } from '../workflow/errors';
 import type { EffectiveConfig } from '../workflow/types';
-import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local-command-resolver';
+import type {
+  ResolveLocalCommandOptions,
+  LocalCommandResolution,
+  LocalPathSource,
+  LocalScalarSource
+} from './local-command-resolver';
 import { LocalCommandResolutionError } from './local-command-resolver';
 import { isWithinPath } from './path-containment';
 import {
@@ -27,23 +32,91 @@ import {
 
 export type DoctorCheckStatus = 'ok' | 'warning' | 'failure';
 export type DoctorOverallStatus = DoctorCheckStatus;
+export type DoctorFindingSeverity = 'pass' | 'warning' | 'blocker';
+export type DoctorFindingProvenanceCategory =
+  | 'cli_flag'
+  | 'environment_variable'
+  | 'environment_file'
+  | 'workflow_value'
+  | 'generated_profile'
+  | 'project_default'
+  | 'layout_inspection'
+  | 'user_local_trust_state'
+  | 'inferred_runtime_default'
+  | 'path_lookup'
+  | 'local_checkout'
+  | 'git_repository'
+  | 'runtime_probe';
 
-export interface DoctorCheck {
+export interface DoctorFindingSource {
+  category: DoctorFindingProvenanceCategory;
+  value?: string;
+  present?: boolean;
+}
+
+export interface DoctorFindingRemediation {
+  guidance: string | null;
+}
+
+export interface DoctorFindingSafeFix {
+  available: boolean;
+  fixId: string | null;
+  command: string | null;
+  requiresYes: boolean;
+}
+
+export interface DoctorFinding {
   id: string;
+  code: string;
   title: string;
+  message: string;
   status: DoctorCheckStatus;
+  checkStatus: DoctorCheckStatus;
+  severity: DoctorFindingSeverity;
   reason: string;
   summary: string;
+  source: DoctorFindingSource;
+  remediationGuidance: string | null;
+  remediationInfo: DoctorFindingRemediation;
+  safeFix: DoctorFindingSafeFix;
   remediation?: string;
-  details?: Record<string, unknown>;
+  details: Record<string, unknown>;
 }
+
+export type DoctorCheck = DoctorFinding;
+type DoctorFindingInput = Omit<
+  DoctorFinding,
+  | 'code'
+  | 'message'
+  | 'checkStatus'
+  | 'severity'
+  | 'source'
+  | 'remediationGuidance'
+  | 'remediationInfo'
+  | 'safeFix'
+  | 'details'
+> & {
+  code?: string;
+  message?: string;
+  source?: DoctorFindingSource;
+  remediationGuidance?: string | null;
+  remediationInfo?: DoctorFindingRemediation;
+  safeFix?: DoctorFindingSafeFix;
+  details?: Record<string, unknown>;
+};
 
 export interface DoctorFixAction {
   id: string;
   status: 'applied' | 'skipped' | 'failed';
   summary: string;
+  safe: boolean;
+  targetFindingIds: string[];
+  requiresYes: boolean;
   details?: Record<string, unknown>;
 }
+
+type DoctorFixActionInput = Omit<DoctorFixAction, 'safe' | 'targetFindingIds' | 'requiresYes'> &
+  Partial<Pick<DoctorFixAction, 'safe' | 'targetFindingIds' | 'requiresYes'>>;
 
 export interface DoctorJsonResult {
   version: 1;
@@ -51,6 +124,15 @@ export interface DoctorJsonResult {
   status: DoctorOverallStatus;
   reason: 'ready' | 'warnings_present' | 'blockers_present';
   exitCode: 0 | 1 | 2;
+  exitSemantics: {
+    code: 0 | 1 | 2;
+    meaning: 'ready' | 'warnings_non_blocking' | 'blockers_present';
+    ci: {
+      requested: boolean;
+      promptsAllowed: false;
+      nonZeroOnBlocker: boolean;
+    };
+  };
   ci: boolean;
   fix: boolean;
   cwd: string;
@@ -66,8 +148,18 @@ export interface DoctorJsonResult {
     consent: SetupConsentSource | null;
   };
   layout: ProjectLayoutInspection | null;
-  checks: DoctorCheck[];
+  findings: DoctorFinding[];
+  checks: DoctorFinding[];
   fixes: DoctorFixAction[];
+  projectContext: {
+    cwd: string;
+    symphonyCheckoutRoot: string;
+    projectRoot: string | null;
+    workflowPath: string | null;
+    envFilePath: string | null;
+    envFileExists: boolean | null;
+    profile: string | null;
+  };
 }
 
 export interface RunLocalDoctorOptions {
@@ -174,8 +266,181 @@ function parseShimMetadata(executablePath: string): ShimMetadata {
   return { path: executablePath, owned, repoRoot, entrypoint };
 }
 
-function addCheck(checks: DoctorCheck[], check: DoctorCheck): void {
-  checks.push(check);
+function severityForStatus(status: DoctorCheckStatus): DoctorFindingSeverity {
+  if (status === 'failure') {
+    return 'blocker';
+  }
+  if (status === 'warning') {
+    return 'warning';
+  }
+  return 'pass';
+}
+
+function safeFixForFinding(check: Pick<DoctorFindingInput, 'id' | 'status'>): DoctorFindingSafeFix {
+  if (check.id.startsWith('executable.') || check.id.startsWith('shim_checkout.')) {
+    return {
+      available: check.status !== 'ok',
+      fixId: 'link-local',
+      command: 'symphony doctor --fix --yes',
+      requiresYes: true
+    };
+  }
+  if (check.id === 'layout.gitignore_system') {
+    return {
+      available: check.status !== 'ok',
+      fixId: 'layout.gitignore-system',
+      command: 'symphony doctor --fix --yes',
+      requiresYes: true
+    };
+  }
+  if (check.id === 'setup.consent') {
+    return {
+      available: check.status !== 'ok',
+      fixId: 'setup-consent',
+      command: 'symphony doctor --fix --yes',
+      requiresYes: true
+    };
+  }
+  return { available: false, fixId: null, command: null, requiresYes: false };
+}
+
+function sourceFromPathSource(source: LocalPathSource): DoctorFindingSource {
+  if (source === 'cli') {
+    return { category: 'cli_flag', value: source, present: true };
+  }
+  if (source === 'env') {
+    return { category: 'environment_variable', value: source, present: true };
+  }
+  if (source === 'profile') {
+    return { category: 'generated_profile', value: source, present: true };
+  }
+  return { category: 'workflow_value', value: source, present: true };
+}
+
+function sourceFromScalarSource(source: LocalScalarSource): DoctorFindingSource {
+  if (source === 'cli') {
+    return { category: 'cli_flag', value: source, present: true };
+  }
+  if (source === 'env') {
+    return { category: 'environment_variable', value: source, present: true };
+  }
+  if (source === 'profile') {
+    return { category: 'generated_profile', value: source, present: true };
+  }
+  return { category: 'inferred_runtime_default', value: source, present: true };
+}
+
+function sourceForFinding(check: DoctorFindingInput): DoctorFindingSource {
+  if (check.id === 'resolver.workflow' && typeof check.details?.workflowSource === 'string') {
+    return sourceFromPathSource(check.details.workflowSource as LocalPathSource);
+  }
+  if (check.id === 'env.path' && typeof check.details?.source === 'string') {
+    const source = check.details.source as LocalPathSource;
+    if (check.details.exists === true) {
+      return { category: 'environment_file', value: source, present: true };
+    }
+    return source === 'project'
+      ? { category: 'project_default', value: source, present: true }
+      : sourceFromPathSource(source);
+  }
+  if (check.id === 'server.port' && typeof check.details?.source === 'string') {
+    return sourceFromScalarSource(check.details.source as LocalScalarSource);
+  }
+  if (check.id.startsWith('layout.')) {
+    return { category: 'layout_inspection', present: true };
+  }
+  if (check.id === 'setup.consent') {
+    return check.reason === 'setup_consent_flag'
+      ? { category: 'cli_flag', value: 'guardrail_ack', present: true }
+      : { category: 'user_local_trust_state', value: check.reason, present: check.status === 'ok' };
+  }
+  if (check.id.startsWith('workspace.')) {
+    return check.id === 'workspace.base_ref' || check.id === 'workspace.dirty_policy'
+      ? { category: 'git_repository', present: true }
+      : { category: 'workflow_value', present: true };
+  }
+  if (check.id === 'workflow.effective_config' || check.id === 'codex.command') {
+    return { category: 'workflow_value', present: check.status === 'ok' };
+  }
+  if (check.id.startsWith('executable.')) {
+    return { category: 'path_lookup', present: check.status === 'ok' };
+  }
+  if (check.id.startsWith('shim_checkout.') || check.id === 'dashboard.prerequisites') {
+    return { category: 'local_checkout', present: check.status === 'ok' };
+  }
+  if (check.id === 'doctor.options') {
+    return { category: 'cli_flag', present: false };
+  }
+  return { category: 'runtime_probe', present: check.status === 'ok' };
+}
+
+function isSensitiveKey(key: string): boolean {
+  return /(api[_-]?key|token|secret|password|credential|authorization|auth)/i.test(key);
+}
+
+function redactDetails(value: unknown, key = ''): unknown {
+  if (isSensitiveKey(key)) {
+    const present = typeof value === 'string' ? value.length > 0 : value !== null && value !== undefined;
+    return { redacted: true, present };
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactDetails(item));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+        entryKey,
+        redactDetails(entryValue, entryKey)
+      ])
+    );
+  }
+  return value;
+}
+
+function normalizeFinding(check: DoctorFindingInput): DoctorFinding {
+  const details = redactDetails(check.details ?? {}) as Record<string, unknown>;
+  const remediationGuidance = check.remediationGuidance ?? check.remediation ?? null;
+  return {
+    ...check,
+    code: check.code ?? check.reason,
+    message: check.message ?? check.summary,
+    checkStatus: check.status,
+    severity: severityForStatus(check.status),
+    source: check.source ?? sourceForFinding({ ...check, details }),
+    remediationGuidance,
+    remediationInfo: check.remediationInfo ?? { guidance: remediationGuidance },
+    safeFix: check.safeFix ?? safeFixForFinding(check),
+    details
+  };
+}
+
+function addCheck(checks: DoctorFinding[], check: DoctorFindingInput): void {
+  checks.push(normalizeFinding(check));
+}
+
+function normalizeFixAction(fix: DoctorFixActionInput): DoctorFixAction {
+  const defaultTargets: Record<string, string[]> = {
+    'link-local': [
+      'executable.discoverable',
+      'executable.checkout',
+      'shim_checkout.checkout_exists',
+      'shim_checkout.cli_script',
+      'shim_checkout.built_cli'
+    ],
+    'layout.gitignore-system': ['layout.gitignore_system'],
+    'setup-consent': ['setup.consent']
+  };
+  return {
+    ...fix,
+    safe: fix.safe ?? true,
+    targetFindingIds: fix.targetFindingIds ?? defaultTargets[fix.id] ?? [],
+    requiresYes: fix.requiresYes ?? true,
+    details: redactDetails(fix.details ?? {}) as Record<string, unknown>
+  };
+}
+
+function addFix(fixes: DoctorFixAction[], fix: DoctorFixActionInput): void {
+  fixes.push(normalizeFixAction(fix));
 }
 
 function statusRank(status: DoctorCheckStatus): number {
@@ -188,7 +453,7 @@ function statusRank(status: DoctorCheckStatus): number {
   return 0;
 }
 
-function summarizeStatus(checks: readonly DoctorCheck[]): {
+function summarizeStatus(checks: readonly DoctorFinding[]): {
   status: DoctorOverallStatus;
   reason: DoctorJsonResult['reason'];
   exitCode: 0 | 1 | 2;
@@ -209,7 +474,7 @@ function layoutWarningSeverity(code: ProjectLayoutWarningCode): DoctorCheckStatu
     : 'warning';
 }
 
-function addLayoutChecks(checks: DoctorCheck[], layout: ProjectLayoutInspection): void {
+function addLayoutChecks(checks: DoctorFinding[], layout: ProjectLayoutInspection): void {
   addCheck(checks, {
     id: 'layout.workflow',
     title: 'Root WORKFLOW.md is canonical',
@@ -302,7 +567,7 @@ function addLayoutChecks(checks: DoctorCheck[], layout: ProjectLayoutInspection)
   }
 }
 
-function checkCheckoutEntrypoint(repoRoot: string, label: string): DoctorCheck {
+function checkCheckoutEntrypoint(repoRoot: string, label: string): DoctorFindingInput {
   const scriptEntrypoint = path.join(repoRoot, 'scripts', 'symphony.js');
   const builtEntrypoint = path.join(repoRoot, 'dist', 'src', 'runtime', 'command-router.js');
   if (!fs.existsSync(repoRoot)) {
@@ -399,12 +664,17 @@ function findCommandOnPath(command: string, env: NodeJS.ProcessEnv): string | nu
 }
 
 function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessEnv): {
-  check: DoctorCheck;
+  check: DoctorFindingInput;
   effectiveConfig: EffectiveConfig | null;
 } {
   try {
     const definition = new WorkflowLoader().load({ explicitPath: resolved.workflowPath });
     const effective = new ConfigResolver({ env }).resolve(definition, { workflowPath: resolved.workflowPath });
+    const workflowDetails = {
+      workflowPath: resolved.workflowPath,
+      trackerKind: effective.tracker.kind,
+      trackerApiKey: effective.tracker.api_key
+    };
     const validation = new ConfigValidator().validate(effective);
     if (!validation.ok) {
       return {
@@ -415,7 +685,7 @@ function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessE
           reason: validation.error_code,
           summary: validation.message,
           remediation: 'Fix WORKFLOW.md or the referenced environment variables before starting the dashboard.',
-          details: { workflowPath: resolved.workflowPath, at: validation.at }
+          details: { ...workflowDetails, at: validation.at }
         },
         effectiveConfig: null
       };
@@ -427,7 +697,7 @@ function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessE
         status: 'ok',
         reason: 'workflow_config_valid',
         summary: 'Workflow syntax and effective configuration are valid for local startup.',
-        details: { workflowPath: resolved.workflowPath }
+        details: workflowDetails
       },
       effectiveConfig: effective
     };
@@ -467,7 +737,7 @@ function parseRemoteBaseRef(baseRef: string): { remote: string; ref: string } | 
   return { remote, ref: rest.join('/') };
 }
 
-function checkBaseRef(repoRoot: string, baseRef: string): DoctorCheck {
+function checkBaseRef(repoRoot: string, baseRef: string): DoctorFindingInput {
   const localRef = runGit(repoRoot, ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`]);
   if (localRef.ok) {
     return {
@@ -506,7 +776,7 @@ function checkBaseRef(repoRoot: string, baseRef: string): DoctorCheck {
   };
 }
 
-function addWorkspaceChecks(checks: DoctorCheck[], resolved: LocalCommandResolution, effectiveConfig: EffectiveConfig): void {
+function addWorkspaceChecks(checks: DoctorFinding[], resolved: LocalCommandResolution, effectiveConfig: EffectiveConfig): void {
   const provisioner = effectiveConfig.workspace.provisioner;
   if (provisioner.type === 'none') {
     addCheck(checks, {
@@ -601,7 +871,7 @@ function addWorkspaceChecks(checks: DoctorCheck[], resolved: LocalCommandResolut
   });
 }
 
-function addCodexCommandCheck(checks: DoctorCheck[], effectiveConfig: EffectiveConfig, env: NodeJS.ProcessEnv): void {
+function addCodexCommandCheck(checks: DoctorFinding[], effectiveConfig: EffectiveConfig, env: NodeJS.ProcessEnv): void {
   const command = effectiveConfig.codex.command;
   const executablePath = findCommandOnPath(command, env);
   addCheck(checks, {
@@ -639,7 +909,7 @@ function renderHuman(result: DoctorJsonResult): string {
     'Checks:'
   ];
 
-  for (const check of result.checks) {
+  for (const check of result.findings) {
     lines.push(`  [${check.status}] ${check.title}: ${check.summary}`);
     if (check.remediation) {
       lines.push(`    next: ${check.remediation}`);
@@ -661,7 +931,7 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
   human: string;
 }> {
   const parsed = parseDoctorArgs(options.argv);
-  const checks: DoctorCheck[] = [];
+  const checks: DoctorFinding[] = [];
   const fixes: DoctorFixAction[] = [];
   const deps = options.deps;
   let resolved: LocalCommandResolution | null = null;
@@ -738,7 +1008,7 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
     )
   ) {
     const exitCode = await deps.runLinkLocal([]);
-    fixes.push({
+    addFix(fixes, {
       id: 'link-local',
       status: exitCode === 0 ? 'applied' : 'failed',
       summary:
@@ -798,7 +1068,7 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
     layout = inspectProjectLayout(resolved.currentProjectRoot);
     if (args.fix && args.yes && !layout.ignoreAnalysis.hasNarrowSystemIgnore) {
       const fix = ensureSystemGitignoreEntry(resolved.currentProjectRoot);
-      fixes.push({
+      addFix(fixes, {
         id: 'layout.gitignore-system',
         status: fix.status,
         summary: fix.summary,
@@ -806,7 +1076,7 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       });
       layout = inspectProjectLayout(resolved.currentProjectRoot);
     } else if (args.fix && !layout.ignoreAnalysis.hasNarrowSystemIgnore) {
-      fixes.push({
+      addFix(fixes, {
         id: 'layout.gitignore-system',
         status: 'skipped',
         summary: 'Runtime-state gitignore entry was not added because `--yes` was not provided.'
@@ -841,7 +1111,7 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
     }
     if (consentSource === 'missing' && args.fix && args.yes) {
       if (setupConsentStoreInProject) {
-        fixes.push({
+        addFix(fixes, {
           id: 'setup-consent',
           status: 'failed',
           summary:
@@ -856,14 +1126,14 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
         });
         persistSetupConsent(deps.setupConsentStore, record);
         consentSource = 'setup';
-        fixes.push({
+        addFix(fixes, {
           id: 'setup-consent',
           status: 'applied',
           summary: `Recorded explicit setup consent for identity ${record.identity_key}.`
         });
       }
     } else if (consentSource === 'missing' && args.fix) {
-      fixes.push({
+      addFix(fixes, {
         id: 'setup-consent',
         status: 'skipped',
         summary: 'Setup consent was not recorded because `--yes` was not provided.'
@@ -920,6 +1190,20 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
     status: summary.status,
     reason: summary.reason,
     exitCode: summary.exitCode,
+    exitSemantics: {
+      code: summary.exitCode,
+      meaning:
+        summary.reason === 'ready'
+          ? 'ready'
+          : summary.reason === 'warnings_present'
+            ? 'warnings_non_blocking'
+            : 'blockers_present',
+      ci: {
+        requested: args.ci,
+        promptsAllowed: false,
+        nonZeroOnBlocker: summary.status === 'failure'
+      }
+    },
     ci: args.ci,
     fix: args.fix,
     cwd: deps.cwd,
@@ -935,7 +1219,17 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       consent: consentSource
     },
     layout,
+    findings: checks,
     checks,
+    projectContext: {
+      cwd: deps.cwd,
+      symphonyCheckoutRoot: deps.repoRoot,
+      projectRoot: resolved?.currentProjectRoot ?? null,
+      workflowPath: resolved?.workflowPath ?? null,
+      envFilePath: resolved?.envFilePath ?? null,
+      envFileExists: resolved ? fs.existsSync(resolved.envFilePath) : null,
+      profile: resolved?.profile.name ?? null
+    },
     fixes
   };
 
