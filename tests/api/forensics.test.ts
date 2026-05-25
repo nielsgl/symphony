@@ -216,6 +216,7 @@ function makeApiDiagnostics(): ApiDiagnosticsResponse {
       duration_ms: 0
     },
     workflow: { prompt_fallback_active: false },
+    project_layout: null,
     runtime_resolution: {
       workflow_path: '/tmp/WORKFLOW.md',
       workflow_dir: '/tmp',
