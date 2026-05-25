@@ -56,7 +56,7 @@ Codex lifecycle (worker stream):
 
 ## Log Transport and Retention
 - Runtime uses dual sinks by default: `stderr` and rotating file sink.
-- Default log root is workflow-scoped: `<workflow_dir>/.symphony/log`.
+- Default log root is workflow-scoped: `<workflow_dir>/.symphony/system/logs`.
 - Overrides:
   - CLI: `--logs-root=<path>` (or split form `--logs-root <path>`)
   - workflow config: `logging.root`

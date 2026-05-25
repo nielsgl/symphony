@@ -102,7 +102,7 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
-  root: ./.symphony/workspaces
+  root: ./.symphony/system/workspaces
 hooks:
   timeout_ms: 60000
 agent:

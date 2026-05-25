@@ -24,7 +24,7 @@ describe('ConfigResolver', () => {
     expect(config.tracker.handoff_states).toEqual([]);
     expect(config.tracker.fresh_dispatch_states).toEqual([]);
     expect(config.tracker.github_linking?.mode).toBe('off');
-    expect(config.workspace.root).toBe('/tmp/symphony_workspaces');
+    expect(config.workspace.root).toBe(path.normalize('/home/tester/.symphony/system/workspaces'));
     expect(config.workspace.root_source).toBe('default');
     expect(config.workspace.provisioner).toEqual({
       type: 'none',
@@ -50,7 +50,8 @@ describe('ConfigResolver', () => {
       phase_timeline_limit: 30,
       phase_stale_warn_ms: 45000
     });
-    expect(config.logging.root).toBe(path.normalize('/home/tester/.symphony/log'));
+    expect(config.persistence.db_path).toBe(path.normalize('/home/tester/.symphony/system/runtime.sqlite'));
+    expect(config.logging.root).toBe(path.normalize('/home/tester/.symphony/system/logs'));
     expect(config.logging.root_source).toBe('default');
     expect(config.logging.max_bytes).toBe(10 * 1024 * 1024);
     expect(config.logging.max_files).toBe(5);
@@ -720,7 +721,7 @@ describe('ConfigResolver', () => {
     expect(config.persistence.retention_days).toBe(30);
   });
 
-  it('defaults persistence.db_path to workflow directory when workflow path is provided', () => {
+  it('defaults runtime-owned paths under the workflow system state root when workflow path is provided', () => {
     const resolver = new ConfigResolver({ env: {}, homedir: () => '/home/tester', tmpdir: () => '/tmp' });
 
     const config = resolver.resolve(
@@ -731,9 +732,41 @@ describe('ConfigResolver', () => {
       { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
     );
 
-    expect(config.persistence.db_path).toBe(path.normalize('/workspace/projects/todo-app/.symphony/runtime.sqlite'));
-    expect(config.logging.root).toBe(path.normalize('/workspace/projects/todo-app/.symphony/log'));
+    expect(config.workspace.root).toBe(path.normalize('/workspace/projects/todo-app/.symphony/system/workspaces'));
+    expect(config.workspace.root_source).toBe('default');
+    expect(config.persistence.db_path).toBe(path.normalize('/workspace/projects/todo-app/.symphony/system/runtime.sqlite'));
+    expect(config.logging.root).toBe(path.normalize('/workspace/projects/todo-app/.symphony/system/logs'));
     expect(config.logging.root_source).toBe('default');
+  });
+
+  it('preserves explicit workflow path overrides over system state defaults', () => {
+    const resolver = new ConfigResolver({
+      env: {
+        SYMPHONY_WORKSPACE_ROOT: '/srv/workspaces',
+        SYMPHONY_LOG_ROOT: '/srv/logs',
+        SYMPHONY_DB_PATH: '/srv/runtime.sqlite'
+      },
+      homedir: () => '/home/tester',
+      tmpdir: () => '/tmp'
+    });
+
+    const config = resolver.resolve(
+      {
+        config: {
+          workspace: { root: '$SYMPHONY_WORKSPACE_ROOT' },
+          logging: { root: '$SYMPHONY_LOG_ROOT' },
+          persistence: { db_path: '$SYMPHONY_DB_PATH' }
+        },
+        prompt_template: 'prompt'
+      },
+      { workflowPath: '/workspace/projects/todo-app/WORKFLOW.md' }
+    );
+
+    expect(config.workspace.root).toBe('/srv/workspaces');
+    expect(config.workspace.root_source).toBe('workflow');
+    expect(config.logging.root).toBe('/srv/logs');
+    expect(config.logging.root_source).toBe('workflow');
+    expect(config.persistence.db_path).toBe('/srv/runtime.sqlite');
   });
 
   it('resolves optional server.host with server.port', () => {

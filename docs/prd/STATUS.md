@@ -516,7 +516,7 @@ Ownership evidence links:
 - Date: 2026-04-23
 - Scope delivered:
   - Added rotating durable file sink (`symphony.log` with capped archives) while keeping default stderr visibility.
-  - Added runtime log-root resolution contract with precedence: CLI `--logs-root` > workflow `logging.root` > workflow-scoped default (`<workflow_dir>/.symphony/log`).
+  - Added runtime log-root resolution contract with precedence: CLI `--logs-root` > workflow `logging.root` > workflow-scoped default (`<workflow_dir>/.symphony/system/logs`).
   - Kept intentional path-semantics divergence from Elixir: TypeScript `--logs-root` is the direct directory containing `symphony.log*`.
   - Added fail-fast startup behavior for non-writable logging root with typed config error (`invalid_logging_root`).
   - Extended diagnostics contract with additive `logging` block (`root`, `active_file`, `rotation`, `sinks`).

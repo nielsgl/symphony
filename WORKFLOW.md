@@ -26,7 +26,7 @@ tracker:
 polling:
   interval_ms: 5000
 workspace:
-  root: ./.symphony/workspaces
+  root: ./.symphony/system/workspaces
   provisioner:
     type: worktree
     repo_root: .
