@@ -19,6 +19,7 @@ const DEFAULT_LINEAR_ACTIVE_STATES = ['Todo', 'In Progress'];
 const DEFAULT_LINEAR_TERMINAL_STATES = ['Closed', 'Cancelled', 'Canceled', 'Duplicate', 'Done'];
 const DEFAULT_GITHUB_ACTIVE_STATES = ['Open'];
 const DEFAULT_GITHUB_TERMINAL_STATES = ['Closed'];
+const DEFAULT_SYSTEM_STATE_DIR = '.symphony/system';
 
 function getDefaultActiveStates(trackerKind: string): string[] {
   if (trackerKind === 'github') {
@@ -398,11 +399,12 @@ export class ConfigResolver {
         ? path.resolve(options.workflowPath)
         : null;
     const workflowDir = workflowResolvedPath ? path.dirname(workflowResolvedPath) : this.homedir();
+    const defaultSystemStateRoot = path.join(workflowDir, DEFAULT_SYSTEM_STATE_DIR);
     const workspaceRoot = resolvePathLikeValue(
       workspace.root,
       this.env,
       this.homedir(),
-      path.join(this.tmpdir(), 'symphony_workspaces'),
+      path.join(defaultSystemStateRoot, 'workspaces'),
       {
         relativeBaseDir: workflowResolvedPath ? workflowDir : undefined
       }
@@ -500,9 +502,7 @@ export class ConfigResolver {
           ? 'legacy'
           : 'typed';
     const workflowScopedPersistencePath =
-      workflowResolvedPath !== null
-        ? path.join(workflowDir, '.symphony', 'runtime.sqlite')
-        : path.join(this.homedir(), '.symphony', 'runtime.sqlite');
+      path.join(defaultSystemStateRoot, 'runtime.sqlite');
 
     const persistenceDbPath = resolvePathLikeValue(
       persistence.db_path,
@@ -510,7 +510,7 @@ export class ConfigResolver {
       this.homedir(),
       workflowScopedPersistencePath
     );
-    const defaultLoggingRoot = path.join(workflowDir, '.symphony', 'log');
+    const defaultLoggingRoot = path.join(defaultSystemStateRoot, 'logs');
     const resolvedLoggingRootCandidate = resolvePathLikeValue(logging.root, this.env, this.homedir(), defaultLoggingRoot);
     const loggingRootSource =
       typeof logging.root === 'string' && logging.root.trim().length > 0 && resolvedLoggingRootCandidate.trim().length > 0

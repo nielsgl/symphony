@@ -155,7 +155,7 @@ Prioritization model:
 - Decision: `adopted` (closed in `P14b`, with intentional path-semantics divergence)
 - Delivered:
   - rotating durable file sink (`symphony.log`, capped archive retention) while preserving default stderr sink visibility,
-  - log-root precedence and startup resolution contract (CLI `--logs-root` > workflow `logging.root` > `<workflow_dir>/.symphony/log` default),
+  - log-root precedence and startup resolution contract (CLI `--logs-root` > workflow `logging.root` > `<workflow_dir>/.symphony/system/logs` default),
   - intentional divergence from Elixir path semantics: TypeScript `--logs-root` is the direct `symphony.log*` directory,
   - fail-fast typed startup error for non-writable log root (`invalid_logging_root`),
   - additive diagnostics logging block and debug-skill operator workflow alignment,

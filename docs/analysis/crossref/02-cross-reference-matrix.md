@@ -67,7 +67,7 @@
 2. Previously high-priority parity deltas XR-01, XR-02, XR-04, XR-05, and XR-08 are closed in P11; post-P15 protocol/API/runtime parity deltas are closed in P16, test-behavior parity closure is delivered in P17, workspace-resolution/operator-clarity deltas are closed in P18, first-class workspace provisioner parity is closed in P19, MCP/input reliability + workspace integrity closure is delivered in P20b, and upstream reference delta closure (model command shape + strict numeric validation semantics) is delivered in P21.
 3. Token accounting semantics alignment (XR-10) is closed in P13.
 4. Remaining deltas are mostly intentional product posture choices (`XR-00`, `XR-03`) rather than parity gaps.
-5. Logging substrate implementation is functionally equivalent for operational goals, with intentional path-semantics divergence from Elixir (`--logs-root` direct target and `<workflow_dir>/.symphony/log` default).
+5. Logging substrate implementation is functionally equivalent for operational goals, with intentional path-semantics divergence from Elixir (`--logs-root` direct target and `<workflow_dir>/.symphony/system/logs` default).
 6. Our implementation remains stronger in intentionally productized areas:
    - GitHub adapter,
    - SQLite persistence and UI continuity APIs,

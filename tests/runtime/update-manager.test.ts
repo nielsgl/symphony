@@ -128,7 +128,7 @@ describe('runtime update manager', () => {
     });
     expect(git(local, ['rev-parse', 'HEAD'])).toBe(beforeHead);
     expect(git(local, ['status', '--porcelain=v1'])).toBe(beforeStatus);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('blocks actionable update prepare when GitHub eligibility is not configured by default', async () => {
     const { root, local } = await makeRepoPair();
@@ -160,7 +160,7 @@ describe('runtime update manager', () => {
       }
     });
     expect(prepared.readiness?.refusal_reasons).toContain(REASON_CODES.runtimeUpdateGithubEligibilityRequired);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('allows prepare for an actionable update only when GitHub eligibility is verified or explicitly allowed', async () => {
     const { root, local } = await makeRepoPair();
@@ -200,7 +200,7 @@ describe('runtime update manager', () => {
         apply_ready: true
       }
     });
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('caches GitHub eligibility for repeated readiness reads of the same candidate', async () => {
     const { root, local } = await makeRepoPair();
@@ -236,7 +236,7 @@ describe('runtime update manager', () => {
     expect(first?.github_eligibility.state).toBe('github_verified');
     expect(second?.github_eligibility.state).toBe('github_verified');
     expect(eligibilityCalls).toBe(1);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it.each([
     'github_checks_pending',
@@ -284,7 +284,7 @@ describe('runtime update manager', () => {
         apply_ready: false
       }
     });
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('distinguishes dirty worktree, branch mismatch, non-fast-forward, stale runtime, and current build states', async () => {
     const { root, local } = await makeRepoPair();

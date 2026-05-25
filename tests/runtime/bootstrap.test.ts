@@ -51,6 +51,8 @@ async function makeWorkflowFile(options?: {
   includeServerPort?: boolean;
   serverPort?: number;
   loggingRoot?: string;
+  omitWorkspaceRoot?: boolean;
+  omitPersistencePath?: boolean;
   pollingIntervalMs?: number;
   hooksTimeoutMs?: number;
   codexBlock?: string;
@@ -63,6 +65,14 @@ async function makeWorkflowFile(options?: {
   const includeServerPort = options?.includeServerPort ?? true;
   const serverPort = options?.serverPort ?? 0;
   const loggingRoot = options?.loggingRoot;
+  const workspaceRootBlock = options?.omitWorkspaceRoot
+    ? ''
+    : `  root: ${JSON.stringify(path.join(dir, 'workspaces'))}
+`;
+  const persistencePathBlock = options?.omitPersistencePath
+    ? ''
+    : `  db_path: ${JSON.stringify(path.join(dir, 'runtime.sqlite'))}
+`;
   const pollingIntervalMs = options?.pollingIntervalMs ?? 1000;
   const hooksTimeoutMs = options?.hooksTimeoutMs ?? 1000;
   const codexBlock =
@@ -102,7 +112,7 @@ ${trackerCredentialBlock}  active_states:
 polling:
   interval_ms: ${pollingIntervalMs}
 workspace:
-  root: ${JSON.stringify(path.join(dir, 'workspaces'))}
+${workspaceRootBlock}\
 ${workspaceProvisionerBlock}\
 ${runtimeUpdateBlock}\
 hooks:
@@ -114,7 +124,7 @@ agent:
 ${codexBlock}\
 persistence:
   enabled: true
-  db_path: ${JSON.stringify(path.join(dir, 'runtime.sqlite'))}
+${persistencePathBlock}\
   retention_days: 14
 ${serverBlock}${loggingBlock}---
 Issue {{ issue.identifier }} attempt {{ attempt }}
@@ -610,8 +620,10 @@ describe('createRuntimeEnvironment', () => {
     expect(payload.active_profile.approval_policy).toBe('never');
     expect(payload.persistence.enabled).toBe(true);
     expect(payload.persistence.integrity_ok).toBe(true);
-    expect(payload.logging.root).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log'));
-    expect(payload.logging.active_file).toBe(path.join(path.dirname(workflowPath), '.symphony', 'log', 'symphony.log'));
+    expect(payload.logging.root).toBe(path.join(path.dirname(workflowPath), '.symphony', 'system', 'logs'));
+    expect(payload.logging.active_file).toBe(
+      path.join(path.dirname(workflowPath), '.symphony', 'system', 'logs', 'symphony.log')
+    );
     expect(payload.logging.sinks).toEqual(expectedRuntimeSinks());
     expect(payload.logging.rotation.max_files).toBe(5);
     expect((payload as Record<string, unknown>).workspace_copy_ignored).toMatchObject({
@@ -619,7 +631,7 @@ describe('createRuntimeEnvironment', () => {
       conflict_policy: 'skip',
       from: 'primary_worktree'
     });
-  });
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('wires runtime update GitHub eligibility mode from workflow config into bootstrap readiness', async () => {
     const repo = await makeRuntimeUpdateRepo();
@@ -1168,6 +1180,53 @@ describe('createRuntimeEnvironment', () => {
     expect(diagnosticsResponse.status).toBe(200);
     expect(diagnosticsPayload.logging.sinks).toEqual(expectedRuntimeSinks({ capture: false }));
   });
+
+  it('exposes default runtime-owned paths under the workflow system state root in diagnostics', async () => {
+    const workflowPath = await makeWorkflowFile({
+      omitWorkspaceRoot: true,
+      omitPersistencePath: true,
+      includeServerPort: true,
+      serverPort: 0
+    });
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({
+      workflowPath,
+      trackerAdapter: tracker,
+      port: 0
+    });
+    runtimes.push(runtime);
+
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const diagnosticsPayload = (await diagnosticsResponse.json()) as {
+      runtime_resolution: { workspace_root: string; workspace_root_source: string };
+      logging: { root: string; active_file: string };
+      persistence: { db_path: string | null };
+    };
+
+    expect(diagnosticsResponse.status).toBe(200);
+    expect(diagnosticsPayload.runtime_resolution).toMatchObject({
+      workspace_root: path.join(workflowDir, '.symphony', 'system', 'workspaces'),
+      workspace_root_source: 'default'
+    });
+    expect(diagnosticsPayload.logging).toMatchObject({
+      root: path.join(workflowDir, '.symphony', 'system', 'logs'),
+      active_file: path.join(workflowDir, '.symphony', 'system', 'logs', 'symphony.log')
+    });
+    expect(diagnosticsPayload.persistence.db_path).toBe(path.join(workflowDir, '.symphony', 'system', 'runtime.sqlite'));
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('uses explicit logsRoot option precedence over workflow logging.root', async () => {
     const workflowPath = await makeWorkflowFile();

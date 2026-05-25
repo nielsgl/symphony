@@ -88,7 +88,7 @@ function resolveRuntimeLogsRoot(params: {
   }
 
   return {
-    logsRoot: path.join(params.workflowDir, '.symphony', 'log'),
+    logsRoot: path.join(params.workflowDir, '.symphony', 'system', 'logs'),
     source: 'default'
   };
 }

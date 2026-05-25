@@ -12,7 +12,7 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
-  root: ./tests/fixtures/todo-sample-app/.symphony/workspaces
+  root: ./tests/fixtures/todo-sample-app/.symphony/system/workspaces
   provisioner:
     type: worktree
     repo_root: ./tests/fixtures/todo-sample-app

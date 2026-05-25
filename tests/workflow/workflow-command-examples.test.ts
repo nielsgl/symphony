@@ -15,6 +15,16 @@ describe('workflow command examples', () => {
     expect(workflow).toMatch(/  reasoning_effort: medium\n/);
   });
 
+  it('keeps the checked-in self-hosting workspace root under system state', () => {
+    const workflowPath = path.join(process.cwd(), 'WORKFLOW.md');
+    const workflow = readFileSync(workflowPath, 'utf8');
+    const parsed = parseWorkflowFrontMatter(workflow);
+
+    const workspace = parsed.config.workspace as { root?: unknown };
+
+    expect(workspace.root).toBe('./.symphony/system/workspaces');
+  });
+
   it('keeps Agent Review active only through handoff and fresh-dispatch config', () => {
     const workflowPath = path.join(process.cwd(), 'WORKFLOW.md');
     const workflow = readFileSync(workflowPath, 'utf8');
