@@ -152,6 +152,7 @@ describe('project layout inspector', () => {
     writeProjectFile(projectRoot, '.gitignore', '.symphony/system/\n');
     mkdirProject(projectRoot, '.symphony/workspaces');
     mkdirProject(projectRoot, '.symphony/log');
+    mkdirProject(projectRoot, '.symphony/logs');
     writeProjectFile(projectRoot, '.symphony/runtime.sqlite', 'sqlite\n');
     writeProjectFile(projectRoot, '.symphony/runtime.sqlite-wal', 'wal\n');
     writeProjectFile(projectRoot, '.symphony/state.db', 'state\n');
@@ -160,13 +161,14 @@ describe('project layout inspector', () => {
 
     expect(result.legacyRuntimePaths.map((item) => item.path).sort()).toEqual([
       '.symphony/log',
+      '.symphony/logs',
       '.symphony/runtime.sqlite',
       '.symphony/runtime.sqlite-wal',
       '.symphony/state.db',
       '.symphony/workspaces'
     ]);
     expect(result.legacyRuntimePaths.every((item) => item.owner === 'legacy-runtime')).toBe(true);
-    expect(result.warnings.filter((warning) => warning.code === 'legacy_runtime_path_present')).toHaveLength(5);
+    expect(result.warnings.filter((warning) => warning.code === 'legacy_runtime_path_present')).toHaveLength(6);
   });
 
   it('reserves customization directories without enabling runtime loading', () => {
@@ -206,6 +208,7 @@ describe('project layout inspector', () => {
       [
         '# legacy runtime state',
         '.symphony/workspaces/',
+        '.symphony/logs/',
         '.symphony/runtime.sqlite',
         '.symphony/runtime.sqlite-*',
         '.symphony/system/'
@@ -217,7 +220,7 @@ describe('project layout inspector', () => {
     expect(result.ignoreAnalysis.status).toBe('mixed-legacy');
     expect(result.ignoreAnalysis.hasNarrowSystemIgnore).toBe(true);
     expect(result.ignoreAnalysis.hasLegacyRuntimeIgnore).toBe(true);
-    expect(result.ignoreAnalysis.patterns.filter((pattern) => pattern.kind === 'legacy-runtime')).toHaveLength(3);
+    expect(result.ignoreAnalysis.patterns.filter((pattern) => pattern.kind === 'legacy-runtime')).toHaveLength(4);
     expect(result.warnings).toEqual([
       expect.objectContaining({
         code: 'legacy_runtime_ignore',

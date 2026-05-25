@@ -102,6 +102,7 @@ const RESERVED_CUSTOMIZATION_PATHS: Array<{ path: string; role: string }> = [
 const LEGACY_RUNTIME_PATHS: Array<{ path: string; role: string }> = [
   { path: '.symphony/workspaces', role: 'legacy runtime workspaces' },
   { path: '.symphony/log', role: 'legacy runtime logs' },
+  { path: '.symphony/logs', role: 'legacy runtime logs' },
   { path: '.symphony/runtime.sqlite', role: 'legacy runtime persistence' },
   { path: '.symphony/state.db', role: 'legacy runtime state database' }
 ];
@@ -156,6 +157,9 @@ function classifyIgnorePattern(pattern: string): ProjectLayoutIgnorePatternKind 
     normalized === '.symphony/log' ||
     normalized === '.symphony/log/*' ||
     normalized === '.symphony/log/**' ||
+    normalized === '.symphony/logs' ||
+    normalized === '.symphony/logs/*' ||
+    normalized === '.symphony/logs/**' ||
     normalized === '.symphony/runtime.sqlite' ||
     normalized === '.symphony/runtime.sqlite-*' ||
     normalized === '.symphony/state.db'
