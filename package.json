@@ -26,6 +26,7 @@
     "bootstrap:tracker-seeds:github": "node scripts/bootstrap-tracker-seeds.js --tracker=github --input=tests/fixtures/tracker-seeds/github-todo-issues.json",
     "validate:integration-profile": "node scripts/validate-real-integration-profile.js",
     "validate:integration-profile:required": "SYMPHONY_REAL_INTEGRATION_REQUIRED=1 node scripts/validate-real-integration-profile.js",
+    "smoke:local-command": "node scripts/smoke-cross-project-command.js",
     "check:api-contract": "node scripts/check-api-contract.js",
     "check:public-api-contract": "node scripts/check-public-api-contract.js",
     "check:codex-app-server-contract": "node scripts/check-codex-app-server-contract.js",

@@ -135,6 +135,11 @@ refresh for link-related findings and can record setup consent only when paired
 with explicit approval (`--fix --yes`). It does not silently change project
 runtime policy.
 
+For the full local command workflow, including linking, PATH setup, high-trust
+consent, update/unlink behavior, bounded `profile`/`init` surfaces, and the
+cross-project smoke command, see
+[`docs/playbooks/local-command-runbook.md`](docs/playbooks/local-command-runbook.md).
+
 ### Project Wrapper (Recommended for Multi-Project)
 
 Use the wrapper to run Symphony against another repository's `WORKFLOW.md`
