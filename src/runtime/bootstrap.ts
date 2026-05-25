@@ -94,10 +94,6 @@ function resolveRuntimeLogsRoot(params: {
   };
 }
 
-function sameResolvedPath(left: string | null | undefined, right: string): boolean {
-  return typeof left === 'string' && path.resolve(left) === path.resolve(right);
-}
-
 function buildProjectLayoutDiagnostics(params: {
   workflowPath: string;
   workflowDir: string;
@@ -106,6 +102,7 @@ function buildProjectLayoutDiagnostics(params: {
   logsRoot: string;
   logsRootSource: LogsRootSource;
   persistencePath: string | null;
+  persistencePathSource: 'workflow' | 'default';
 }): ApiProjectLayoutDiagnostics {
   const inspection = inspectProjectLayout(params.workflowDir);
   const expectedRuntimeStateRoot = path.join(params.workflowDir, '.symphony', 'system');
@@ -113,9 +110,8 @@ function buildProjectLayoutDiagnostics(params: {
   const broadIgnoreWarning = inspection.warnings.find((warning) => warning.code === 'broad_symphony_ignore');
   const workspaceSource = params.workspaceRootSource === 'default' ? 'default_system_state' : 'explicit_override';
   const logsSource = params.logsRootSource === 'default' ? 'default_system_state' : 'explicit_override';
-  const persistenceSource = sameResolvedPath(params.persistencePath, expectedPersistencePath)
-    ? 'default_system_state'
-    : 'explicit_override';
+  const persistenceSource =
+    params.persistencePathSource === 'default' ? 'default_system_state' : 'explicit_override';
 
   return {
     status: inspection.status,
@@ -1564,7 +1560,8 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
                 workspaceRootSource: effectiveConfig.workspace.root_source,
                 logsRoot: loggingResolution.logsRoot,
                 logsRootSource: loggingResolution.source,
-                persistencePath: effectiveConfig.persistence.db_path
+                persistencePath: effectiveConfig.persistence.db_path,
+                persistencePathSource: effectiveConfig.persistence.db_path_source
               }),
             getPhaseMarkers: () => orchestrator.getPhaseMarkerSettings(),
             getBreakerStatuses: () =>

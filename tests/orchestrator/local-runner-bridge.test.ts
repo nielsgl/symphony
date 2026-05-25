@@ -83,6 +83,7 @@ function makeConfig(): EffectiveConfig {
     persistence: {
       enabled: true,
       db_path: '/tmp/symphony/runtime.sqlite',
+      db_path_source: 'workflow',
       retention_days: 14
     },
     logging: {

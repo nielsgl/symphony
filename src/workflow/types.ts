@@ -157,6 +157,7 @@ export interface CodexConfig {
 export interface PersistenceConfig {
   enabled: boolean;
   db_path: string;
+  db_path_source: 'workflow' | 'default';
   retention_days: number;
 }
 
