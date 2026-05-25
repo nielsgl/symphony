@@ -349,7 +349,14 @@ describe('local symphony command router', () => {
         available: true,
         fixId: 'setup-consent',
         command: 'symphony doctor --fix --yes',
-        requiresYes: true
+        requiresYes: true,
+        mutates: [
+          {
+            scope: 'user_local_state',
+            path: harness.deps.setupConsentStore.path,
+            operation: 'record_setup_consent'
+          }
+        ]
       },
       details: {
         posture: 'high-trust'
@@ -366,7 +373,17 @@ describe('local symphony command router', () => {
       details: { exists: false }
     });
     expect(doctorFinding(payload, 'layout.gitignore_system')).toMatchObject({
-      source: { category: 'layout_inspection' }
+      source: { category: 'layout_inspection' },
+      safeFix: {
+        available: false,
+        mutates: [
+          {
+            scope: 'project_file',
+            path: path.join(projectRoot, '.gitignore'),
+            operation: 'append_gitignore_entry'
+          }
+        ]
+      }
     });
     expect(doctorFinding(payload, 'workflow.effective_config')).toMatchObject({
       details: {
@@ -684,6 +701,52 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('does not perform doctor fix mutations in CI mode', async () => {
+    const { repoRoot } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/\n', 'utf8');
+    const emptyBin = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-empty-path-')));
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: emptyBin };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--fix', '--yes', '--ci', '--json'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8')).toBe('.symphony/\n');
+    expect(harness.consent.records()).toEqual([]);
+    expect(harness.linkLocalCalls).toEqual([]);
+    expect(payload.fixes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'link-local',
+          status: 'skipped',
+          summary: expect.stringContaining('`--ci` forbids doctor fix mutations')
+        }),
+        expect.objectContaining({
+          id: 'layout.gitignore-system',
+          status: 'skipped',
+          summary: expect.stringContaining('`--ci` forbids doctor fix mutations')
+        }),
+        expect.objectContaining({
+          id: 'setup-consent',
+          status: 'skipped',
+          summary: expect.stringContaining('`--ci` forbids doctor fix mutations')
+        })
+      ])
+    );
+    expect(payload.exitSemantics.ci).toMatchObject({
+      requested: true,
+      promptsAllowed: false,
+      nonZeroOnBlocker: true
+    });
+    expect(harness.stderr).toBe('');
+  });
+
   it('reports missing and invalid workflows through the local resolver and config validator', async () => {
     const { repoRoot, binDir } = await createDoctorRepo();
     const cwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-no-workflow-')));
@@ -743,7 +806,9 @@ describe('local symphony command router', () => {
   it('doctor --fix --yes can append the runtime-state gitignore entry without removing broad ignores', async () => {
     const { repoRoot, binDir } = await createDoctorRepo();
     const projectRoot = await createDoctorProject();
-    await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/\n', 'utf8');
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), 'node_modules/\n.symphony/\n.env\n', 'utf8');
+    await fs.mkdir(path.join(projectRoot, '.symphony', 'workspaces'), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, '.symphony', 'runtime.sqlite'), 'legacy', 'utf8');
     const harness = createHarness({ repoRoot });
     harness.deps.cwd = projectRoot;
     harness.deps.env = { PATH: binDir };
@@ -753,12 +818,16 @@ describe('local symphony command router', () => {
     const gitignore = await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8');
 
     expect(exitCode).toBe(1);
-    expect(gitignore).toBe('.symphony/\n.symphony/system/\n');
+    expect(gitignore).toBe('node_modules/\n.symphony/\n.env\n.symphony/system/\n');
     expect(payload.fixes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: 'layout.gitignore-system',
-          status: 'applied'
+          status: 'applied',
+          details: {
+            path: '.gitignore',
+            pattern: '.symphony/system/'
+          }
         }),
         expect.objectContaining({
           id: 'setup-consent',
@@ -778,7 +847,55 @@ describe('local symphony command router', () => {
         })
       ])
     );
+    expect(doctorFinding(payload, 'layout.gitignore_system')).toMatchObject({
+      safeFix: {
+        available: false,
+        mutates: [
+          {
+            scope: 'project_file',
+            path: path.join(projectRoot, '.gitignore'),
+            operation: 'append_gitignore_entry'
+          }
+        ]
+      }
+    });
+    expect(doctorFinding(payload, 'layout.legacy_runtime_paths')).toMatchObject({
+      status: 'warning'
+    });
+    expect(await fs.readFile(path.join(projectRoot, '.symphony', 'runtime.sqlite'), 'utf8')).toBe('legacy');
+    await expect(fs.stat(path.join(projectRoot, '.symphony', 'workspaces'))).resolves.toBeTruthy();
     expect(harness.stderr).toBe('');
+  });
+
+  it('doctor --fix --yes is idempotent for the runtime-state gitignore entry', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    await fs.writeFile(path.join(projectRoot, '.gitignore'), '.symphony/\n', 'utf8');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    expect(await runCommandRouter({ argv: ['doctor', '--fix', '--yes', '--json'], deps: harness.deps })).toBe(1);
+    const firstGitignore = await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8');
+    const secondHarness = createHarness({ repoRoot });
+    secondHarness.deps.cwd = projectRoot;
+    secondHarness.deps.env = { PATH: binDir };
+
+    expect(await runCommandRouter({ argv: ['doctor', '--fix', '--yes', '--json'], deps: secondHarness.deps })).toBe(1);
+    const secondPayload = JSON.parse(secondHarness.stdout);
+    const secondGitignore = await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8');
+
+    expect(firstGitignore).toBe('.symphony/\n.symphony/system/\n');
+    expect(secondGitignore).toBe(firstGitignore);
+    expect(secondPayload.fixes).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'layout.gitignore-system',
+          status: 'applied'
+        })
+      ])
+    );
+    expect(secondPayload.checks.filter((check: { id: string }) => check.id === 'layout.gitignore_system')).toHaveLength(1);
   });
 
   it('refuses doctor --fix setup consent when local state is inside the project checkout', async () => {
@@ -860,6 +977,29 @@ describe('local symphony command router', () => {
     );
     expect(doctorHarness.stderr).toBe('');
     expect(doctorHarness.dashboardCalls).toEqual([]);
+  });
+
+  it('does not treat workflow declarations as doctor setup consent authority', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject(
+      ['---', 'local_high_trust_consent: true', 'codex:', '  command: codex', '---', 'workflow'].join('\n')
+    );
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({ argv: ['doctor', '--json'], deps: harness.deps });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(payload.resolution.consent).toBe('missing');
+    expect(doctorFinding(payload, 'setup.consent')).toMatchObject({
+      status: 'failure',
+      reason: 'setup_consent_missing',
+      source: { category: 'user_local_trust_state', present: false }
+    });
+    expect(harness.consent.records()).toEqual([]);
+    expect(harness.stderr).toBe('');
   });
 
   it('records explicit setup consent in user-local state for the resolved workflow identity', async () => {
