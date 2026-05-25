@@ -398,6 +398,18 @@ assertJsonMatch('broad ignore reports migration warning', broadDoctor, (payload)
     payload.checks.some((check) => check.id === 'layout.broad_symphony_ignore' && check.status === 'warning')
   );
 });
+const broadDiagnostics = runDiagnosticsProbe(broadIgnoreProject);
+assertDefaultDiagnosticsLayout('broad ignore diagnostics defaults use .symphony/system', broadDiagnostics, broadIgnoreProject);
+assertJsonMatch('broad ignore diagnostics reports migration warning', broadDiagnostics, (payload) => {
+  const warnings = payload.project_layout.warnings.map((warning) => warning.code);
+  return (
+    payload.project_layout.status === 'warning' &&
+    payload.project_layout.ignore_status.status === 'broad-symphony' &&
+    payload.project_layout.broad_ignore_warning.status === 'warning' &&
+    payload.project_layout.broad_ignore_warning.present === true &&
+    warnings.includes('broad_symphony_ignore')
+  );
+});
 assertIncludes('broad ignore setup preserves broad rule', fs.readFileSync(path.join(broadIgnoreProject, '.gitignore'), 'utf8'), '.symphony/\n.symphony/system/\n');
 assertPathExists('broad ignore setup preserves reserved skills', path.join(broadIgnoreProject, '.symphony', 'skills', 'README.md'));
 assertPathExists('broad ignore setup preserves reserved prompts', path.join(broadIgnoreProject, '.symphony', 'prompts', 'README.md'));
@@ -427,6 +439,20 @@ assertJsonMatch('legacy runtime reports migration guidance', legacyDoctor, (payl
     payload.layout.legacyRuntimePaths.some((item) => item.path === '.symphony/workspaces') &&
     payload.layout.legacyRuntimePaths.some((item) => item.path === '.symphony/runtime.sqlite') &&
     payload.checks.some((check) => check.id === 'layout.legacy_runtime_paths' && check.status === 'warning')
+  );
+});
+const legacyDiagnostics = runDiagnosticsProbe(legacyProject);
+assertDefaultDiagnosticsLayout('legacy runtime diagnostics defaults use .symphony/system', legacyDiagnostics, legacyProject);
+assertJsonMatch('legacy runtime diagnostics reports migration warning', legacyDiagnostics, (payload) => {
+  const legacyPaths = payload.project_layout.legacy_runtime_path_status.paths.map((item) => item.path);
+  const warningCodes = payload.project_layout.warnings.map((warning) => warning.code);
+  return (
+    payload.project_layout.status === 'warning' &&
+    payload.project_layout.legacy_runtime_path_status.status === 'warning' &&
+    payload.project_layout.legacy_runtime_path_status.present === true &&
+    legacyPaths.includes('.symphony/workspaces') &&
+    legacyPaths.includes('.symphony/runtime.sqlite') &&
+    warningCodes.includes('legacy_runtime_path_present')
   );
 });
 assertPathExists('legacy setup does not auto-move workspaces', path.join(legacyProject, '.symphony', 'workspaces'));
