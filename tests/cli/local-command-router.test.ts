@@ -172,7 +172,8 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('symphony <command> [options]');
     expect(harness.stdout).toContain('dashboard');
     expect(harness.stdout).toContain('doctor');
-    expect(harness.stdout).toContain('setup');
+    expect(harness.stdout).toContain('setup           Record user-local setup consent for this workflow');
+    expect(harness.stdout).not.toContain('Reserved for future local setup consent and configuration');
     expect(harness.stdout).toContain('profile');
     expect(harness.stdout).toContain('init');
     expect(harness.stdout).toContain('link-local');
