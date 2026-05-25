@@ -70,6 +70,36 @@ symphony dashboard --profile symphony-internal
 This profile binds to the checked-in Symphony `WORKFLOW.md`. It is not a
 generated project profile and does not materialize files.
 
+## Project Layout Boundary
+
+The root `WORKFLOW.md` is the committed project contract for local Symphony
+execution. `SPEC.md` remains the canonical service specification; do not edit it
+for local layout extensions. Put layout usage additions in `SPEC.ext.md` or
+operational docs.
+
+Runtime-owned local state belongs under `.symphony/system/`:
+
+- `.symphony/system/workspaces/` for per-issue workspaces.
+- `.symphony/system/logs/` for local runtime logs.
+- `.symphony/system/runtime.sqlite` for local persistence.
+
+The project root `.gitignore` should ignore `.symphony/system/`. Do not use a
+broad `.symphony/`, `.symphony/*`, or `.symphony/**` rule for normal operation,
+because that hides project-owned Symphony customization from review.
+
+`.symphony/skills/` and `.symphony/prompts/` are reserved project-owned
+customization paths. They are intentionally visible to git today and are not
+loaded by the runtime until a future customization implementation deliberately
+adds that behavior.
+
+During migration, a repository may still contain old runtime state such as
+`.symphony/workspaces/`, `.symphony/log/`, `.symphony/logs/`,
+`.symphony/runtime.sqlite`, `.symphony/runtime.sqlite-*`, or
+`.symphony/state.db`. `setup` and `doctor --fix --yes` may add the missing
+`.symphony/system/` ignore entry, but they do not automatically move or delete
+legacy runtime state and they do not remove broad ignore rules. Migrate those
+paths manually after confirming no active Symphony process still uses them.
+
 ## Setup Consent
 
 `symphony setup --yes` records explicit user-local consent for the resolved
@@ -150,3 +180,19 @@ The smoke creates temporary external projects with `WORKFLOW.md`, links a
 temporary `symphony` shim, runs the bounded command surfaces, verifies setup and
 doctor behavior, starts dashboard through explicit/default/profile paths using
 a deterministic supervisor child, and exercises the compatibility wrapper.
+
+The same smoke also exercises the project layout matrix:
+
+- no `.gitignore`;
+- broad `.symphony/` ignore;
+- narrow `.symphony/system/` ignore;
+- legacy runtime state present;
+- Symphony self-hosting through `symphony-internal`;
+- Node-ish project with `package.json`;
+- generic project without Node metadata.
+
+It validates that effective workspace, log, and persistence paths default under
+`.symphony/system/`; `.symphony/system/` is ignored while
+`.symphony/skills/` and `.symphony/prompts/` stay visible in healthy layouts;
+doctor/setup guidance is present for missing, broad-ignore, and legacy cases;
+and legacy runtime state is neither moved nor deleted automatically.
