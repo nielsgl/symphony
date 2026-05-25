@@ -49,6 +49,12 @@ interface DoctorCliResult {
   };
 }
 
+interface DoctorTextCliResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
 beforeAll(() => {
   execFileSync('npm', ['run', 'build', '--silent'], { cwd: repoRoot, stdio: 'pipe' });
 }, 120_000);
@@ -160,6 +166,37 @@ function runDoctor(projectRoot: string, argv: string[] = [], env: Record<string,
   };
 }
 
+function runDoctorText(projectRoot: string, argv: string[] = [], env: Record<string, string> = {}): DoctorTextCliResult {
+  const binDir = env.PATH?.split(path.delimiter)[0] ?? fsSync.mkdtempSync(path.join(os.tmpdir(), 'unused-bin-'));
+  const stateHome = fsSync.mkdtempSync(path.join(os.tmpdir(), 'symphony-doctor-matrix-state-'));
+  const { PATH: _pathOverride, ...extraEnv } = env;
+  const baseEnv = { ...process.env };
+  for (const key of [
+    'SYMPHONY_WORKFLOW_PATH',
+    'SYMPHONY_ENV_FILE',
+    'SYMPHONY_PROFILE',
+    'SYMPHONY_HOST',
+    'SYMPHONY_PORT'
+  ]) {
+    delete baseEnv[key];
+  }
+  const child = spawnSync(process.execPath, [doctorScript, 'doctor', ...argv], {
+    cwd: projectRoot,
+    env: {
+      ...baseEnv,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+      SYMPHONY_LOCAL_STATE_HOME: stateHome,
+      ...extraEnv
+    },
+    encoding: 'utf8'
+  });
+  return {
+    status: child.status,
+    stdout: child.stdout,
+    stderr: child.stderr
+  };
+}
+
 function check(payload: DoctorCliResult['json'], id: string) {
   const found = payload.checks.find((item) => item.id === id);
   expect(found, `missing doctor check ${id}`).toBeTruthy();
@@ -182,6 +219,29 @@ describe('Doctor MVP real CLI scenario matrix', () => {
       'layout-customization-ci-provenance',
       'project-local-consent-rejected'
     ]);
+  });
+
+  it('smokes human output through the real CLI for minimal and worktree project shapes', async () => {
+    const binDir = await createBin();
+    const minimalProject = await createProject(memoryWorkflow());
+    const minimal = runDoctorText(minimalProject, [guardrailFlag], { PATH: binDir });
+    expect(minimal.status).toBe(0);
+    expect(minimal.stderr).toBe('');
+    expect(minimal.stdout).toContain('Symphony doctor: ok');
+    expect(minimal.stdout).toContain('Resolved context:');
+    expect(minimal.stdout).toContain('Checks:');
+    expect(minimal.stdout).toContain('Root WORKFLOW.md is present.');
+    expect(minimal.stdout).toContain('Workflow does not record generated profile, bundle, pack, or customization provenance.');
+
+    const gitRoot = await createGitRepo();
+    const worktreeProject = await createProject(worktreeWorkflow(gitRoot));
+    const worktree = runDoctorText(worktreeProject, [guardrailFlag], { PATH: binDir });
+    expect(worktree.status).toBe(0);
+    expect(worktree.stderr).toBe('');
+    expect(worktree.stdout).toContain('Symphony doctor: ok');
+    expect(worktree.stdout).toContain('workspace.provisioner.repo_root is a git work tree');
+    expect(worktree.stdout).toContain('Base ref origin/main resolves locally.');
+    expect(worktree.stdout).toContain('Git worktree metadata can be inspected.');
   });
 
   it('executes blocker/pass/warning scenarios through scripts/symphony.js doctor', async () => {
@@ -363,7 +423,9 @@ describe('Doctor MVP real CLI scenario matrix', () => {
 
     const layoutProject = await createProject(memoryWorkflow());
     await fs.writeFile(path.join(layoutProject, '.gitignore'), '.symphony/\n', 'utf8');
-    await fs.mkdir(path.join(layoutProject, '.symphony', 'workspaces'), { recursive: true });
+    const legacyRuntimePath = path.join(layoutProject, '.symphony', 'workspaces');
+    await fs.mkdir(legacyRuntimePath, { recursive: true });
+    await fs.writeFile(path.join(legacyRuntimePath, 'legacy-run.json'), 'legacy state\n', 'utf8');
     await fs.mkdir(path.join(layoutProject, '.symphony', 'skills'), { recursive: true });
     const layoutWarning = runDoctor(layoutProject, ['--ci', guardrailFlag], { PATH: binDir });
     expect(layoutWarning.status).toBe(1);
@@ -382,6 +444,23 @@ describe('Doctor MVP real CLI scenario matrix', () => {
     );
     expect(check(layoutWarning.json, 'resolver.workflow').details).toMatchObject({ workflowSource: 'project' });
     expect(check(layoutWarning.json, 'env.path').details).toMatchObject({ source: 'project' });
+    await expect(fs.readFile(path.join(legacyRuntimePath, 'legacy-run.json'), 'utf8')).resolves.toBe('legacy state\n');
+
+    const fixedLayout = runDoctor(layoutProject, ['--fix', '--yes', guardrailFlag], { PATH: binDir });
+    expect(fixedLayout.status).toBe(1);
+    expect(fixedLayout.json.fixes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'layout.gitignore-system', status: 'applied' })])
+    );
+    expect(await fs.readFile(path.join(layoutProject, '.gitignore'), 'utf8')).toBe('.symphony/\n.symphony/system/\n');
+    await expect(fs.readFile(path.join(legacyRuntimePath, 'legacy-run.json'), 'utf8')).resolves.toBe('legacy state\n');
+    expect(check(fixedLayout.json, 'layout.broad_symphony_ignore')).toMatchObject({
+      status: 'warning',
+      reason: 'broad_symphony_ignore_present'
+    });
+    expect(check(fixedLayout.json, 'layout.legacy_runtime_paths')).toMatchObject({
+      status: 'warning',
+      reason: 'legacy_runtime_paths_present'
+    });
 
     const hooksProject = await createProject(memoryWorkflow(['hooks:', '  after_create: |', '    echo created'].join('\n')));
     const hooksReady = runDoctor(hooksProject, [guardrailFlag], { PATH: binDir });
