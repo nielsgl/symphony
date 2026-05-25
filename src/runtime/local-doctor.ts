@@ -920,13 +920,93 @@ function findCommandOnPath(command: string, env: NodeJS.ProcessEnv): string | nu
   return null;
 }
 
+function workflowRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function envTokenName(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('$') || trimmed.length === 1) {
+    return null;
+  }
+  const name = trimmed.slice(1);
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : null;
+}
+
+function requiredTrackerEnvTokens(definition: { config: Record<string, unknown> }): Array<{ field: string; name: string }> {
+  const tracker = workflowRecord(definition.config.tracker);
+  const kind = typeof tracker.kind === 'string' ? tracker.kind.trim() : '';
+  const requirements: Array<{ field: string; name: string }> = [];
+
+  const explicitApiKey = typeof tracker.api_key === 'string';
+  const apiKeyToken = explicitApiKey
+    ? envTokenName(tracker.api_key)
+    : kind === 'linear'
+      ? 'LINEAR_API_KEY'
+      : kind === 'github'
+        ? 'GITHUB_TOKEN'
+        : null;
+  if ((kind === 'linear' || kind === 'github') && apiKeyToken) {
+    requirements.push({ field: 'tracker.api_key', name: apiKeyToken });
+  }
+
+  for (const field of kind === 'linear' ? ['project_slug'] : kind === 'github' ? ['owner', 'repo'] : []) {
+    const token = envTokenName(tracker[field]);
+    if (token) {
+      requirements.push({ field: `tracker.${field}`, name: token });
+    }
+  }
+
+  return requirements;
+}
+
+function buildRequiredEnvCheck(
+  definition: { config: Record<string, unknown> },
+  env: NodeJS.ProcessEnv,
+  envFilePath: string
+): DoctorFindingInput {
+  const requirements = requiredTrackerEnvTokens(definition);
+  const variables = requirements.map((requirement) => ({
+    name: requirement.name,
+    field: requirement.field,
+    present: typeof env[requirement.name] === 'string' && env[requirement.name]!.length > 0
+  }));
+  const missing = variables.filter((variable) => !variable.present);
+
+  return {
+    id: 'env.required_variables',
+    title: 'Required environment variables are present',
+    status: missing.length > 0 ? 'failure' : 'ok',
+    reason: missing.length > 0 ? 'required_env_missing' : 'required_env_present',
+    summary:
+      missing.length > 0
+        ? `Missing ${missing.length} required environment variable(s) after loading the effective environment source.`
+        : 'All required environment variables are present after loading the effective environment source.',
+    remediation:
+      missing.length > 0
+        ? 'Define the missing variables in the project .env file or process environment before starting Symphony.'
+        : undefined,
+    source: { category: 'environment_file', value: envFilePath, present: fs.existsSync(envFilePath) },
+    details: {
+      envFilePath,
+      variables
+    }
+  };
+}
+
 function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessEnv): {
   check: DoctorFindingInput;
   effectiveConfig: EffectiveConfig | null;
+  configValid: boolean;
+  envCheck: DoctorFindingInput | null;
 } {
   try {
     const definition = new WorkflowLoader().load({ explicitPath: resolved.workflowPath });
     const effective = new ConfigResolver({ env }).resolve(definition, { workflowPath: resolved.workflowPath });
+    const envCheck = buildRequiredEnvCheck(definition, env, resolved.envFilePath);
     const workflowDetails = {
       workflowPath: resolved.workflowPath,
       trackerKind: effective.tracker.kind,
@@ -944,7 +1024,9 @@ function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessE
           remediation: 'Fix WORKFLOW.md or the referenced environment variables before starting the dashboard.',
           details: { ...workflowDetails, at: validation.at }
         },
-        effectiveConfig: null
+        effectiveConfig: effective,
+        configValid: false,
+        envCheck
       };
     }
     return {
@@ -956,7 +1038,9 @@ function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessE
         summary: 'Workflow syntax and effective configuration are valid for local startup.',
         details: workflowDetails
       },
-      effectiveConfig: effective
+      effectiveConfig: effective,
+      configValid: true,
+      envCheck
     };
   } catch (error) {
     const code = error instanceof WorkflowConfigError ? error.code : 'workflow_validation_failed';
@@ -971,7 +1055,9 @@ function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessE
         remediation: 'Fix WORKFLOW.md syntax/configuration before starting the dashboard.',
         details: { workflowPath: resolved.workflowPath }
       },
-      effectiveConfig: null
+      effectiveConfig: null,
+      configValid: false,
+      envCheck: null
     };
   }
 }
@@ -1139,6 +1225,87 @@ function addCodexCommandCheck(checks: DoctorFinding[], effectiveConfig: Effectiv
     summary: executablePath ? `Codex command resolves to ${executablePath}.` : `Codex command is not executable: ${command}`,
     remediation: executablePath ? undefined : 'Install Codex or set codex.command to an executable command before starting agents.',
     details: { command, executablePath }
+  });
+}
+
+function addTrackerCredentialCheck(checks: DoctorFinding[], effectiveConfig: EffectiveConfig): void {
+  const tracker = effectiveConfig.tracker;
+  if (tracker.kind === 'memory') {
+    addCheck(checks, {
+      id: 'tracker.credentials',
+      title: 'Tracker credentials are ready',
+      status: 'ok',
+      reason: 'tracker_credentials_not_required',
+      summary: 'Memory tracker mode does not require external tracker credentials.',
+      details: { trackerKind: tracker.kind, required: false, present: true }
+    });
+    return;
+  }
+
+  const present = tracker.api_key.trim().length > 0;
+  addCheck(checks, {
+    id: 'tracker.credentials',
+    title: 'Tracker credentials are ready',
+    status: present ? 'ok' : 'failure',
+    reason: present ? `${tracker.kind}_tracker_credentials_present` : `${tracker.kind}_tracker_credentials_missing`,
+    summary: present
+      ? `${tracker.kind} tracker credentials are present after environment resolution.`
+      : `${tracker.kind} tracker credentials are missing after environment resolution.`,
+    remediation: present ? undefined : `Set ${tracker.kind === 'linear' ? 'LINEAR_API_KEY' : 'GITHUB_TOKEN'} or tracker.api_key before starting Symphony.`,
+    details: {
+      trackerKind: tracker.kind,
+      required: true,
+      present
+    }
+  });
+}
+
+function addHookCommandReadinessCheck(checks: DoctorFinding[], effectiveConfig: EffectiveConfig, env: NodeJS.ProcessEnv): void {
+  const hooks = [
+    ['after_create', effectiveConfig.hooks.after_create],
+    ['before_run', effectiveConfig.hooks.before_run],
+    ['after_run', effectiveConfig.hooks.after_run],
+    ['before_remove', effectiveConfig.hooks.before_remove]
+  ]
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+    .map(([name, command]) => ({
+      name,
+      configured: true,
+      commandPreview: command.split(/\r?\n/)[0].trim().slice(0, 120)
+    }));
+  const bashPath = findCommandOnPath('bash', env);
+  const shellReady = Boolean(bashPath);
+
+  addCheck(checks, {
+    id: 'hooks.commands',
+    title: 'Workspace hook command runner is ready',
+    status: hooks.length === 0 ? 'ok' : shellReady ? 'ok' : 'failure',
+    reason: shellReady
+      ? hooks.length > 0
+        ? 'hook_shell_ready'
+        : 'no_hooks_configured'
+      : hooks.length > 0
+        ? 'hook_shell_missing'
+        : 'no_hooks_configured',
+    summary:
+      hooks.length > 0
+        ? shellReady
+          ? `Found bash for ${hooks.length} configured workspace hook(s); hooks are reported but not executed by doctor.`
+          : 'Workspace hooks are configured, but bash is not available for the runtime hook runner.'
+        : shellReady
+          ? 'No workspace hooks are configured.'
+          : 'No workspace hooks are configured; bash was not found for future hook execution.',
+    remediation:
+      !shellReady && hooks.length > 0
+        ? 'Install bash or adjust the runtime hook runner environment before provisioning workspaces.'
+        : undefined,
+    details: {
+      bashPath,
+      timeoutMs: effectiveConfig.hooks.timeout_ms,
+      hooks,
+      executed: false,
+      guarantee: 'doctor verifies the hook shell is available and reports configured commands; it does not guarantee runtime hook success'
+    }
   });
 }
 
@@ -1310,9 +1477,16 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
     };
     const workflowValidation = validateWorkflow(resolved, dashboardEnv);
     addCheck(checks, workflowValidation.check);
+    if (workflowValidation.envCheck) {
+      addCheck(checks, workflowValidation.envCheck);
+    }
     if (workflowValidation.effectiveConfig) {
-      addCodexCommandCheck(checks, workflowValidation.effectiveConfig, dashboardEnv);
-      addWorkspaceChecks(checks, resolved, workflowValidation.effectiveConfig);
+      addTrackerCredentialCheck(checks, workflowValidation.effectiveConfig);
+      addHookCommandReadinessCheck(checks, workflowValidation.effectiveConfig, dashboardEnv);
+      if (workflowValidation.configValid) {
+        addCodexCommandCheck(checks, workflowValidation.effectiveConfig, dashboardEnv);
+        addWorkspaceChecks(checks, resolved, workflowValidation.effectiveConfig);
+      }
     }
     addCheck(checks, {
       id: 'env.path',

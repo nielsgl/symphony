@@ -212,10 +212,95 @@ describe('Doctor MVP real CLI scenario matrix', () => {
     );
     const missingCredential = runDoctor(missingEnv, [], { PATH: binDir });
     expect(missingCredential.status).toBe(2);
+    expect(check(missingCredential.json, 'env.required_variables')).toMatchObject({
+      status: 'failure',
+      reason: 'required_env_missing'
+    });
+    expect(check(missingCredential.json, 'tracker.credentials')).toMatchObject({
+      status: 'failure',
+      reason: 'linear_tracker_credentials_missing'
+    });
     expect(check(missingCredential.json, 'workflow.effective_config')).toMatchObject({
       status: 'failure',
       reason: 'missing_tracker_api_key'
     });
+
+    const githubMissingEnv = await createProject(
+      [
+        '---',
+        'tracker:',
+        '  kind: github',
+        '  owner: nielsgl',
+        '  repo: symphony',
+        'codex:',
+        '  command: codex',
+        '---',
+        'workflow'
+      ].join('\n')
+    );
+    const missingGithubCredential = runDoctor(githubMissingEnv, [], { PATH: binDir, GITHUB_TOKEN: '' });
+    expect(missingGithubCredential.status).toBe(2);
+    expect(check(missingGithubCredential.json, 'env.required_variables')).toMatchObject({
+      status: 'failure',
+      reason: 'required_env_missing'
+    });
+    expect(check(missingGithubCredential.json, 'tracker.credentials')).toMatchObject({
+      status: 'failure',
+      reason: 'github_tracker_credentials_missing'
+    });
+
+    const literalLinearProject = await createProject(
+      ['---', 'tracker:', '  kind: linear', '  api_key: literal-linear-token', '  project_slug: DEMO', 'codex:', '  command: codex', '---', 'workflow'].join(
+        '\n'
+      )
+    );
+    const literalLinear = runDoctor(literalLinearProject, [guardrailFlag], {
+      PATH: binDir,
+      LINEAR_API_KEY: '',
+      GITHUB_TOKEN: ''
+    });
+    expect(literalLinear.status).toBe(0);
+    expect(check(literalLinear.json, 'env.required_variables')).toMatchObject({
+      status: 'ok',
+      reason: 'required_env_present'
+    });
+    expect(check(literalLinear.json, 'env.required_variables').details?.variables).toEqual([]);
+    expect(check(literalLinear.json, 'tracker.credentials')).toMatchObject({
+      status: 'ok',
+      reason: 'linear_tracker_credentials_present'
+    });
+    expect(literalLinear.stdout).not.toContain('literal-linear-token');
+
+    const literalGithubProject = await createProject(
+      [
+        '---',
+        'tracker:',
+        '  kind: github',
+        '  api_key: literal-github-token',
+        '  owner: nielsgl',
+        '  repo: symphony',
+        'codex:',
+        '  command: codex',
+        '---',
+        'workflow'
+      ].join('\n')
+    );
+    const literalGithub = runDoctor(literalGithubProject, [guardrailFlag], {
+      PATH: binDir,
+      LINEAR_API_KEY: '',
+      GITHUB_TOKEN: ''
+    });
+    expect(literalGithub.status).toBe(0);
+    expect(check(literalGithub.json, 'env.required_variables')).toMatchObject({
+      status: 'ok',
+      reason: 'required_env_present'
+    });
+    expect(check(literalGithub.json, 'env.required_variables').details?.variables).toEqual([]);
+    expect(check(literalGithub.json, 'tracker.credentials')).toMatchObject({
+      status: 'ok',
+      reason: 'github_tracker_credentials_present'
+    });
+    expect(literalGithub.stdout).not.toContain('literal-github-token');
 
     const noCodexBin = await createBin({ includeCodex: false });
     const codexProject = await createProject(
@@ -229,6 +314,12 @@ describe('Doctor MVP real CLI scenario matrix', () => {
     const workspaceProject = await createProject(worktreeWorkflow(gitRoot));
     const workspaceReady = runDoctor(workspaceProject, [guardrailFlag], { PATH: binDir });
     expect(workspaceReady.status).toBe(0);
+    expect(check(workspaceReady.json, 'env.required_variables')).toMatchObject({ status: 'ok', reason: 'required_env_present' });
+    expect(check(workspaceReady.json, 'tracker.credentials')).toMatchObject({
+      status: 'ok',
+      reason: 'tracker_credentials_not_required'
+    });
+    expect(check(workspaceReady.json, 'hooks.commands')).toMatchObject({ status: 'ok', reason: 'no_hooks_configured' });
     expect(check(workspaceReady.json, 'workspace.git_repository')).toMatchObject({ status: 'ok', reason: 'repo_root_git_repository' });
     expect(check(workspaceReady.json, 'workspace.worktree')).toMatchObject({ status: 'ok', reason: 'worktree_list_ready' });
     expect(check(workspaceReady.json, 'workspace.base_ref')).toMatchObject({ status: 'ok', reason: 'base_ref_exists' });
@@ -291,6 +382,15 @@ describe('Doctor MVP real CLI scenario matrix', () => {
     );
     expect(check(layoutWarning.json, 'resolver.workflow').details).toMatchObject({ workflowSource: 'project' });
     expect(check(layoutWarning.json, 'env.path').details).toMatchObject({ source: 'project' });
+
+    const hooksProject = await createProject(memoryWorkflow(['hooks:', '  after_create: |', '    echo created'].join('\n')));
+    const hooksReady = runDoctor(hooksProject, [guardrailFlag], { PATH: binDir });
+    expect(hooksReady.status).toBe(0);
+    expect(check(hooksReady.json, 'hooks.commands')).toMatchObject({ status: 'ok', reason: 'hook_shell_ready' });
+    expect(check(hooksReady.json, 'hooks.commands').details).toMatchObject({
+      executed: false,
+      hooks: [expect.objectContaining({ name: 'after_create', commandPreview: 'echo created' })]
+    });
 
     const projectConsent = await createProject(memoryWorkflow());
     const projectStateHome = path.join(projectConsent, '.symphony');
