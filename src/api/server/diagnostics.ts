@@ -178,6 +178,9 @@ export function buildDiagnosticsPayload(options: {
     workflow: {
       prompt_fallback_active: options.diagnosticsSource.getPromptFallbackActive()
     },
+    project_layout: options.diagnosticsSource.getProjectLayoutDiagnostics
+      ? options.diagnosticsSource.getProjectLayoutDiagnostics()
+      : null,
     phase_markers: options.diagnosticsSource.getPhaseMarkers
       ? options.diagnosticsSource.getPhaseMarkers()
       : {

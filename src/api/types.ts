@@ -134,6 +134,7 @@ export interface DiagnosticsSource {
   getUiState(): UiContinuityState | null;
   setUiState(state: UiContinuityState): void;
   getPromptFallbackActive(): boolean;
+  getProjectLayoutDiagnostics?: () => ApiProjectLayoutDiagnostics | null;
   getRuntimeResolution(): {
     workflow_path: string;
     workflow_dir: string;
@@ -208,6 +209,68 @@ export interface DiagnosticsSource {
     blocked_event_reject_total: number;
     blocked_latch_violation_total: number;
   };
+}
+
+export type ApiProjectLayoutPathSource =
+  | 'default_system_state'
+  | 'explicit_override'
+  | 'runtime_contract';
+
+export interface ApiProjectLayoutEffectivePath {
+  path: string;
+  source: ApiProjectLayoutPathSource;
+  explicit_override_source: 'workflow' | 'cli' | null;
+}
+
+export interface ApiProjectLayoutPathStatus {
+  path: string;
+  role: string;
+  status: 'present' | 'missing' | 'reserved' | 'legacy-present';
+  exists: boolean;
+  loaded_by_runtime?: boolean;
+}
+
+export interface ApiProjectLayoutDiagnostics {
+  status: 'ok' | 'warning';
+  canonical_workflow_path: ApiProjectLayoutEffectivePath & {
+    exists: boolean;
+  };
+  project_root: {
+    path: string;
+  };
+  expected_runtime_state_root: ApiProjectLayoutEffectivePath & {
+    relative_path: '.symphony/system';
+  };
+  effective_workspace_root: ApiProjectLayoutEffectivePath;
+  effective_log_root: ApiProjectLayoutEffectivePath;
+  effective_persistence_path: ApiProjectLayoutEffectivePath;
+  ignore_status: {
+    path: '.gitignore';
+    exists: boolean;
+    status: 'missing' | 'narrow-system' | 'broad-symphony' | 'mixed-legacy' | 'unclassified' | 'unreadable';
+    has_narrow_system_ignore: boolean;
+    remediation: string;
+  };
+  broad_ignore_warning: {
+    status: 'ok' | 'warning';
+    present: boolean;
+    remediation: string | null;
+  };
+  legacy_runtime_path_status: {
+    status: 'ok' | 'warning';
+    present: boolean;
+    paths: ApiProjectLayoutPathStatus[];
+  };
+  reserved_customization_path_status: {
+    status: 'reserved';
+    paths: ApiProjectLayoutPathStatus[];
+  };
+  warnings: Array<{
+    code: string;
+    path: string;
+    message: string;
+    remediation: string;
+  }>;
 }
 
 export interface LocalApiErrorEnvelope {
@@ -1782,6 +1845,7 @@ export interface ApiDiagnosticsResponse {
   workflow: {
     prompt_fallback_active: boolean;
   };
+  project_layout: ApiProjectLayoutDiagnostics | null;
   runtime_resolution: {
     workflow_path: string;
     workflow_dir: string;

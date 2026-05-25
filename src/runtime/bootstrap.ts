@@ -5,7 +5,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
-import { ControlPlaneHealthRecorder, LocalApiServer } from '../api';
+import { ControlPlaneHealthRecorder, LocalApiServer, type ApiProjectLayoutDiagnostics } from '../api';
 import { SnapshotService } from '../api/snapshot-service';
 import { CodexRunner, createDefaultDynamicToolExecutor, type CodexRunnerEvent } from '../codex';
 import {
@@ -36,6 +36,7 @@ import type { WorkerObservabilityEvent } from '../orchestrator';
 import { resolveSecurityProfile, securityProfileSummary } from '../security';
 import { createTrackerAdapter, type TrackerAdapter } from '../tracker';
 import { LocalRuntimeUpdateManager, type LocalRuntimeUpdateManagerOptions, type RuntimeRestartController } from './update-manager';
+import { inspectProjectLayout } from './project-layout-inspector';
 import { WorkflowConfigError } from '../workflow/errors';
 import {
   WorkflowLoader,
@@ -90,6 +91,103 @@ function resolveRuntimeLogsRoot(params: {
   return {
     logsRoot: path.join(params.workflowDir, '.symphony', 'system', 'logs'),
     source: 'default'
+  };
+}
+
+function sameResolvedPath(left: string | null | undefined, right: string): boolean {
+  return typeof left === 'string' && path.resolve(left) === path.resolve(right);
+}
+
+function buildProjectLayoutDiagnostics(params: {
+  workflowPath: string;
+  workflowDir: string;
+  workspaceRoot: string;
+  workspaceRootSource: 'workflow' | 'default';
+  logsRoot: string;
+  logsRootSource: LogsRootSource;
+  persistencePath: string | null;
+}): ApiProjectLayoutDiagnostics {
+  const inspection = inspectProjectLayout(params.workflowDir);
+  const expectedRuntimeStateRoot = path.join(params.workflowDir, '.symphony', 'system');
+  const expectedPersistencePath = path.join(expectedRuntimeStateRoot, 'runtime.sqlite');
+  const broadIgnoreWarning = inspection.warnings.find((warning) => warning.code === 'broad_symphony_ignore');
+  const workspaceSource = params.workspaceRootSource === 'default' ? 'default_system_state' : 'explicit_override';
+  const logsSource = params.logsRootSource === 'default' ? 'default_system_state' : 'explicit_override';
+  const persistenceSource = sameResolvedPath(params.persistencePath, expectedPersistencePath)
+    ? 'default_system_state'
+    : 'explicit_override';
+
+  return {
+    status: inspection.status,
+    canonical_workflow_path: {
+      path: params.workflowPath,
+      source: 'runtime_contract',
+      explicit_override_source: null,
+      exists: inspection.workflow.exists
+    },
+    project_root: {
+      path: inspection.projectRoot
+    },
+    expected_runtime_state_root: {
+      path: expectedRuntimeStateRoot,
+      relative_path: '.symphony/system',
+      source: 'default_system_state',
+      explicit_override_source: null
+    },
+    effective_workspace_root: {
+      path: params.workspaceRoot,
+      source: workspaceSource,
+      explicit_override_source: params.workspaceRootSource === 'workflow' ? 'workflow' : null
+    },
+    effective_log_root: {
+      path: params.logsRoot,
+      source: logsSource,
+      explicit_override_source:
+        params.logsRootSource === 'cli' ? 'cli' : params.logsRootSource === 'workflow' ? 'workflow' : null
+    },
+    effective_persistence_path: {
+      path: params.persistencePath ?? expectedPersistencePath,
+      source: persistenceSource,
+      explicit_override_source: persistenceSource === 'explicit_override' ? 'workflow' : null
+    },
+    ignore_status: {
+      path: inspection.ignoreAnalysis.path,
+      exists: inspection.ignoreAnalysis.exists,
+      status: inspection.ignoreAnalysis.status,
+      has_narrow_system_ignore: inspection.ignoreAnalysis.hasNarrowSystemIgnore,
+      remediation: inspection.ignoreAnalysis.remediation
+    },
+    broad_ignore_warning: {
+      status: broadIgnoreWarning ? 'warning' : 'ok',
+      present: Boolean(broadIgnoreWarning),
+      remediation: broadIgnoreWarning?.remediation ?? null
+    },
+    legacy_runtime_path_status: {
+      status: inspection.legacyRuntimePaths.length > 0 ? 'warning' : 'ok',
+      present: inspection.legacyRuntimePaths.length > 0,
+      paths: inspection.legacyRuntimePaths.map((entry) => ({
+        path: entry.path,
+        role: entry.role,
+        status: entry.status,
+        exists: entry.exists
+      }))
+    },
+    reserved_customization_path_status: {
+      status: 'reserved',
+      paths: inspection.reservedCustomizationPaths.map((entry) => ({
+        path: entry.path,
+        role: entry.role,
+        status: entry.status,
+        exists: entry.exists,
+        loaded_by_runtime: entry.loadedByRuntime
+      }))
+    },
+    warnings: inspection.warnings.map((warning) => ({
+      code: warning.code,
+      path: warning.path,
+      message: warning.message,
+      remediation: warning.remediation
+    }))
   };
 }
 
@@ -1458,6 +1556,16 @@ export function createRuntimeEnvironment(options: RuntimeBootstrapOptions = {}):
               persistenceStore?.saveUiState(state);
             },
             getPromptFallbackActive: () => promptFallbackActive,
+            getProjectLayoutDiagnostics: () =>
+              buildProjectLayoutDiagnostics({
+                workflowPath: currentWorkflowPath,
+                workflowDir,
+                workspaceRoot: effectiveConfig.workspace.root,
+                workspaceRootSource: effectiveConfig.workspace.root_source,
+                logsRoot: loggingResolution.logsRoot,
+                logsRootSource: loggingResolution.source,
+                persistencePath: effectiveConfig.persistence.db_path
+              }),
             getPhaseMarkers: () => orchestrator.getPhaseMarkerSettings(),
             getBreakerStatuses: () =>
               orchestrator.getCircuitBreakerSnapshot().map((entry) => ({
