@@ -52,7 +52,7 @@ polling:
   interval_ms: 30000
 
 workspace:
-  root: ~/.symphony/workspaces
+  root: ./.symphony/system/workspaces
   provisioner:
     type: none
     repo_root: ""
