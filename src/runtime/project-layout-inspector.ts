@@ -161,6 +161,7 @@ function classifyIgnorePattern(pattern: string): ProjectLayoutIgnorePatternKind 
     normalized === '.symphony/logs/*' ||
     normalized === '.symphony/logs/**' ||
     normalized === '.symphony/runtime.sqlite' ||
+    normalized === '.symphony/runtime.sqlite.bak-*' ||
     normalized === '.symphony/runtime.sqlite-*' ||
     normalized === '.symphony/state.db'
   ) {
@@ -344,12 +345,14 @@ function scanLegacyRuntimeSidecars(projectRoot: string): LegacyRuntimeSidecarSca
 
   return {
     paths: entries
-      .filter((entry) => entry.startsWith('runtime.sqlite-'))
+      .filter((entry) => entry.startsWith('runtime.sqlite-') || entry.startsWith('runtime.sqlite.bak-'))
       .sort()
       .map((entry) => ({
         path: `.symphony/${entry}`,
         owner: 'legacy-runtime',
-        role: 'legacy runtime persistence sidecar',
+        role: entry.startsWith('runtime.sqlite.bak-')
+          ? 'legacy runtime persistence backup'
+          : 'legacy runtime persistence sidecar',
         status: 'legacy-present',
         exists: true,
         remediation: 'Move runtime persistence under .symphony/system/ and remove the legacy sidecar after migration.'

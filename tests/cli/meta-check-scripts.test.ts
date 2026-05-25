@@ -68,6 +68,7 @@ function initTempGitRepository(root: string) {
       '.symphony/log/',
       '.symphony/logs/',
       '.symphony/runtime.sqlite',
+      '.symphony/runtime.sqlite.bak-*',
       '.symphony/runtime.sqlite-*',
       '.symphony/state.db',
       '.symphony/runtime-restart-failure.json',
@@ -607,6 +608,7 @@ describe('meta check scripts', () => {
     expect(runGit(['check-ignore', '-q', '.symphony/system/runtime.sqlite'], tempRoot).status).toBe(0);
     expect(runGit(['check-ignore', '-q', '.symphony/workspaces/NIE-1'], tempRoot).status).toBe(0);
     expect(runGit(['check-ignore', '-q', '.symphony/logs/runtime.log'], tempRoot).status).toBe(0);
+    expect(runGit(['check-ignore', '-q', '.symphony/runtime.sqlite.bak-example'], tempRoot).status).toBe(0);
     expect(runGit(['check-ignore', '-q', '.symphony/runtime.sqlite-wal'], tempRoot).status).toBe(0);
     expect(runGit(['check-ignore', '-q', '.symphony/stress-base/summary.json'], tempRoot).status).toBe(0);
     expect(runGit(['check-ignore', '-q', '.symphony/skills/example.md'], tempRoot).status).toBe(1);
@@ -621,7 +623,7 @@ describe('meta check scripts', () => {
     initTempGitRepository(tempRoot);
     fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
     fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
-    fs.appendFileSync(path.join(tempRoot, '.gitignore'), '.symphony/system/\n', 'utf8');
+    fs.appendFileSync(path.join(tempRoot, '.gitignore'), '.symphony/runtime.sqlite.bak-*\n', 'utf8');
 
     const result = runNode(['scripts/check-meta.js'], tempRoot, {
       SYMPHONY_META_SKIP_BASE_CHECKS: '1',
@@ -629,7 +631,7 @@ describe('meta check scripts', () => {
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('project_layout_ignore_policy_failed');
-    expect(result.stderr).toContain('duplicate managed Symphony ignore entry .symphony/system');
+    expect(result.stderr).toContain('duplicate managed Symphony ignore entry .symphony/runtime.sqlite.bak-*');
 
     removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);

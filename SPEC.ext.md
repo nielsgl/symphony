@@ -192,7 +192,8 @@ and must be ignored by the repository root `.gitignore`.
 
 During migration, the repository may also keep targeted legacy runtime ignores
 for existing local paths such as `.symphony/workspaces/`, `.symphony/log/`,
-`.symphony/logs/`, `.symphony/runtime.sqlite`, `.symphony/runtime.sqlite-*`,
+`.symphony/logs/`, `.symphony/runtime.sqlite`,
+`.symphony/runtime.sqlite.bak-*`, `.symphony/runtime.sqlite-*`,
 `.symphony/state.db`, `.symphony/runtime-restart-failure.json`, and
 `.symphony/stress-base/`. These entries are compatibility guards only; new
 runtime state should use `.symphony/system/`.

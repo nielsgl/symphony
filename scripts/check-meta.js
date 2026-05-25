@@ -303,6 +303,7 @@ function classifyProjectLayoutIgnorePattern(pattern) {
     normalized === '.symphony/logs/*' ||
     normalized === '.symphony/logs/**' ||
     normalized === '.symphony/runtime.sqlite' ||
+    normalized === '.symphony/runtime.sqlite.bak-*' ||
     normalized === '.symphony/runtime.sqlite-*' ||
     normalized === '.symphony/state.db' ||
     normalized === '.symphony/runtime-restart-failure.json' ||

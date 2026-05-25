@@ -164,6 +164,7 @@ output/playwright/
 .symphony/log/
 .symphony/logs/
 .symphony/runtime.sqlite
+.symphony/runtime.sqlite.bak-*
 .symphony/runtime.sqlite-*
 .symphony/state.db
 .symphony/runtime-restart-failure.json
