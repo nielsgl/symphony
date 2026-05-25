@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import dotenv from 'dotenv';
 
 import { ConfigResolver, ConfigValidator, WorkflowLoader } from '../workflow';
 import { WorkflowConfigError } from '../workflow/errors';
+import type { EffectiveConfig } from '../workflow/types';
 import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local-command-resolver';
 import { LocalCommandResolutionError } from './local-command-resolver';
 import { isWithinPath } from './path-containment';
@@ -368,43 +370,249 @@ function readEnvFileValues(envFilePath: string): NodeJS.ProcessEnv {
   }
 }
 
-function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessEnv): DoctorCheck {
+function findCommandOnPath(command: string, env: NodeJS.ProcessEnv): string | null {
+  const [executable] = command.trim().split(/\s+/);
+  if (!executable) {
+    return null;
+  }
+
+  if (executable.includes(path.sep)) {
+    try {
+      fs.accessSync(executable, fs.constants.X_OK);
+      return fs.realpathSync(executable);
+    } catch {
+      return null;
+    }
+  }
+
+  for (const entry of (env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(entry, executable);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return fs.realpathSync(candidate);
+    } catch {
+      // Continue searching PATH.
+    }
+  }
+
+  return null;
+}
+
+function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessEnv): {
+  check: DoctorCheck;
+  effectiveConfig: EffectiveConfig | null;
+} {
   try {
     const definition = new WorkflowLoader().load({ explicitPath: resolved.workflowPath });
     const effective = new ConfigResolver({ env }).resolve(definition, { workflowPath: resolved.workflowPath });
     const validation = new ConfigValidator().validate(effective);
     if (!validation.ok) {
       return {
-        id: 'workflow.effective_config',
-        title: 'Workflow effective config validates',
-        status: 'failure',
-        reason: validation.error_code,
-        summary: validation.message,
-        remediation: 'Fix WORKFLOW.md or the referenced environment variables before starting the dashboard.',
-        details: { workflowPath: resolved.workflowPath, at: validation.at }
+        check: {
+          id: 'workflow.effective_config',
+          title: 'Workflow effective config validates',
+          status: 'failure',
+          reason: validation.error_code,
+          summary: validation.message,
+          remediation: 'Fix WORKFLOW.md or the referenced environment variables before starting the dashboard.',
+          details: { workflowPath: resolved.workflowPath, at: validation.at }
+        },
+        effectiveConfig: null
       };
     }
     return {
-      id: 'workflow.effective_config',
-      title: 'Workflow effective config validates',
-      status: 'ok',
-      reason: 'workflow_config_valid',
-      summary: 'Workflow syntax and effective configuration are valid for local startup.',
-      details: { workflowPath: resolved.workflowPath }
+      check: {
+        id: 'workflow.effective_config',
+        title: 'Workflow effective config validates',
+        status: 'ok',
+        reason: 'workflow_config_valid',
+        summary: 'Workflow syntax and effective configuration are valid for local startup.',
+        details: { workflowPath: resolved.workflowPath }
+      },
+      effectiveConfig: effective
     };
   } catch (error) {
     const code = error instanceof WorkflowConfigError ? error.code : 'workflow_validation_failed';
     const message = error instanceof Error ? error.message : String(error);
     return {
-      id: 'workflow.effective_config',
-      title: 'Workflow effective config validates',
-      status: 'failure',
-      reason: code,
-      summary: message,
-      remediation: 'Fix WORKFLOW.md syntax/configuration before starting the dashboard.',
-      details: { workflowPath: resolved.workflowPath }
+      check: {
+        id: 'workflow.effective_config',
+        title: 'Workflow effective config validates',
+        status: 'failure',
+        reason: code,
+        summary: message,
+        remediation: 'Fix WORKFLOW.md syntax/configuration before starting the dashboard.',
+        details: { workflowPath: resolved.workflowPath }
+      },
+      effectiveConfig: null
     };
   }
+}
+
+function runGit(cwd: string, args: readonly string[]): { ok: boolean; stdout: string; stderr: string } {
+  const result = spawnSync('git', [...args], { cwd, encoding: 'utf8' });
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? ''
+  };
+}
+
+function parseRemoteBaseRef(baseRef: string): { remote: string; ref: string } | null {
+  const [remote, ...rest] = baseRef.split('/');
+  if (!remote || rest.length === 0) {
+    return null;
+  }
+
+  return { remote, ref: rest.join('/') };
+}
+
+function checkBaseRef(repoRoot: string, baseRef: string): DoctorCheck {
+  const localRef = runGit(repoRoot, ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`]);
+  if (localRef.ok) {
+    return {
+      id: 'workspace.base_ref',
+      title: 'Workspace base ref is ready',
+      status: 'ok',
+      reason: 'base_ref_exists',
+      summary: `Base ref ${baseRef} resolves locally.`,
+      details: { repoRoot, baseRef, source: 'local' }
+    };
+  }
+
+  const remoteRef = parseRemoteBaseRef(baseRef);
+  if (remoteRef) {
+    const remote = runGit(repoRoot, ['ls-remote', '--exit-code', remoteRef.remote, remoteRef.ref]);
+    if (remote.ok) {
+      return {
+        id: 'workspace.base_ref',
+        title: 'Workspace base ref is ready',
+        status: 'ok',
+        reason: 'base_ref_fetchable',
+        summary: `Base ref ${baseRef} is fetchable from ${remoteRef.remote}.`,
+        details: { repoRoot, baseRef, source: 'remote', remote: remoteRef.remote, ref: remoteRef.ref }
+      };
+    }
+  }
+
+  return {
+    id: 'workspace.base_ref',
+    title: 'Workspace base ref is ready',
+    status: 'failure',
+    reason: 'base_ref_unavailable',
+    summary: `Base ref ${baseRef} does not resolve locally and was not fetchable.`,
+    remediation: 'Fetch the configured base ref or update workspace.provisioner.base_ref before running agents.',
+    details: { repoRoot, baseRef, stderr: localRef.stderr.trim() }
+  };
+}
+
+function addWorkspaceChecks(checks: DoctorCheck[], resolved: LocalCommandResolution, effectiveConfig: EffectiveConfig): void {
+  const provisioner = effectiveConfig.workspace.provisioner;
+  if (provisioner.type === 'none') {
+    addCheck(checks, {
+      id: 'workspace.provisioner',
+      title: 'Workspace provisioner is configured',
+      status: 'ok',
+      reason: 'workspace_provisioner_disabled',
+      summary: 'Workspace provisioning is disabled for this workflow.',
+      details: { type: provisioner.type }
+    });
+    return;
+  }
+
+  const repoRoot = provisioner.repo_root ?? resolved.currentProjectRoot;
+  const repoStat = fs.existsSync(repoRoot) ? fs.statSync(repoRoot) : null;
+  if (!repoStat?.isDirectory()) {
+    addCheck(checks, {
+      id: 'workspace.git_repository',
+      title: 'Workspace repository is ready',
+      status: 'failure',
+      reason: 'repo_root_missing',
+      summary: `workspace.provisioner.repo_root is not a directory: ${repoRoot}`,
+      remediation: 'Set workspace.provisioner.repo_root to an existing git checkout.',
+      details: { type: provisioner.type, repoRoot }
+    });
+    return;
+  }
+
+  const insideWorkTree = runGit(repoRoot, ['rev-parse', '--is-inside-work-tree']);
+  if (!insideWorkTree.ok || insideWorkTree.stdout.trim() !== 'true') {
+    addCheck(checks, {
+      id: 'workspace.git_repository',
+      title: 'Workspace repository is ready',
+      status: 'failure',
+      reason: 'repo_root_not_git_repository',
+      summary: `workspace.provisioner.repo_root is not a git work tree: ${repoRoot}`,
+      remediation: 'Use a git checkout for workspace.provisioner.repo_root.',
+      details: { type: provisioner.type, repoRoot, stderr: insideWorkTree.stderr.trim() }
+    });
+    return;
+  }
+
+  addCheck(checks, {
+    id: 'workspace.git_repository',
+    title: 'Workspace repository is ready',
+    status: 'ok',
+    reason: 'repo_root_git_repository',
+    summary: `workspace.provisioner.repo_root is a git work tree: ${repoRoot}`,
+    details: { type: provisioner.type, repoRoot }
+  });
+
+  if (provisioner.type === 'worktree') {
+    const worktreeList = runGit(repoRoot, ['worktree', 'list', '--porcelain']);
+    addCheck(checks, {
+      id: 'workspace.worktree',
+      title: 'Git worktree support is ready',
+      status: worktreeList.ok ? 'ok' : 'failure',
+      reason: worktreeList.ok ? 'worktree_list_ready' : 'worktree_list_failed',
+      summary: worktreeList.ok ? 'Git worktree metadata can be inspected.' : 'Git worktree metadata could not be inspected.',
+      remediation: worktreeList.ok ? undefined : 'Repair git worktree metadata before provisioning issue workspaces.',
+      details: { repoRoot, stderr: worktreeList.stderr.trim() }
+    });
+  }
+
+  addCheck(checks, checkBaseRef(repoRoot, provisioner.base_ref));
+
+  const status = runGit(repoRoot, ['status', '--porcelain']);
+  const dirty = status.stdout.trim().length > 0;
+  addCheck(checks, {
+    id: 'workspace.dirty_policy',
+    title: 'Dirty repository policy is satisfied',
+    status: !dirty || provisioner.allow_dirty_repo ? 'ok' : 'failure',
+    reason: dirty
+      ? provisioner.allow_dirty_repo
+        ? 'dirty_repo_allowed'
+        : 'dirty_repo_blocked'
+      : 'repo_clean',
+    summary: dirty
+      ? provisioner.allow_dirty_repo
+        ? 'Repository has local changes and workflow allows dirty provisioning.'
+        : 'Repository has local changes but workflow blocks dirty provisioning.'
+      : 'Repository has no local changes.',
+    remediation: dirty && !provisioner.allow_dirty_repo ? 'Commit, stash, or discard local changes before provisioning workspaces.' : undefined,
+    details: {
+      repoRoot,
+      allowDirtyRepo: provisioner.allow_dirty_repo,
+      dirtyEntries: status.stdout
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .slice(0, 20)
+    }
+  });
+}
+
+function addCodexCommandCheck(checks: DoctorCheck[], effectiveConfig: EffectiveConfig, env: NodeJS.ProcessEnv): void {
+  const command = effectiveConfig.codex.command;
+  const executablePath = findCommandOnPath(command, env);
+  addCheck(checks, {
+    id: 'codex.command',
+    title: 'Codex command is available',
+    status: executablePath ? 'ok' : 'failure',
+    reason: executablePath ? 'codex_command_available' : 'codex_command_missing',
+    summary: executablePath ? `Codex command resolves to ${executablePath}.` : `Codex command is not executable: ${command}`,
+    remediation: executablePath ? undefined : 'Install Codex or set codex.command to an executable command before starting agents.',
+    details: { command, executablePath }
+  });
 }
 
 function renderHuman(result: DoctorJsonResult): string {
@@ -565,7 +773,12 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       ...readEnvFileValues(resolved.envFilePath),
       ...deps.env
     };
-    addCheck(checks, validateWorkflow(resolved, dashboardEnv));
+    const workflowValidation = validateWorkflow(resolved, dashboardEnv);
+    addCheck(checks, workflowValidation.check);
+    if (workflowValidation.effectiveConfig) {
+      addCodexCommandCheck(checks, workflowValidation.effectiveConfig, dashboardEnv);
+      addWorkspaceChecks(checks, resolved, workflowValidation.effectiveConfig);
+    }
     addCheck(checks, {
       id: 'env.path',
       title: 'Project env file path resolved',
