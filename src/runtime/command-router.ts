@@ -31,6 +31,7 @@ import {
   type ProfilePack,
   type ProfileResolution
 } from '../workflow/profile-registry';
+import { materializeWorkflowDryRun, renderWorkflowFilePlan } from '../workflow/materializer';
 
 export interface DashboardLaunchContext {
   cwd: string;
@@ -413,9 +414,11 @@ function renderInitHelp(): string {
     '',
     'Usage:',
     '  symphony init --help',
+    '  symphony init --dry-run --bundle memory-generic',
+    '  symphony init --dry-run --pack tracker:memory --pack workspace:none --pack toolchain:generic --pack workflow:solo-local',
+    '  symphony init --dry-run --tracker memory --workspace none --toolchain generic --workflow solo-local',
     '',
-    'The init command shape is reserved for later workflow materialization work.',
-    'This PRD only exposes help; it does not generate, copy, or overwrite workflows.'
+    'Dry-run renders a complete WORKFLOW.md and supporting file plan without writing files.'
   ].join('\n');
 }
 
@@ -597,17 +600,97 @@ function runProfileCommand(argv: readonly string[], deps: CommandRouterDependenc
   );
 }
 
+function parseInitSelections(argv: readonly string[]): { dryRun: boolean; selections: string[]; errors: string[] } {
+  const selections: string[] = [];
+  const errors: string[] = [];
+  let dryRun = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--dry-run') {
+      dryRun = true;
+      continue;
+    }
+    if (arg === '--bundle' || arg === '--pack') {
+      const value = argv[index + 1];
+      if (!value) {
+        errors.push(`${arg} requires a value.`);
+      } else {
+        selections.push(value);
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === '--tracker' || arg === '--workspace' || arg === '--toolchain' || arg === '--workflow') {
+      const value = argv[index + 1];
+      if (!value) {
+        errors.push(`${arg} requires a value.`);
+      } else {
+        selections.push(`${arg.slice(2)}:${value}`);
+        index += 1;
+      }
+      continue;
+    }
+    errors.push(`Unsupported init option: ${arg}`);
+  }
+
+  return { dryRun, selections, errors };
+}
+
+function detectInitProjectFacts(cwd: string): { root: string; packageManager: string | null; existingWorkflowPath: string | null } {
+  const packageManager = fs.existsSync(path.join(cwd, 'package-lock.json'))
+    ? 'npm'
+    : fs.existsSync(path.join(cwd, 'pnpm-lock.yaml'))
+      ? 'pnpm'
+      : fs.existsSync(path.join(cwd, 'yarn.lock'))
+        ? 'yarn'
+        : null;
+  const workflowPath = path.join(cwd, 'WORKFLOW.md');
+  return {
+    root: cwd,
+    packageManager,
+    existingWorkflowPath: fs.existsSync(workflowPath) ? workflowPath : null
+  };
+}
+
 function runInitCommand(argv: readonly string[], deps: CommandRouterDependencies): number {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
     deps.stdout(`${renderInitHelp()}\n`);
     return 0;
   }
 
-  return failUnsupported(
-    deps,
-    'Workflow materialization is not implemented in this PRD.',
-    renderInitHelp()
-  );
+  const parsed = parseInitSelections(argv);
+  if (!parsed.dryRun) {
+    return failUnsupported(deps, 'Only symphony init --dry-run is implemented.', renderInitHelp());
+  }
+  if (parsed.errors.length > 0) {
+    deps.stderr(`${parsed.errors.join('\n')}\n\n${renderInitHelp()}\n`);
+    return 1;
+  }
+
+  const resolution = resolveProfileSelection(parsed.selections);
+  if (resolution.errors.length > 0) {
+    deps.stderr(`${resolution.errors.join('\n')}\n`);
+    return 1;
+  }
+
+  try {
+    const plan = materializeWorkflowDryRun({
+      resolution,
+      projectFacts: detectInitProjectFacts(deps.cwd),
+      choices: { dryRun: true, selections: parsed.selections },
+      clock: deps.clock
+    });
+    if (!plan.validation.ok) {
+      deps.stderr(`Generated workflow validation failed: ${plan.validation.message}\n`);
+      return 1;
+    }
+    deps.stdout(renderWorkflowFilePlan(plan));
+    return 0;
+  } catch (error) {
+    deps.stderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
 }
 
 export async function runCommandRouter(options: RunCommandRouterOptions): Promise<number> {

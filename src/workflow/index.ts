@@ -1,5 +1,6 @@
 export * from './errors';
 export * from './loader';
+export * from './materializer';
 export * from './profile-registry';
 export * from './resolver';
 export * from './store';
