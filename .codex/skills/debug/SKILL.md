@@ -33,7 +33,7 @@ rg -n "orchestration\.dispatch\.spawn\.failed|orchestration\.retry\.scheduled|co
 ```bash
 WORKFLOW_PATH=/abs/path/to/WORKFLOW.md
 WORKFLOW_DIR="$(dirname "$WORKFLOW_PATH")"
-LOG_ROOT="$WORKFLOW_DIR/.symphony/log"
+LOG_ROOT="$WORKFLOW_DIR/.symphony/system/logs"
 ```
 2. If runtime was started with `--logs-root`, use that directory directly as `LOG_ROOT`.
 3. Run the same `rg` correlation queries against `"$LOG_ROOT"/symphony.log*`.

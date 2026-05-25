@@ -106,7 +106,7 @@ codex:
 
 persistence:
   enabled: true
-  db_path: ~/.symphony/runtime.sqlite
+  db_path: .symphony/system/runtime.sqlite
   retention_days: 14
 
 observability:
@@ -182,7 +182,7 @@ Memory tracker note:
 
 | Key | Type | Default | Allowed values / notes | Required |
 |---|---|---|---|---|
-| `workspace.root` | string | `<tmp>/symphony_workspaces` | absolute or relative path | No |
+| `workspace.root` | string | `<workflow-dir>/.symphony/system/workspaces` | absolute or relative path | No |
 | `workspace.provisioner.type` | string | `none` | `none`, `worktree`, `clone` | No |
 | `workspace.provisioner.repo_root` | string | unset | required when `type=worktree`; absolute or workflow-relative path | Conditional |
 | `workspace.provisioner.base_ref` | string | `origin/main` | git ref used when provisioning new worktrees/clones | No |
@@ -273,13 +273,14 @@ Rules:
 | Key | Type | Default | Allowed values / notes | Required |
 |---|---|---|---|---|
 | `persistence.enabled` | boolean | `true` | `true` or `false` | No |
-| `persistence.db_path` | string | `<workflow-dir>/.symphony/runtime.sqlite` | path to sqlite db | No |
+| `persistence.db_path` | string | `<workflow-dir>/.symphony/system/runtime.sqlite` | path to sqlite db | No |
 | `persistence.retention_days` | integer | `14` | clamped to minimum `1` | No |
 
 Runtime note:
 - When the runtime is started with a workflow path, default persistence path is
   derived from that workflow file directory.
-- Fallback outside that context remains `~/.symphony/runtime.sqlite`.
+- Fallback outside that context remains `.symphony/system/runtime.sqlite`
+  relative to the current working directory.
 
 ### `worker`
 
