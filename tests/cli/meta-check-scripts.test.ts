@@ -60,6 +60,23 @@ function initTempGitRepository(root: string) {
   expect(runGit(['init'], root).status).toBe(0);
   expect(runGit(['config', 'user.email', 'test@example.com'], root).status).toBe(0);
   expect(runGit(['config', 'user.name', 'Meta Test'], root).status).toBe(0);
+  fs.writeFileSync(
+    path.join(root, '.gitignore'),
+    [
+      '.symphony/system/',
+      '.symphony/workspaces/',
+      '.symphony/log/',
+      '.symphony/logs/',
+      '.symphony/runtime.sqlite',
+      '.symphony/runtime.sqlite.bak-*',
+      '.symphony/runtime.sqlite-*',
+      '.symphony/state.db',
+      '.symphony/runtime-restart-failure.json',
+      '.symphony/stress-base/',
+      ''
+    ].join('\n'),
+    'utf8'
+  );
   const fixturePath = path.join(root, UI_FIXTURE_PATH);
   fs.mkdirSync(path.dirname(fixturePath), { recursive: true });
   if (!fs.existsSync(fixturePath)) {
@@ -549,6 +566,72 @@ describe('meta check scripts', () => {
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Meta checks passed');
+
+    removeTempRoot(tempRoot);
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
+
+  it('fails aggregate meta check when root gitignore reintroduces broad symphony ignores', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-layout-ignore-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, '.gitignore'), '.symphony/\n', 'utf8');
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('project_layout_ignore_policy_failed');
+    expect(result.stderr).toContain('broad .symphony/');
+    expect(result.stderr).toContain('missing .symphony/system/');
+
+    removeTempRoot(tempRoot);
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
+
+  it('accepts narrow system and targeted legacy ignores while reserved customization stays visible', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-layout-ignore-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    expect(runGit(['add', '.'], tempRoot).status).toBe(0);
+    expect(runGit(['commit', '-m', 'initial'], tempRoot).status).toBe(0);
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline'
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Project layout ignore policy passed');
+    expect(runGit(['check-ignore', '-q', '.symphony/system/runtime.sqlite'], tempRoot).status).toBe(0);
+    expect(runGit(['check-ignore', '-q', '.symphony/workspaces/NIE-1'], tempRoot).status).toBe(0);
+    expect(runGit(['check-ignore', '-q', '.symphony/logs/runtime.log'], tempRoot).status).toBe(0);
+    expect(runGit(['check-ignore', '-q', '.symphony/runtime.sqlite.bak-example'], tempRoot).status).toBe(0);
+    expect(runGit(['check-ignore', '-q', '.symphony/runtime.sqlite-wal'], tempRoot).status).toBe(0);
+    expect(runGit(['check-ignore', '-q', '.symphony/stress-base/summary.json'], tempRoot).status).toBe(0);
+    expect(runGit(['check-ignore', '-q', '.symphony/skills/example.md'], tempRoot).status).toBe(1);
+    expect(runGit(['check-ignore', '-q', '.symphony/prompts/example.md'], tempRoot).status).toBe(1);
+
+    removeTempRoot(tempRoot);
+  }, HEAVY_META_FIXTURE_TIMEOUT_MS);
+
+  it('fails aggregate meta check when managed symphony ignore entries are duplicated', () => {
+    const root = process.cwd();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-layout-ignore-check-'));
+    initTempGitRepository(tempRoot);
+    fs.cpSync(path.join(root, 'scripts'), path.join(tempRoot, 'scripts'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(tempRoot, 'src'), { recursive: true });
+    fs.appendFileSync(path.join(tempRoot, '.gitignore'), '.symphony/runtime.sqlite.bak-*\n', 'utf8');
+
+    const result = runNode(['scripts/check-meta.js'], tempRoot, {
+      SYMPHONY_META_SKIP_BASE_CHECKS: '1',
+      SYMPHONY_UI_EVIDENCE_PROFILE: 'baseline'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('project_layout_ignore_policy_failed');
+    expect(result.stderr).toContain('duplicate managed Symphony ignore entry .symphony/runtime.sqlite.bak-*');
 
     removeTempRoot(tempRoot);
   }, HEAVY_META_FIXTURE_TIMEOUT_MS);
