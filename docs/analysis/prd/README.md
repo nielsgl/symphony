@@ -13,6 +13,7 @@ proven.
 
 - `PRD-001-local-command-and-setup.md`
 - `PRD-002-project-layout-and-config-boundaries.md`
+- `PRD-002-project-layout-closure-audit.md`
 - `PRD-003-composable-profile-registry.md`
 - `PRD-004-init-and-safe-materialization.md`
 - `PRD-005-doctor-and-diagnostics.md`
