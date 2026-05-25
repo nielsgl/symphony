@@ -12,8 +12,11 @@ import {
   type DashboardLaunchContext,
   type DashboardSupervisorSignal
 } from '../../src/runtime/command-router';
+import { resolveLocalCommand } from '../../src/runtime/local-command-resolver';
 import {
+  buildSetupConsentRecord,
   createFileSetupConsentStore,
+  persistSetupConsent,
   type SetupConsentStore,
   type SetupConsentStorePayload,
   type WorkflowPosture
@@ -584,6 +587,40 @@ describe('local symphony command router', () => {
       'reason: workflow effective codex sandbox posture requires danger-full-access local execution'
     );
     expect(harness.stdout).toContain('consent: setup');
+  });
+
+  it('does not trust project-contained setup consent for dashboard startup', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-router-dashboard-project-state-')));
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'workflow\n', 'utf8');
+    const projectStore = createMemoryConsentStore(path.join(projectRoot, '.symphony', 'setup-consent.json'));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    harness.deps.setupConsentStore = projectStore.store;
+
+    const setupExit = await runCommandRouter({ argv: ['setup', '--yes'], deps: harness.deps });
+    expect(setupExit).toBe(1);
+    const resolved = resolveLocalCommand({
+      command: 'dashboard',
+      argv: ['--port=0'],
+      cwd: projectRoot,
+      env: harness.deps.env,
+      symphonyCheckoutRoot: harness.deps.repoRoot
+    });
+    persistSetupConsent(
+      projectStore.store,
+      buildSetupConsentRecord({
+        resolved,
+        posture: HIGH_TRUST_POSTURE,
+        approvedAt: '2026-05-24T20:00:00.000Z'
+      })
+    );
+
+    const exitCode = await runCommandRouter({ argv: ['dashboard', '--port=0'], deps: harness.deps });
+
+    expect(exitCode).toBe(27);
+    expect(projectStore.records()).toHaveLength(1);
+    expect(harness.dashboardCalls.at(-1)).not.toContain('--i-understand-that-this-will-be-running-without-the-usual-guardrails');
+    expect(harness.stdout).toContain('consent: missing');
   });
 
   it('does not treat workflow declarations as setup consent authority', async () => {

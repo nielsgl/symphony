@@ -471,7 +471,8 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
     let dashboardArgv = resolved.dashboardArgv;
     const posture = deps.resolveWorkflowPosture(resolved.workflowPath, deps.env);
     let consentSource: SetupConsentSource = dashboardArgv.includes(GUARDRAIL_ACK_FLAG) ? 'flag' : 'missing';
-    if (consentSource === 'missing') {
+    const setupConsentStoreInProject = isWithinPath(resolved.currentProjectRoot, deps.setupConsentStore.path);
+    if (consentSource === 'missing' && !setupConsentStoreInProject) {
       const consent = findValidSetupConsent({ store: deps.setupConsentStore, resolved, posture });
       if (consent) {
         dashboardArgv = [...dashboardArgv, GUARDRAIL_ACK_FLAG];
