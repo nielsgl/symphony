@@ -279,8 +279,7 @@ Rules:
 Runtime note:
 - When the runtime is started with a workflow path, default persistence path is
   derived from that workflow file directory.
-- Fallback outside that context remains `.symphony/system/runtime.sqlite`
-  relative to the current working directory.
+- Fallback outside that context remains `~/.symphony/system/runtime.sqlite`.
 
 ### `worker`
 
