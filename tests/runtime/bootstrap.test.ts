@@ -1228,6 +1228,274 @@ describe('createRuntimeEnvironment', () => {
     expect(diagnosticsPayload.persistence.db_path).toBe(path.join(workflowDir, '.symphony', 'system', 'runtime.sqlite'));
   }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
 
+  it('exposes healthy project layout diagnostics for default system state paths', async () => {
+    const workflowPath = await makeWorkflowFile({
+      omitWorkspaceRoot: true,
+      omitPersistencePath: true,
+      includeServerPort: true,
+      serverPort: 0
+    });
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    await writeTestFile(path.join(workflowDir, '.gitignore'), '.symphony/system/\n');
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+
+    const runtime = createRuntimeEnvironment({ workflowPath, trackerAdapter: tracker, port: 0 });
+    runtimes.push(runtime);
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      project_layout: {
+        status: string;
+        canonical_workflow_path: { path: string; source: string; exists: boolean };
+        project_root: { path: string };
+        expected_runtime_state_root: { path: string; relative_path: string; source: string };
+        effective_workspace_root: { path: string; source: string; explicit_override_source: string | null };
+        effective_log_root: { path: string; source: string; explicit_override_source: string | null };
+        effective_persistence_path: { path: string; source: string; explicit_override_source: string | null };
+        ignore_status: { status: string; has_narrow_system_ignore: boolean };
+        broad_ignore_warning: { status: string; present: boolean };
+        legacy_runtime_path_status: { status: string; present: boolean; paths: unknown[] };
+        reserved_customization_path_status: { status: string; paths: Array<{ path: string; loaded_by_runtime: boolean }> };
+        warnings: unknown[];
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.project_layout).toMatchObject({
+      status: 'ok',
+      canonical_workflow_path: {
+        path: workflowPath,
+        source: 'runtime_contract',
+        exists: true
+      },
+      project_root: { path: workflowDir },
+      expected_runtime_state_root: {
+        path: path.join(workflowDir, '.symphony', 'system'),
+        relative_path: '.symphony/system',
+        source: 'default_system_state'
+      },
+      effective_workspace_root: {
+        path: path.join(workflowDir, '.symphony', 'system', 'workspaces'),
+        source: 'default_system_state',
+        explicit_override_source: null
+      },
+      effective_log_root: {
+        path: path.join(workflowDir, '.symphony', 'system', 'logs'),
+        source: 'default_system_state',
+        explicit_override_source: null
+      },
+      effective_persistence_path: {
+        path: path.join(workflowDir, '.symphony', 'system', 'runtime.sqlite'),
+        source: 'default_system_state',
+        explicit_override_source: null
+      },
+      ignore_status: {
+        status: 'narrow-system',
+        has_narrow_system_ignore: true
+      },
+      broad_ignore_warning: {
+        status: 'ok',
+        present: false
+      },
+      legacy_runtime_path_status: {
+        status: 'ok',
+        present: false,
+        paths: []
+      },
+      reserved_customization_path_status: {
+        status: 'reserved'
+      },
+      warnings: []
+    });
+    expect(payload.project_layout.reserved_customization_path_status.paths).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: '.symphony/skills', loaded_by_runtime: false }),
+        expect.objectContaining({ path: '.symphony/prompts', loaded_by_runtime: false })
+      ])
+    );
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('reports broad and missing system ignore layout warnings without failing diagnostics', async () => {
+    const workflowPath = await makeWorkflowFile({ includeServerPort: true, serverPort: 0 });
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    await writeTestFile(path.join(workflowDir, '.gitignore'), '.symphony/\n');
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+    const runtime = createRuntimeEnvironment({ workflowPath, trackerAdapter: tracker, port: 0 });
+    runtimes.push(runtime);
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      project_layout: {
+        status: string;
+        ignore_status: { status: string; has_narrow_system_ignore: boolean };
+        broad_ignore_warning: { status: string; present: boolean };
+        warnings: Array<{ code: string }>;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.project_layout.status).toBe('warning');
+    expect(payload.project_layout.ignore_status).toMatchObject({
+      status: 'broad-symphony',
+      has_narrow_system_ignore: false
+    });
+    expect(payload.project_layout.broad_ignore_warning).toMatchObject({
+      status: 'warning',
+      present: true
+    });
+    expect(payload.project_layout.warnings.map((warning) => warning.code).sort()).toEqual([
+      'broad_symphony_ignore',
+      'system_ignore_missing'
+    ]);
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('reports missing system ignore layout warnings when .gitignore is absent', async () => {
+    const workflowPath = await makeWorkflowFile({ includeServerPort: true, serverPort: 0 });
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+    const runtime = createRuntimeEnvironment({ workflowPath, trackerAdapter: tracker, port: 0 });
+    runtimes.push(runtime);
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      project_layout: {
+        ignore_status: { exists: boolean; status: string };
+        broad_ignore_warning: { status: string; present: boolean };
+        warnings: Array<{ code: string }>;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.project_layout.ignore_status).toMatchObject({ exists: false, status: 'missing' });
+    expect(payload.project_layout.broad_ignore_warning).toMatchObject({ status: 'ok', present: false });
+    expect(payload.project_layout.warnings.map((warning) => warning.code)).toContain('system_ignore_missing');
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('keeps diagnostics available when legacy runtime state exists', async () => {
+    const workflowPath = await makeWorkflowFile({ includeServerPort: true, serverPort: 0 });
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    await writeTestFile(path.join(workflowDir, '.gitignore'), '.symphony/system/\n');
+    await fs.mkdir(path.join(workflowDir, '.symphony', 'workspaces'), { recursive: true });
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+    const runtime = createRuntimeEnvironment({ workflowPath, trackerAdapter: tracker, port: 0 });
+    runtimes.push(runtime);
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      project_layout: {
+        legacy_runtime_path_status: { status: string; present: boolean; paths: Array<{ path: string }> };
+        warnings: Array<{ code: string; path: string }>;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.project_layout.legacy_runtime_path_status).toMatchObject({
+      status: 'warning',
+      present: true,
+      paths: [expect.objectContaining({ path: '.symphony/workspaces' })]
+    });
+    expect(payload.project_layout.warnings).toContainEqual(
+      expect.objectContaining({ code: 'legacy_runtime_path_present', path: '.symphony/workspaces' })
+    );
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
+
+  it('distinguishes explicit layout path overrides and omits sensitive workflow content', async () => {
+    const workflowPath = await makeWorkflowFile({
+      includeServerPort: true,
+      serverPort: 0,
+      loggingRoot: 'custom-logs',
+      codexBlock: `codex:
+  command: codex app-server
+  turn_timeout_ms: 1000
+  read_timeout_ms: 1000
+  stall_timeout_ms: 1000
+# workflow body secret marker: DO_NOT_PROJECT_WORKFLOW_BODY
+`
+    });
+    const workflowDir = path.dirname(workflowPath);
+    dirs.push(workflowDir);
+    await writeTestFile(path.join(workflowDir, '.gitignore'), '.symphony/system/\n');
+
+    const tracker: TrackerAdapter = {
+      fetch_candidate_issues: vi.fn(async () => []),
+      fetch_issues_by_states: vi.fn(async () => []),
+      fetch_issue_states_by_ids: vi.fn(async () => []),
+      create_comment: vi.fn(async () => undefined),
+      update_issue_state: vi.fn(async () => undefined)
+    };
+    const runtime = createRuntimeEnvironment({ workflowPath, trackerAdapter: tracker, logsRoot: path.join(workflowDir, 'cli-logs'), port: 0 });
+    runtimes.push(runtime);
+    await runtime.start();
+    const address = requireApiAddress(runtime);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/diagnostics`);
+    const payload = (await response.json()) as {
+      project_layout: {
+        effective_workspace_root: { source: string; explicit_override_source: string | null };
+        effective_log_root: { path: string; source: string; explicit_override_source: string | null };
+        effective_persistence_path: { source: string; explicit_override_source: string | null };
+      };
+    };
+    const projectLayoutJson = JSON.stringify(payload.project_layout);
+
+    expect(response.status).toBe(200);
+    expect(payload.project_layout.effective_workspace_root).toMatchObject({
+      source: 'explicit_override',
+      explicit_override_source: 'workflow'
+    });
+    expect(payload.project_layout.effective_log_root).toMatchObject({
+      path: path.join(workflowDir, 'cli-logs'),
+      source: 'explicit_override',
+      explicit_override_source: 'cli'
+    });
+    expect(payload.project_layout.effective_persistence_path).toMatchObject({
+      source: 'explicit_override',
+      explicit_override_source: 'workflow'
+    });
+    expect(projectLayoutJson).not.toContain('DO_NOT_PROJECT_WORKFLOW_BODY');
+    expect(projectLayoutJson).not.toContain('test-token');
+  }, RUNTIME_STARTUP_INTEGRATION_TEST_TIMEOUT_MS);
+
   it('uses explicit logsRoot option precedence over workflow logging.root', async () => {
     const workflowPath = await makeWorkflowFile();
     const workflowDir = path.dirname(workflowPath);

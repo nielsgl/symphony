@@ -1379,7 +1379,15 @@ describe('dashboard browser client modules', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse({ coalesced: false }))
       .mockResolvedValueOnce(jsonResponse(snapshotPayload()))
-      .mockResolvedValueOnce(jsonResponse({ runtime_resolution: { workspace_root: '/repo' } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          runtime_resolution: { workspace_root: '/repo' },
+          project_layout: {
+            status: 'ok',
+            project_root: { path: '/repo' }
+          }
+        })
+      )
       .mockResolvedValueOnce(jsonResponse({ runs: [] }))
       .mockResolvedValueOnce(
         jsonResponse({
@@ -1403,6 +1411,7 @@ describe('dashboard browser client modules', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/v1/diagnostics', undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/v1/history?limit=8', undefined);
     expect(elements.diagnosticsOutput.textContent).toContain('Diagnostics JSON');
+    expect(elements.diagnosticsOutput.textContent).toContain('"project_layout"');
     expect(collectText(elements.historyList)).toContain('No run history available.');
 
     await loadUiState();
