@@ -21,6 +21,16 @@ import {
   type SetupConsentStore,
   type WorkflowPosture
 } from './setup-consent';
+import {
+  getProfileBundle,
+  getProfilePack,
+  listProfileBundles,
+  listProfilePacks,
+  resolveProfileSelection,
+  type ProfileBundle,
+  type ProfilePack,
+  type ProfileResolution
+} from '../workflow/profile-registry';
 
 export interface DashboardLaunchContext {
   cwd: string;
@@ -415,11 +425,133 @@ function renderProfileHelp(): string {
     '',
     'Usage:',
     '  symphony profile list',
+    '  symphony profile show <pack-or-bundle>',
     '  symphony profile show symphony-internal',
     '',
-    'Profiles:',
-    '  symphony-internal  Protected binding to the checked-in Symphony WORKFLOW.md'
+    'Discovery only:',
+    '  Packs and bundles describe init materialization inputs.',
+    '  Runtime execution continues to use the materialized workflow file.',
+    '',
+    'Examples:',
+    '  symphony profile show linear-node',
+    '  symphony profile show tracker:memory'
   ].join('\n');
+}
+
+function renderProfileList(repoRoot: string): string {
+  const lines = [
+    'Symphony profile registry',
+    '',
+    'Packs:',
+    ...listProfilePacks().map((pack) => renderProfilePackSummary(pack, repoRoot)),
+    '',
+    'Bundles:',
+    ...listProfileBundles().map(
+      (bundle) =>
+        `  ${bundle.id}\t${bundle.title}\n    expands: ${bundle.packs.join(', ')}\n    intended use: ${bundle.intendedUse}`
+    ),
+    '',
+    'Conflict model:',
+    '  Select exactly one pack for each required dimension: tracker, workspace, toolchain, workflow.',
+    '  Packs in the same dimension conflict; choose a bundle or one explicit pack per dimension.',
+    '',
+    'Protected profiles:',
+    `  symphony-internal -> workflow:symphony-internal (${path.join(repoRoot, 'WORKFLOW.md')})`,
+    '  Protected bindings are golden references to checked-in workflows, not generated templates.'
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
+function renderProfilePackSummary(pack: ProfilePack, repoRoot: string): string {
+  const markers: string[] = [pack.dimension];
+  if (pack.protected) {
+    markers.push('protected');
+  }
+  const binding = pack.binding ? `\n    binding: ${renderProfilePackBinding(pack, repoRoot)}` : '';
+  return `  ${pack.id}\t${markers.join(', ')}\n    ${pack.summary}\n    intended use: ${pack.intendedUse}${binding}`;
+}
+
+function renderProfilePackBinding(pack: ProfilePack, repoRoot: string): string {
+  if (!pack.binding) {
+    return 'none';
+  }
+  if (pack.binding.kind === 'checked-in-workflow') {
+    return `${path.join(repoRoot, pack.binding.path)} (${pack.binding.description})`;
+  }
+  return pack.binding.description;
+}
+
+function renderProfileSelectionResolution(resolution: ProfileResolution): string[] {
+  const lines = [
+    'Resolution:',
+    `  requested: ${resolution.requested.join(', ') || '(none)'}`,
+    `  packs: ${resolution.packs.map((pack) => pack.id).join(', ') || '(none)'}`
+  ];
+
+  if (resolution.expandedBundles.length > 0) {
+    lines.push('  bundle expansions:');
+    for (const expansion of resolution.expandedBundles) {
+      lines.push(`    ${expansion.bundle.id} -> ${expansion.packs.join(', ')}`);
+    }
+  }
+
+  lines.push('  dimensions:');
+  for (const dimension of ['tracker', 'workspace', 'toolchain', 'workflow'] as const) {
+    lines.push(`    ${dimension}: ${resolution.dimensions[dimension]?.id ?? '(missing)'}`);
+  }
+
+  if (resolution.errors.length > 0) {
+    lines.push('  errors:');
+    for (const error of resolution.errors) {
+      lines.push(`    - ${error}`);
+    }
+  } else {
+    lines.push('  errors: none');
+  }
+
+  if (resolution.warnings.length > 0) {
+    lines.push('  warnings:');
+    for (const warning of resolution.warnings) {
+      lines.push(`    - ${warning}`);
+    }
+  }
+
+  return lines;
+}
+
+function renderProfileBundle(bundle: ProfileBundle): string {
+  const resolution = resolveProfileSelection([bundle.id]);
+  return [
+    `Bundle: ${bundle.id}`,
+    `Title: ${bundle.title}`,
+    `Summary: ${bundle.summary}`,
+    `Intended use: ${bundle.intendedUse}`,
+    `Expands to: ${bundle.packs.join(', ')}`,
+    ...renderProfileSelectionResolution(resolution)
+  ].join('\n');
+}
+
+function renderProfilePack(pack: ProfilePack, repoRoot: string): string {
+  const sameDimensionConflicts = listProfilePacks()
+    .filter((candidate) => candidate.dimension === pack.dimension && candidate.id !== pack.id)
+    .map((candidate) => candidate.id);
+  const resolution = resolveProfileSelection([pack.id]);
+  const lines = [
+    `Pack: ${pack.id}`,
+    `Title: ${pack.title}`,
+    `Dimension: ${pack.dimension}`,
+    `Summary: ${pack.summary}`,
+    `Intended use: ${pack.intendedUse}`,
+    `Conflicts: ${sameDimensionConflicts.length > 0 ? sameDimensionConflicts.join(', ') : 'none'}`,
+    `Protected: ${pack.protected ? 'yes' : 'no'}`,
+    `Binding: ${pack.binding ? renderProfilePackBinding(pack, repoRoot) : 'none'}`,
+    ...renderProfileSelectionResolution(resolution)
+  ];
+  if (pack.id === 'workflow:symphony-internal') {
+    lines.unshift('Type: protected');
+    lines.unshift('Profile: symphony-internal');
+  }
+  return lines.join('\n');
 }
 
 function failUnsupported(
@@ -440,21 +572,22 @@ function runProfileCommand(argv: readonly string[], deps: CommandRouterDependenc
   }
 
   if (mode === 'list' && extra.length === 0 && value === undefined) {
-    deps.stdout('symphony-internal\tprotected\tchecked-in WORKFLOW.md\n');
+    deps.stdout(renderProfileList(deps.repoRoot));
     return 0;
   }
 
-  if (mode === 'show' && value === 'symphony-internal' && extra.length === 0) {
-    deps.stdout(
-      [
-        'Profile: symphony-internal',
-        'Type: protected',
-        `Workflow: ${path.join(deps.repoRoot, 'WORKFLOW.md')}`,
-        'Source: checked-in Symphony WORKFLOW.md',
-        'Template: no; this is not a generated workflow template'
-      ].join('\n') + '\n'
-    );
-    return 0;
+  if (mode === 'show' && value !== undefined && extra.length === 0) {
+    const bundle = getProfileBundle(value);
+    if (bundle) {
+      deps.stdout(`${renderProfileBundle(bundle)}\n`);
+      return 0;
+    }
+
+    const pack = getProfilePack(value);
+    if (pack) {
+      deps.stdout(`${renderProfilePack(pack, deps.repoRoot)}\n`);
+      return 0;
+    }
   }
 
   return failUnsupported(
