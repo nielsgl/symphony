@@ -194,6 +194,20 @@ interface ShimMetadata {
   verificationError?: string;
 }
 
+interface WorkflowCustomizationMetadata {
+  profile: string | null;
+  bundle: string | null;
+  packs: string[];
+  references: WorkflowCustomizationReference[];
+  sources: string[];
+}
+
+interface WorkflowCustomizationReference {
+  path: string;
+  kind: 'skill' | 'prompt' | 'customization';
+  source: string;
+}
+
 const DOCTOR_FLAGS = new Set(['--json', '--ci', '--fix', '--yes', '--accept-high-trust-local-run']);
 
 function parseDoctorArgs(argv: readonly string[]): DoctorArgs | { error: string } {
@@ -349,6 +363,12 @@ function sourceForFinding(check: DoctorFindingInput): DoctorFindingSource {
   if (check.id.startsWith('layout.')) {
     return { category: 'layout_inspection', present: true };
   }
+  if (check.id.startsWith('customization.generated_profile')) {
+    return { category: 'generated_profile', present: check.status === 'ok' };
+  }
+  if (check.id.startsWith('customization.reference.')) {
+    return { category: 'generated_profile', present: check.status === 'ok' };
+  }
   if (check.id === 'setup.consent') {
     return check.reason === 'setup_consent_flag'
       ? { category: 'cli_flag', value: 'guardrail_ack', present: true }
@@ -372,6 +392,202 @@ function sourceForFinding(check: DoctorFindingInput): DoctorFindingSource {
     return { category: 'cli_flag', present: false };
   }
   return { category: 'runtime_probe', present: check.status === 'ok' };
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => readString(item)).filter((item): item is string => Boolean(item));
+  }
+  return [];
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function splitMetadataFields(raw: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const part of raw.split(/[;\n]/)) {
+    const [rawKey, ...rawValue] = part.split('=');
+    const key = rawKey?.trim();
+    const value = rawValue.join('=').trim();
+    if (key && value) {
+      fields[key] = value;
+    }
+  }
+  return fields;
+}
+
+function referencesFromFields(fields: Record<string, unknown>, source: string): WorkflowCustomizationReference[] {
+  const references: WorkflowCustomizationReference[] = [];
+  for (const key of ['skill', 'skills']) {
+    for (const item of readStringArray(fields[key])) {
+      references.push({ path: item, kind: 'skill', source });
+    }
+  }
+  for (const key of ['prompt', 'prompts']) {
+    for (const item of readStringArray(fields[key])) {
+      references.push({ path: item, kind: 'prompt', source });
+    }
+  }
+  for (const key of ['file', 'files', 'customization', 'customizations']) {
+    for (const item of readStringArray(fields[key])) {
+      references.push({ path: item, kind: 'customization', source });
+    }
+  }
+  return references;
+}
+
+function metadataFromConfig(config: Record<string, unknown>): WorkflowCustomizationMetadata | null {
+  const symphony = readRecord(config.symphony);
+  const generated = readRecord(symphony?.generated_profile) ?? readRecord(symphony?.profile_provenance);
+  if (!generated) {
+    return null;
+  }
+
+  return {
+    profile: readString(generated.profile),
+    bundle: readString(generated.bundle),
+    packs: readStringArray(generated.packs),
+    references: referencesFromFields(generated, 'workflow_frontmatter'),
+    sources: ['workflow_frontmatter']
+  };
+}
+
+function metadataFromWorkflowComments(workflowText: string): WorkflowCustomizationMetadata | null {
+  const htmlPattern = /<!--\s*symphony-generated-profile\s*:\s*([\s\S]*?)-->/gi;
+  const linePattern = /^\s*#\s*symphony-generated-profile\s*:\s*(.+)$/gim;
+  const records: Record<string, string>[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = htmlPattern.exec(workflowText))) {
+    records.push(splitMetadataFields(match[1] ?? ''));
+  }
+  while ((match = linePattern.exec(workflowText))) {
+    records.push(splitMetadataFields(match[1] ?? ''));
+  }
+  if (records.length === 0) {
+    return null;
+  }
+
+  const merged = Object.assign({}, ...records);
+  return {
+    profile: readString(merged.profile),
+    bundle: readString(merged.bundle),
+    packs: readStringArray(merged.packs ?? merged.pack),
+    references: referencesFromFields(merged, 'workflow_comment'),
+    sources: ['workflow_comment']
+  };
+}
+
+function mergeCustomizationMetadata(
+  left: WorkflowCustomizationMetadata | null,
+  right: WorkflowCustomizationMetadata | null
+): WorkflowCustomizationMetadata | null {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return {
+    profile: left.profile ?? right.profile,
+    bundle: left.bundle ?? right.bundle,
+    packs: [...new Set([...left.packs, ...right.packs])],
+    references: [...left.references, ...right.references],
+    sources: [...new Set([...left.sources, ...right.sources])]
+  };
+}
+
+function readWorkflowCustomizationMetadata(workflowPath: string, config: Record<string, unknown>): WorkflowCustomizationMetadata | null {
+  let workflowText = '';
+  try {
+    workflowText = fs.readFileSync(workflowPath, 'utf8');
+  } catch {
+    return metadataFromConfig(config);
+  }
+  return mergeCustomizationMetadata(metadataFromConfig(config), metadataFromWorkflowComments(workflowText));
+}
+
+function safeReferenceId(reference: WorkflowCustomizationReference): string {
+  return reference.path
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+}
+
+function resolveProjectReference(projectRoot: string, relativePath: string): string | null {
+  if (path.isAbsolute(relativePath)) {
+    return null;
+  }
+  const resolved = path.resolve(projectRoot, relativePath);
+  return isWithinPath(projectRoot, resolved) ? resolved : null;
+}
+
+function addCustomizationChecks(
+  checks: DoctorFinding[],
+  resolved: LocalCommandResolution,
+  metadata: WorkflowCustomizationMetadata | null
+): void {
+  const hasMetadata = Boolean(metadata?.profile || metadata?.bundle || metadata?.packs.length || metadata?.references.length);
+  addCheck(checks, {
+    id: 'customization.generated_profile',
+    title: 'Generated workflow customization provenance is observable',
+    status: 'ok',
+    reason: hasMetadata ? 'generated_profile_provenance_recorded' : 'generated_profile_provenance_absent',
+    summary: hasMetadata
+      ? 'Workflow records generated profile, bundle, pack, or customization provenance; runtime behavior comes from the materialized workflow.'
+      : 'Workflow does not record generated profile, bundle, pack, or customization provenance.',
+    source: hasMetadata
+      ? { category: 'generated_profile', value: metadata?.sources.join(',') ?? 'workflow', present: true }
+      : { category: 'workflow_value', present: false },
+    details: {
+      profile: metadata?.profile ?? null,
+      bundle: metadata?.bundle ?? null,
+      packs: metadata?.packs ?? [],
+      sources: metadata?.sources ?? [],
+      runtimeLoadingSupported: false,
+      runtimeLoadingBehavior: 'observable_only'
+    }
+  });
+
+  for (const reference of metadata?.references ?? []) {
+    const fullPath = resolveProjectReference(resolved.currentProjectRoot, reference.path);
+    const exists = fullPath ? fs.existsSync(fullPath) : false;
+    addCheck(checks, {
+      id: `customization.reference.${safeReferenceId(reference) || reference.kind}`,
+      title: `Observable ${reference.kind} customization reference exists`,
+      status: exists ? 'ok' : 'warning',
+      reason: exists ? 'customization_reference_present' : 'customization_reference_missing',
+      summary: exists
+        ? `Referenced ${reference.kind} customization file is present: ${reference.path}; this is observable project content, not runtime-loaded behavior.`
+        : `Referenced ${reference.kind} customization file is missing: ${reference.path}; this is an observable project reference, not a Codex runtime loading failure.`,
+      remediation: exists
+        ? undefined
+        : 'Create the referenced project file or remove the stale workflow customization reference.',
+      source: { category: 'generated_profile', value: reference.source, present: true },
+      details: {
+        path: reference.path,
+        kind: reference.kind,
+        exists,
+        projectRoot: resolved.currentProjectRoot,
+        withinProject: fullPath !== null,
+        source: reference.source,
+        runtimeLoadingSupported: false,
+        runtimeLoadingBehavior: 'observable_only',
+        note: 'Doctor reports this explicit project reference; Codex project-local skill/prompt loading is not enabled by this finding.'
+      }
+    });
+  }
 }
 
 function isSensitiveKey(key: string): boolean {
@@ -1083,6 +1299,13 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
       });
     }
     addLayoutChecks(checks, layout);
+    let workflowConfig: Record<string, unknown> = {};
+    try {
+      workflowConfig = new WorkflowLoader().load({ explicitPath: resolved.workflowPath }).config;
+    } catch {
+      workflowConfig = {};
+    }
+    addCustomizationChecks(checks, resolved, readWorkflowCustomizationMetadata(resolved.workflowPath, workflowConfig));
 
     const portAvailable = await canListen(resolved.host.host, resolved.port.port);
     addCheck(checks, {

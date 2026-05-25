@@ -469,6 +469,147 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('reports generated workflow customization provenance and missing explicit references', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const workflow = [
+      '---',
+      'tracker:',
+      '  kind: memory',
+      'codex:',
+      '  command: codex',
+      '---',
+      [
+        '<!-- symphony-generated-profile: profile=team-review; bundle=linear-node; packs=tracker:linear,workflow:team-review;',
+        'prompt=.symphony/prompts/review.md; skill=.symphony/skills/commit/SKILL.md -->'
+      ].join(' '),
+      'workflow'
+    ].join('\n');
+    const projectRoot = await createDoctorProject(workflow);
+    await fs.mkdir(path.join(projectRoot, '.symphony', 'skills'), { recursive: true });
+    await fs.mkdir(path.join(projectRoot, '.symphony', 'prompts'), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, '.symphony', 'prompts', 'review.md'), 'review prompt\n', 'utf8');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(1);
+    const reservedCustomization = doctorFinding(payload, 'layout.reserved_customization') as unknown as {
+      details: { reservedCustomizationPaths: Array<Record<string, unknown>> };
+    };
+    expect(reservedCustomization.details.reservedCustomizationPaths).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: '.symphony/skills', exists: true, loadedByRuntime: false }),
+        expect.objectContaining({ path: '.symphony/prompts', exists: true, loadedByRuntime: false })
+      ])
+    );
+    expect(doctorFinding(payload, 'customization.generated_profile')).toMatchObject({
+      status: 'ok',
+      severity: 'pass',
+      reason: 'generated_profile_provenance_recorded',
+      source: { category: 'generated_profile', value: 'workflow_comment', present: true },
+      details: {
+        profile: 'team-review',
+        bundle: 'linear-node',
+        packs: ['tracker:linear', 'workflow:team-review'],
+        runtimeLoadingSupported: false,
+        runtimeLoadingBehavior: 'observable_only'
+      }
+    });
+    expect(doctorFinding(payload, 'customization.reference.symphony_prompts_review_md')).toMatchObject({
+      status: 'ok',
+      severity: 'pass',
+      reason: 'customization_reference_present',
+      source: { category: 'generated_profile', value: 'workflow_comment', present: true },
+      details: {
+        path: '.symphony/prompts/review.md',
+        kind: 'prompt',
+        exists: true,
+        runtimeLoadingSupported: false,
+        runtimeLoadingBehavior: 'observable_only'
+      }
+    });
+    expect(doctorFinding(payload, 'customization.reference.symphony_skills_commit_skill_md')).toMatchObject({
+      status: 'warning',
+      severity: 'warning',
+      reason: 'customization_reference_missing',
+      details: {
+        path: '.symphony/skills/commit/SKILL.md',
+        kind: 'skill',
+        exists: false,
+        runtimeLoadingSupported: false,
+        runtimeLoadingBehavior: 'observable_only'
+      }
+    });
+    expect(JSON.stringify(payload)).not.toContain('loaded by Codex');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('reports absent customization provenance for generic workflows without warnings', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const projectRoot = await createDoctorProject();
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(0);
+    expect(doctorFinding(payload, 'customization.generated_profile')).toMatchObject({
+      status: 'ok',
+      reason: 'generated_profile_provenance_absent',
+      source: { category: 'workflow_value', present: false },
+      details: {
+        profile: null,
+        bundle: null,
+        packs: [],
+        sources: [],
+        runtimeLoadingSupported: false
+      }
+    });
+    expect(payload.findings.some((finding: { id: string }) => finding.id.startsWith('customization.reference.'))).toBe(false);
+    expect(harness.stderr).toBe('');
+  });
+
+  it('renders the customization runtime-loading boundary in human doctor output', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const workflow = [
+      '---',
+      'tracker:',
+      '  kind: memory',
+      'codex:',
+      '  command: codex',
+      '---',
+      '<!-- symphony-generated-profile: bundle=github-node; packs=tracker:github; prompt=.symphony/prompts/missing.md -->',
+      'workflow'
+    ].join('\n');
+    const projectRoot = await createDoctorProject(workflow);
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stdout).toContain('Generated workflow customization provenance is observable');
+    expect(harness.stdout).toContain('runtime behavior comes from the materialized workflow');
+    expect(harness.stdout).toContain('Observable prompt customization reference exists');
+    expect(harness.stdout).toContain('not a Codex runtime loading failure');
+    expect(harness.stderr).toBe('');
+  });
+
   it('reports layout checks in doctor human output', async () => {
     const { repoRoot, binDir } = await createDoctorRepo();
     const projectRoot = await createDoctorProject();
