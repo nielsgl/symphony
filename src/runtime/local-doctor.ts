@@ -684,9 +684,14 @@ function requiredTrackerEnvTokens(definition: { config: Record<string, unknown> 
   const kind = typeof tracker.kind === 'string' ? tracker.kind.trim() : '';
   const requirements: Array<{ field: string; name: string }> = [];
 
-  const apiKeyToken =
-    envTokenName(tracker.api_key) ??
-    (kind === 'linear' ? 'LINEAR_API_KEY' : kind === 'github' ? 'GITHUB_TOKEN' : null);
+  const explicitApiKey = typeof tracker.api_key === 'string';
+  const apiKeyToken = explicitApiKey
+    ? envTokenName(tracker.api_key)
+    : kind === 'linear'
+      ? 'LINEAR_API_KEY'
+      : kind === 'github'
+        ? 'GITHUB_TOKEN'
+        : null;
   if ((kind === 'linear' || kind === 'github') && apiKeyToken) {
     requirements.push({ field: 'tracker.api_key', name: apiKeyToken });
   }

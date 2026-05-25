@@ -249,6 +249,59 @@ describe('Doctor MVP real CLI scenario matrix', () => {
       reason: 'github_tracker_credentials_missing'
     });
 
+    const literalLinearProject = await createProject(
+      ['---', 'tracker:', '  kind: linear', '  api_key: literal-linear-token', '  project_slug: DEMO', 'codex:', '  command: codex', '---', 'workflow'].join(
+        '\n'
+      )
+    );
+    const literalLinear = runDoctor(literalLinearProject, [guardrailFlag], {
+      PATH: binDir,
+      LINEAR_API_KEY: '',
+      GITHUB_TOKEN: ''
+    });
+    expect(literalLinear.status).toBe(0);
+    expect(check(literalLinear.json, 'env.required_variables')).toMatchObject({
+      status: 'ok',
+      reason: 'required_env_present'
+    });
+    expect(check(literalLinear.json, 'env.required_variables').details?.variables).toEqual([]);
+    expect(check(literalLinear.json, 'tracker.credentials')).toMatchObject({
+      status: 'ok',
+      reason: 'linear_tracker_credentials_present'
+    });
+    expect(literalLinear.stdout).not.toContain('literal-linear-token');
+
+    const literalGithubProject = await createProject(
+      [
+        '---',
+        'tracker:',
+        '  kind: github',
+        '  api_key: literal-github-token',
+        '  owner: nielsgl',
+        '  repo: symphony',
+        'codex:',
+        '  command: codex',
+        '---',
+        'workflow'
+      ].join('\n')
+    );
+    const literalGithub = runDoctor(literalGithubProject, [guardrailFlag], {
+      PATH: binDir,
+      LINEAR_API_KEY: '',
+      GITHUB_TOKEN: ''
+    });
+    expect(literalGithub.status).toBe(0);
+    expect(check(literalGithub.json, 'env.required_variables')).toMatchObject({
+      status: 'ok',
+      reason: 'required_env_present'
+    });
+    expect(check(literalGithub.json, 'env.required_variables').details?.variables).toEqual([]);
+    expect(check(literalGithub.json, 'tracker.credentials')).toMatchObject({
+      status: 'ok',
+      reason: 'github_tracker_credentials_present'
+    });
+    expect(literalGithub.stdout).not.toContain('literal-github-token');
+
     const noCodexBin = await createBin({ includeCodex: false });
     const codexProject = await createProject(
       ['---', 'tracker:', '  kind: memory', 'codex:', '  command: missing-doctor-matrix-codex', '---', 'workflow'].join('\n')
