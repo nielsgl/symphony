@@ -609,16 +609,19 @@ describe('ConfigValidator', () => {
     }
   });
 
-  it('rejects worktree provisioner without repo_root', () => {
+  it('rejects git-backed provisioners without repo_root', () => {
     const validator = new ConfigValidator();
-    const config = baseConfig();
-    config.workspace.provisioner.type = 'worktree';
-    delete config.workspace.provisioner.repo_root;
+    for (const provisionerType of ['worktree', 'clone'] as const) {
+      const config = baseConfig();
+      config.workspace.provisioner.type = provisionerType;
+      delete config.workspace.provisioner.repo_root;
 
-    const result = validator.validate(config);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error_code).toBe('invalid_workspace_provisioner_repo_root');
+      const result = validator.validate(config);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error_code).toBe('invalid_workspace_provisioner_repo_root');
+        expect(result.message).toContain(`workspace.provisioner.type=${provisionerType}`);
+      }
     }
   });
 

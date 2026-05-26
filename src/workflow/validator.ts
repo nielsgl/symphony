@@ -556,11 +556,14 @@ export class ConfigValidator {
       };
     }
 
-    if (provisionerType === 'worktree' && !effectiveConfig.workspace.provisioner.repo_root?.trim()) {
+    if (
+      (provisionerType === 'worktree' || provisionerType === 'clone') &&
+      !effectiveConfig.workspace.provisioner.repo_root?.trim()
+    ) {
       return {
         ok: false,
         error_code: 'invalid_workspace_provisioner_repo_root',
-        message: 'workspace.provisioner.repo_root is required when workspace.provisioner.type=worktree',
+        message: `workspace.provisioner.repo_root is required when workspace.provisioner.type=${provisionerType}`,
         at
       };
     }

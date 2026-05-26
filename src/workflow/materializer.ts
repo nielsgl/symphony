@@ -197,6 +197,7 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
   const trackerConfig = buildTrackerConfig(options, trackerKind);
   const workspaceConfig = buildWorkspaceConfig(workspaceType);
   const toolchainConfig = buildToolchainConfig(toolchain.name, packageManager);
+  const workspaceBaseRef = workspaceType === 'clone' ? 'main' : 'origin/main';
   const codexSandbox = workspaceType === 'worktree' ? 'danger-full-access' : 'read-only';
 
   return [
@@ -218,8 +219,8 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     ...workspaceConfig,
     '  provisioner:',
     `    type: ${yamlString(workspaceType)}`,
-    ...(workspaceType === 'worktree' ? ['    repo_root: "."'] : []),
-    '    base_ref: "origin/main"',
+    ...(workspaceType === 'worktree' || workspaceType === 'clone' ? ['    repo_root: "."'] : []),
+    `    base_ref: ${yamlString(workspaceBaseRef)}`,
     '    branch_template: "feature/{{ issue.identifier }}"',
     '    teardown_mode: "remove_worktree"',
     '    allow_dirty_repo: false',

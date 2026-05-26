@@ -119,6 +119,26 @@ function worktreeWorkflow(gitRoot: string, options: { baseRef?: string; allowDir
   ].join('\n');
 }
 
+function cloneWorkflow(gitRoot?: string, options: { baseRef?: string } = {}): string {
+  return [
+    '---',
+    'tracker:',
+    '  kind: memory',
+    'codex:',
+    '  command: codex',
+    'workspace:',
+    '  provisioner:',
+    '    type: clone',
+    ...(gitRoot ? [`    repo_root: ${JSON.stringify(gitRoot)}`] : []),
+    `    base_ref: ${options.baseRef ?? 'main'}`,
+    '    branch_template: "feature/{{ issue.identifier }}"',
+    '    teardown_mode: remove_worktree',
+    '    allow_dirty_repo: false',
+    '---',
+    'workflow'
+  ].join('\n');
+}
+
 async function createGitRepo(options: { dirty?: boolean } = {}): Promise<string> {
   const gitRoot = await makeTempDir('symphony-doctor-matrix-git-');
   execFileSync('git', ['init', '-b', 'main'], { cwd: gitRoot, stdio: 'pipe' });
@@ -267,6 +287,15 @@ describe('Doctor MVP real CLI scenario matrix', () => {
       reason: 'missing_codex_command'
     });
 
+    const cloneMissingRepoRootProject = await createProject(cloneWorkflow());
+    const cloneMissingRepoRoot = runDoctor(cloneMissingRepoRootProject, [], { PATH: binDir });
+    expect(cloneMissingRepoRoot.status).toBe(2);
+    expect(check(cloneMissingRepoRoot.json, 'workflow.effective_config')).toMatchObject({
+      status: 'failure',
+      reason: 'invalid_workspace_provisioner_repo_root'
+    });
+    expect(cloneMissingRepoRoot.json.checks.find((item) => item.id === 'workspace.git_repository')).toBeUndefined();
+
     const missingEnv = await createProject(
       ['---', 'tracker:', '  kind: linear', '  api_key: $DOCTOR_MATRIX_LINEAR_TOKEN', '  project_slug: DEMO', 'codex:', '  command: codex', '---', 'workflow'].join('\n')
     );
@@ -385,13 +414,31 @@ describe('Doctor MVP real CLI scenario matrix', () => {
     expect(check(workspaceReady.json, 'workspace.base_ref')).toMatchObject({ status: 'ok', reason: 'base_ref_exists' });
     expect(check(workspaceReady.json, 'workspace.dirty_policy')).toMatchObject({ status: 'ok', reason: 'repo_clean' });
 
+    const cloneProject = await createProject(cloneWorkflow(gitRoot));
+    const cloneReady = runDoctor(cloneProject, [guardrailFlag], { PATH: binDir });
+    expect(cloneReady.status).toBe(0);
+    expect(check(cloneReady.json, 'workspace.git_repository')).toMatchObject({
+      status: 'ok',
+      reason: 'repo_root_git_repository',
+      details: { type: 'clone', repoRoot: gitRoot }
+    });
+    expect(check(cloneReady.json, 'workspace.base_ref')).toMatchObject({ status: 'ok', reason: 'base_ref_exists' });
+
+    const remoteTrackingCloneProject = await createProject(cloneWorkflow(gitRoot, { baseRef: 'origin/main' }));
+    const remoteTrackingClone = runDoctor(remoteTrackingCloneProject, [guardrailFlag], { PATH: binDir });
+    expect(remoteTrackingClone.status).toBe(2);
+    expect(check(remoteTrackingClone.json, 'workspace.base_ref')).toMatchObject({
+      status: 'failure',
+      reason: 'base_ref_unavailable'
+    });
+
     const dirtyGitRoot = await createGitRepo({ dirty: true });
     const dirtyProject = await createProject(worktreeWorkflow(dirtyGitRoot, { baseRef: 'origin/not-present' }));
     const dirtyBlocked = runDoctor(dirtyProject, [guardrailFlag], { PATH: binDir });
     expect(dirtyBlocked.status).toBe(2);
     expect(check(dirtyBlocked.json, 'workspace.base_ref')).toMatchObject({ status: 'failure', reason: 'base_ref_unavailable' });
     expect(check(dirtyBlocked.json, 'workspace.dirty_policy')).toMatchObject({ status: 'failure', reason: 'dirty_repo_blocked' });
-  });
+  }, 20_000);
 
   it('covers ports, fixes, layout warnings, provenance, severity, and local consent rejection', async () => {
     const binDir = await createBin();

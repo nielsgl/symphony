@@ -1036,6 +1036,44 @@ function checkBaseRef(repoRoot: string, baseRef: string): DoctorFindingInput {
   };
 }
 
+function checkCloneBaseRef(repoRoot: string, baseRef: string): DoctorFindingInput {
+  const branchRef = `refs/heads/${baseRef}`;
+  const branch = runGit(repoRoot, ['rev-parse', '--verify', '--quiet', `${branchRef}^{commit}`]);
+  if (branch.ok) {
+    return {
+      id: 'workspace.base_ref',
+      title: 'Workspace base ref is ready',
+      status: 'ok',
+      reason: 'base_ref_exists',
+      summary: `Clone base ref ${baseRef} resolves to a source branch.`,
+      details: { repoRoot, baseRef, source: 'clone_branch', ref: branchRef }
+    };
+  }
+
+  const tagRef = `refs/tags/${baseRef}`;
+  const tag = runGit(repoRoot, ['rev-parse', '--verify', '--quiet', `${tagRef}^{commit}`]);
+  if (tag.ok) {
+    return {
+      id: 'workspace.base_ref',
+      title: 'Workspace base ref is ready',
+      status: 'ok',
+      reason: 'base_ref_exists',
+      summary: `Clone base ref ${baseRef} resolves to a source tag.`,
+      details: { repoRoot, baseRef, source: 'clone_tag', ref: tagRef }
+    };
+  }
+
+  return {
+    id: 'workspace.base_ref',
+    title: 'Workspace base ref is ready',
+    status: 'failure',
+    reason: 'base_ref_unavailable',
+    summary: `Clone base ref ${baseRef} is not a source branch or tag.`,
+    remediation: 'Set workspace.provisioner.base_ref to a branch or tag that git clone --branch can check out.',
+    details: { repoRoot, baseRef, checkedRefs: [branchRef, tagRef], stderr: branch.stderr.trim() || tag.stderr.trim() }
+  };
+}
+
 function addWorkspaceChecks(checks: DoctorFinding[], resolved: LocalCommandResolution, effectiveConfig: EffectiveConfig): void {
   const provisioner = effectiveConfig.workspace.provisioner;
   if (provisioner.type === 'none') {
@@ -1050,7 +1088,20 @@ function addWorkspaceChecks(checks: DoctorFinding[], resolved: LocalCommandResol
     return;
   }
 
-  const repoRoot = provisioner.repo_root ?? resolved.currentProjectRoot;
+  const repoRoot = provisioner.repo_root;
+  if (!repoRoot) {
+    addCheck(checks, {
+      id: 'workspace.git_repository',
+      title: 'Workspace repository is ready',
+      status: 'failure',
+      reason: 'repo_root_missing',
+      summary: 'workspace.provisioner.repo_root is not configured.',
+      remediation: 'Set workspace.provisioner.repo_root to an existing git checkout.',
+      details: { type: provisioner.type }
+    });
+    return;
+  }
+
   const repoStat = fs.existsSync(repoRoot) ? fs.statSync(repoRoot) : null;
   if (!repoStat?.isDirectory()) {
     addCheck(checks, {
@@ -1101,7 +1152,10 @@ function addWorkspaceChecks(checks: DoctorFinding[], resolved: LocalCommandResol
     });
   }
 
-  addCheck(checks, checkBaseRef(repoRoot, provisioner.base_ref));
+  addCheck(
+    checks,
+    provisioner.type === 'clone' ? checkCloneBaseRef(repoRoot, provisioner.base_ref) : checkBaseRef(repoRoot, provisioner.base_ref)
+  );
 
   const status = runGit(repoRoot, ['status', '--porcelain']);
   const dirty = status.stdout.trim().length > 0;
