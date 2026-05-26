@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   bindDashboardSupervisorSignalForwarding,
   runCommandRouter,
+  type CommandRouterDependencies,
   type DashboardLaunchContext,
   type LinkLocalRunOptions,
   type DashboardSupervisorSignal
@@ -69,6 +70,9 @@ const ENV_BACKED_LINEAR_WORKFLOW = [
 function createHarness(overrides: { packageVersion?: string; repoRoot?: string } = {}) {
   let stdout = '';
   let stderr = '';
+  const unexpectedPromptInitInputs: CommandRouterDependencies['promptInitInputs'] = async () => {
+    throw new Error('unexpected init prompt');
+  };
   const dashboardCalls: string[][] = [];
   const dashboardContexts: Array<{ cwd: string; envFilePath: string; repoRoot: string }> = [];
   const linkLocalCalls: string[][] = [];
@@ -114,11 +118,14 @@ function createHarness(overrides: { packageVersion?: string; repoRoot?: string }
       setupConsentStore: consent.store,
       resolveWorkflowPosture: () => HIGH_TRUST_POSTURE,
       promptSetupConsent: async () => false,
+      promptInitInputs: unexpectedPromptInitInputs,
       clock: () => new Date('2026-05-24T20:00:00.000Z'),
       packageVersion: overrides.packageVersion ?? '9.8.7',
       repoRoot: overrides.repoRoot ?? '/repo/symphony',
       cwd: process.cwd(),
-      env: {}
+      env: {},
+      stdinIsTTY: () => false,
+      stdoutIsTTY: () => false
     }
   };
 }
@@ -375,6 +382,28 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('prompts for missing init selections when an interactive TTY is available', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-interactive-')));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    harness.deps.stdinIsTTY = () => true;
+    harness.deps.stdoutIsTTY = () => true;
+    harness.deps.promptInitInputs = async ({ parsed }) => ({
+      selections: [...parsed.selections, 'tracker:memory', 'workspace:none', 'toolchain:generic', 'workflow:solo-local'],
+      linearProjectSlug: parsed.linearProjectSlug,
+      githubOwner: parsed.githubOwner,
+      githubRepo: parsed.githubRepo
+    });
+
+    const exitCode = await runCommandRouter({ argv: ['init', '--dry-run'], deps: harness.deps });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Symphony init dry-run file plan');
+    expect(harness.stdout).toContain('Selected packs: tracker:memory, workspace:none, toolchain:generic, workflow:solo-local');
+    expect(harness.stdout).toContain('Validation: ok');
+    expect(harness.stderr).toBe('');
+  });
+
   it('writes memory generic init files through the real CLI in a temporary git repository', async () => {
     const projectRoot = await createInitGitRepo();
 
@@ -571,6 +600,45 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('prompts for missing Linear hosted tracker input when interactive', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-linear-node-prompt-');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    harness.deps.stdinIsTTY = () => true;
+    harness.deps.stdoutIsTTY = () => true;
+    harness.deps.promptInitInputs = async ({ parsed }) => ({
+      selections: [...parsed.selections],
+      linearProjectSlug: 'PROMPTED',
+      githubOwner: parsed.githubOwner,
+      githubRepo: parsed.githubRepo
+    });
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'linear-node'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('project_slug: "PROMPTED"');
+    expect(harness.stdout).toContain('Validation: ok');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('fails Linear Node dry-run without hosted input in non-interactive mode', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-linear-node-missing-');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'linear-node'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain('Missing required Linear project slug');
+    expect(harness.stdout).toBe('');
+  });
+
   it('detects GitHub remotes and npm lockfiles for GitHub Node dry-run workflows', async () => {
     const projectRoot = await createInitGitRepo('symphony-init-github-node-');
     await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:nielsgl/symphony.git'], {
@@ -594,6 +662,39 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('GITHUB_TOKEN=');
     expect(harness.stdout).toContain('Package manager: npm');
     expect(harness.stdout).toContain('after_create: "npm install"');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('fails GitHub Node dry-run without a remote or explicit owner and repo', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-github-node-missing-');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'github-node'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain('Missing required GitHub owner');
+    expect(harness.stderr).toContain('Missing required GitHub repo');
+    expect(harness.stdout).toBe('');
+  });
+
+  it('renders GitHub Node dry-run workflows with explicit owner and repo flags', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-github-node-explicit-');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'github-node', '--github-owner', 'octo-org', '--github-repo', 'octo-repo'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('owner: "octo-org"');
+    expect(harness.stdout).toContain('repo: "octo-repo"');
+    expect(harness.stdout).toContain('Validation: ok');
     expect(harness.stderr).toBe('');
   });
 
@@ -665,6 +766,24 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toContain('Missing required workspace pack');
     expect(harness.stderr).toContain('Missing required toolchain pack');
     expect(harness.stderr).toContain('Missing required workflow pack');
+    expect(harness.stderr).toContain('provide all required --tracker/--workspace/--toolchain/--workflow flags');
+    expect(harness.stdout).toBe('');
+  });
+
+  it('does not prompt in CI even when stdio reports TTY', async () => {
+    const harness = createHarness();
+    harness.deps.env = { CI: 'true' };
+    harness.deps.stdinIsTTY = () => true;
+    harness.deps.stdoutIsTTY = () => true;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr).toContain('Missing required tracker pack');
+    expect(harness.stderr).toContain('provide all required --tracker/--workspace/--toolchain/--workflow flags');
     expect(harness.stdout).toBe('');
   });
 

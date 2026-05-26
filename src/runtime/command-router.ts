@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import readline from 'node:readline/promises';
 import dotenv from 'dotenv';
 
 import type { ResolveLocalCommandOptions, LocalCommandResolution } from './local-command-resolver';
@@ -28,6 +29,7 @@ import {
   listProfilePacks,
   resolveProfileSelection,
   type ProfileBundle,
+  type ProfilePackDimension,
   type ProfilePack,
   type ProfileResolution
 } from '../workflow/profile-registry';
@@ -63,12 +65,15 @@ export interface CommandRouterDependencies {
   promptSetupConsent: typeof promptSetupConsent;
   loadEnvFile: (envFilePath: string) => void;
   promptInitOverwrite: (conflicts: readonly WorkflowFilePlanEntry[]) => Promise<boolean>;
+  promptInitInputs: (options: PromptInitInputsOptions) => Promise<PromptInitInputsResult>;
   materializeWorkflowPlan: (options: WorkflowMaterializerOptions) => WorkflowMaterializationPlan;
   clock: () => Date;
   packageVersion: string;
   repoRoot: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  stdinIsTTY: () => boolean;
+  stdoutIsTTY: () => boolean;
 }
 
 export interface RunCommandRouterOptions {
@@ -236,12 +241,15 @@ function defaultDependencies(): CommandRouterDependencies {
       dotenv.config({ path: envFilePath });
     },
     promptInitOverwrite: (conflicts) => promptInitOverwrite(conflicts),
+    promptInitInputs: (options) => promptInitInputs(options),
     materializeWorkflowPlan: defaultMaterializeWorkflowPlan,
     clock: () => new Date(),
     packageVersion: readPackageVersion(repoRoot),
     repoRoot,
     cwd: process.cwd(),
-    env: process.env
+    env: process.env,
+    stdinIsTTY: () => Boolean(process.stdin.isTTY),
+    stdoutIsTTY: () => Boolean(process.stdout.isTTY)
   };
 }
 
@@ -432,9 +440,14 @@ function renderInitHelp(): string {
     '  symphony init --tracker memory --workspace none --toolchain generic --workflow solo-local',
     '  symphony init --bundle linear-node --linear-project-slug SYMPHONY',
     '  symphony init --bundle github-node --github-owner octo-org --github-repo octo-repo',
+    '  symphony init --no-input --bundle memory-generic',
     '',
     'Writes are non-destructive by default. Existing generated targets require',
-    'interactive confirmation or --force. Dry-run renders the same file plan without writing files.'
+    'interactive confirmation or --force. Dry-run renders the same file plan without writing files.',
+    '',
+    'When run from a TTY, missing init selections and hosted tracker inputs are',
+    'prompted interactively. Use --no-input, explicit flags, or CI=true for',
+    'deterministic non-interactive operation.'
   ].join('\n');
 }
 
@@ -616,19 +629,36 @@ function runProfileCommand(argv: readonly string[], deps: CommandRouterDependenc
   );
 }
 
-function parseInitSelections(argv: readonly string[]): {
+interface ParsedInitSelections {
   dryRun: boolean;
   force: boolean;
+  noInput: boolean;
   selections: string[];
   errors: string[];
   linearProjectSlug: string | null;
   githubOwner: string | null;
   githubRepo: string | null;
-} {
+}
+
+interface PromptInitInputsOptions {
+  parsed: ParsedInitSelections;
+  resolution: ProfileResolution;
+  projectFacts: ReturnType<typeof detectInitProjectFacts>;
+}
+
+interface PromptInitInputsResult {
+  selections: string[];
+  linearProjectSlug: string | null;
+  githubOwner: string | null;
+  githubRepo: string | null;
+}
+
+function parseInitSelections(argv: readonly string[]): ParsedInitSelections {
   const selections: string[] = [];
   const errors: string[] = [];
   let dryRun = false;
   let force = false;
+  let noInput = false;
   let linearProjectSlug: string | null = null;
   let githubOwner: string | null = null;
   let githubRepo: string | null = null;
@@ -641,6 +671,10 @@ function parseInitSelections(argv: readonly string[]): {
     }
     if (arg === '--force') {
       force = true;
+      continue;
+    }
+    if (arg === '--no-input' || arg === '--ci') {
+      noInput = true;
       continue;
     }
     if (arg === '--bundle' || arg === '--pack') {
@@ -696,7 +730,7 @@ function parseInitSelections(argv: readonly string[]): {
     errors.push(`Unsupported init option: ${arg}`);
   }
 
-  return { dryRun, force, selections, errors, linearProjectSlug, githubOwner, githubRepo };
+  return { dryRun, force, noInput, selections, errors, linearProjectSlug, githubOwner, githubRepo };
 }
 
 function detectInitProjectFacts(cwd: string): {
@@ -813,6 +847,134 @@ async function promptInitOverwrite(conflicts: readonly WorkflowFilePlanEntry[]):
   });
 }
 
+async function promptInitInputs(options: PromptInitInputsOptions): Promise<PromptInitInputsResult> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await promptInitInputsWithQuestion(options, (question) => rl.question(question));
+  } finally {
+    rl.close();
+  }
+}
+
+async function promptInitInputsWithQuestion(
+  options: PromptInitInputsOptions,
+  ask: (question: string) => Promise<string>
+): Promise<PromptInitInputsResult> {
+  const selections = [...options.parsed.selections];
+  let resolution = options.resolution;
+  for (const dimension of ['tracker', 'workspace', 'toolchain', 'workflow'] as const) {
+    if (resolution.dimensions[dimension]) {
+      continue;
+    }
+    const packId = await promptForDimensionPack(dimension, ask);
+    selections.push(packId);
+    resolution = resolveProfileSelection(selections);
+  }
+
+  const trackerKind = resolution.dimensions.tracker?.name;
+  let linearProjectSlug = options.parsed.linearProjectSlug;
+  let githubOwner = options.parsed.githubOwner;
+  let githubRepo = options.parsed.githubRepo;
+
+  if (trackerKind === 'linear' && !linearProjectSlug?.trim()) {
+    linearProjectSlug = (await promptForRequiredText('Linear project slug', ask)).trim();
+  }
+
+  if (trackerKind === 'github') {
+    const detected = options.projectFacts.githubRepository;
+    if (!githubOwner?.trim() && !detected?.owner) {
+      githubOwner = (await promptForRequiredText('GitHub owner', ask)).trim();
+    }
+    if (!githubRepo?.trim() && !detected?.repo) {
+      githubRepo = (await promptForRequiredText('GitHub repo', ask)).trim();
+    }
+  }
+
+  return { selections, linearProjectSlug, githubOwner, githubRepo };
+}
+
+async function promptForDimensionPack(
+  dimension: ProfilePackDimension,
+  ask: (question: string) => Promise<string>
+): Promise<string> {
+  const packs = listProfilePacks().filter((pack) => pack.dimension === dimension && !pack.protected);
+  const choices = packs
+    .map((pack, index) => `  ${index + 1}. ${pack.name} (${pack.id}) - ${pack.summary}`)
+    .join('\n');
+
+  while (true) {
+    const answer = (
+      await ask(`Choose ${dimension} pack:\n${choices}\nEnter number, name, or pack id: `)
+    ).trim();
+    const selected = matchPromptedPack(answer, packs);
+    if (selected) {
+      return selected.id;
+    }
+    process.stdout.write(`Unknown ${dimension} selection '${answer}'. Choose one of: ${packs.map((pack) => pack.name).join(', ')}.\n`);
+  }
+}
+
+function matchPromptedPack(answer: string, packs: readonly ProfilePack[]): ProfilePack | null {
+  const index = Number(answer);
+  if (Number.isInteger(index) && index >= 1 && index <= packs.length) {
+    return packs[index - 1];
+  }
+  const normalized = answer.toLowerCase();
+  return (
+    packs.find((pack) => pack.id.toLowerCase() === normalized || pack.name.toLowerCase() === normalized) ?? null
+  );
+}
+
+async function promptForRequiredText(label: string, ask: (question: string) => Promise<string>): Promise<string> {
+  while (true) {
+    const answer = await ask(`${label}: `);
+    if (answer.trim()) {
+      return answer;
+    }
+    process.stdout.write(`${label} is required.\n`);
+  }
+}
+
+function initPromptsAllowed(parsed: ParsedInitSelections, deps: CommandRouterDependencies): boolean {
+  return !parsed.noInput && !isTruthyEnv(deps.env.CI) && deps.stdinIsTTY() && deps.stdoutIsTTY();
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  return !['0', 'false', 'no'].includes(value.toLowerCase());
+}
+
+function renderHostedInputErrors(params: {
+  resolution: ProfileResolution;
+  projectFacts: ReturnType<typeof detectInitProjectFacts>;
+  parsed: ParsedInitSelections;
+}): string[] {
+  const trackerKind = params.resolution.dimensions.tracker?.name;
+  const errors: string[] = [];
+  if (trackerKind === 'linear' && !params.parsed.linearProjectSlug?.trim()) {
+    errors.push('Missing required Linear project slug. Pass --linear-project-slug <slug> or run `symphony init` interactively from a TTY.');
+  }
+  if (trackerKind === 'github') {
+    const detected = params.projectFacts.githubRepository;
+    if (!params.parsed.githubOwner?.trim() && !detected?.owner) {
+      errors.push('Missing required GitHub owner. Pass --github-owner <owner> or run `symphony init` interactively from a TTY.');
+    }
+    if (!params.parsed.githubRepo?.trim() && !detected?.repo) {
+      errors.push('Missing required GitHub repo. Pass --github-repo <repo> or run `symphony init` interactively from a TTY.');
+    }
+  }
+  return errors;
+}
+
+function nonInteractiveSelectionGuidance(parsed: ParsedInitSelections): string {
+  if (parsed.noInput) {
+    return 'Non-interactive init was requested with --no-input/--ci; provide a bundle or all required --tracker/--workspace/--toolchain/--workflow flags.';
+  }
+  return 'Run `symphony init` from an interactive TTY, choose a --bundle, or provide all required --tracker/--workspace/--toolchain/--workflow flags.';
+}
+
 function renderInitConflicts(conflicts: readonly WorkflowFilePlanEntry[]): string {
   return [
     'Symphony init found existing files that would be overwritten:',
@@ -862,16 +1024,44 @@ async function runInitCommand(argv: readonly string[], deps: CommandRouterDepend
     return 1;
   }
 
-  const resolution = resolveProfileSelection(parsed.selections);
+  const projectFacts = detectInitProjectFacts(deps.cwd);
+  let resolution = resolveProfileSelection(parsed.selections);
+  if (resolution.errors.length > 0 && initPromptsAllowed(parsed, deps)) {
+    const onlyMissingSelections = resolution.errors.every((error) => error.startsWith('Missing required '));
+    if (onlyMissingSelections) {
+      const prompted = await deps.promptInitInputs({ parsed, resolution, projectFacts });
+      parsed.selections = prompted.selections;
+      parsed.linearProjectSlug = prompted.linearProjectSlug;
+      parsed.githubOwner = prompted.githubOwner;
+      parsed.githubRepo = prompted.githubRepo;
+      resolution = resolveProfileSelection(parsed.selections);
+    }
+  }
+
   if (resolution.errors.length > 0) {
-    deps.stderr(`${resolution.errors.join('\n')}\n`);
+    deps.stderr(`${resolution.errors.join('\n')}\n${nonInteractiveSelectionGuidance(parsed)}\n`);
+    return 1;
+  }
+
+  const hostedInputErrors = renderHostedInputErrors({ resolution, projectFacts, parsed });
+  if (hostedInputErrors.length > 0 && initPromptsAllowed(parsed, deps)) {
+    const prompted = await deps.promptInitInputs({ parsed, resolution, projectFacts });
+    parsed.selections = prompted.selections;
+    parsed.linearProjectSlug = prompted.linearProjectSlug;
+    parsed.githubOwner = prompted.githubOwner;
+    parsed.githubRepo = prompted.githubRepo;
+  }
+
+  const remainingHostedInputErrors = renderHostedInputErrors({ resolution, projectFacts, parsed });
+  if (remainingHostedInputErrors.length > 0) {
+    deps.stderr(`${remainingHostedInputErrors.join('\n')}\n`);
     return 1;
   }
 
   try {
     const plan = deps.materializeWorkflowPlan({
       resolution,
-      projectFacts: detectInitProjectFacts(deps.cwd),
+      projectFacts,
       choices: {
         dryRun: parsed.dryRun,
         selections: parsed.selections,

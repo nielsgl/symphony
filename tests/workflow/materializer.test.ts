@@ -64,8 +64,18 @@ describe('workflow materializer', () => {
 
       const plan = materializeWorkflowDryRun({
         resolution,
-        projectFacts: { root, packageManager: 'npm', existingWorkflowPath: null },
-        choices: { dryRun: true, selections: [bundle] }
+        projectFacts: {
+          root,
+          packageManager: 'npm',
+          existingWorkflowPath: null,
+          githubRepository:
+            bundle === 'github-node' ? { owner: 'nielsgl', repo: 'symphony', remote: 'origin' } : null
+        },
+        choices: {
+          dryRun: true,
+          selections: [bundle],
+          linearProjectSlug: bundle === 'linear-node' ? 'SYMPHONY' : null
+        }
       });
       const workflow = plan.files.find((file) => file.path === 'WORKFLOW.md')?.content ?? '';
 
@@ -230,6 +240,26 @@ describe('workflow materializer', () => {
     expect(effective.workspace.provisioner.type).toBe('worktree');
     expect(effective.workspace.copy_ignored.enabled).toBe(true);
     expect(effective.hooks.after_create).toBe('pnpm install');
+  });
+
+  it('rejects hosted tracker workflows without runtime-critical hosted inputs', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-hosted-inputs-')));
+
+    expect(() =>
+      materializeWorkflowDryRun({
+        resolution: resolveProfileSelection(['linear-node']),
+        projectFacts: { root, packageManager: 'npm', existingWorkflowPath: null },
+        choices: { dryRun: true, selections: ['linear-node'] }
+      })
+    ).toThrow('Missing required Linear project slug');
+
+    expect(() =>
+      materializeWorkflowDryRun({
+        resolution: resolveProfileSelection(['github-node']),
+        projectFacts: { root, packageManager: 'npm', existingWorkflowPath: null, githubRepository: null },
+        choices: { dryRun: true, selections: ['github-node'] }
+      })
+    ).toThrow('Missing required GitHub owner');
   });
 
   it('rejects malformed generated profile provenance during generated workflow validation', () => {
