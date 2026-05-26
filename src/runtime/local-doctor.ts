@@ -1050,7 +1050,20 @@ function addWorkspaceChecks(checks: DoctorFinding[], resolved: LocalCommandResol
     return;
   }
 
-  const repoRoot = provisioner.repo_root ?? resolved.currentProjectRoot;
+  const repoRoot = provisioner.repo_root;
+  if (!repoRoot) {
+    addCheck(checks, {
+      id: 'workspace.git_repository',
+      title: 'Workspace repository is ready',
+      status: 'failure',
+      reason: 'repo_root_missing',
+      summary: 'workspace.provisioner.repo_root is not configured.',
+      remediation: 'Set workspace.provisioner.repo_root to an existing git checkout.',
+      details: { type: provisioner.type }
+    });
+    return;
+  }
+
   const repoStat = fs.existsSync(repoRoot) ? fs.statSync(repoRoot) : null;
   if (!repoStat?.isDirectory()) {
     addCheck(checks, {

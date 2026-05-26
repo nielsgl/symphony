@@ -390,6 +390,113 @@ describe('local symphony command router', () => {
     await expect(fs.access(path.join(projectRoot, '.symphony', 'config.yaml'))).rejects.toThrow();
   });
 
+  it('writes clone profile workflows through the real CLI and doctor checks the configured repo root', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-clone-write-');
+    await execFileAsync('git', ['config', 'user.email', 'clone-profile@example.test'], { cwd: projectRoot });
+    await execFileAsync('git', ['config', 'user.name', 'Clone Profile'], { cwd: projectRoot });
+    await fs.writeFile(path.join(projectRoot, 'README.md'), 'clone profile\n', 'utf8');
+    await execFileAsync('git', ['add', 'README.md'], { cwd: projectRoot });
+    await execFileAsync('git', ['commit', '-m', 'initial'], { cwd: projectRoot });
+    await execFileAsync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: projectRoot });
+
+    const dryRun = runRealInit(projectRoot, [
+      '--dry-run',
+      '--tracker',
+      'memory',
+      '--workspace',
+      'clone',
+      '--toolchain',
+      'generic',
+      '--workflow',
+      'solo-local'
+    ]);
+    expect(dryRun.status).toBe(0);
+    expect(dryRun.stderr).toBe('');
+    expect(dryRun.stdout).toContain('Validation: ok');
+    expect(dryRun.stdout).toContain('type: "clone"');
+    expect(dryRun.stdout).toContain('repo_root: "."');
+
+    const write = runRealInit(projectRoot, [
+      '--tracker',
+      'memory',
+      '--workspace',
+      'clone',
+      '--toolchain',
+      'generic',
+      '--workflow',
+      'solo-local'
+    ]);
+    expect(write.status).toBe(0);
+    expect(write.stderr).toBe('');
+    expect(write.stdout).toContain('Validation: ok');
+
+    const workflow = await fs.readFile(path.join(projectRoot, 'WORKFLOW.md'), 'utf8');
+    expect(workflow).toContain('    type: "clone"');
+    expect(workflow).toContain('    repo_root: "."');
+    expect(validateWorkflowContent(workflow, path.join(projectRoot, 'WORKFLOW.md'))).toMatchObject({ ok: true });
+    await execFileAsync('git', ['add', 'WORKFLOW.md', '.gitignore'], { cwd: projectRoot });
+    await execFileAsync('git', ['commit', '-m', 'add generated workflow'], { cwd: projectRoot });
+    await execFileAsync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: projectRoot });
+
+    const binDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-clone-bin-')));
+    await fs.writeFile(
+      path.join(binDir, 'symphony'),
+      [
+        '#!/usr/bin/env bash',
+        '# symphony-local-shim',
+        '# symphony-shim-version: 1',
+        `# symphony-repo-root: ${process.cwd()}`,
+        `# symphony-entrypoint: ${realCliScript}`,
+        `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(realCliScript)} "$@"`,
+        ''
+      ].join('\n'),
+      { encoding: 'utf8', mode: 0o755 }
+    );
+    await fs.writeFile(path.join(binDir, 'codex'), '#!/usr/bin/env bash\nexit 0\n', { encoding: 'utf8', mode: 0o755 });
+    const stateHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-clone-state-')));
+    const cliEnv = {
+      ...process.env,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+      SYMPHONY_LOCAL_STATE_HOME: stateHome,
+      SYMPHONY_USER_STATE_DIR: stateHome,
+      LINEAR_API_KEY: 'generated-validation-placeholder',
+      GITHUB_TOKEN: 'generated-validation-placeholder'
+    };
+    const setup = spawnSync(process.execPath, [realCliScript, 'setup', '--yes'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: cliEnv
+    });
+    expect(setup.status).toBe(0);
+
+    const doctor = spawnSync(process.execPath, [realCliScript, 'doctor', '--json', '--ci'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: cliEnv
+    });
+    const payload = JSON.parse(doctor.stdout.toString()) as {
+      status: string;
+      findings?: Array<{ id: string; status: string; reason: string; details?: Record<string, unknown> }>;
+      checks?: Array<{ id: string; status: string; reason: string; details?: Record<string, unknown> }>;
+    };
+    const findings = payload.findings ?? payload.checks ?? [];
+    expect(doctor.status).toBe(0);
+    expect(payload.status).toBe('ok');
+    expect(findings.find((finding) => finding.id === 'workflow.effective_config')).toMatchObject({
+      status: 'ok',
+      reason: 'workflow_config_valid'
+    });
+    expect(findings.find((finding) => finding.id === 'workspace.git_repository')).toMatchObject({
+      status: 'ok',
+      reason: 'repo_root_git_repository',
+      details: { type: 'clone', repoRoot: projectRoot }
+    });
+    expect(findings.find((finding) => finding.id === 'workspace.base_ref')).toMatchObject({
+      status: 'ok',
+      reason: 'base_ref_exists'
+    });
+  });
+
   it('writes hosted Node profile workflows through the real CLI and exposes doctor provenance', async () => {
     const linearRoot = await createInitGitRepo('symphony-init-linear-node-write-');
     await fs.writeFile(path.join(linearRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n', 'utf8');

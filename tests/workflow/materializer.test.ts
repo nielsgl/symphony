@@ -232,6 +232,49 @@ describe('workflow materializer', () => {
     expect(effective.hooks.after_create).toBe('pnpm install');
   });
 
+  it('generates clone workflows with an explicit repo root for dry-run and writes', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-clone-')));
+    const resolution = resolveProfileSelection([
+      'tracker:memory',
+      'workspace:clone',
+      'toolchain:generic',
+      'workflow:solo-local'
+    ]);
+    const choices = {
+      dryRun: true,
+      selections: ['tracker:memory', 'workspace:clone', 'toolchain:generic', 'workflow:solo-local']
+    };
+
+    const dryRun = materializeWorkflowDryRun({
+      resolution,
+      projectFacts: { root, packageManager: 'generic', existingWorkflowPath: null },
+      choices
+    });
+    const writePlan = materializeWorkflowPlan({
+      resolution,
+      projectFacts: { root, packageManager: 'generic', existingWorkflowPath: null },
+      choices: { ...choices, dryRun: false }
+    });
+
+    for (const plan of [dryRun, writePlan]) {
+      const workflow = plan.files.find((file) => file.path === 'WORKFLOW.md')?.content ?? '';
+      expect(plan.validation).toMatchObject({ ok: true });
+      expect(workflow).toContain('    type: "clone"');
+      expect(workflow).toContain('    repo_root: "."');
+
+      const definition = new WorkflowLoader().parse(workflow);
+      const effective = new ConfigResolver({ env: {}, homedir: () => root }).resolve(definition, {
+        workflowPath: path.join(root, 'WORKFLOW.md')
+      });
+
+      expect(new ConfigValidator().validate(effective)).toMatchObject({ ok: true });
+      expect(effective.workspace.provisioner).toMatchObject({
+        type: 'clone',
+        repo_root: root
+      });
+    }
+  });
+
   it('rejects malformed generated profile provenance during generated workflow validation', () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-provenance-')));
     const malformed = [

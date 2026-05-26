@@ -191,7 +191,7 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     ...workspaceConfig,
     '  provisioner:',
     `    type: ${yamlString(workspaceType)}`,
-    ...(workspaceType === 'worktree' ? ['    repo_root: "."'] : []),
+    ...(workspaceType === 'worktree' || workspaceType === 'clone' ? ['    repo_root: "."'] : []),
     '    base_ref: "origin/main"',
     '    branch_template: "feature/{{ issue.identifier }}"',
     '    teardown_mode: "remove_worktree"',
