@@ -343,7 +343,11 @@ assertIncludes(
   runStep('symphony profile show symphony-internal', 'symphony', ['profile', 'show', 'symphony-internal'], { cwd: projectA }).stdout,
   path.join(repoRoot, 'WORKFLOW.md')
 );
-assertIncludes('init --help', runStep('symphony init --help', 'symphony', ['init', '--help'], { cwd: projectA }).stdout, 'does not generate, copy, or overwrite workflows');
+const initHelp = runStep('symphony init --help', 'symphony', ['init', '--help'], { cwd: projectA }).stdout;
+assertIncludes('init --help advertises bundle init', initHelp, 'symphony init --bundle memory-generic');
+assertIncludes('init --help advertises dry-run safety', initHelp, 'symphony init --dry-run --bundle memory-generic');
+assertIncludes('init --help advertises non-destructive writes', initHelp, 'Writes are non-destructive by default');
+assertIncludes('init --help advertises dry-run file plan', initHelp, 'Dry-run renders the same file plan without writing files');
 
 const noGitignoreDoctor = JSON.parse(
   runStep('doctor --json --ci no gitignore', 'symphony', ['doctor', '--json', '--ci'], {

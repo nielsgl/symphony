@@ -143,12 +143,14 @@ silently rewrite project runtime policy or implement later diagnostic PRDs.
 
 ## Bounded Surfaces
 
-These commands are intentionally narrow in the Local Command and Setup PRD:
+These commands are intentionally bounded in the local command surface:
 
 ```bash
 symphony profile list
 symphony profile show <pack-or-bundle>
 symphony init --help
+symphony init --dry-run --bundle memory-generic
+symphony init --bundle memory-generic
 ```
 
 `profile list` exposes the composable profile registry: tracker, workspace,
@@ -156,9 +158,10 @@ toolchain, and workflow packs plus named bundles such as Linear/Node and
 GitHub/Node. `profile show <pack-or-bundle>` prints registry metadata, intended
 use, bundle expansion, conflict or required-dimension validation output, and
 protected binding behavior. `symphony-internal` remains a protected binding to
-the checked-in `WORKFLOW.md`, not a generated template. `init` only prints help
-and must not generate, copy, or overwrite workflows until the init
-materialization PRD is implemented.
+the checked-in `WORKFLOW.md`, not a generated template. `init` supports
+non-destructive generated workflow materialization from profile packs and
+bundles. Use `--dry-run` to inspect the file plan before writing; existing
+generated targets require confirmation or `--force`.
 
 ## Compatibility Entrypoints
 

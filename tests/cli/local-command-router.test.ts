@@ -337,7 +337,7 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
-  it('prints bounded init help without materialization behavior', async () => {
+  it('prints init help with materialization options and safety semantics', async () => {
     const harness = createHarness();
 
     const exitCode = await runCommandRouter({ argv: ['init', '--help'], deps: harness.deps });
