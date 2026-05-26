@@ -124,7 +124,7 @@ const PROFILE_PACKS: readonly ProfilePack[] = [
     dimension: 'workflow',
     name: 'solo-local',
     title: 'Solo local workflow',
-    summary: 'Favor local execution, local tracker state, and lightweight review handoff.',
+    summary: 'Favor local execution, local tracker state, and lightweight result sharing.',
     intendedUse: 'Single-operator local development and demos.'
   },
   {
@@ -156,16 +156,16 @@ const PROFILE_BUNDLES: readonly ProfileBundle[] = [
   {
     id: 'linear-node',
     title: 'Linear / Node',
-    summary: 'Team-review workflow for a Node repository tracked in Linear.',
-    intendedUse: 'Default team implementation flow for Node/TypeScript projects using Linear.',
-    packs: ['tracker:linear', 'workspace:worktree', 'toolchain:node', 'workflow:team-review']
+    summary: 'External-project workflow for a Node repository tracked in Linear.',
+    intendedUse: 'Default implementation flow for Node/TypeScript projects using Linear.',
+    packs: ['tracker:linear', 'workspace:worktree', 'toolchain:node', 'workflow:solo-local']
   },
   {
     id: 'github-node',
     title: 'GitHub / Node',
-    summary: 'Team-review workflow for a Node repository tracked in GitHub.',
+    summary: 'External-project workflow for a Node repository tracked in GitHub.',
     intendedUse: 'Repository-native Node/TypeScript projects using GitHub issues and pull requests.',
-    packs: ['tracker:github', 'workspace:worktree', 'toolchain:node', 'workflow:team-review']
+    packs: ['tracker:github', 'workspace:worktree', 'toolchain:node', 'workflow:solo-local']
   },
   {
     id: 'memory-generic',
@@ -264,6 +264,13 @@ export function resolveProfileSelection(selection: readonly string[]): ProfileRe
     warnings.push(
       'Protected workflow bindings are discovery-only golden bindings; init must not generate templates for them.'
     );
+    if (expandedBundles.length > 0) {
+      errors.push(
+        `Protected workflow pack ${protectedBindings
+          .map((pack) => pack.id)
+          .join(', ')} cannot be combined with generated bundles. Select symphony-internal by itself for the checked-in workflow binding.`
+      );
+    }
   }
 
   return {

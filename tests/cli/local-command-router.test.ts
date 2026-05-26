@@ -235,7 +235,7 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('symphony-internal');
     expect(harness.stdout).toContain('checked-in WORKFLOW.md');
     expect(harness.stdout).toContain('linear-node');
-    expect(harness.stdout).toContain('expands: tracker:linear, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('expands: tracker:linear, workspace:worktree, toolchain:node, workflow:solo-local');
     expect(harness.stdout).toContain('github-node');
     expect(harness.stdout).toContain('Select exactly one pack for each required dimension');
     expect(harness.stderr).toBe('');
@@ -248,9 +248,9 @@ describe('local symphony command router', () => {
 
     expect(exitCode).toBe(0);
     expect(harness.stdout).toContain('Bundle: linear-node');
-    expect(harness.stdout).toContain('Expands to: tracker:linear, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('Expands to: tracker:linear, workspace:worktree, toolchain:node, workflow:solo-local');
     expect(harness.stdout).toContain('bundle expansions:');
-    expect(harness.stdout).toContain('linear-node -> tracker:linear, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('linear-node -> tracker:linear, workspace:worktree, toolchain:node, workflow:solo-local');
     expect(harness.stdout).toContain('tracker: tracker:linear');
     expect(harness.stdout).toContain('errors: none');
     expect(harness.stderr).toBe('');
@@ -486,7 +486,7 @@ describe('local symphony command router', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(harness.stdout).toContain('Selected packs: tracker:linear, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('Selected packs: tracker:linear, workspace:worktree, toolchain:node, workflow:solo-local');
     expect(harness.stdout).toContain('Validation: ok');
     expect(harness.stdout).toContain('.env.example');
     expect(harness.stdout).toContain('LINEAR_API_KEY=');
@@ -512,7 +512,7 @@ describe('local symphony command router', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(harness.stdout).toContain('Selected packs: tracker:github, workspace:worktree, toolchain:node, workflow:team-review');
+    expect(harness.stdout).toContain('Selected packs: tracker:github, workspace:worktree, toolchain:node, workflow:solo-local');
     expect(harness.stdout).toContain('Validation: ok');
     expect(harness.stdout).toContain('owner: "nielsgl"');
     expect(harness.stdout).toContain('repo: "symphony"');

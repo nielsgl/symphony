@@ -159,15 +159,10 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
   const trackerKind = tracker.name;
   const workspaceType = workspace.name;
   const profileName = workflow.name;
-  const activeStates =
-    trackerKind === 'github'
-      ? ['Open']
-      : profileName === 'team-review'
-        ? ['Todo', 'In Progress', 'Agent Review']
-        : ['Todo', 'In Progress'];
-  const handoffStates = trackerKind === 'github' ? [] : profileName === 'team-review' ? ['Agent Review'] : [];
-  const freshDispatchStates = trackerKind === 'github' ? [] : profileName === 'team-review' ? ['Agent Review'] : [];
-  const terminalStates = trackerKind === 'github' ? ['Closed'] : profileName === 'team-review' ? ['Done', 'Canceled'] : ['Done'];
+  const activeStates = getActiveStates(trackerKind, profileName);
+  const handoffStates = getHandoffStates(trackerKind, profileName);
+  const freshDispatchStates = getFreshDispatchStates(trackerKind, profileName);
+  const terminalStates = getTerminalStates(trackerKind, profileName);
   const bundle = options.resolution.expandedBundles.map((expansion) => expansion.bundle.id).join(',');
   const packs = options.resolution.packs.map((pack) => pack.id).join(',');
   const packageManager = options.projectFacts.packageManager ?? 'unknown';
@@ -190,8 +185,7 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     ...trackerConfig,
     `  active_states: ${yamlList(activeStates)}`,
     `  terminal_states: ${yamlList(terminalStates)}`,
-    `  handoff_states: ${yamlList(handoffStates)}`,
-    `  fresh_dispatch_states: ${yamlList(freshDispatchStates)}`,
+    ...optionalTrackerStateLines(handoffStates, freshDispatchStates),
     'workspace:',
     ...workspaceConfig,
     '  provisioner:',
@@ -245,9 +239,20 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '## Operator Contract',
     '',
     '- Work one issue at a time and keep progress evidence in the tracker.',
-    '- Run the validation commands that match the repository before handoff.',
+    '- Run the validation commands that match the repository before sharing results.',
+    '- For dry-run initialization, review this generated file plan before enabling any write path.',
     '- Keep generated runtime state under .symphony/system/ and out of version control.'
   ].join('\n');
+}
+
+function optionalTrackerStateLines(
+  handoffStates: readonly string[],
+  freshDispatchStates: readonly string[]
+): string[] {
+  if (handoffStates.length === 0 && freshDispatchStates.length === 0) {
+    return [];
+  }
+  return [`  handoff_states: ${yamlList(handoffStates)}`, `  fresh_dispatch_states: ${yamlList(freshDispatchStates)}`];
 }
 
 export function validateWorkflowContent(content: string, workflowPath: string): ValidationResult {
@@ -266,6 +271,28 @@ export function validateWorkflowContent(content: string, workflowPath: string): 
       at: '2026-05-25T00:00:00.000Z'
     };
   }
+}
+
+function getActiveStates(trackerKind: string, profileName: string): string[] {
+  if (trackerKind === 'github') {
+    return ['Open'];
+  }
+  return profileName === 'team-review' ? ['Todo', 'In Progress', 'Agent Review'] : ['Todo', 'In Progress'];
+}
+
+function getHandoffStates(trackerKind: string, profileName: string): string[] {
+  return trackerKind !== 'github' && profileName === 'team-review' ? ['Agent Review'] : [];
+}
+
+function getFreshDispatchStates(trackerKind: string, profileName: string): string[] {
+  return trackerKind !== 'github' && profileName === 'team-review' ? ['Agent Review'] : [];
+}
+
+function getTerminalStates(trackerKind: string, profileName: string): string[] {
+  if (trackerKind === 'github') {
+    return ['Closed'];
+  }
+  return profileName === 'team-review' ? ['Done', 'Canceled'] : ['Done'];
 }
 
 function buildOptionalSupportFiles(options: WorkflowMaterializerOptions): WorkflowFilePlanEntry[] {
