@@ -149,8 +149,11 @@ These commands are intentionally bounded in the local command surface:
 symphony profile list
 symphony profile show <pack-or-bundle>
 symphony init --help
+symphony init
 symphony init --dry-run --bundle memory-generic
 symphony init --bundle memory-generic
+symphony init --no-input --bundle linear-node --linear-project-slug SYMPHONY
+symphony init --no-input --bundle github-node --github-owner octo-org --github-repo octo-repo
 ```
 
 `profile list` exposes the composable profile registry: tracker, workspace,
@@ -160,8 +163,16 @@ use, bundle expansion, conflict or required-dimension validation output, and
 protected binding behavior. `symphony-internal` remains a protected binding to
 the checked-in `WORKFLOW.md`, not a generated template. `init` supports
 non-destructive generated workflow materialization from profile packs and
-bundles. Use `--dry-run` to inspect the file plan before writing; existing
-generated targets require confirmation or `--force`.
+bundles. In an interactive terminal, `symphony init` prompts for missing
+tracker, workspace, toolchain, workflow-style, and hosted tracker inputs. Use
+`--dry-run` to inspect the file plan before writing; existing generated targets
+require confirmation or `--force`.
+
+Automation should use `--no-input` or `CI=true` with explicit selections. Hosted
+tracker workflows also require runtime-critical hosted inputs: Linear needs
+`--linear-project-slug`, and GitHub needs a detectable GitHub remote or explicit
+`--github-owner` plus `--github-repo`. Non-interactive runs fail with actionable
+errors instead of materializing placeholder owner, repo, or project slug values.
 
 ## Compatibility Entrypoints
 
