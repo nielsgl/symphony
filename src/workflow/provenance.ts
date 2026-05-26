@@ -106,6 +106,7 @@ function requireStringField(
   errors: string[]
 ): string | null {
   if (!(field in fields)) {
+    errors.push(`${source}.${field} is required`);
     return null;
   }
   const value = readString(fields[field]);
@@ -113,6 +114,24 @@ function requireStringField(
     errors.push(`${source}.${field} must be a non-empty string`);
   }
   return value;
+}
+
+function requireStringListField(
+  fields: Record<string, unknown>,
+  field: 'packs',
+  source: string,
+  errors: string[],
+  options: { allowCommaString?: boolean }
+): string[] {
+  if (!(field in fields) && !('pack' in fields)) {
+    errors.push(`${source}.${field} is required`);
+    return [];
+  }
+  const values = readStringArray(fields[field] ?? fields.pack, field, source, errors, options);
+  if (values.length === 0) {
+    errors.push(`${source}.${field} must include at least one pack id`);
+  }
+  return values;
 }
 
 function metadataFromFields(
@@ -123,7 +142,7 @@ function metadataFromFields(
   return {
     profile: requireStringField(fields, 'profile', source, errors),
     bundle: requireStringField(fields, 'bundle', source, errors),
-    packs: readStringArray(fields.packs ?? fields.pack, 'packs', source, errors, {
+    packs: requireStringListField(fields, 'packs', source, errors, {
       allowCommaString: source === 'workflow_comment'
     }),
     references: referencesFromFields(fields, source, errors),

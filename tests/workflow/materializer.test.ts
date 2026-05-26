@@ -256,6 +256,55 @@ describe('workflow materializer', () => {
     });
   });
 
+  it('rejects incomplete present generated profile frontmatter provenance', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-incomplete-provenance-')));
+    const incomplete = [
+      '---',
+      'symphony:',
+      '  generated_profile: {}',
+      'tracker:',
+      '  kind: memory',
+      'codex:',
+      '  command: codex',
+      '---',
+      'workflow'
+    ].join('\n');
+
+    const validation = validateWorkflowContent(incomplete, path.join(root, 'WORKFLOW.md'));
+
+    expect(validation).toMatchObject({
+      ok: false,
+      error_code: 'invalid_generated_profile_provenance'
+    });
+    expect(validation.ok ? '' : validation.message).toContain('workflow_frontmatter.profile is required');
+    expect(validation.ok ? '' : validation.message).toContain('workflow_frontmatter.bundle is required');
+    expect(validation.ok ? '' : validation.message).toContain('workflow_frontmatter.packs is required');
+  });
+
+  it('rejects incomplete present generated profile comment provenance', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-incomplete-comment-')));
+    const incomplete = [
+      '---',
+      'tracker:',
+      '  kind: memory',
+      'codex:',
+      '  command: codex',
+      '---',
+      '<!-- symphony-generated-profile: -->',
+      'workflow'
+    ].join('\n');
+
+    const validation = validateWorkflowContent(incomplete, path.join(root, 'WORKFLOW.md'));
+
+    expect(validation).toMatchObject({
+      ok: false,
+      error_code: 'invalid_generated_profile_provenance'
+    });
+    expect(validation.ok ? '' : validation.message).toContain('workflow_comment.profile is required');
+    expect(validation.ok ? '' : validation.message).toContain('workflow_comment.bundle is required');
+    expect(validation.ok ? '' : validation.message).toContain('workflow_comment.packs is required');
+  });
+
   it('rejects generated profile provenance mismatches between frontmatter and comments', () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-provenance-mismatch-')));
     const mismatch = [
