@@ -60,7 +60,8 @@ export type ValidationErrorCode =
   | 'invalid_logging_root'
   | 'invalid_logging_max_bytes'
   | 'invalid_logging_max_files'
-  | 'invalid_validation_ui_evidence_profile';
+  | 'invalid_validation_ui_evidence_profile'
+  | 'invalid_generated_profile_provenance';
 
 export interface WorkflowDefinition {
   config: Record<string, unknown>;
