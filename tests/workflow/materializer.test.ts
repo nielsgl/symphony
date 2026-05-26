@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { materializeWorkflowDryRun, materializeWorkflowPlan } from '../../src/workflow/materializer';
+import { materializeWorkflowDryRun, materializeWorkflowPlan, validateWorkflowContent } from '../../src/workflow/materializer';
 import { resolveProfileSelection } from '../../src/workflow/profile-registry';
 import { ConfigResolver } from '../../src/workflow/resolver';
 import { ConfigValidator } from '../../src/workflow/validator';
@@ -230,6 +230,58 @@ describe('workflow materializer', () => {
     expect(effective.workspace.provisioner.type).toBe('worktree');
     expect(effective.workspace.copy_ignored.enabled).toBe(true);
     expect(effective.hooks.after_create).toBe('pnpm install');
+  });
+
+  it('rejects malformed generated profile provenance during generated workflow validation', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-provenance-')));
+    const malformed = [
+      '---',
+      'symphony:',
+      '  generated_profile:',
+      '    profile: 42',
+      '    bundle: []',
+      '    packs: tracker:memory',
+      'tracker:',
+      '  kind: memory',
+      'codex:',
+      '  command: codex',
+      '---',
+      '<!-- symphony-generated-profile: profile=solo-local; bundle=memory-generic; packs=tracker:memory,workspace:none -->',
+      'workflow'
+    ].join('\n');
+
+    expect(validateWorkflowContent(malformed, path.join(root, 'WORKFLOW.md'))).toMatchObject({
+      ok: false,
+      error_code: 'invalid_generated_profile_provenance'
+    });
+  });
+
+  it('rejects generated profile provenance mismatches between frontmatter and comments', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-provenance-mismatch-')));
+    const mismatch = [
+      '---',
+      'symphony:',
+      '  generated_profile:',
+      '    profile: solo-local',
+      '    bundle: memory-generic',
+      '    packs:',
+      '      - tracker:memory',
+      'tracker:',
+      '  kind: memory',
+      'codex:',
+      '  command: codex',
+      '---',
+      '<!-- symphony-generated-profile: profile=team-review; bundle=linear-node; packs=tracker:linear -->',
+      'workflow'
+    ].join('\n');
+
+    const validation = validateWorkflowContent(mismatch, path.join(root, 'WORKFLOW.md'));
+
+    expect(validation).toMatchObject({
+      ok: false,
+      error_code: 'invalid_generated_profile_provenance'
+    });
+    expect(validation.ok ? '' : validation.message).toContain('generated profile mismatch');
   });
 
   it('generates a valid GitHub Node workflow from detected repository facts', () => {

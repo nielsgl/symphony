@@ -29,6 +29,10 @@ import {
   type SetupConsentStore,
   type WorkflowPosture
 } from './setup-consent';
+import {
+  readWorkflowGeneratedProfileProvenance,
+  validateWorkflowGeneratedProfileProvenance
+} from '../workflow/provenance';
 
 export type DoctorCheckStatus = 'ok' | 'warning' | 'failure';
 export type DoctorOverallStatus = DoctorCheckStatus;
@@ -431,128 +435,14 @@ function sourceForFinding(check: DoctorFindingInput): DoctorFindingSource {
   return { category: 'runtime_probe', present: check.status === 'ok' };
 }
 
-function readString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-}
-
-function readStringArray(value: unknown): string[] {
-  if (typeof value === 'string') {
-    return value
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => readString(item)).filter((item): item is string => Boolean(item));
-  }
-  return [];
-}
-
-function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-function splitMetadataFields(raw: string): Record<string, string> {
-  const fields: Record<string, string> = {};
-  for (const part of raw.split(/[;\n]/)) {
-    const [rawKey, ...rawValue] = part.split('=');
-    const key = rawKey?.trim();
-    const value = rawValue.join('=').trim();
-    if (key && value) {
-      fields[key] = value;
-    }
-  }
-  return fields;
-}
-
-function referencesFromFields(fields: Record<string, unknown>, source: string): WorkflowCustomizationReference[] {
-  const references: WorkflowCustomizationReference[] = [];
-  for (const key of ['skill', 'skills']) {
-    for (const item of readStringArray(fields[key])) {
-      references.push({ path: item, kind: 'skill', source });
-    }
-  }
-  for (const key of ['prompt', 'prompts']) {
-    for (const item of readStringArray(fields[key])) {
-      references.push({ path: item, kind: 'prompt', source });
-    }
-  }
-  for (const key of ['file', 'files', 'customization', 'customizations']) {
-    for (const item of readStringArray(fields[key])) {
-      references.push({ path: item, kind: 'customization', source });
-    }
-  }
-  return references;
-}
-
-function metadataFromConfig(config: Record<string, unknown>): WorkflowCustomizationMetadata | null {
-  const symphony = readRecord(config.symphony);
-  const generated = readRecord(symphony?.generated_profile) ?? readRecord(symphony?.profile_provenance);
-  if (!generated) {
-    return null;
-  }
-
-  return {
-    profile: readString(generated.profile),
-    bundle: readString(generated.bundle),
-    packs: readStringArray(generated.packs),
-    references: referencesFromFields(generated, 'workflow_frontmatter'),
-    sources: ['workflow_frontmatter']
-  };
-}
-
-function metadataFromWorkflowComments(workflowText: string): WorkflowCustomizationMetadata | null {
-  const htmlPattern = /<!--\s*symphony-generated-profile\s*:\s*([\s\S]*?)-->/gi;
-  const linePattern = /^\s*#\s*symphony-generated-profile\s*:\s*(.+)$/gim;
-  const records: Record<string, string>[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = htmlPattern.exec(workflowText))) {
-    records.push(splitMetadataFields(match[1] ?? ''));
-  }
-  while ((match = linePattern.exec(workflowText))) {
-    records.push(splitMetadataFields(match[1] ?? ''));
-  }
-  if (records.length === 0) {
-    return null;
-  }
-
-  const merged = Object.assign({}, ...records);
-  return {
-    profile: readString(merged.profile),
-    bundle: readString(merged.bundle),
-    packs: readStringArray(merged.packs ?? merged.pack),
-    references: referencesFromFields(merged, 'workflow_comment'),
-    sources: ['workflow_comment']
-  };
-}
-
-function mergeCustomizationMetadata(
-  left: WorkflowCustomizationMetadata | null,
-  right: WorkflowCustomizationMetadata | null
-): WorkflowCustomizationMetadata | null {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return {
-    profile: left.profile ?? right.profile,
-    bundle: left.bundle ?? right.bundle,
-    packs: [...new Set([...left.packs, ...right.packs])],
-    references: [...left.references, ...right.references],
-    sources: [...new Set([...left.sources, ...right.sources])]
-  };
-}
-
 function readWorkflowCustomizationMetadata(workflowPath: string, config: Record<string, unknown>): WorkflowCustomizationMetadata | null {
   let workflowText = '';
   try {
     workflowText = fs.readFileSync(workflowPath, 'utf8');
   } catch {
-    return metadataFromConfig(config);
+    return readWorkflowGeneratedProfileProvenance({ config }).metadata;
   }
-  return mergeCustomizationMetadata(metadataFromConfig(config), metadataFromWorkflowComments(workflowText));
+  return readWorkflowGeneratedProfileProvenance({ config, workflowText }).metadata;
 }
 
 function safeReferenceId(reference: WorkflowCustomizationReference): string {
@@ -582,7 +472,13 @@ function addCustomizationChecks(
     status: 'ok',
     reason: hasMetadata ? 'generated_profile_provenance_recorded' : 'generated_profile_provenance_absent',
     summary: hasMetadata
-      ? 'Workflow records generated profile, bundle, pack, or customization provenance; runtime behavior comes from the materialized workflow.'
+      ? `Workflow records generated profile provenance (${[
+          metadata?.profile ? `profile ${metadata.profile}` : null,
+          metadata?.bundle ? `bundle ${metadata.bundle}` : null,
+          metadata?.packs.length ? `packs ${metadata.packs.join(', ')}` : null
+        ]
+          .filter(Boolean)
+          .join('; ')}); runtime behavior comes from the materialized workflow.`
       : 'Workflow does not record generated profile, bundle, pack, or customization provenance.',
     source: hasMetadata
       ? { category: 'generated_profile', value: metadata?.sources.join(',') ?? 'workflow', present: true }
@@ -1005,6 +901,27 @@ function validateWorkflow(resolved: LocalCommandResolution, env: NodeJS.ProcessE
 } {
   try {
     const definition = new WorkflowLoader().load({ explicitPath: resolved.workflowPath });
+    const workflowText = fs.readFileSync(resolved.workflowPath, 'utf8');
+    const provenanceValidation = validateWorkflowGeneratedProfileProvenance({
+      config: definition.config,
+      workflowText
+    });
+    if (!provenanceValidation.ok) {
+      return {
+        check: {
+          id: 'workflow.effective_config',
+          title: 'Workflow effective config validates',
+          status: 'failure',
+          reason: 'invalid_generated_profile_provenance',
+          summary: provenanceValidation.message,
+          remediation: 'Fix generated profile provenance in WORKFLOW.md before starting the dashboard.',
+          details: { workflowPath: resolved.workflowPath }
+        },
+        effectiveConfig: null,
+        configValid: false,
+        envCheck: null
+      };
+    }
     const effective = new ConfigResolver({ env }).resolve(definition, { workflowPath: resolved.workflowPath });
     const envCheck = buildRequiredEnvCheck(definition, env, resolved.envFilePath);
     const workflowDetails = {

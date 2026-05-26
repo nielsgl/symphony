@@ -1000,6 +1000,44 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('rejects malformed generated workflow provenance in doctor validation', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    const workflow = [
+      '---',
+      'symphony:',
+      '  generated_profile:',
+      '    profile: 42',
+      '    bundle: []',
+      '    packs: tracker:memory',
+      'tracker:',
+      '  kind: memory',
+      'codex:',
+      '  command: codex',
+      '---',
+      'workflow'
+    ].join('\n');
+    const projectRoot = await createDoctorProject(workflow);
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(doctorFinding(payload, 'workflow.effective_config')).toMatchObject({
+      status: 'failure',
+      reason: 'invalid_generated_profile_provenance'
+    });
+    expect((doctorFinding(payload, 'workflow.effective_config') as unknown as { summary: string }).summary).toContain(
+      'workflow_frontmatter.profile must be a non-empty string'
+    );
+    expect(harness.stderr).toBe('');
+  });
+
   it('renders the customization runtime-loading boundary in human doctor output', async () => {
     const { repoRoot, binDir } = await createDoctorRepo();
     const workflow = [
