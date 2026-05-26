@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { WorkflowLoader } from './loader';
 import type { ProfilePack, ProfileResolution } from './profile-registry';
+import { validateWorkflowGeneratedProfileProvenance } from './provenance';
 import { ConfigResolver } from './resolver';
 import type { ValidationResult } from './types';
 import { ConfigValidator } from './validator';
@@ -258,6 +259,18 @@ function optionalTrackerStateLines(
 export function validateWorkflowContent(content: string, workflowPath: string): ValidationResult {
   try {
     const workflowDefinition = new WorkflowLoader().parse(content);
+    const provenanceValidation = validateWorkflowGeneratedProfileProvenance({
+      config: workflowDefinition.config,
+      workflowText: content
+    });
+    if (!provenanceValidation.ok) {
+      return {
+        ok: false,
+        error_code: 'invalid_generated_profile_provenance',
+        message: provenanceValidation.message,
+        at: '2026-05-25T00:00:00.000Z'
+      };
+    }
     const effectiveConfig = new ConfigResolver({
       env: GENERATED_VALIDATION_ENV,
       homedir: () => path.dirname(workflowPath)

@@ -206,6 +206,17 @@ project-owned customization and make those files unreviewable.
 customization paths. They are intentionally visible to git and intentionally
 not loaded by the runtime in this extension.
 
+Generated profiles, bundles, and packs are init inputs only. When `symphony
+init` materializes a project, it records reviewable provenance in the root
+`WORKFLOW.md` so operators and `symphony doctor` can inspect which profile
+inputs produced the file. Runtime policy still comes from the materialized root
+`WORKFLOW.md`; runtime startup must not read profile registry templates as a
+hidden policy source.
+
+Generated profile provenance is optional for hand-written workflows. If present,
+the metadata must be well-formed enough for doctor and init validation to report
+the profile, selected bundle, and expanded pack ids consistently.
+
 ## 5. Invariants
 
 Implementations must enforce the following invariants for the typed effective
