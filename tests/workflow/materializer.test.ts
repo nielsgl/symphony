@@ -271,6 +271,7 @@ describe('workflow materializer', () => {
       expect(plan.validation).toMatchObject({ ok: true });
       expect(workflow).toContain('    type: "clone"');
       expect(workflow).toContain('    repo_root: "."');
+      expect(workflow).toContain('    base_ref: "main"');
 
       const definition = new WorkflowLoader().parse(workflow);
       const effective = new ConfigResolver({ env: {}, homedir: () => root }).resolve(definition, {
@@ -280,7 +281,8 @@ describe('workflow materializer', () => {
       expect(new ConfigValidator().validate(effective)).toMatchObject({ ok: true });
       expect(effective.workspace.provisioner).toMatchObject({
         type: 'clone',
-        repo_root: root
+        repo_root: root,
+        base_ref: 'main'
       });
     }
   });

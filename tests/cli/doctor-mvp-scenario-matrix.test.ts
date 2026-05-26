@@ -119,7 +119,7 @@ function worktreeWorkflow(gitRoot: string, options: { baseRef?: string; allowDir
   ].join('\n');
 }
 
-function cloneWorkflow(gitRoot?: string): string {
+function cloneWorkflow(gitRoot?: string, options: { baseRef?: string } = {}): string {
   return [
     '---',
     'tracker:',
@@ -130,7 +130,7 @@ function cloneWorkflow(gitRoot?: string): string {
     '  provisioner:',
     '    type: clone',
     ...(gitRoot ? [`    repo_root: ${JSON.stringify(gitRoot)}`] : []),
-    '    base_ref: origin/main',
+    `    base_ref: ${options.baseRef ?? 'main'}`,
     '    branch_template: "feature/{{ issue.identifier }}"',
     '    teardown_mode: remove_worktree',
     '    allow_dirty_repo: false',
@@ -423,6 +423,14 @@ describe('Doctor MVP real CLI scenario matrix', () => {
       details: { type: 'clone', repoRoot: gitRoot }
     });
     expect(check(cloneReady.json, 'workspace.base_ref')).toMatchObject({ status: 'ok', reason: 'base_ref_exists' });
+
+    const remoteTrackingCloneProject = await createProject(cloneWorkflow(gitRoot, { baseRef: 'origin/main' }));
+    const remoteTrackingClone = runDoctor(remoteTrackingCloneProject, [guardrailFlag], { PATH: binDir });
+    expect(remoteTrackingClone.status).toBe(2);
+    expect(check(remoteTrackingClone.json, 'workspace.base_ref')).toMatchObject({
+      status: 'failure',
+      reason: 'base_ref_unavailable'
+    });
 
     const dirtyGitRoot = await createGitRepo({ dirty: true });
     const dirtyProject = await createProject(worktreeWorkflow(dirtyGitRoot, { baseRef: 'origin/not-present' }));

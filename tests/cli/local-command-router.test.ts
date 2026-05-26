@@ -26,6 +26,9 @@ import {
   type WorkflowPosture
 } from '../../src/runtime/setup-consent';
 import { materializeWorkflowPlan, validateWorkflowContent } from '../../src/workflow/materializer';
+import { WorkflowLoader } from '../../src/workflow/loader';
+import { ConfigResolver } from '../../src/workflow/resolver';
+import { createWorkspaceProvisioner } from '../../src/workspace/provisioner';
 
 const execFileAsync = promisify(execFile);
 const realCliScript = path.join(process.cwd(), 'scripts', 'symphony.js');
@@ -444,6 +447,7 @@ describe('local symphony command router', () => {
     expect(dryRun.stdout).toContain('Validation: ok');
     expect(dryRun.stdout).toContain('type: "clone"');
     expect(dryRun.stdout).toContain('repo_root: "."');
+    expect(dryRun.stdout).toContain('base_ref: "main"');
 
     const write = runRealInit(projectRoot, [
       '--tracker',
@@ -462,6 +466,7 @@ describe('local symphony command router', () => {
     const workflow = await fs.readFile(path.join(projectRoot, 'WORKFLOW.md'), 'utf8');
     expect(workflow).toContain('    type: "clone"');
     expect(workflow).toContain('    repo_root: "."');
+    expect(workflow).toContain('    base_ref: "main"');
     expect(validateWorkflowContent(workflow, path.join(projectRoot, 'WORKFLOW.md'))).toMatchObject({ ok: true });
     await execFileAsync('git', ['add', 'WORKFLOW.md', '.gitignore'], { cwd: projectRoot });
     await execFileAsync('git', ['commit', '-m', 'add generated workflow'], { cwd: projectRoot });
@@ -522,7 +527,24 @@ describe('local symphony command router', () => {
     });
     expect(findings.find((finding) => finding.id === 'workspace.base_ref')).toMatchObject({
       status: 'ok',
-      reason: 'base_ref_exists'
+      reason: 'base_ref_exists',
+      details: { baseRef: 'main', source: 'clone_branch' }
+    });
+
+    const definition = new WorkflowLoader().parse(workflow);
+    const effective = new ConfigResolver({ env: {}, homedir: () => projectRoot }).resolve(definition, {
+      workflowPath: path.join(projectRoot, 'WORKFLOW.md')
+    });
+    const workspacePath = path.join(await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-clone-workspace-'))), 'NIE-267');
+    const provision = await createWorkspaceProvisioner(effective.workspace.provisioner).provision({
+      identifier: 'NIE-267',
+      workspacePath
+    });
+    expect(provision).toMatchObject({
+      status: 'provisioned',
+      provisioner_type: 'clone',
+      repo_root: projectRoot,
+      workspace_provisioned: true
     });
   });
 
