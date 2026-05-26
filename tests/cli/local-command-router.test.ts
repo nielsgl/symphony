@@ -24,7 +24,7 @@ import {
   type SetupConsentStorePayload,
   type WorkflowPosture
 } from '../../src/runtime/setup-consent';
-import { materializeWorkflowPlan } from '../../src/workflow/materializer';
+import { materializeWorkflowPlan, validateWorkflowContent } from '../../src/workflow/materializer';
 
 const execFileAsync = promisify(execFile);
 const realCliScript = path.join(process.cwd(), 'scripts', 'symphony.js');
@@ -167,6 +167,49 @@ function runRealInit(projectRoot: string, argv: string[], input?: string) {
     cwd: projectRoot,
     input,
     encoding: 'utf8'
+  });
+}
+
+function runRealDoctor(projectRoot: string) {
+  return spawnSync(process.execPath, [realCliScript, 'doctor', '--json', '--ci'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      LINEAR_API_KEY: 'generated-validation-placeholder',
+      GITHUB_TOKEN: 'generated-validation-placeholder',
+      SYMPHONY_USER_STATE_DIR: path.join(projectRoot, '.tmp-user-state')
+    }
+  });
+}
+
+async function expectGeneratedWorkflowValid(projectRoot: string, expectedBundle: string) {
+  const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
+  const workflow = await fs.readFile(workflowPath, 'utf8');
+  expect(validateWorkflowContent(workflow, workflowPath)).toMatchObject({ ok: true });
+  expect(workflow).toContain('symphony-generated-profile');
+  expect(workflow).toContain(`bundle: "${expectedBundle}"`);
+  expect(workflow).toContain(`bundle=${expectedBundle}`);
+  expect(workflow).not.toMatch(/Agent Review|Human Review|Merging|workflow:symphony-internal/);
+}
+
+function expectDoctorGeneratedProfileProvenance(result: ReturnType<typeof spawnSync>, expectedBundle: string) {
+  const stdout = result.stdout.toString();
+  expect(stdout).not.toBe('');
+  const payload = JSON.parse(stdout) as {
+    findings: Array<{
+      id: string;
+      reason: string;
+      details: { bundle?: string; runtimeLoadingBehavior?: string };
+    }>;
+  };
+  const finding = payload.findings.find((candidate) => candidate.id === 'customization.generated_profile');
+  expect(finding).toMatchObject({
+    reason: 'generated_profile_provenance_recorded',
+    details: {
+      bundle: expectedBundle,
+      runtimeLoadingBehavior: 'observable_only'
+    }
   });
 }
 
@@ -345,6 +388,37 @@ describe('local symphony command router', () => {
     expect(await fs.readFile(path.join(projectRoot, '.symphony', 'system', '.gitignore'), 'utf8')).toBe('*\n!.gitignore\n');
     expect(await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8')).toBe('.symphony/system/\n');
     await expect(fs.access(path.join(projectRoot, '.symphony', 'config.yaml'))).rejects.toThrow();
+  });
+
+  it('writes hosted Node profile workflows through the real CLI and exposes doctor provenance', async () => {
+    const linearRoot = await createInitGitRepo('symphony-init-linear-node-write-');
+    await fs.writeFile(path.join(linearRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n', 'utf8');
+    const linear = runRealInit(linearRoot, ['--bundle', 'linear-node', '--linear-project-slug', 'SMOKE']);
+
+    expect(linear.status).toBe(0);
+    expect(linear.stderr).toBe('');
+    expect(linear.stdout).toContain('Symphony init write complete');
+    expect(linear.stdout).toContain('Validation: ok');
+    await expectGeneratedWorkflowValid(linearRoot, 'linear-node');
+    expect(await fs.readFile(path.join(linearRoot, '.env.example'), 'utf8')).toContain('LINEAR_API_KEY=');
+    expect(await fs.readFile(path.join(linearRoot, '.worktreeinclude'), 'utf8')).toContain('.env');
+    expectDoctorGeneratedProfileProvenance(runRealDoctor(linearRoot), 'linear-node');
+
+    const githubRoot = await createInitGitRepo('symphony-init-github-node-write-');
+    await execFileAsync('git', ['remote', 'add', 'origin', 'git@github.com:nielsgl/smoke-node.git'], {
+      cwd: githubRoot
+    });
+    await fs.writeFile(path.join(githubRoot, 'package-lock.json'), '{}\n', 'utf8');
+    const github = runRealInit(githubRoot, ['--bundle', 'github-node']);
+
+    expect(github.status).toBe(0);
+    expect(github.stderr).toBe('');
+    expect(github.stdout).toContain('Symphony init write complete');
+    expect(github.stdout).toContain('Validation: ok');
+    await expectGeneratedWorkflowValid(githubRoot, 'github-node');
+    expect(await fs.readFile(path.join(githubRoot, '.env.example'), 'utf8')).toContain('GITHUB_TOKEN=');
+    expect(await fs.readFile(path.join(githubRoot, '.worktreeinclude'), 'utf8')).toContain('.env');
+    expectDoctorGeneratedProfileProvenance(runRealDoctor(githubRoot), 'github-node');
   });
 
   it('refuses conflicting real CLI writes by default in a temporary git repository', async () => {
