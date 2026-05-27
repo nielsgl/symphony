@@ -72,35 +72,45 @@ if (command === '--version') {
   console.log(args.includes('symphony-internal') ? 'symphony-internal' : 'memory-generic');
 } else if (command === 'init') {
   const dryRun = args.includes('--dry-run');
+  const bundle = args[args.indexOf('--bundle') + 1] || 'memory-generic';
+  const linearProjectSlug = args[args.indexOf('--linear-project-slug') + 1] || 'SYMPHONY-TRIAL';
+  const isLinearNode = bundle === 'linear-node';
   const workflow = [
     '---',
     'symphony:',
     '  generated_profile:',
     '    profile: "solo-local"',
-    '    bundle: "memory-generic"',
+    '    bundle: "' + bundle + '"',
     '    packs:',
-    '      - "tracker:memory"',
-    '      - "workspace:none"',
-    '      - "toolchain:generic"',
+    isLinearNode ? '      - "tracker:linear"' : '      - "tracker:memory"',
+    isLinearNode ? '      - "workspace:worktree"' : '      - "workspace:none"',
+    isLinearNode ? '      - "toolchain:node"' : '      - "toolchain:generic"',
     '      - "workflow:solo-local"',
     'tracker:',
-    '  kind: "memory"',
-    '  endpoint: "memory://local"',
-    '  api_key: ""',
+    isLinearNode ? '  kind: "linear"' : '  kind: "memory"',
+    isLinearNode ? '  project_slug: "' + linearProjectSlug + '"' : '  endpoint: "memory://local"',
+    isLinearNode ? '  active_states: ["Todo", "In Progress"]' : '  api_key: ""',
+    isLinearNode ? '  terminal_states: ["Done"]' : '',
     'toolchain:',
-    '  kind: "generic"',
-    '  setup_command: ""',
-    '  validation_command: "git diff --check"',
+    isLinearNode ? '  kind: "node"' : '  kind: "generic"',
+    isLinearNode ? '  setup_command: "npm install"' : '  setup_command: ""',
+    isLinearNode ? '  validation_command: "npm test"' : '  validation_command: "git diff --check"',
     '---',
-    '<!-- symphony-generated-profile: profile=solo-local; bundle=memory-generic; packs=tracker:memory,workspace:none,toolchain:generic,workflow:solo-local; -->',
+    '<!-- symphony-generated-profile: profile=solo-local; bundle=' + bundle + '; packs=' + (isLinearNode ? 'tracker:linear,workspace:worktree,toolchain:node' : 'tracker:memory,workspace:none,toolchain:generic') + ',workflow:solo-local; -->',
     '# Symphony Workflow',
     '',
-    '- Memory tracker: no hosted tracker credentials required.',
-    '- Validation: git diff --check',
+    isLinearNode ? '- Linear tracker project: ' + linearProjectSlug : '- Memory tracker: no hosted tracker credentials required.',
+    isLinearNode ? '- Validation: npm test' : '- Validation: git diff --check',
     ''
-  ].join('\\n');
+  ].filter(Boolean).join('\\n');
   const files = [
     { path: 'WORKFLOW.md', content: workflow },
+    ...(isLinearNode
+      ? [
+          { path: '.env.example', content: 'LINEAR_API_KEY=\\n' },
+          { path: '.worktreeinclude', content: 'node_modules/**\\n' }
+        ]
+      : []),
     { path: path.join('.symphony', 'system', '.gitignore'), content: '*\\n!.gitignore\\n' },
     { path: '.gitignore', content: '.symphony/system/\\n' }
   ];
@@ -113,6 +123,8 @@ if (command === '--version') {
     console.log('Symphony init dry-run file plan');
     console.log('');
     console.log('Dry run: yes');
+    console.log('Validation: ok');
+    console.log('');
     console.log('Files:');
     actions.forEach((file, index) => {
       console.log(\`  \${index + 1}. \${file.path}\`);
@@ -156,6 +168,41 @@ if (command === '--version') {
         source: { category: 'layout_inspection', present: true },
         remediationInfo: { guidance: 'Narrow the .symphony ignore rule to allow .symphony/system/.' },
         safeFix: { available: false }
+      }
+    ])));
+    process.exit(2);
+  }
+  const workflowContent = require('node:fs').existsSync(workflowPath)
+    ? require('node:fs').readFileSync(workflowPath, 'utf8')
+    : '';
+  if (workflowContent.includes('kind: "linear"') && !process.env.LINEAR_API_KEY && !process.env.LINEAR_AUTH_TOKEN) {
+    console.log(JSON.stringify(doctorPayload('failure', 'blockers_present', 2, [
+      {
+        id: 'workflow.effective_config',
+        code: 'missing_tracker_api_key',
+        severity: 'blocker',
+        checkStatus: 'failure',
+        message: 'tracker.api_key is required after env resolution',
+        source: { category: 'workflow_value', present: true },
+        remediationInfo: { guidance: 'Fix WORKFLOW.md or the referenced environment variables before starting the dashboard.' }
+      },
+      {
+        id: 'env.required_variables',
+        code: 'required_env_missing',
+        severity: 'blocker',
+        checkStatus: 'failure',
+        message: 'Missing 1 required environment variable(s) after loading the effective environment source.',
+        source: { category: 'environment_file', present: true },
+        remediationInfo: { guidance: 'Define the missing variables in the project .env file or process environment before starting Symphony.' }
+      },
+      {
+        id: 'tracker.credentials',
+        code: 'linear_tracker_credentials_missing',
+        severity: 'blocker',
+        checkStatus: 'failure',
+        message: 'linear tracker credentials are missing after environment resolution.',
+        source: { category: 'runtime_probe', present: true },
+        remediationInfo: { guidance: 'Set LINEAR_API_KEY or tracker.api_key before starting Symphony.' }
       }
     ])));
     process.exit(2);
@@ -259,7 +306,7 @@ describe('local multi-project trial harness', () => {
     expect(options.projectRoots).toEqual([{ path: '/tmp/project-a', required: false, shape: 'existing-node' }]);
     expect(options.requiredProjectRoots).toEqual([{ path: '/tmp/project-b', required: true, shape: 'existing-node' }]);
     expect(options.syntheticProjectRoots).toEqual([{ path: '/tmp/project-c', required: false, shape: 'existing-node' }]);
-  });
+  }, 30_000);
 
   it('summarizes SYMPHONY and hosted credential environment without secret values', () => {
     const summary = trial.summarizeEnv({
@@ -284,7 +331,7 @@ describe('local multi-project trial harness', () => {
       present: true,
       value: '<redacted>'
     });
-  });
+  }, 30_000);
 
   it('fails closed when build output is missing and writes report shape', async () => {
     const repoRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-trial-missing-build-')));
@@ -342,7 +389,7 @@ describe('local multi-project trial harness', () => {
 
     expect(report.summary).toMatchObject({
       status: 'passed',
-      passed: 4,
+      passed: 5,
       failed: 0,
       blocked: 0
     });
@@ -420,12 +467,39 @@ describe('local multi-project trial harness', () => {
         project_identity_match: true
       }
     });
+    expect(report.lanes.find((lane: any) => lane.id === 'generated-linear-node-setup')).toMatchObject({
+      status: 'passed',
+      synthetic: true,
+      counts_for_external_project_evidence: false,
+      init_file_plan_match: true,
+      doctor: {
+        status: 'failure',
+        reason: 'blockers_present',
+        finding_counts: { blockers: 3 }
+      },
+      hosted_credential_behavior: {
+        mode: 'non_hosted_setup',
+        hosted_credentials_required_for_issue_run: true,
+        doctor: {
+          missing_credentials_expected_for_non_hosted_setup: true,
+          expected_blockers_present: true,
+          blocker_codes: ['missing_tracker_api_key', 'required_env_missing', 'linear_tracker_credentials_missing']
+        }
+      },
+      generated_workflow_checks: {
+        ok: true,
+        generated_profile_provenance: true,
+        includes_node_setup_command: true,
+        includes_node_validation_command: true,
+        unintended_symphony_internal_states: []
+      }
+    });
     expect(report.lanes.find((lane: any) => lane.id === 'real-project-1')).toMatchObject({
       status: 'passed',
       synthetic: false,
       counts_for_external_project_evidence: true
     });
-  });
+  }, 30_000);
 
   it('blocks full trial evidence when no real existing project root is supplied', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
@@ -445,7 +519,7 @@ describe('local multi-project trial harness', () => {
 
     expect(report.summary).toMatchObject({
       status: 'blocked',
-      passed: 3,
+      passed: 4,
       blocked: 1
     });
     expect(report.lanes.find((lane: any) => lane.id === 'real-existing-project-missing')).toMatchObject({
@@ -459,7 +533,7 @@ describe('local multi-project trial harness', () => {
         })
       ]
     });
-  });
+  }, 30_000);
 
   it('labels synthetic existing-workflow fixtures without counting them as real external evidence', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
@@ -482,7 +556,7 @@ describe('local multi-project trial harness', () => {
 
     expect(report.summary).toMatchObject({
       status: 'blocked',
-      passed: 4,
+      passed: 5,
       blocked: 1
     });
     expect(report.lanes.find((lane: any) => lane.id === 'synthetic-existing-project-1')).toMatchObject({
@@ -541,7 +615,7 @@ describe('local multi-project trial harness', () => {
     });
     expect(report.summary).toMatchObject({
       status: 'blocked',
-      passed: 3,
+      passed: 4,
       blocked: 1,
       findings_by_category: {
         environment_prerequisite: 1
@@ -580,13 +654,54 @@ describe('local multi-project trial harness', () => {
     );
     expect(report.summary).toMatchObject({
       status: 'failed',
-      passed: 3,
+      passed: 4,
       failed: 1,
       blocked: 0,
       findings_by_category: {
         environment_prerequisite: 1,
         implementation_defect: 1
       }
+    });
+  }, 30_000);
+
+  it('blocks hosted issue-run lanes until explicit disposable resources and credentials are supplied', async () => {
+    const { repoRoot, buildArtifact } = createFakeRepo();
+    const fakeCommand = writeFakeCommand(repoRoot);
+    const { report } = await trial.runTrial({
+      repoRoot,
+      report: path.join(repoRoot, 'trial-report.json'),
+      env: { PATH: process.env.PATH, LINEAR_API_KEY: 'linear-secret' },
+      hostedCredentials: true,
+      operator: {
+        source: 'linked-symphony',
+        command: process.execPath,
+        argsPrefix: [fakeCommand],
+        buildArtifact,
+        fallbackEntrypoint: fakeCommand
+      }
+    });
+
+    const hostedLane = report.lanes.find((lane: any) => lane.id === 'hosted-linear-node-issue-run');
+    expect(hostedLane).toMatchObject({
+      status: 'blocked',
+      counts_for_external_project_evidence: true,
+      hosted_prerequisites: {
+        status: 'blocked',
+        missing: expect.arrayContaining([
+          expect.objectContaining({ name: 'GITHUB_TOKEN or GH_TOKEN' }),
+          expect.objectContaining({ name: 'hosted Linear project slug' }),
+          expect.objectContaining({ name: 'isolated disposable Linear project acknowledgement' }),
+          expect.objectContaining({ name: 'hosted Linear issue id' }),
+          expect.objectContaining({ name: 'hosted GitHub owner' }),
+          expect.objectContaining({ name: 'hosted GitHub repository' }),
+          expect.objectContaining({ name: 'hosted GitHub remote URL' })
+        ])
+      }
+    });
+    expect(report.summary).toMatchObject({
+      status: 'blocked',
+      passed: 4,
+      blocked: 2
     });
   }, 30_000);
 });

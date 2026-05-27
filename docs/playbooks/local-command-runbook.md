@@ -249,6 +249,16 @@ workflow provenance and validation behavior, doctor findings, reserved
 customization path visibility, runtime state layout, ambient `SYMPHONY_*`
 handling, and dashboard identity/shutdown evidence.
 
+The default run also includes a generated Linear/Node setup lane. That lane
+starts from a fresh Node git project with minimal package metadata and a real
+`npm test` command, runs `symphony init --dry-run` and `symphony init` with an
+explicit disposable project slug, verifies that the write plan matches the
+dry-run plan, commits intended init files, and then runs `symphony setup --yes`,
+`symphony doctor --json --ci`, and the dashboard probe from that generated
+project root. In the dry baseline, missing Linear credentials are recorded as
+expected hosted issue-run prerequisites for that lane rather than as default
+trial blockers; unexpected doctor blockers still block the lane.
+
 Synthetic lanes are labeled with `"synthetic": true` and
 `"counts_for_external_project_evidence": false`. They prove harness behavior and
 non-hosted command readiness, but they do not satisfy the existing
@@ -287,11 +297,32 @@ evidence.
 Hosted tracker credentials are never printed. The report summarizes
 `SYMPHONY_*`, Linear, and GitHub credential variables as present or missing, and
 secret-like values are redacted from command transcript summaries. To make
-hosted credentials part of operator intent, pass:
+hosted credentials part of operator intent, pass explicit disposable Linear and
+GitHub resources:
 
 ```bash
-npm run trial:local-multi-project -- --with-hosted-credentials
+npm run trial:local-multi-project -- \
+  --with-hosted-credentials \
+  --hosted-linear-project-slug SYMPHONY-TRIAL \
+  --hosted-linear-project-disposable \
+  --hosted-linear-issue-id TRI-123 \
+  --hosted-github-owner octo-org \
+  --hosted-github-repo symphony-trial-node \
+  --hosted-github-remote-url git@github.com:octo-org/symphony-trial-node.git
 ```
+
+The hosted lane fails closed as `environment_prerequisite` when intent,
+credentials, disposable resource identifiers, or an isolated disposable Linear
+project acknowledgement are missing. Do not point the hosted lane at an active
+real project slug as a shortcut; existing Symphony runtimes may dispatch other
+active issues from that project before the trial can prove external-project
+isolation. When the hosted lane is explicitly enabled, it pushes the generated
+project `main` branch to the configured disposable GitHub remote before
+dispatch so `origin/main` is a real external base for worktree creation. A
+hosted lane must not be counted as passed until it records the
+tracker ticket identifier, final tracker state, branch, commit SHA, pushed
+branch proof, PR URL, dashboard/API evidence, and Project Execution History
+evidence for the external project.
 
 The report classifies findings as:
 
