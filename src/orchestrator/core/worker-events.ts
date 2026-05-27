@@ -172,10 +172,6 @@ export function staleWorkerEventReasonForRunningEntry(params: {
     return 'inactive_worker_pid';
   }
 
-  if (!eventPid && isInactiveWorkerLineage(inactiveWorkerEntries, workerEvent)) {
-    return 'lineage_mismatch';
-  }
-
   if (eventPid && runningEntry.codex_app_server_pid && eventPid !== runningEntry.codex_app_server_pid) {
     return 'worker_identity_mismatch';
   }
@@ -190,6 +186,10 @@ export function staleWorkerEventReasonForRunningEntry(params: {
 
   if (isSameThreadRecoveryTurnStart(runningEntry, workerEvent)) {
     return null;
+  }
+
+  if (!eventPid && isInactiveWorkerLineage(inactiveWorkerEntries, workerEvent)) {
+    return 'lineage_mismatch';
   }
 
   if (isPreviousRecoveryTurnEvent(runningEntry, workerEvent)) {
@@ -992,6 +992,10 @@ function isInactiveWorkerPid(inactiveEntries: InactiveWorkerPidEntry[], pid: str
   return inactiveEntries.some((entry) => entry.pid === pid);
 }
 
+function isInactiveWorkerLineageQuarantineReason(reason: string): boolean {
+  return reason === REASON_CODES.workspaceAttemptResidueRecovered || reason === REASON_CODES.handoffRelease;
+}
+
 function isInactiveWorkerLineage(
   inactiveEntries: InactiveWorkerPidEntry[],
   workerEvent: WorkerObservabilityEvent
@@ -1001,6 +1005,9 @@ function isInactiveWorkerLineage(
   }
 
   return inactiveEntries.some((entry) => {
+    if (!isInactiveWorkerLineageQuarantineReason(entry.reason)) {
+      return false;
+    }
     const turnMatches = Boolean(entry.turn_id) && workerEvent.turn_id === entry.turn_id;
     const sessionMatches = Boolean(entry.session_id) && workerEvent.session_id === entry.session_id;
     if (!turnMatches && !sessionMatches) {

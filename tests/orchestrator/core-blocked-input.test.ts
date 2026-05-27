@@ -2067,6 +2067,13 @@ describe('OrchestratorCore blocked input', () => {
     });
     harness.tracker.fetch_candidate_issues.mockResolvedValue([makeIssue({ id: 'i-native', identifier: 'ABC-NATIVE' })]);
     await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-native', {
+      timestamp_ms: harness.now.value + 1,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-native',
+      turn_id: 'turn-native-blocked',
+      session_id: 'session-native'
+    });
     await harness.orchestrator.onWorkerExit(
       'i-native',
       'abnormal',
@@ -2094,6 +2101,20 @@ describe('OrchestratorCore blocked input', () => {
     });
     const resumedSpawn = harness.spawned.find((entry) => entry.issue_id === 'i-native' && entry.attempt === 2);
     expect(resumedSpawn?.resume_context ?? null).toBeNull();
+
+    harness.orchestrator.onWorkerEvent('i-native', {
+      timestamp_ms: harness.now.value + 2,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      thread_id: 'thread-native',
+      turn_id: 'turn-native-continuation',
+      session_id: 'session-native'
+    });
+    expect(harness.orchestrator.getStateSnapshot().running.get('i-native')).toMatchObject({
+      thread_id: 'thread-native',
+      turn_id: 'turn-native-continuation',
+      session_id: 'session-native',
+      quarantined_event_count: 0
+    });
   });
 
   it('holds native blocked input submission during Drain Mode without applying or consuming blocked state', async () => {

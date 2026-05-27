@@ -552,13 +552,11 @@ export async function coordinateDispatchIssue(
   });
 
   const runningEntry = state.running.get(issue.id);
-  if (runningEntry) {
+  if (runningEntry && graphContext.recover_workspace_attempt_residue) {
     rememberInactiveWorkerLineage({
       state,
       issueId: issue.id,
-      reason: graphContext.recover_workspace_attempt_residue
-        ? REASON_CODES.workspaceAttemptResidueRecovered
-        : REASON_CODES.manualResume,
+      reason: REASON_CODES.workspaceAttemptResidueRecovered,
       nowMs: startedAtMs,
       ttlMs: context.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS,
       thread_id: graphContext.previous_thread_id ?? null,
