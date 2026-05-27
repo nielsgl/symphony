@@ -6,11 +6,14 @@ Status: blocked on required real existing-project evidence.
 
 The Local Multi-Project Trial is not clean enough to unblock public npm,
 Homebrew, standalone binary, or desktop packaging work. The harness and child
-slices now prove the synthetic/generated lanes, the Symphony-internal protected
-profile, the hosted Linear/Node issue-run, and recovered-worker ownership
-hardening. The required existing external project lane still lacks a supplied
-real project root in the closure run, so synthetic existing-workflow evidence
-must not be counted as parent-PRD acceptance.
+slices now prove the synthetic/generated lanes, the hosted Linear/Node
+issue-run, and recovered-worker ownership hardening. The protected
+Symphony-internal profile is proven by `NIE-271`, but the default `NIE-275`
+closure reproduction is environment-blocked unless local checkout/profile and
+Linear setup prerequisites are satisfied. The required existing external
+project lane still lacks a supplied real project root in the closure run, so
+synthetic existing-workflow evidence must not be counted as parent-PRD
+acceptance.
 
 ## Closure Command
 
@@ -26,6 +29,19 @@ Use a real project that already has a hand-written `WORKFLOW.md`. The harness
 may also accept synthetic fixtures for regression coverage, but a synthetic
 fixture is not enough to close the parent PRD.
 
+For the `symphony-internal-profile` lane to count as passing closure evidence,
+the local environment must also have:
+
+- the current checkout command shim/profile setup expected by the protected
+  internal profile;
+- setup consent available for the Symphony project;
+- required Linear environment such as `LINEAR_API_KEY` and project selection
+  values when the internal workflow's doctor checks require tracker access.
+
+Without those prerequisites, the lane is an environment-blocked closure result,
+not a pass. The parent remains blocked while this or any other required lane is
+blocked unless the parent PRD owner accepts a documented exception.
+
 The 2026-05-27 closure reproduction in `NIE-275` used:
 
 ```bash
@@ -40,14 +56,14 @@ Result:
 | `synthetic-memory-baseline` | passed | synthetic | Smoke coverage only. |
 | `synthetic-generated-generic` | passed | synthetic generated project | Proves generic/non-Node generated path. |
 | `generated-linear-node-setup` | passed | synthetic generated project | Proves non-hosted Linear/Node setup readiness. |
-| `symphony-internal-profile` | passed | real Symphony checkout | Proves protected internal profile resolves the checked-in workflow. |
+| `symphony-internal-profile` | blocked | real Symphony checkout | Environment-blocked in the default closure reproduction because internal-profile local prerequisites were missing; `NIE-271` remains the passing child-slice evidence. |
 | `real-existing-project-missing` | blocked | missing real root | Parent PRD remains blocked. |
 
 ## User Story Traceability
 
 | Story | Evidence | Verdict |
 | --- | --- | --- |
-| 1. Symphony repository through protected internal profile | `NIE-271`, PR #490, and `NIE-275` closure report: `symphony-internal-profile: passed`. | Pass |
+| 1. Symphony repository through protected internal profile | `NIE-271` and PR #490 prove the protected internal profile in the child slice. The default `NIE-275` closure report reproduced `symphony-internal-profile: blocked` until local checkout/profile, setup-consent, and Linear prerequisites are present. | Blocked in closure reproduction |
 | 2. Existing external project with hand-written `WORKFLOW.md` | `NIE-271` added real-root support and synthetic regression coverage, but no real project root was supplied to `NIE-275`. | Blocked |
 | 3. Fresh Node project with `linear-node` defaults | `NIE-273`, PR #489, generated setup lane and hosted evidence for `NIE-280`. | Pass |
 | 4. Generic or non-Node project | `NIE-272`, PR #488, generated generic lane. | Pass |
