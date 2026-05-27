@@ -297,6 +297,44 @@ export function rememberInactiveWorkerPid(params: {
   state.inactive_worker_pids.set(issueId, next);
 }
 
+export function rememberInactiveWorkerLineage(params: {
+  state: WorkerEventLineageState;
+  issueId: string;
+  reason: string;
+  nowMs: number;
+  ttlMs: number;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  session_id?: string | null;
+}): void {
+  const { state, issueId, reason, nowMs, ttlMs } = params;
+  const threadId = params.thread_id ?? null;
+  const turnId = params.turn_id ?? null;
+  const sessionId = params.session_id ?? null;
+  if (!threadId && !turnId && !sessionId) {
+    return;
+  }
+
+  const existing = pruneInactiveWorkerPidsForIssue({ state, issueId, nowMs, ttlMs });
+  const next = [
+    ...existing.filter(
+      (entry) => !(entry.pid === '' && entry.thread_id === threadId && entry.turn_id === turnId && entry.session_id === sessionId)
+    ),
+    {
+      pid: '',
+      recorded_at_ms: nowMs,
+      reason,
+      thread_id: threadId,
+      turn_id: turnId,
+      session_id: sessionId
+    }
+  ].slice(-20);
+  if (!state.inactive_worker_pids) {
+    state.inactive_worker_pids = new Map();
+  }
+  state.inactive_worker_pids.set(issueId, next);
+}
+
 export function rememberReleasedWorker(params: {
   state: WorkerEventLineageState;
   runningEntry: RunningEntry;

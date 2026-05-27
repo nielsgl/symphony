@@ -405,6 +405,113 @@ describe('OrchestratorCore blocked input', () => {
     expect(harness.spawned.length).toBe(spawnedBeforeTicks + 1);
   });
 
+  it('protects manual workspace-conflict resume ownership from late setup-session events', async () => {
+    const completedRuns: Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0][] = [];
+    const harness = createHarness({
+      persistence: {
+        startRun: async () => `run-blocked-resume-${completedRuns.length + 1}`,
+        appendIssueRun: async () => 'issue-run-blocked-resume',
+        appendAttempt: async ({ attempt_number }) => `attempt-blocked-resume-${attempt_number}`,
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async (params) => {
+          completedRuns.push(params);
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-workspace-conflict-resume', identifier: 'ABC-BLOCK-RESUME', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+    harness.orchestrator.onWorkerEvent('i-workspace-conflict-resume', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'setup generated package-lock.json before workspace preflight blocked',
+      thread_id: 'thread-setup',
+      turn_id: 'turn-setup',
+      session_id: 'session-setup'
+    });
+    await harness.orchestrator.onWorkerExit(
+      'i-workspace-conflict-resume',
+      'abnormal',
+      'workspace_conflict:{"code":"operator_action_required_workspace_conflict","detail":"workspace contains setup/preflight residue","conflict_files":[{"path":"package-lock.json","status":"untracked","classification":"unknown_non_ephemeral"}],"resolution_hints":["Resolve and resume."]}',
+      {
+        thread_id: 'thread-setup',
+        turn_id: 'turn-setup',
+        session_id: 'session-setup'
+      }
+    );
+
+    const blocked = harness.orchestrator.getStateSnapshot().blocked_inputs.get('i-workspace-conflict-resume');
+    expect(blocked).toMatchObject({
+      previous_thread_id: 'thread-setup',
+      previous_turn_id: 'turn-setup',
+      previous_session_id: 'session-setup',
+      requires_manual_resume: true
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-workspace-conflict-resume', identifier: 'ABC-BLOCK-RESUME', state: 'In Progress' })
+    ]);
+    harness.tracker.fetch_issue_states_by_ids.mockResolvedValue([
+      makeIssue({ id: 'i-workspace-conflict-resume', identifier: 'ABC-BLOCK-RESUME', state: 'In Progress' })
+    ]);
+    const resumed = await harness.orchestrator.resumeBlockedIssue('ABC-BLOCK-RESUME', 'operator cleared package-lock residue', null, {
+      actor: 'operator@example.test',
+      reason_note: 'workspace conflict resolved'
+    });
+    expect(resumed).toEqual({ ok: true, issue_id: 'i-workspace-conflict-resume' });
+
+    harness.orchestrator.onWorkerEvent('i-workspace-conflict-resume', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'late setup session heartbeat after manual resume dispatch',
+      thread_id: 'thread-setup',
+      turn_id: 'turn-setup',
+      session_id: 'session-setup'
+    });
+    let running = harness.orchestrator.getStateSnapshot().running.get('i-workspace-conflict-resume');
+    expect(running).toMatchObject({
+      thread_id: null,
+      turn_id: null,
+      session_id: null,
+      last_event: null,
+      quarantined_event_count: 1
+    });
+
+    harness.orchestrator.onWorkerEvent('i-workspace-conflict-resume', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      detail: 'replacement session owns manual residue recovery',
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement'
+    });
+    running = harness.orchestrator.getStateSnapshot().running.get('i-workspace-conflict-resume');
+    expect(running).toMatchObject({
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement',
+      last_event: CANONICAL_EVENT.codex.turnStarted,
+      last_message: 'replacement session owns manual residue recovery',
+      quarantined_event_count: 1
+    });
+
+    await harness.orchestrator.onWorkerExit('i-workspace-conflict-resume', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review',
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement'
+    });
+    expect(completedRuns.at(-1)).toMatchObject({
+      terminal_status: 'succeeded',
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement'
+    });
+  });
+
   it('recovers restart-restored workspace attempt residue into a continuation retry', async () => {
     const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-attempt-residue-'));
     spawnSync('git', ['init'], { cwd: workspacePath });
@@ -460,6 +567,64 @@ describe('OrchestratorCore blocked input', () => {
         attempt: 1,
         resume_context: expect.stringContaining('Workspace attempt residue recovery'),
         recover_workspace_attempt_residue: true
+      })
+    ]);
+    harness.orchestrator.onWorkerEvent('i-attempt-residue', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'late restored setup session heartbeat',
+      thread_id: 'thread-prev',
+      turn_id: 'turn-prev',
+      session_id: 'session-prev'
+    });
+    let running = harness.orchestrator.getStateSnapshot().running.get('i-attempt-residue');
+    expect(running).toMatchObject({
+      thread_id: null,
+      turn_id: null,
+      session_id: null,
+      last_event: null,
+      quarantined_event_count: 1
+    });
+    harness.orchestrator.onWorkerEvent('i-attempt-residue', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      detail: 'replacement owns restored residue',
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement'
+    });
+    running = harness.orchestrator.getStateSnapshot().running.get('i-attempt-residue');
+    expect(running).toMatchObject({
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement',
+      last_event: CANONICAL_EVENT.codex.turnStarted,
+      quarantined_event_count: 1
+    });
+    const service = new SnapshotService();
+    const projectedState = service.projectState(harness.orchestrator.getStateSnapshot());
+    const projectedIssue = service.projectIssue(harness.orchestrator.getStateSnapshot(), 'NIE-RESIDUE');
+    expect(projectedState.running[0]).toMatchObject({
+      issue_identifier: 'NIE-RESIDUE',
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement',
+      quarantined_event_count: 1
+    });
+    expect(projectedIssue.running).toMatchObject({
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement'
+    });
+    expect(projectedIssue.stale_events).toEqual([
+      expect.objectContaining({
+        thread_id: 'thread-prev',
+        turn_id: 'turn-prev',
+        session_id: 'session-prev',
+        active_thread_id: null,
+        active_turn_id: null,
+        active_session_id: null,
+        reason: 'lineage_mismatch'
       })
     ]);
     fs.rmSync(workspacePath, { recursive: true, force: true });

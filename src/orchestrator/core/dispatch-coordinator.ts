@@ -16,6 +16,9 @@ import type {
 } from '../types';
 import { emptyDispatchBackpressureState, evaluateDispatchBackpressure, getBackpressureRetryDelayMs } from './retry-backpressure';
 import type { DispatchGraphContext } from './execution-graph-persistence';
+import { rememberInactiveWorkerLineage } from './worker-events';
+
+const DEFAULT_INACTIVE_WORKER_PID_TTL_MS = 60 * 60 * 1000;
 
 export interface DispatchCoordinatorScheduleRetryParams {
   issue_id: string;
@@ -549,6 +552,20 @@ export async function coordinateDispatchIssue(
   });
 
   const runningEntry = state.running.get(issue.id);
+  if (runningEntry) {
+    rememberInactiveWorkerLineage({
+      state,
+      issueId: issue.id,
+      reason: graphContext.recover_workspace_attempt_residue
+        ? REASON_CODES.workspaceAttemptResidueRecovered
+        : REASON_CODES.manualResume,
+      nowMs: startedAtMs,
+      ttlMs: context.config.inactive_worker_pid_ttl_ms ?? DEFAULT_INACTIVE_WORKER_PID_TTL_MS,
+      thread_id: graphContext.previous_thread_id ?? null,
+      turn_id: graphContext.previous_turn_id ?? null,
+      session_id: graphContext.previous_session_id ?? null
+    });
+  }
   if (runningEntry && context.persistence) {
     try {
       const startedAt = asIso(runningEntry.started_at_ms);

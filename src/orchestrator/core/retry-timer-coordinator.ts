@@ -312,6 +312,9 @@ export async function coordinateRetryTimer(context: RetryTimerCoordinatorContext
     await context.hooks.dispatchIssue(issue, retryEntry.attempt, context.hooks.workspaceAttemptResidueResumeContext(retryEntry), {
       issue_run_id: retryEntry.issue_run_id,
       previous_attempt_id: retryEntry.previous_attempt_id,
+      previous_thread_id: retryEntry.previous_thread_id ?? null,
+      previous_turn_id: retryEntry.previous_turn_id ?? null,
+      previous_session_id: retryEntry.previous_session_id ?? null,
       recover_workspace_attempt_residue: retryEntry.recover_workspace_attempt_residue ?? false
     });
     return;
@@ -485,6 +488,9 @@ export async function coordinateRetryTimer(context: RetryTimerCoordinatorContext
   await context.hooks.dispatchIssue(issue, retryEntry.attempt, context.hooks.workspaceAttemptResidueResumeContext(retryEntry), {
     issue_run_id: retryEntry.issue_run_id,
     previous_attempt_id: retryEntry.previous_attempt_id,
+    previous_thread_id: retryEntry.previous_thread_id ?? null,
+    previous_turn_id: retryEntry.previous_turn_id ?? null,
+    previous_session_id: retryEntry.previous_session_id ?? null,
     recover_workspace_attempt_residue: retryEntry.recover_workspace_attempt_residue ?? false
   });
 }
