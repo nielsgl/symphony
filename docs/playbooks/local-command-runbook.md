@@ -234,7 +234,12 @@ The dry baseline does not require hosted tracker credentials. It creates
 synthetic temporary projects and records command availability, profile
 discovery, `init --dry-run`, `doctor --json --ci`, dashboard bind proof,
 `/api/v1/state`, `/api/v1/diagnostics`, Project Identity root/workflow matching,
-and clean dashboard shutdown.
+and clean dashboard shutdown. It also creates a fresh generated Linear/Node
+project with minimal package metadata and a real `npm test` command, runs
+`symphony init --dry-run` and `symphony init` with an explicit disposable
+project slug, verifies that the write plan matches the dry-run plan, then runs
+`symphony setup --yes`, `symphony doctor --json --ci`, and the dashboard probe
+from that generated project root.
 
 Synthetic lanes are labeled with `"synthetic": true` and
 `"counts_for_external_project_evidence": false`. They prove harness behavior and
@@ -266,11 +271,24 @@ can distinguish clean adoption from usable-but-frictional adoption.
 Hosted tracker credentials are never printed. The report summarizes
 `SYMPHONY_*`, Linear, and GitHub credential variables as present or missing, and
 secret-like values are redacted from command transcript summaries. To make
-hosted credentials part of operator intent, pass:
+hosted credentials part of operator intent, pass explicit disposable Linear and
+GitHub resources:
 
 ```bash
-npm run trial:local-multi-project -- --with-hosted-credentials
+npm run trial:local-multi-project -- \
+  --with-hosted-credentials \
+  --hosted-linear-project-slug SYMPHONY-TRIAL \
+  --hosted-linear-issue-id TRI-123 \
+  --hosted-github-owner octo-org \
+  --hosted-github-repo symphony-trial-node \
+  --hosted-github-remote-url git@github.com:octo-org/symphony-trial-node.git
 ```
+
+The hosted lane fails closed as `environment_prerequisite` when intent,
+credentials, or disposable resource identifiers are missing. A hosted lane must
+not be counted as passed until it records the tracker ticket identifier, final
+tracker state, branch, commit SHA, pushed branch proof, PR URL, dashboard/API
+evidence, and Project Execution History evidence for the external project.
 
 The report classifies findings as:
 

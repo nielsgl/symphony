@@ -64,7 +64,54 @@ if (command === '--version') {
 } else if (command === 'profile') {
   console.log('memory-generic');
 } else if (command === 'init') {
-  console.log('dry run ok');
+  const dryRun = args.includes('--dry-run');
+  const linearProjectSlug = args[args.indexOf('--linear-project-slug') + 1] || 'SYMPHONY-TRIAL';
+  const workflow = [
+    '---',
+    'symphony:',
+    '  generated_profile:',
+    '    profile: "solo-local"',
+    '    bundle: "linear-node"',
+    '    packs:',
+    '      - "tracker:linear"',
+    '      - "workspace:worktree"',
+    '      - "toolchain:node"',
+    '      - "workflow:solo-local"',
+    'tracker:',
+    '  kind: "linear"',
+    '  project_slug: "' + linearProjectSlug + '"',
+    '  active_states: ["Todo", "In Progress"]',
+    '  terminal_states: ["Done"]',
+    'toolchain:',
+    '  setup_command: "npm install"',
+    '  validation_command: "npm test"',
+    '---',
+    '<!-- symphony-generated-profile: profile=solo-local; bundle=linear-node; packs=tracker:linear,workspace:worktree,toolchain:node,workflow:solo-local; -->',
+    ''
+  ].join('\\n');
+  const files = [
+    ['WORKFLOW.md', workflow],
+    ['.env.example', 'LINEAR_API_KEY=\\n'],
+    ['.worktreeinclude', 'node_modules/**\\n'],
+    [path.join('.symphony', 'system', '.gitignore'), '*\\n!.gitignore\\n'],
+    ['.gitignore', '.symphony/system/\\n']
+  ];
+  if (!dryRun) {
+    for (const [relativePath, content] of files) {
+      require('node:fs').mkdirSync(path.dirname(path.join(process.cwd(), relativePath)), { recursive: true });
+      require('node:fs').writeFileSync(path.join(process.cwd(), relativePath), content);
+    }
+  }
+  console.log('Symphony init ' + (dryRun ? 'dry-run' : 'write') + ' file plan');
+  console.log('');
+  console.log('Validation: ok');
+  console.log('');
+  console.log('Files:');
+  files.forEach(([relativePath], index) => {
+    console.log('  ' + (index + 1) + '. ' + relativePath);
+    console.log('     action: create');
+    console.log('     would_write: yes');
+  });
 } else if (command === 'setup') {
   console.log('setup ok');
 } else if (command === 'doctor') {
@@ -219,7 +266,7 @@ describe('local multi-project trial harness', () => {
 
     expect(report.summary).toMatchObject({
       status: 'passed',
-      passed: 1,
+      passed: 2,
       failed: 0,
       blocked: 0
     });
@@ -244,6 +291,19 @@ describe('local multi-project trial harness', () => {
         health: { ok: true, status: 200 },
         diagnostics: { ok: true, status: 200 },
         shutdown: { clean: true }
+      }
+    });
+    expect(report.lanes.find((lane: any) => lane.id === 'generated-linear-node-setup')).toMatchObject({
+      status: 'passed',
+      synthetic: true,
+      counts_for_external_project_evidence: false,
+      init_file_plan_match: true,
+      generated_workflow_checks: {
+        ok: true,
+        generated_profile_provenance: true,
+        includes_node_setup_command: true,
+        includes_node_validation_command: true,
+        unintended_symphony_internal_states: []
       }
     });
   });
@@ -297,7 +357,7 @@ describe('local multi-project trial harness', () => {
     });
     expect(report.summary).toMatchObject({
       status: 'blocked',
-      passed: 1,
+      passed: 2,
       blocked: 1,
       findings_by_category: {
         environment_prerequisite: 1
@@ -336,13 +396,53 @@ describe('local multi-project trial harness', () => {
     );
     expect(report.summary).toMatchObject({
       status: 'failed',
-      passed: 1,
+      passed: 2,
       failed: 1,
       blocked: 0,
       findings_by_category: {
         environment_prerequisite: 1,
         implementation_defect: 1
       }
+    });
+  });
+
+  it('blocks hosted issue-run lanes until explicit disposable resources and credentials are supplied', async () => {
+    const { repoRoot, buildArtifact } = createFakeRepo();
+    const fakeCommand = writeFakeCommand(repoRoot);
+    const { report } = await trial.runTrial({
+      repoRoot,
+      report: path.join(repoRoot, 'trial-report.json'),
+      env: { PATH: process.env.PATH, LINEAR_API_KEY: 'linear-secret' },
+      hostedCredentials: true,
+      operator: {
+        source: 'linked-symphony',
+        command: process.execPath,
+        argsPrefix: [fakeCommand],
+        buildArtifact,
+        fallbackEntrypoint: fakeCommand
+      }
+    });
+
+    const hostedLane = report.lanes.find((lane: any) => lane.id === 'hosted-linear-node-issue-run');
+    expect(hostedLane).toMatchObject({
+      status: 'blocked',
+      counts_for_external_project_evidence: true,
+      hosted_prerequisites: {
+        status: 'blocked',
+        missing: expect.arrayContaining([
+          expect.objectContaining({ name: 'GITHUB_TOKEN or GH_TOKEN' }),
+          expect.objectContaining({ name: 'hosted Linear project slug' }),
+          expect.objectContaining({ name: 'hosted Linear issue id' }),
+          expect.objectContaining({ name: 'hosted GitHub owner' }),
+          expect.objectContaining({ name: 'hosted GitHub repository' }),
+          expect.objectContaining({ name: 'hosted GitHub remote URL' })
+        ])
+      }
+    });
+    expect(report.summary).toMatchObject({
+      status: 'blocked',
+      passed: 2,
+      blocked: 1
     });
   });
 });

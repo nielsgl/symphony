@@ -7,6 +7,14 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DASHBOARD_TIMEOUT_MS = 90_000;
 const SECRET_KEY_PATTERN = /(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE)/i;
 const HOSTED_CREDENTIAL_KEYS = ['LINEAR_API_KEY', 'LINEAR_AUTH_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN'];
+const HOSTED_RESOURCE_ENV_KEYS = [
+  'SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG',
+  'SYMPHONY_TRIAL_LINEAR_ISSUE_ID',
+  'SYMPHONY_TRIAL_GITHUB_OWNER',
+  'SYMPHONY_TRIAL_GITHUB_REPO',
+  'SYMPHONY_TRIAL_GITHUB_REMOTE_URL'
+];
+const GENERATED_LINEAR_NODE_SLUG = 'SYMPHONY-TRIAL';
 
 function isoNow() {
   return new Date().toISOString();
@@ -53,6 +61,11 @@ function parseArgs(argv) {
     requiredProjectRoots: [],
     projectShape: null,
     hostedCredentials: false,
+    hostedLinearProjectSlug: null,
+    hostedLinearIssueId: null,
+    hostedGithubOwner: null,
+    hostedGithubRepo: null,
+    hostedGithubRemoteUrl: null,
     noDashboard: false
   };
 
@@ -79,6 +92,16 @@ function parseArgs(argv) {
       options.projectShape = readValue();
     } else if (arg === '--with-hosted-credentials') {
       options.hostedCredentials = true;
+    } else if (arg === '--hosted-linear-project-slug') {
+      options.hostedLinearProjectSlug = readValue();
+    } else if (arg === '--hosted-linear-issue-id') {
+      options.hostedLinearIssueId = readValue();
+    } else if (arg === '--hosted-github-owner') {
+      options.hostedGithubOwner = readValue();
+    } else if (arg === '--hosted-github-repo') {
+      options.hostedGithubRepo = readValue();
+    } else if (arg === '--hosted-github-remote-url') {
+      options.hostedGithubRemoteUrl = readValue();
     } else if (arg === '--no-dashboard') {
       options.noDashboard = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -105,6 +128,13 @@ function renderHelp() {
     '  --required-project-root <path>  Include a required real local project root',
     '  --project-shape <name>          Shape label for following project-root args',
     '  --with-hosted-credentials       Mark hosted credential lanes as intended',
+    '  --hosted-linear-project-slug <slug>',
+    '                                  Disposable Linear project slug for hosted issue-run proof',
+    '  --hosted-linear-issue-id <id>   Disposable Linear issue identifier for hosted issue-run proof',
+    '  --hosted-github-owner <owner>   Disposable GitHub owner for hosted issue-run proof',
+    '  --hosted-github-repo <repo>     Disposable GitHub repository for hosted issue-run proof',
+    '  --hosted-github-remote-url <url>',
+    '                                  Disposable GitHub remote URL for hosted issue-run proof',
     '  --no-dashboard                  Skip dashboard proof and mark it out of scope',
     '  --help                          Show this help'
   ].join('\n');
@@ -129,6 +159,32 @@ function summarizeEnv(env) {
       secret_like: true,
       value: env[name] ? '<redacted>' : '<missing>'
     }))
+  };
+}
+
+function summarizeHostedResources(env, options = {}) {
+  const read = (optionName, envName) => options[optionName] || env[envName] || null;
+  return {
+    linear_project_slug: {
+      present: Boolean(read('hostedLinearProjectSlug', 'SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG')),
+      source: options.hostedLinearProjectSlug ? 'cli' : env.SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG ? 'env' : 'missing'
+    },
+    linear_issue_id: {
+      present: Boolean(read('hostedLinearIssueId', 'SYMPHONY_TRIAL_LINEAR_ISSUE_ID')),
+      source: options.hostedLinearIssueId ? 'cli' : env.SYMPHONY_TRIAL_LINEAR_ISSUE_ID ? 'env' : 'missing'
+    },
+    github_owner: {
+      present: Boolean(read('hostedGithubOwner', 'SYMPHONY_TRIAL_GITHUB_OWNER')),
+      source: options.hostedGithubOwner ? 'cli' : env.SYMPHONY_TRIAL_GITHUB_OWNER ? 'env' : 'missing'
+    },
+    github_repo: {
+      present: Boolean(read('hostedGithubRepo', 'SYMPHONY_TRIAL_GITHUB_REPO')),
+      source: options.hostedGithubRepo ? 'cli' : env.SYMPHONY_TRIAL_GITHUB_REPO ? 'env' : 'missing'
+    },
+    github_remote_url: {
+      present: Boolean(read('hostedGithubRemoteUrl', 'SYMPHONY_TRIAL_GITHUB_REMOTE_URL')),
+      source: options.hostedGithubRemoteUrl ? 'cli' : env.SYMPHONY_TRIAL_GITHUB_REMOTE_URL ? 'env' : 'missing'
+    }
   };
 }
 
@@ -276,7 +332,7 @@ function summarizeWorkflowFile(workflowPath) {
 }
 
 function summarizeGeneratedFiles(projectRoot) {
-  const candidates = ['WORKFLOW.md', '.gitignore', '.symphony/system/runtime.sqlite'];
+  const candidates = ['WORKFLOW.md', '.env.example', '.worktreeinclude', '.gitignore', '.symphony/system/.gitignore', '.symphony/system/runtime.sqlite'];
   return candidates.map((relativePath) => {
     const filePath = path.join(projectRoot, relativePath);
     return {
@@ -285,6 +341,124 @@ function summarizeGeneratedFiles(projectRoot) {
       bytes: fs.existsSync(filePath) && fs.statSync(filePath).isFile() ? fs.statSync(filePath).size : null
     };
   });
+}
+
+function parseInitFilePlan(stdout) {
+  const files = [];
+  const lines = String(stdout || '').split(/\r?\n/);
+  let inFiles = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^\s*Files:\s*$/.test(lines[index])) {
+      inFiles = true;
+      continue;
+    }
+    if (!inFiles) {
+      continue;
+    }
+    const match = lines[index].match(/^\s{0,4}(?:\d+\.|-)\s+(.+?)(?::\s*(\w+).*)?\s*$/);
+    if (!match) {
+      continue;
+    }
+    const entry = { path: match[1], action: match[2] || null, would_write: null };
+    for (let cursor = index + 1; cursor < Math.min(lines.length, index + 8); cursor += 1) {
+      const action = lines[cursor].match(/^\s*action:\s*(.+?)\s*$/);
+      if (action) {
+        entry.action = action[1];
+      }
+      const wouldWrite = lines[cursor].match(/^\s*would_write:\s*(yes|no)\s*$/);
+      if (wouldWrite) {
+        entry.would_write = wouldWrite[1] === 'yes';
+      }
+    }
+    files.push(entry);
+  }
+  return files;
+}
+
+function commitProjectChanges(projectRoot, message) {
+  const add = spawnSync('git', ['add', 'WORKFLOW.md', '.env.example', '.worktreeinclude', '.gitignore'], {
+    cwd: projectRoot,
+    encoding: 'utf8'
+  });
+  if (add.status !== 0) {
+    return { ok: false, step: 'git add', exit_code: add.status, stdout: add.stdout || '', stderr: add.stderr || '' };
+  }
+  const commit = spawnSync('git', ['commit', '-m', message], { cwd: projectRoot, encoding: 'utf8' });
+  return {
+    ok: commit.status === 0,
+    step: 'git commit',
+    exit_code: commit.status,
+    stdout: commit.stdout || '',
+    stderr: commit.stderr || ''
+  };
+}
+
+function summarizeGitStatus(projectRoot) {
+  const result = spawnSync('git', ['status', '--porcelain=v1'], { cwd: projectRoot, encoding: 'utf8' });
+  return {
+    exit_code: result.status,
+    clean: result.status === 0 && result.stdout.trim().length === 0,
+    porcelain: result.stdout.trim().split(/\r?\n/).filter(Boolean)
+  };
+}
+
+function readWorkflowChecks(workflowPath, expectedLinearProjectSlug) {
+  const content = fs.existsSync(workflowPath) ? fs.readFileSync(workflowPath, 'utf8') : '';
+  const unintendedStates = ['Agent Review', 'Human Review', 'Merging', 'Rework'].filter((state) => content.includes(state));
+  const checks = {
+    parses_and_validates: content.includes('Validation: ok') ? null : null,
+    generated_profile_provenance: content.includes('symphony-generated-profile') && content.includes('bundle=linear-node'),
+    includes_node_setup_command: /setup_command:\s*"npm install"/.test(content) || /setup_command:\s*"npm ci"/.test(content),
+    includes_node_validation_command: /validation_command:\s*"npm test"/.test(content),
+    linear_project_slug: content.includes(`project_slug: "${expectedLinearProjectSlug}"`) || content.includes(`project_slug: ${expectedLinearProjectSlug}`),
+    unintended_symphony_internal_states: unintendedStates,
+    tracker_kind_linear: /tracker:\s*\n\s*kind:\s*"linear"|tracker:\s*\n\s*kind:\s*linear/.test(content),
+    active_states_solo_local: content.includes('active_states: ["Todo", "In Progress"]'),
+    handoff_states_absent: !content.includes('handoff_states:'),
+    fresh_dispatch_states_absent: !content.includes('fresh_dispatch_states:')
+  };
+  checks.ok =
+    checks.generated_profile_provenance &&
+    checks.includes_node_setup_command &&
+    checks.includes_node_validation_command &&
+    checks.linear_project_slug &&
+    checks.tracker_kind_linear &&
+    checks.active_states_solo_local &&
+    checks.handoff_states_absent &&
+    checks.fresh_dispatch_states_absent &&
+    checks.unintended_symphony_internal_states.length === 0;
+  return checks;
+}
+
+function createGeneratedNodeProject(tempRoot, name) {
+  const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(tempRoot, `${name}-`)));
+  fs.writeFileSync(
+    path.join(projectRoot, 'package.json'),
+    `${JSON.stringify(
+      {
+        name: name.replace(/[^a-z0-9-]/g, '-'),
+        version: '0.0.0',
+        private: true,
+        scripts: {
+          test: 'node test.js'
+        }
+      },
+      null,
+      2
+    )}\n`
+  );
+  fs.writeFileSync(path.join(projectRoot, 'index.js'), "module.exports = function hello() { return 'hello'; };\n");
+  fs.writeFileSync(path.join(projectRoot, 'test.js'), "const hello = require('./index'); if (hello() !== 'hello') process.exit(1);\n");
+  spawnSync('git', ['init', '-b', 'main'], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['config', 'user.email', 'symphony-trial@example.invalid'], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['config', 'user.name', 'Symphony Trial'], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['add', 'package.json', 'index.js', 'test.js'], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['commit', '-m', 'Initial Node trial project'], { cwd: projectRoot, encoding: 'utf8' });
+  const remoteRoot = fs.realpathSync(fs.mkdtempSync(path.join(tempRoot, `${name}-remote-`)));
+  spawnSync('git', ['init', '--bare'], { cwd: remoteRoot, encoding: 'utf8' });
+  spawnSync('git', ['remote', 'add', 'origin', remoteRoot], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['push', '-u', 'origin', 'main'], { cwd: projectRoot, encoding: 'utf8' });
+  return { projectRoot, remoteRoot };
 }
 
 function buildLane(id, label, projectShape, projectRoot, synthetic) {
@@ -706,6 +880,246 @@ async function runBaselineLane(report, operator, env, tempRoot, options) {
   report.lanes.push(lane);
 }
 
+async function runGeneratedLinearNodeLane(report, operator, env, tempRoot, options) {
+  const { projectRoot, remoteRoot } = createGeneratedNodeProject(tempRoot, 'generated-linear-node');
+  const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
+  const lane = buildLane('generated-linear-node-setup', 'Generated Linear/Node setup', 'generated-linear-node', projectRoot, true);
+  lane.counts_for_external_project_evidence = false;
+  lane.synthetic_reason = 'fresh temporary project proves generated setup path without hosted tracker mutation';
+  lane.tracker_identifiers.push({ kind: 'linear', project_slug: GENERATED_LINEAR_NODE_SLUG, hosted: false });
+  lane.disposable_remote = {
+    kind: 'local-bare-git',
+    path: remoteRoot,
+    purpose: 'origin/main support for generated worktree workflow validation'
+  };
+
+  const initArgs = ['init', '--bundle', 'linear-node', '--linear-project-slug', GENERATED_LINEAR_NODE_SLUG, '--no-input'];
+  const dryRun = runCommand(operator.command, [...operator.argsPrefix, ...initArgs, '--dry-run'], {
+    name: 'linear-node init dry-run',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, dryRun);
+  lane.init_dry_run_plan = {
+    files: parseInitFilePlan(dryRun._rawStdout),
+    validation_ok: /Validation:\s+ok/.test(dryRun._rawStdout)
+  };
+
+  const initWrite = runCommand(operator.command, [...operator.argsPrefix, ...initArgs], {
+    name: 'linear-node init write',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, initWrite);
+  lane.init_write_plan = {
+    files: parseInitFilePlan(initWrite._rawStdout),
+    validation_ok: /Validation:\s+ok/.test(initWrite._rawStdout)
+  };
+
+  const dryRunPaths = lane.init_dry_run_plan.files.map((file) => file.path).sort();
+  const writePaths = lane.init_write_plan.files.map((file) => file.path).sort();
+  lane.init_file_plan_match = JSON.stringify(dryRunPaths) === JSON.stringify(writePaths) && dryRunPaths.length > 0;
+  if (!lane.init_file_plan_match) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Linear/Node init write file plan did not match the dry-run file plan.',
+      'Keep init dry-run and write materialization plans aligned before accepting generated setup evidence.'
+    );
+  }
+  if (!lane.init_dry_run_plan.validation_ok || !lane.init_write_plan.validation_ok) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Linear/Node generated workflow did not validate during init.',
+      'Fix generated workflow validation before accepting generated setup evidence.'
+    );
+  }
+
+  lane.init_commit = commitProjectChanges(projectRoot, 'Add generated Symphony Linear Node workflow');
+  if (!lane.init_commit.ok) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Generated Linear/Node init files could not be committed before doctor readiness.',
+      'Inspect lane.init_commit and ensure the generated project can become clean before workspace provisioning.'
+    );
+  }
+  lane.setup_side_effects = {
+    package_lock_after_setup: false,
+    classification: 'expected_clean_generated_workflow',
+    note: 'The generated setup lane commits intended init files before doctor; no setup-generated lockfile is expected before workspace hooks run.'
+  };
+
+  lane.workflow_source = summarizeWorkflowFile(workflowPath);
+  lane.generated_workflow_checks = readWorkflowChecks(workflowPath, GENERATED_LINEAR_NODE_SLUG);
+  if (!lane.generated_workflow_checks.ok) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Generated Linear/Node WORKFLOW.md failed provenance, Node command, tracker, or lifecycle-state checks.',
+      'Inspect lane.generated_workflow_checks and update profile materialization or trial assertions.'
+    );
+  }
+
+  appendCommand(lane, runCommand('npm', ['test'], { name: 'generated project test command', cwd: projectRoot, env }));
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'setup', '--yes'], { name: 'setup consent', cwd: projectRoot, env }));
+  lane.git_status_after_setup = summarizeGitStatus(projectRoot);
+  if (!lane.git_status_after_setup.clean) {
+    addFinding(
+      lane,
+      'product_friction',
+      'warning',
+      'Generated project setup left local checkout changes after intended init files were committed.',
+      'Inspect lane.git_status_after_setup; classify expected hook side effects or adjust setup behavior.'
+    );
+  }
+  const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], {
+    name: 'doctor JSON',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, doctor, [0, 1, 2]);
+  parseDoctorJson(lane, doctor, { classifyNonReady: true });
+  await runDashboardProof(lane, operator, projectRoot, workflowPath, env, options);
+  lane.generated_files = summarizeGeneratedFiles(projectRoot);
+  lane.status = laneStatus(lane);
+  report.lanes.push(lane);
+}
+
+function getHostedConfig(env, options) {
+  return {
+    linearProjectSlug: options.hostedLinearProjectSlug || env.SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG || null,
+    linearIssueId: options.hostedLinearIssueId || env.SYMPHONY_TRIAL_LINEAR_ISSUE_ID || null,
+    githubOwner: options.hostedGithubOwner || env.SYMPHONY_TRIAL_GITHUB_OWNER || null,
+    githubRepo: options.hostedGithubRepo || env.SYMPHONY_TRIAL_GITHUB_REPO || null,
+    githubRemoteUrl: options.hostedGithubRemoteUrl || env.SYMPHONY_TRIAL_GITHUB_REMOTE_URL || null
+  };
+}
+
+function addHostedPrerequisiteFinding(lane, summary, remediation) {
+  addFinding(lane, 'environment_prerequisite', 'blocker', summary, remediation);
+}
+
+async function runHostedLinearNodeIssueLane(report, operator, env, tempRoot, options) {
+  const config = getHostedConfig(env, options);
+  const lane = buildLane('hosted-linear-node-issue-run', 'Hosted Linear/Node issue run', 'hosted-generated-linear-node', null, false);
+  lane.counts_for_external_project_evidence = true;
+  lane.hosted_resources = summarizeHostedResources(env, options);
+  lane.tracker_identifiers = [
+    { kind: 'linear', project_slug: config.linearProjectSlug, issue_id: config.linearIssueId, hosted: true },
+    { kind: 'github', owner: config.githubOwner, repo: config.githubRepo, remote_url_present: Boolean(config.githubRemoteUrl), hosted: true }
+  ];
+
+  const missing = [];
+  if (!options.hostedCredentials) {
+    missing.push({
+      name: '--with-hosted-credentials',
+      remediation: 'Rerun with --with-hosted-credentials to make hosted mutation explicit.'
+    });
+  }
+  if (!env.LINEAR_API_KEY && !env.LINEAR_AUTH_TOKEN) {
+    missing.push({ name: 'LINEAR_API_KEY or LINEAR_AUTH_TOKEN', remediation: 'Export a Linear API token for a disposable trial project.' });
+  }
+  if (!env.GITHUB_TOKEN && !env.GH_TOKEN) {
+    missing.push({ name: 'GITHUB_TOKEN or GH_TOKEN', remediation: 'Export a GitHub token scoped to a disposable trial repository.' });
+  }
+  if (!config.linearProjectSlug) {
+    missing.push({
+      name: 'hosted Linear project slug',
+      remediation: 'Pass --hosted-linear-project-slug or set SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG for a disposable project.'
+    });
+  }
+  if (!config.linearIssueId) {
+    missing.push({
+      name: 'hosted Linear issue id',
+      remediation: 'Pass --hosted-linear-issue-id or set SYMPHONY_TRIAL_LINEAR_ISSUE_ID for a clearly named disposable issue.'
+    });
+  }
+  if (!config.githubOwner) {
+    missing.push({
+      name: 'hosted GitHub owner',
+      remediation: 'Pass --hosted-github-owner or set SYMPHONY_TRIAL_GITHUB_OWNER for a disposable repository.'
+    });
+  }
+  if (!config.githubRepo) {
+    missing.push({
+      name: 'hosted GitHub repository',
+      remediation: 'Pass --hosted-github-repo or set SYMPHONY_TRIAL_GITHUB_REPO for a disposable repository.'
+    });
+  }
+  if (!config.githubRemoteUrl) {
+    missing.push({
+      name: 'hosted GitHub remote URL',
+      remediation: 'Pass --hosted-github-remote-url or set SYMPHONY_TRIAL_GITHUB_REMOTE_URL for the disposable repository.'
+    });
+  }
+
+  if (missing.length > 0) {
+    lane.project_root = null;
+    lane.hosted_prerequisites = { status: 'blocked', missing };
+    for (const item of missing) {
+      addHostedPrerequisiteFinding(lane, `Missing hosted issue-run prerequisite: ${item.name}.`, item.remediation);
+    }
+    lane.status = laneStatus(lane);
+    report.lanes.push(lane);
+    return;
+  }
+
+  const { projectRoot } = createGeneratedNodeProject(tempRoot, 'hosted-linear-node');
+  lane.project_root = projectRoot;
+  const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
+  spawnSync('git', ['remote', 'set-url', 'origin', config.githubRemoteUrl], { cwd: projectRoot, encoding: 'utf8' });
+  const initArgs = ['init', '--bundle', 'linear-node', '--linear-project-slug', config.linearProjectSlug, '--no-input'];
+  appendCommand(
+    lane,
+    runCommand(operator.command, [...operator.argsPrefix, ...initArgs, '--dry-run'], {
+      name: 'hosted linear-node init dry-run',
+      cwd: projectRoot,
+      env
+    })
+  );
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, ...initArgs], { name: 'hosted linear-node init write', cwd: projectRoot, env }));
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'setup', '--yes'], { name: 'hosted setup consent', cwd: projectRoot, env }));
+  const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], {
+    name: 'hosted doctor JSON',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, doctor, [0, 1, 2]);
+  parseDoctorJson(lane, doctor, { classifyNonReady: true });
+
+  lane.issue_run = {
+    status: 'blocked',
+    reason: 'operator_dispatch_not_automated_in_harness_yet',
+    expected_evidence: [
+      'tracker ticket final state',
+      'workspace path',
+      'branch name',
+      'commit SHA',
+      'pushed branch proof',
+      'PR URL',
+      'dashboard/API issue evidence',
+      'Project Execution History evidence'
+    ]
+  };
+  addFinding(
+    lane,
+    'implementation_defect',
+    'blocker',
+    'Hosted issue-run dispatch is not yet automated by the trial harness.',
+    'Extend this lane to start the real local runtime, wait for the configured Linear issue, and record branch/commit/PR/tracker/dashboard/history evidence before marking it passed.'
+  );
+  lane.workflow_source = summarizeWorkflowFile(workflowPath);
+  lane.generated_files = summarizeGeneratedFiles(projectRoot);
+  lane.status = laneStatus(lane);
+  report.lanes.push(lane);
+}
+
 async function runRealProjectLane(report, operator, env, rootSpec, index, options) {
   const projectRoot = path.resolve(rootSpec.path);
   const lane = buildLane(`real-project-${index + 1}`, `Real local project ${index + 1}`, rootSpec.shape, projectRoot, false);
@@ -816,6 +1230,12 @@ async function runTrial(options = {}) {
       linked_shim: operator.linkedShim ?? null
     },
     environment: summarizeEnv(env),
+    environment_handling: {
+      symphony_resolution_env_cleared: ['SYMPHONY_WORKFLOW_PATH', 'SYMPHONY_PORT', 'SYMPHONY_HOST', 'SYMPHONY_ENV_FILE'],
+      symphony_env_recorded: true,
+      hosted_resource_env_recorded: HOSTED_RESOURCE_ENV_KEYS
+    },
+    hosted_resources: summarizeHostedResources(env, options),
     hosted_credentials_requested: Boolean(options.hostedCredentials),
     lanes: [],
     summary: null
@@ -845,6 +1265,17 @@ async function runTrial(options = {}) {
     report.lanes.push(lane);
   } else {
     await runBaselineLane(report, operator, env, tempRoot, options);
+    await runGeneratedLinearNodeLane(report, operator, env, tempRoot, options);
+    if (
+      options.hostedCredentials ||
+      options.hostedLinearProjectSlug ||
+      options.hostedLinearIssueId ||
+      options.hostedGithubOwner ||
+      options.hostedGithubRepo ||
+      options.hostedGithubRemoteUrl
+    ) {
+      await runHostedLinearNodeIssueLane(report, operator, env, tempRoot, options);
+    }
     const roots = [...(options.projectRoots || []), ...(options.requiredProjectRoots || [])];
     for (let index = 0; index < roots.length; index += 1) {
       await runRealProjectLane(report, operator, env, roots[index], index, options);
