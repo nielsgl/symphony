@@ -7,13 +7,10 @@ Status: blocked on required real existing-project evidence.
 The Local Multi-Project Trial is not clean enough to unblock public npm,
 Homebrew, standalone binary, or desktop packaging work. The harness and child
 slices now prove the synthetic/generated lanes, the hosted Linear/Node
-issue-run, and recovered-worker ownership hardening. The protected
-Symphony-internal profile is proven by `NIE-271`, but the default `NIE-275`
-closure reproduction is environment-blocked unless local checkout/profile and
-Linear setup prerequisites are satisfied. The required existing external
-project lane still lacks a supplied real project root in the closure run, so
-synthetic existing-workflow evidence must not be counted as parent-PRD
-acceptance.
+issue-run, the protected Symphony-internal profile, and recovered-worker
+ownership hardening. The required existing external project lane still lacks a
+supplied real project root in the closure run, so synthetic existing-workflow
+evidence must not be counted as parent-PRD acceptance.
 
 ## Closure Command
 
@@ -42,11 +39,11 @@ Without those prerequisites, the lane is an environment-blocked closure result,
 not a pass. The parent remains blocked while this or any other required lane is
 blocked unless the parent PRD owner accepts a documented exception.
 
-The 2026-05-27 closure reproduction in `NIE-275` used:
+The 2026-05-27 current closure reproduction in `NIE-275` used:
 
 ```bash
 npm run build
-npm run trial:local-multi-project -- --report /tmp/nie-275-repro-trial-report.json
+npm run trial:local-multi-project -- --report /tmp/nie-275-current-trial-report.json
 ```
 
 Result:
@@ -56,14 +53,14 @@ Result:
 | `synthetic-memory-baseline` | passed | synthetic | Smoke coverage only. |
 | `synthetic-generated-generic` | passed | synthetic generated project | Proves generic/non-Node generated path. |
 | `generated-linear-node-setup` | passed | synthetic generated project | Proves non-hosted Linear/Node setup readiness. |
-| `symphony-internal-profile` | blocked | real Symphony checkout | Environment-blocked in the default closure reproduction because internal-profile local prerequisites were missing; `NIE-271` remains the passing child-slice evidence. |
+| `symphony-internal-profile` | passed | real Symphony checkout | Proves the protected internal profile in the current closure environment; if checkout/profile, setup-consent, or Linear prerequisites are absent in another environment, that run must record the lane as blocked instead of counting it as a pass. |
 | `real-existing-project-missing` | blocked | missing real root | Parent PRD remains blocked. |
 
 ## User Story Traceability
 
 | Story | Evidence | Verdict |
 | --- | --- | --- |
-| 1. Symphony repository through protected internal profile | `NIE-271` and PR #490 prove the protected internal profile in the child slice. The default `NIE-275` closure report reproduced `symphony-internal-profile: blocked` until local checkout/profile, setup-consent, and Linear prerequisites are present. | Blocked in closure reproduction |
+| 1. Symphony repository through protected internal profile | `NIE-271`, PR #490, and the current `NIE-275` closure report prove `symphony-internal-profile: passed` against the checked-in Symphony `WORKFLOW.md`. | Pass |
 | 2. Existing external project with hand-written `WORKFLOW.md` | `NIE-271` added real-root support and synthetic regression coverage, but no real project root was supplied to `NIE-275`. | Blocked |
 | 3. Fresh Node project with `linear-node` defaults | `NIE-273`, PR #489, generated setup lane and hosted evidence for `NIE-280`. | Pass |
 | 4. Generic or non-Node project | `NIE-272`, PR #488, generated generic lane. | Pass |
@@ -91,8 +88,9 @@ Result:
 | Supply and run a real existing external project root for the Local Multi-Project Trial closure | Environment prerequisite / closure blocker | `NIE-275` report has `real-existing-project-missing: blocked`; no real root was supplied. | High | Blocks closing `NIE-269`; not an implementation defect. |
 | `NIE-277` Automate hosted Linear/Node trial issue-run evidence capture | Bounded implementation follow-up | Fake-hosted success coverage remains useful for CI-like proof without real secrets. | Medium | Related to `NIE-273`; does not block the already-recorded hosted live evidence. |
 
-No new implementation-defect follow-up was found in the `NIE-275` closure run.
-The only parent-blocking gap is unavailable real external project evidence.
+No new implementation-defect follow-up was found in the current `NIE-275`
+closure run. The only parent-blocking gap is unavailable real external project
+evidence.
 
 ## Distribution Gate
 
