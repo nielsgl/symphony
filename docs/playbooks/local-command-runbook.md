@@ -215,3 +215,70 @@ It validates that effective workspace, log, and persistence paths default under
 `.symphony/skills/` and `.symphony/prompts/` stay visible in healthy layouts;
 doctor/setup guidance is present for missing, broad-ignore, and legacy cases;
 and legacy runtime state is neither moved nor deleted automatically.
+
+## Local Multi-Project Trial Evidence
+
+Run the reusable Local Multi-Project Trial harness after build output exists:
+
+```bash
+npm run build
+npm run trial:local-multi-project
+```
+
+The harness uses the linked `symphony` executable when it is available on
+`PATH`; otherwise it uses `node scripts/symphony.js` as the local-development
+fallback. It writes a JSON evidence report under
+`output/local-multi-project-trial/` by default and prints the exact report path.
+
+The dry baseline does not require hosted tracker credentials. It creates
+synthetic temporary projects and records command availability, profile
+discovery, `init --dry-run`, `doctor --json --ci`, dashboard bind proof,
+`/api/v1/state`, `/api/v1/diagnostics`, Project Identity root/workflow matching,
+and clean dashboard shutdown.
+
+Synthetic lanes are labeled with `"synthetic": true` and
+`"counts_for_external_project_evidence": false`. They prove harness behavior and
+non-hosted command readiness, but they do not satisfy the existing
+external-project evidence required by the Local Multi-Project Trial parent PRD.
+
+Include real local projects only through command arguments, not checked-in paths:
+
+```bash
+npm run trial:local-multi-project -- \
+  --project-shape existing-node \
+  --project-root /path/to/existing/project \
+  --project-shape existing-generic \
+  --required-project-root /path/to/required/project
+```
+
+Use `--project-root` for optional evidence lanes and `--required-project-root`
+when the lane must be present for a closure run. A missing required root is
+reported as an environment prerequisite with remediation instructions, not as a
+passed lane.
+
+Every real-project lane runs `symphony doctor --json --ci` and promotes the
+parsed doctor status into `lane.doctor`. Doctor blockers keep the lane from
+passing even when dashboard startup later succeeds; the report includes the
+doctor reason, exit semantics, summarized findings, and remediation guidance.
+Warning-only doctor results become `passed_with_warnings` so closure evidence
+can distinguish clean adoption from usable-but-frictional adoption.
+
+Hosted tracker credentials are never printed. The report summarizes
+`SYMPHONY_*`, Linear, and GitHub credential variables as present or missing, and
+secret-like values are redacted from command transcript summaries. To make
+hosted credentials part of operator intent, pass:
+
+```bash
+npm run trial:local-multi-project -- --with-hosted-credentials
+```
+
+The report classifies findings as:
+
+- `implementation_defect`: Symphony behavior that must be fixed before a lane
+  can pass.
+- `product_friction`: usable behavior that still creates adoption friction.
+- `environment_prerequisite`: missing local roots, build artifacts, command
+  availability, git, hosted credentials, or API probes that require operator
+  remediation.
+- `intentional_out_of_scope`: deliberately skipped evidence such as
+  `--no-dashboard`.
