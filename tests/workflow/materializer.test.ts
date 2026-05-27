@@ -222,6 +222,9 @@ describe('workflow materializer', () => {
       '.gitignore'
     ]);
     expect(plan.files.find((file) => file.path === '.env.example')?.content).toContain('LINEAR_API_KEY=');
+    expect(plan.files.find((file) => file.path === '.env.example')?.content).toContain(
+      'generated Linear Node project trials'
+    );
     expect(plan.files.find((file) => file.path === '.worktreeinclude')?.content).toContain('.env.local');
     expect(plan.files[0].content).toContain('api_key: "$LINEAR_API_KEY"');
     expect(plan.files[0].content).toContain('project_slug: "SYMPHONY"');

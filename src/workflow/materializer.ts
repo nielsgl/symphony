@@ -368,7 +368,13 @@ function buildOptionalSupportFiles(options: WorkflowMaterializerOptions): Workfl
 
 function buildEnvExample(trackerKind: string): string {
   if (trackerKind === 'linear') {
-    return ['# Required by generated tracker:linear workflows.', '# Copy to .env or export in your shell; never commit real secrets.', 'LINEAR_API_KEY=', ''].join('\n');
+    return [
+      '# Required by generated tracker:linear workflows.',
+      '# Copy to .env or export in your shell; never commit real secrets.',
+      '# Used by generated Linear Node project trials and hosted tracker runs.',
+      'LINEAR_API_KEY=',
+      ''
+    ].join('\n');
   }
 
   return ['# Required by generated tracker:github workflows.', '# Copy to .env or export in your shell; never commit real secrets.', 'GITHUB_TOKEN=', ''].join('\n');
