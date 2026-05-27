@@ -68,8 +68,10 @@ Expected result:
 
 Packaging check:
 
-- `npm run build:desktop` succeeds and includes bundled `symphony-backend`
-  sidecar in desktop app resources.
+- Standalone desktop packaging is currently disabled because the legacy `pkg`
+  sidecar packager has no audit-safe fixed release.
+- Keep using `npm run start:desktop` for desktop smoke coverage until the
+  sidecar packaging replacement lands.
 
 3. Verify runtime endpoint from another terminal:
 

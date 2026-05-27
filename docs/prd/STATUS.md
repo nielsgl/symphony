@@ -924,7 +924,7 @@ Ownership evidence links:
     - Graceful shutdown path closes API listener and clears retry/poll timers.
   - Tauri desktop dev host in `src-tauri/src/main.rs`:
     - `npm run start:desktop` launches Tauri and manages backend lifecycle directly (spawn, startup readiness detection, teardown).
-    - `npm run build:desktop` bundles platform backend sidecar (`symphony-backend`) into app resources for standalone packaging.
+    - Standalone desktop sidecar packaging is disabled until the deprecated `pkg` packager is replaced with an audit-safe path.
     - Dev host startup can fall back to repository launcher when sidecar is unavailable.
     - Desktop backend launch contract is shared via typed helpers in `src/runtime/desktop-launcher.ts`.
   - API projection completion in `src/api/snapshot-service.ts` and `src/api/types.ts`:
