@@ -96,7 +96,9 @@ if (command === '--version') {
       response.end(JSON.stringify({
         runtime_resolution: {
           workflow_path: workflowPath,
-          workflow_dir: process.cwd()
+          workflow_dir: process.cwd().includes('dashboard-mismatch')
+            ? path.join(process.cwd(), 'wrong-root')
+            : process.cwd()
         }
       }));
       return;
@@ -299,6 +301,47 @@ describe('local multi-project trial harness', () => {
       blocked: 1,
       findings_by_category: {
         environment_prerequisite: 1
+      }
+    });
+  });
+
+  it('fails mixed blocker lanes when implementation defects are present', async () => {
+    const { repoRoot, buildArtifact } = createFakeRepo();
+    const fakeCommand = writeFakeCommand(repoRoot);
+    const realProject = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'real-doctor-blocked-dashboard-mismatch-'))
+    );
+    fs.writeFileSync(path.join(realProject, 'WORKFLOW.md'), trial.workflow('Mixed blocker real project'));
+    const { report } = await trial.runTrial({
+      repoRoot,
+      report: path.join(repoRoot, 'trial-report.json'),
+      env: { PATH: process.env.PATH },
+      projectRoots: [{ path: realProject, required: false, shape: 'existing-node' }],
+      operator: {
+        source: 'linked-symphony',
+        command: process.execPath,
+        argsPrefix: [fakeCommand],
+        buildArtifact,
+        fallbackEntrypoint: fakeCommand
+      }
+    });
+
+    const realLane = report.lanes.find((lane: any) => lane.id === 'real-project-1');
+    expect(realLane.status).toBe('failed');
+    expect(realLane.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'environment_prerequisite', severity: 'blocker' }),
+        expect.objectContaining({ category: 'implementation_defect', severity: 'blocker' })
+      ])
+    );
+    expect(report.summary).toMatchObject({
+      status: 'failed',
+      passed: 1,
+      failed: 1,
+      blocked: 0,
+      findings_by_category: {
+        environment_prerequisite: 1,
+        implementation_defect: 1
       }
     });
   });

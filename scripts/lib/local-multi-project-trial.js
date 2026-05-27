@@ -245,10 +245,11 @@ function addFinding(lane, category, severity, summary, remediation, status = 'op
 }
 
 function laneStatus(lane) {
-  if (lane.findings.some((finding) => finding.severity === 'blocker' && finding.category === 'environment_prerequisite')) {
-    return 'blocked';
-  }
   if (lane.findings.some((finding) => finding.severity === 'blocker')) {
+    const blockers = lane.findings.filter((finding) => finding.severity === 'blocker');
+    if (blockers.every((finding) => finding.category === 'environment_prerequisite')) {
+      return 'blocked';
+    }
     return 'failed';
   }
   if (lane.findings.some((finding) => finding.severity === 'warning')) {
