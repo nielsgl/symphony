@@ -172,6 +172,41 @@ if (command === '--version') {
     ])));
     process.exit(2);
   }
+  const workflowContent = require('node:fs').existsSync(workflowPath)
+    ? require('node:fs').readFileSync(workflowPath, 'utf8')
+    : '';
+  if (workflowContent.includes('kind: "linear"') && !process.env.LINEAR_API_KEY && !process.env.LINEAR_AUTH_TOKEN) {
+    console.log(JSON.stringify(doctorPayload('failure', 'blockers_present', 2, [
+      {
+        id: 'workflow.effective_config',
+        code: 'missing_tracker_api_key',
+        severity: 'blocker',
+        checkStatus: 'failure',
+        message: 'tracker.api_key is required after env resolution',
+        source: { category: 'workflow_value', present: true },
+        remediationInfo: { guidance: 'Fix WORKFLOW.md or the referenced environment variables before starting the dashboard.' }
+      },
+      {
+        id: 'env.required_variables',
+        code: 'required_env_missing',
+        severity: 'blocker',
+        checkStatus: 'failure',
+        message: 'Missing 1 required environment variable(s) after loading the effective environment source.',
+        source: { category: 'environment_file', present: true },
+        remediationInfo: { guidance: 'Define the missing variables in the project .env file or process environment before starting Symphony.' }
+      },
+      {
+        id: 'tracker.credentials',
+        code: 'linear_tracker_credentials_missing',
+        severity: 'blocker',
+        checkStatus: 'failure',
+        message: 'linear tracker credentials are missing after environment resolution.',
+        source: { category: 'runtime_probe', present: true },
+        remediationInfo: { guidance: 'Set LINEAR_API_KEY or tracker.api_key before starting Symphony.' }
+      }
+    ])));
+    process.exit(2);
+  }
   console.log(JSON.stringify(doctorPayload('ok', 'ready', 0, [
     {
       id: 'tracker.credentials',
@@ -437,6 +472,20 @@ describe('local multi-project trial harness', () => {
       synthetic: true,
       counts_for_external_project_evidence: false,
       init_file_plan_match: true,
+      doctor: {
+        status: 'failure',
+        reason: 'blockers_present',
+        finding_counts: { blockers: 3 }
+      },
+      hosted_credential_behavior: {
+        mode: 'non_hosted_setup',
+        hosted_credentials_required_for_issue_run: true,
+        doctor: {
+          missing_credentials_expected_for_non_hosted_setup: true,
+          expected_blockers_present: true,
+          blocker_codes: ['missing_tracker_api_key', 'required_env_missing', 'linear_tracker_credentials_missing']
+        }
+      },
       generated_workflow_checks: {
         ok: true,
         generated_profile_provenance: true,

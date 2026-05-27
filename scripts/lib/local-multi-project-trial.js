@@ -536,6 +536,28 @@ function findDoctorFinding(summary, id) {
   return summary?.findings?.find((finding) => finding.id === id) ?? null;
 }
 
+function summarizeExpectedLinearCredentialBlockers(summary) {
+  const blockerFindings = (summary?.findings || []).filter((finding) => finding.severity === 'blocker');
+  const expectedCredentialBlockers = [
+    { id: 'workflow.effective_config', code: 'missing_tracker_api_key' },
+    { id: 'env.required_variables', code: 'required_env_missing' },
+    { id: 'tracker.credentials', code: 'linear_tracker_credentials_missing' }
+  ];
+  const expectedKeys = new Set(expectedCredentialBlockers.map((finding) => `${finding.id}:${finding.code}`));
+  const foundKeys = new Set(blockerFindings.map((finding) => `${finding.id}:${finding.code}`));
+  return {
+    missing_credentials_expected_for_non_hosted_setup:
+      blockerFindings.length > 0 && blockerFindings.every((finding) => expectedKeys.has(`${finding.id}:${finding.code}`)),
+    expected_blockers_present: expectedCredentialBlockers.every((finding) =>
+      foundKeys.has(`${finding.id}:${finding.code}`)
+    ),
+    blocker_codes: blockerFindings.map((finding) => finding.code).filter(Boolean),
+    remediation:
+      findDoctorFinding(summary, 'tracker.credentials')?.remediation ||
+      'Set LINEAR_API_KEY only when running the explicit hosted Linear/Node issue-run lane.'
+  };
+}
+
 function parseInitFilePlan(text) {
   const files = [];
   let current = null;
@@ -1218,10 +1240,12 @@ function firstProjectHistoryKey(historyPayload, fallbackProjectRoot) {
   const runs = Array.isArray(historyPayload?.runs) ? historyPayload.runs : [];
   for (const run of runs) {
     const key =
+      run?.identity?.project?.key ||
       run?.identity?.project_key ||
       run?.project_key ||
       run?.project_identity?.key ||
       run?.project_identity?.project_key ||
+      run?.identity_projection?.project_key ||
       null;
     if (key) {
       return key;
@@ -1235,6 +1259,19 @@ function historyContainsIssue(payload, issueIdentifier) {
     return false;
   }
   return JSON.stringify(payload).includes(issueIdentifier);
+}
+
+function findProjectHistoryTicketKey(listPayload, issueIdentifier) {
+  const tickets = Array.isArray(listPayload?.tickets) ? listPayload.tickets : [];
+  const match = tickets.find((ticket) => {
+    const identity = ticket.ticket_identity || ticket.identity?.ticket || {};
+    return (
+      identity.human_issue_identifier === issueIdentifier ||
+      ticket.issue_identifier === issueIdentifier ||
+      ticket.human_issue_identifier === issueIdentifier
+    );
+  });
+  return match?.ticket_identity?.key || match?.identity?.ticket?.key || null;
 }
 
 async function runHostedIssueRunProof(lane, operator, projectRoot, workflowPath, env, config, options = {}) {
@@ -1300,12 +1337,22 @@ async function runHostedIssueRunProof(lane, operator, projectRoot, workflowPath,
     const projectKey = firstProjectHistoryKey(history.body, projectRoot);
     if (projectKey) {
       const listUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets?limit=50`;
-      const detailUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets/${encodeURIComponent(config.linearIssueId)}`;
+      const detailByIdentifierUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets/${encodeURIComponent(config.linearIssueId)}`;
       const healthUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/health`;
+      const list = await fetchJson(listUrl).catch((error) => ({ ok: false, error: String(error) }));
+      let detail = await fetchJson(detailByIdentifierUrl).catch((error) => ({ ok: false, error: String(error) }));
+      const detailLookup = { requested_identifier: config.linearIssueId, fallback_ticket_key: null };
+      const ticketKey = findProjectHistoryTicketKey(list.body, config.linearIssueId);
+      if (!detail.ok && ticketKey) {
+        detailLookup.fallback_ticket_key = ticketKey;
+        const detailByTicketKeyUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets/${encodeURIComponent(ticketKey)}`;
+        detail = await fetchJson(detailByTicketKeyUrl).catch((error) => ({ ok: false, error: String(error) }));
+      }
       proof.project_history = {
         project_key: projectKey,
-        list: await fetchJson(listUrl).catch((error) => ({ ok: false, error: String(error) })),
-        detail: await fetchJson(detailUrl).catch((error) => ({ ok: false, error: String(error) })),
+        detail_lookup: detailLookup,
+        list,
+        detail,
         health: await fetchJson(healthUrl).catch((error) => ({ ok: false, error: String(error) }))
       };
     }
@@ -1793,7 +1840,31 @@ async function runGeneratedLinearNodeLane(report, operator, env, tempRoot, optio
     env
   });
   appendCommand(lane, doctor, [0, 1, 2]);
-  parseDoctorJson(lane, doctor, { classifyNonReady: true });
+  const doctorSummary = parseDoctorJson(lane, doctor);
+  lane.hosted_credential_behavior = {
+    mode: 'non_hosted_setup',
+    hosted_credentials_required_for_issue_run: true,
+    doctor: summarizeExpectedLinearCredentialBlockers(doctorSummary)
+  };
+  if (
+    doctorSummary &&
+    (doctorSummary.status === 'failure' ||
+      doctorSummary.reason === 'blockers_present' ||
+      doctorSummary.finding_counts.blockers > 0 ||
+      doctor.exit_code === 2) &&
+    !lane.hosted_credential_behavior.doctor.missing_credentials_expected_for_non_hosted_setup
+  ) {
+    const remediation =
+      doctorSummary.findings.find((finding) => finding.remediation)?.remediation ||
+      'Run `symphony doctor --json` in this project root and resolve unexpected blockers before counting this lane as passed.';
+    addFinding(
+      lane,
+      'environment_prerequisite',
+      'blocker',
+      `Doctor reported unexpected blockers for generated Linear/Node setup: ${doctorSummary.reason || 'blockers_present'}.`,
+      remediation
+    );
+  }
   await runDashboardProof(lane, operator, projectRoot, workflowPath, env, options);
   lane.generated_files = summarizeGeneratedFiles(projectRoot);
   lane.status = laneStatus(lane);
@@ -1906,6 +1977,17 @@ async function runHostedLinearNodeIssueLane(report, operator, env, tempRoot, opt
       'Inspect lane.init_commit and ensure the hosted generated project can become clean before workspace provisioning.'
     );
   }
+  const pushMain = runCommand('git', ['push', '-u', 'origin', 'main'], {
+    name: 'hosted push main',
+    cwd: projectRoot,
+    env
+  });
+  lane.hosted_main_push = {
+    exit_code: pushMain.exit_code,
+    pushed: pushMain.exit_code === 0,
+    remote: config.githubRemoteUrl ? '<configured-hosted-remote>' : null
+  };
+  appendCommand(lane, pushMain);
   appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'setup', '--yes'], { name: 'hosted setup consent', cwd: projectRoot, env }));
   const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], { name: 'hosted doctor JSON', cwd: projectRoot, env });
   appendCommand(lane, doctor, [0, 1, 2]);
