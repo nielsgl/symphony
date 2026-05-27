@@ -6,8 +6,18 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DASHBOARD_TIMEOUT_MS = 90_000;
+const HOSTED_ISSUE_RUN_TIMEOUT_MS = 15 * 60_000;
+const HOSTED_ISSUE_RUN_POLL_MS = 5_000;
 const SECRET_KEY_PATTERN = /(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE)/i;
 const HOSTED_CREDENTIAL_KEYS = ['LINEAR_API_KEY', 'LINEAR_AUTH_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN'];
+const HOSTED_RESOURCE_ENV_KEYS = [
+  'SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG',
+  'SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE',
+  'SYMPHONY_TRIAL_LINEAR_ISSUE_ID',
+  'SYMPHONY_TRIAL_GITHUB_OWNER',
+  'SYMPHONY_TRIAL_GITHUB_REPO',
+  'SYMPHONY_TRIAL_GITHUB_REMOTE_URL'
+];
 const PROJECT_RESOLUTION_SYMPHONY_KEYS = [
   'SYMPHONY_WORKFLOW_PATH',
   'SYMPHONY_PORT',
@@ -24,6 +34,7 @@ const INIT_FILE_CANDIDATES = [
   '.worktreeinclude',
   ...PACKAGE_METADATA_FILES
 ];
+const GENERATED_LINEAR_NODE_SLUG = 'SYMPHONY-TRIAL';
 
 function isoNow() {
   return new Date().toISOString();
@@ -71,6 +82,12 @@ function parseArgs(argv) {
     syntheticProjectRoots: [],
     projectShape: null,
     hostedCredentials: false,
+    hostedLinearProjectSlug: null,
+    hostedLinearProjectDisposable: false,
+    hostedLinearIssueId: null,
+    hostedGithubOwner: null,
+    hostedGithubRepo: null,
+    hostedGithubRemoteUrl: null,
     noDashboard: false
   };
 
@@ -99,6 +116,18 @@ function parseArgs(argv) {
       options.projectShape = readValue();
     } else if (arg === '--with-hosted-credentials') {
       options.hostedCredentials = true;
+    } else if (arg === '--hosted-linear-project-slug') {
+      options.hostedLinearProjectSlug = readValue();
+    } else if (arg === '--hosted-linear-project-disposable') {
+      options.hostedLinearProjectDisposable = true;
+    } else if (arg === '--hosted-linear-issue-id') {
+      options.hostedLinearIssueId = readValue();
+    } else if (arg === '--hosted-github-owner') {
+      options.hostedGithubOwner = readValue();
+    } else if (arg === '--hosted-github-repo') {
+      options.hostedGithubRepo = readValue();
+    } else if (arg === '--hosted-github-remote-url') {
+      options.hostedGithubRemoteUrl = readValue();
     } else if (arg === '--no-dashboard') {
       options.noDashboard = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -126,6 +155,15 @@ function renderHelp() {
     '  --synthetic-project-root <path> Include a synthetic existing-workflow fixture',
     '  --project-shape <name>          Shape label for following project-root args',
     '  --with-hosted-credentials       Mark hosted credential lanes as intended',
+    '  --hosted-linear-project-slug <slug>',
+    '                                  Disposable Linear project slug for hosted issue-run proof',
+    '  --hosted-linear-project-disposable',
+    '                                  Acknowledge the Linear project is isolated and disposable',
+    '  --hosted-linear-issue-id <id>   Disposable Linear issue identifier for hosted issue-run proof',
+    '  --hosted-github-owner <owner>   Disposable GitHub owner for hosted issue-run proof',
+    '  --hosted-github-repo <repo>     Disposable GitHub repository for hosted issue-run proof',
+    '  --hosted-github-remote-url <url>',
+    '                                  Disposable GitHub remote URL for hosted issue-run proof',
     '  --no-dashboard                  Skip dashboard proof and mark it out of scope',
     '  --help                          Show this help'
   ].join('\n');
@@ -154,6 +192,39 @@ function summarizeEnv(env) {
       secret_like: true,
       value: env[name] ? '<redacted>' : '<missing>'
     }))
+  };
+}
+
+function summarizeHostedResources(env, options = {}) {
+  const read = (optionName, envName) => options[optionName] || env[envName] || null;
+  const disposableProject =
+    options.hostedLinearProjectDisposable === true ||
+    ['1', 'true', 'yes'].includes(String(env.SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE || '').toLowerCase());
+  return {
+    linear_project_slug: {
+      present: Boolean(read('hostedLinearProjectSlug', 'SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG')),
+      source: options.hostedLinearProjectSlug ? 'cli' : env.SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG ? 'env' : 'missing'
+    },
+    linear_project_disposable: {
+      present: disposableProject,
+      source: options.hostedLinearProjectDisposable ? 'cli' : env.SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE ? 'env' : 'missing'
+    },
+    linear_issue_id: {
+      present: Boolean(read('hostedLinearIssueId', 'SYMPHONY_TRIAL_LINEAR_ISSUE_ID')),
+      source: options.hostedLinearIssueId ? 'cli' : env.SYMPHONY_TRIAL_LINEAR_ISSUE_ID ? 'env' : 'missing'
+    },
+    github_owner: {
+      present: Boolean(read('hostedGithubOwner', 'SYMPHONY_TRIAL_GITHUB_OWNER')),
+      source: options.hostedGithubOwner ? 'cli' : env.SYMPHONY_TRIAL_GITHUB_OWNER ? 'env' : 'missing'
+    },
+    github_repo: {
+      present: Boolean(read('hostedGithubRepo', 'SYMPHONY_TRIAL_GITHUB_REPO')),
+      source: options.hostedGithubRepo ? 'cli' : env.SYMPHONY_TRIAL_GITHUB_REPO ? 'env' : 'missing'
+    },
+    github_remote_url: {
+      present: Boolean(read('hostedGithubRemoteUrl', 'SYMPHONY_TRIAL_GITHUB_REMOTE_URL')),
+      source: options.hostedGithubRemoteUrl ? 'cli' : env.SYMPHONY_TRIAL_GITHUB_REMOTE_URL ? 'env' : 'missing'
+    }
   };
 }
 
@@ -465,6 +536,28 @@ function findDoctorFinding(summary, id) {
   return summary?.findings?.find((finding) => finding.id === id) ?? null;
 }
 
+function summarizeExpectedLinearCredentialBlockers(summary) {
+  const blockerFindings = (summary?.findings || []).filter((finding) => finding.severity === 'blocker');
+  const expectedCredentialBlockers = [
+    { id: 'workflow.effective_config', code: 'missing_tracker_api_key' },
+    { id: 'env.required_variables', code: 'required_env_missing' },
+    { id: 'tracker.credentials', code: 'linear_tracker_credentials_missing' }
+  ];
+  const expectedKeys = new Set(expectedCredentialBlockers.map((finding) => `${finding.id}:${finding.code}`));
+  const foundKeys = new Set(blockerFindings.map((finding) => `${finding.id}:${finding.code}`));
+  return {
+    missing_credentials_expected_for_non_hosted_setup:
+      blockerFindings.length > 0 && blockerFindings.every((finding) => expectedKeys.has(`${finding.id}:${finding.code}`)),
+    expected_blockers_present: expectedCredentialBlockers.every((finding) =>
+      foundKeys.has(`${finding.id}:${finding.code}`)
+    ),
+    blocker_codes: blockerFindings.map((finding) => finding.code).filter(Boolean),
+    remediation:
+      findDoctorFinding(summary, 'tracker.credentials')?.remediation ||
+      'Set LINEAR_API_KEY only when running the explicit hosted Linear/Node issue-run lane.'
+  };
+}
+
 function parseInitFilePlan(text) {
   const files = [];
   let current = null;
@@ -658,6 +751,33 @@ function verifyGeneratedWorkflow(lane, summary) {
   return { passed: failures.length === 0, failures };
 }
 
+function readLinearNodeWorkflowChecks(workflowPath, expectedLinearProjectSlug) {
+  const content = fs.existsSync(workflowPath) ? fs.readFileSync(workflowPath, 'utf8') : '';
+  const unintendedStates = ['Agent Review', 'Human Review', 'Merging', 'Rework'].filter((state) => content.includes(state));
+  const checks = {
+    generated_profile_provenance: content.includes('symphony-generated-profile') && content.includes('bundle=linear-node'),
+    includes_node_setup_command: /setup_command:\s*"npm install"/.test(content) || /setup_command:\s*"npm ci"/.test(content),
+    includes_node_validation_command: /validation_command:\s*"npm test"/.test(content),
+    linear_project_slug: content.includes(`project_slug: "${expectedLinearProjectSlug}"`) || content.includes(`project_slug: ${expectedLinearProjectSlug}`),
+    unintended_symphony_internal_states: unintendedStates,
+    tracker_kind_linear: /tracker:\s*\n\s*kind:\s*"linear"|tracker:\s*\n\s*kind:\s*linear/.test(content),
+    active_states_solo_local: content.includes('active_states: ["Todo", "In Progress"]'),
+    handoff_states_absent: !content.includes('handoff_states:'),
+    fresh_dispatch_states_absent: !content.includes('fresh_dispatch_states:')
+  };
+  checks.ok =
+    checks.generated_profile_provenance &&
+    checks.includes_node_setup_command &&
+    checks.includes_node_validation_command &&
+    checks.linear_project_slug &&
+    checks.tracker_kind_linear &&
+    checks.active_states_solo_local &&
+    checks.handoff_states_absent &&
+    checks.fresh_dispatch_states_absent &&
+    checks.unintended_symphony_internal_states.length === 0;
+  return checks;
+}
+
 function parseJsonObjectOutput(text) {
   const raw = String(text || '').trim();
   if (!raw) {
@@ -791,6 +911,22 @@ async function waitForDashboardUrl(child, lane, env, timeoutMs) {
 
 async function fetchJson(url) {
   const response = await fetch(url);
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = { parse_error: text.slice(0, 500) };
+  }
+  return { ok: response.ok, status: response.status, body };
+}
+
+async function postJson(url, payload = {}) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
   const text = await response.text();
   let body = null;
   try {
@@ -986,6 +1122,269 @@ async function runDashboardProof(lane, operator, projectRoot, workflowPath, env,
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchLinearIssueEvidence(env, issueIdentifier) {
+  const apiKey = env.LINEAR_API_KEY || env.LINEAR_AUTH_TOKEN;
+  if (!apiKey || !issueIdentifier) {
+    return { ok: false, reason: 'missing_linear_api_key_or_issue_identifier' };
+  }
+  const query = `
+    query HostedTrialIssue($id: String!) {
+      issue(id: $id) {
+        id
+        identifier
+        title
+        url
+        branchName
+        state { name type }
+        attachments { nodes { title url } }
+      }
+    }
+  `;
+  try {
+    const response = await fetch('https://api.linear.app/graphql', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: apiKey
+      },
+      body: JSON.stringify({ query, variables: { id: issueIdentifier } })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.errors) {
+      return {
+        ok: false,
+        status: response.status,
+        errors: Array.isArray(payload?.errors) ? payload.errors.map((error) => error.message).slice(0, 5) : []
+      };
+    }
+    return { ok: Boolean(payload?.data?.issue), issue: payload?.data?.issue ?? null };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function runGitJson(projectRoot, args) {
+  const result = spawnSync('git', args, { cwd: projectRoot, encoding: 'utf8' });
+  return {
+    exit_code: result.status,
+    stdout: (result.stdout || '').trim(),
+    stderr: (result.stderr || '').trim()
+  };
+}
+
+function readBranchEvidence(projectRoot, branchName) {
+  if (!branchName) {
+    return { branch_name: null, local_present: false, commit_sha: null, pushed: false };
+  }
+  const local = runGitJson(projectRoot, ['rev-parse', '--verify', branchName]);
+  const remote = runGitJson(projectRoot, ['ls-remote', '--heads', 'origin', branchName]);
+  return {
+    branch_name: branchName,
+    local_present: local.exit_code === 0,
+    commit_sha: local.exit_code === 0 ? local.stdout : null,
+    pushed: remote.exit_code === 0 && remote.stdout.length > 0,
+    remote_ref: remote.stdout || null,
+    errors: {
+      local: local.exit_code === 0 ? null : local.stderr || local.stdout || 'branch not found',
+      remote: remote.exit_code === 0 ? null : remote.stderr || 'ls-remote failed'
+    }
+  };
+}
+
+function readPullRequestEvidence(config, branchName) {
+  if (!config.githubOwner || !config.githubRepo) {
+    return { ok: false, reason: 'missing_github_owner_or_repo' };
+  }
+  const result = spawnSync(
+    'gh',
+    [
+      'pr',
+      'list',
+      '--repo',
+      `${config.githubOwner}/${config.githubRepo}`,
+      '--head',
+      branchName,
+      '--state',
+      'all',
+      '--json',
+      'url,state,headRefName,headRefOid,number,title'
+    ],
+    { encoding: 'utf8' }
+  );
+  if (result.status !== 0) {
+    return { ok: false, exit_code: result.status, stderr: (result.stderr || '').trim() };
+  }
+  let prs = [];
+  try {
+    prs = JSON.parse(result.stdout || '[]');
+  } catch {
+    return { ok: false, reason: 'gh_pr_json_parse_failed', stdout: (result.stdout || '').slice(0, 500) };
+  }
+  const pr = prs[0] ?? null;
+  return {
+    ok: Boolean(pr?.url),
+    pr_url: pr?.url ?? null,
+    state: pr?.state ?? null,
+    head_ref: pr?.headRefName ?? null,
+    head_sha: pr?.headRefOid ?? null,
+    number: pr?.number ?? null,
+    title: pr?.title ?? null
+  };
+}
+
+function firstProjectHistoryKey(historyPayload, fallbackProjectRoot) {
+  const runs = Array.isArray(historyPayload?.runs) ? historyPayload.runs : [];
+  for (const run of runs) {
+    const key =
+      run?.identity?.project?.key ||
+      run?.identity?.project_key ||
+      run?.project_key ||
+      run?.project_identity?.key ||
+      run?.project_identity?.project_key ||
+      run?.identity_projection?.project_key ||
+      null;
+    if (key) {
+      return key;
+    }
+  }
+  return fallbackProjectRoot ? realpathIfExists(fallbackProjectRoot) : null;
+}
+
+function historyContainsIssue(payload, issueIdentifier) {
+  if (!payload || !issueIdentifier) {
+    return false;
+  }
+  return JSON.stringify(payload).includes(issueIdentifier);
+}
+
+function findProjectHistoryTicketKey(listPayload, issueIdentifier) {
+  const tickets = Array.isArray(listPayload?.tickets) ? listPayload.tickets : [];
+  const match = tickets.find((ticket) => {
+    const identity = ticket.ticket_identity || ticket.identity?.ticket || {};
+    return (
+      identity.human_issue_identifier === issueIdentifier ||
+      ticket.issue_identifier === issueIdentifier ||
+      ticket.human_issue_identifier === issueIdentifier
+    );
+  });
+  return match?.ticket_identity?.key || match?.identity?.ticket?.key || null;
+}
+
+async function runHostedIssueRunProof(lane, operator, projectRoot, workflowPath, env, config, options = {}) {
+  const args = [...operator.argsPrefix, 'dashboard', '--workflow', workflowPath, '--port', '0'];
+  const child = spawn(operator.command, args, {
+    cwd: projectRoot,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const started = await waitForDashboardUrl(child, lane, env, DASHBOARD_TIMEOUT_MS);
+  const proof = {
+    status: started.ok ? 'running' : 'failed_to_bind',
+    url: started.url,
+    issue_identifier: config.linearIssueId,
+    branch_name: config.linearIssueId ? `feature/${config.linearIssueId}` : null,
+    state_samples: [],
+    issue_detail_samples: [],
+    history_samples: [],
+    project_history: null,
+    linear_issue: null,
+    branch: null,
+    pull_request: null,
+    dashboard_shutdown: null
+  };
+  lane.issue_run = proof;
+
+  if (!started.ok || !started.url) {
+    proof.dashboard_shutdown = await stopDashboard(child, null);
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Hosted issue-run dashboard did not bind before dispatch proof.',
+      'Inspect hosted issue-run dashboard stdout/stderr and fix runtime startup.'
+    );
+    return proof;
+  }
+
+  const baseUrl = started.url.replace(/\/$/, '');
+  proof.dashboard = {
+    status: 'bound',
+    url: started.url,
+    state_url: `${baseUrl}/api/v1/state`,
+    issue_url: `${baseUrl}/api/v1/issues/${encodeURIComponent(config.linearIssueId)}`,
+    history_url: `${baseUrl}/api/v1/history?limit=50`
+  };
+
+  const deadline = Date.now() + (options.hostedIssueRunTimeoutMs ?? HOSTED_ISSUE_RUN_TIMEOUT_MS);
+  let completed = false;
+  while (Date.now() < deadline) {
+    await postJson(`${baseUrl}/api/v1/refresh`, { source: 'local-multi-project-trial' }).catch(() => null);
+    const state = await fetchJson(proof.dashboard.state_url).catch((error) => ({ ok: false, error: String(error) }));
+    const issue = await fetchJson(proof.dashboard.issue_url).catch((error) => ({ ok: false, error: String(error) }));
+    const history = await fetchJson(proof.dashboard.history_url).catch((error) => ({ ok: false, error: String(error) }));
+    proof.state_samples.push({ at: isoNow(), ok: state.ok, status: state.status, body: state.body ?? state.error ?? null });
+    proof.issue_detail_samples.push({ at: isoNow(), ok: issue.ok, status: issue.status, body: issue.body ?? issue.error ?? null });
+    proof.history_samples.push({ at: isoNow(), ok: history.ok, status: history.status, body: history.body ?? history.error ?? null });
+
+    proof.linear_issue = await fetchLinearIssueEvidence(env, config.linearIssueId);
+    proof.branch = readBranchEvidence(projectRoot, proof.branch_name);
+    proof.pull_request = readPullRequestEvidence(config, proof.branch_name);
+
+    const projectKey = firstProjectHistoryKey(history.body, projectRoot);
+    if (projectKey) {
+      const listUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets?limit=50`;
+      const detailByIdentifierUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets/${encodeURIComponent(config.linearIssueId)}`;
+      const healthUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/health`;
+      const list = await fetchJson(listUrl).catch((error) => ({ ok: false, error: String(error) }));
+      let detail = await fetchJson(detailByIdentifierUrl).catch((error) => ({ ok: false, error: String(error) }));
+      const detailLookup = { requested_identifier: config.linearIssueId, fallback_ticket_key: null };
+      const ticketKey = findProjectHistoryTicketKey(list.body, config.linearIssueId);
+      if (!detail.ok && ticketKey) {
+        detailLookup.fallback_ticket_key = ticketKey;
+        const detailByTicketKeyUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets/${encodeURIComponent(ticketKey)}`;
+        detail = await fetchJson(detailByTicketKeyUrl).catch((error) => ({ ok: false, error: String(error) }));
+      }
+      proof.project_history = {
+        project_key: projectKey,
+        detail_lookup: detailLookup,
+        list,
+        detail,
+        health: await fetchJson(healthUrl).catch((error) => ({ ok: false, error: String(error) }))
+      };
+    }
+
+    const finalState = proof.linear_issue?.issue?.state?.name ?? null;
+    const finalStateInactive = finalState && !['Todo', 'In Progress'].includes(finalState);
+    const hasHistory =
+      historyContainsIssue(history.body, config.linearIssueId) ||
+      historyContainsIssue(proof.project_history?.list?.body, config.linearIssueId) ||
+      historyContainsIssue(proof.project_history?.detail?.body, config.linearIssueId);
+    if (finalStateInactive && proof.branch?.commit_sha && proof.branch?.pushed && proof.pull_request?.pr_url && hasHistory) {
+      completed = true;
+      break;
+    }
+
+    await sleep(options.hostedIssueRunPollMs ?? HOSTED_ISSUE_RUN_POLL_MS);
+  }
+
+  proof.status = completed ? 'passed' : 'blocked';
+  proof.dashboard_shutdown = await stopDashboard(child, started.url);
+  if (!completed) {
+    addFinding(
+      lane,
+      'environment_prerequisite',
+      'blocker',
+      'Hosted issue-run did not produce the required external-project evidence before timeout.',
+      'Inspect lane.issue_run for final Linear state, dashboard state, branch, PR, and Project Execution History samples; rerun after resolving the missing hosted-runtime prerequisite.'
+    );
+  }
+  return proof;
+}
+
 function recordPostCommandEvidence(lane, projectRoot, workflowPath, env) {
   const consentPath = path.join(projectRoot, '.symphony', 'setup-consent.json');
   lane.environment = summarizeLaneEnv(env);
@@ -1068,6 +1467,64 @@ function createGeneratedGenericProject(tempRoot) {
   fs.writeFileSync(path.join(projectRoot, '.symphony', 'prompts', 'README.md'), 'Reserved for project-owned prompts.\n');
   spawnSync('git', ['init'], { cwd: projectRoot, encoding: 'utf8' });
   return projectRoot;
+}
+
+function createGeneratedNodeProject(tempRoot, name) {
+  const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(tempRoot, `${name}-`)));
+  fs.writeFileSync(
+    path.join(projectRoot, 'package.json'),
+    `${JSON.stringify(
+      {
+        name: name.replace(/[^a-z0-9-]/g, '-'),
+        version: '0.0.0',
+        private: true,
+        scripts: {
+          test: 'node test.js'
+        }
+      },
+      null,
+      2
+    )}\n`
+  );
+  fs.writeFileSync(path.join(projectRoot, 'index.js'), "module.exports = function hello() { return 'hello'; };\n");
+  fs.writeFileSync(path.join(projectRoot, 'test.js'), "const hello = require('./index'); if (hello() !== 'hello') process.exit(1);\n");
+  spawnSync('git', ['init', '-b', 'main'], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['config', 'user.email', 'symphony-trial@example.invalid'], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['config', 'user.name', 'Symphony Trial'], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['add', 'package.json', 'index.js', 'test.js'], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['commit', '-m', 'Initial Node trial project'], { cwd: projectRoot, encoding: 'utf8' });
+  const remoteRoot = fs.realpathSync(fs.mkdtempSync(path.join(tempRoot, `${name}-remote-`)));
+  spawnSync('git', ['init', '--bare'], { cwd: remoteRoot, encoding: 'utf8' });
+  spawnSync('git', ['remote', 'add', 'origin', remoteRoot], { cwd: projectRoot, encoding: 'utf8' });
+  spawnSync('git', ['push', '-u', 'origin', 'main'], { cwd: projectRoot, encoding: 'utf8' });
+  return { projectRoot, remoteRoot };
+}
+
+function commitProjectChanges(projectRoot, message) {
+  const add = spawnSync('git', ['add', 'WORKFLOW.md', '.env.example', '.worktreeinclude', '.gitignore'], {
+    cwd: projectRoot,
+    encoding: 'utf8'
+  });
+  if (add.status !== 0) {
+    return { ok: false, step: 'git add', exit_code: add.status, stdout: add.stdout || '', stderr: add.stderr || '' };
+  }
+  const commit = spawnSync('git', ['commit', '-m', message], { cwd: projectRoot, encoding: 'utf8' });
+  return {
+    ok: commit.status === 0,
+    step: 'git commit',
+    exit_code: commit.status,
+    stdout: commit.stdout || '',
+    stderr: commit.stderr || ''
+  };
+}
+
+function summarizeGitStatus(projectRoot) {
+  const result = spawnSync('git', ['status', '--porcelain=v1'], { cwd: projectRoot, encoding: 'utf8' });
+  return {
+    exit_code: result.status,
+    clean: result.status === 0 && result.stdout.trim().length === 0,
+    porcelain: result.stdout.trim().split(/\r?\n/).filter(Boolean)
+  };
 }
 
 function makeBaseEnv(env, tempRoot) {
@@ -1276,6 +1733,289 @@ async function runGeneratedGenericLane(report, operator, env, tempRoot, options)
   report.lanes.push(lane);
 }
 
+async function runGeneratedLinearNodeLane(report, operator, env, tempRoot, options) {
+  const { projectRoot, remoteRoot } = createGeneratedNodeProject(tempRoot, 'generated-linear-node');
+  const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
+  const lane = buildLane('generated-linear-node-setup', 'Generated Linear/Node setup', 'generated-linear-node', projectRoot, true);
+  lane.counts_for_external_project_evidence = false;
+  lane.synthetic_reason = 'fresh temporary project proves generated setup path without hosted tracker mutation';
+  lane.environment = summarizeEnv(env);
+  lane.tracker_identifiers.push({ kind: 'linear', project_slug: GENERATED_LINEAR_NODE_SLUG, hosted: false });
+  lane.disposable_remote = {
+    kind: 'local-bare-git',
+    path: remoteRoot,
+    purpose: 'origin/main support for generated worktree workflow validation'
+  };
+
+  const initArgs = ['init', '--bundle', 'linear-node', '--linear-project-slug', GENERATED_LINEAR_NODE_SLUG, '--no-input'];
+  const dryRun = runCommand(operator.command, [...operator.argsPrefix, ...initArgs, '--dry-run'], {
+    name: 'linear-node init dry-run',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, dryRun);
+  lane.init_dry_run_plan = {
+    files: parseInitFilePlan(dryRun._rawStdout).files,
+    validation_ok: /Validation:\s+ok/.test(dryRun._rawStdout)
+  };
+
+  const initWrite = runCommand(operator.command, [...operator.argsPrefix, ...initArgs], {
+    name: 'linear-node init write',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, initWrite);
+  lane.init_write_plan = {
+    files: parseInitWriteSummary(initWrite._rawStdout).files.length > 0
+      ? parseInitWriteSummary(initWrite._rawStdout).files
+      : parseInitFilePlan(initWrite._rawStdout).files,
+    validation_ok: /Validation:\s+ok/.test(initWrite._rawStdout)
+  };
+
+  const dryRunPaths = lane.init_dry_run_plan.files.map((file) => file.path).sort();
+  const writePaths = lane.init_write_plan.files.map((file) => file.path).sort();
+  lane.init_file_plan_match = JSON.stringify(dryRunPaths) === JSON.stringify(writePaths) && dryRunPaths.length > 0;
+  if (!lane.init_file_plan_match) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Linear/Node init write file plan did not match the dry-run file plan.',
+      'Keep init dry-run and write materialization plans aligned before accepting generated setup evidence.'
+    );
+  }
+  if (!lane.init_dry_run_plan.validation_ok || !lane.init_write_plan.validation_ok) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Linear/Node generated workflow did not validate during init.',
+      'Fix generated workflow validation before accepting generated setup evidence.'
+    );
+  }
+
+  lane.init_commit = commitProjectChanges(projectRoot, 'Add generated Symphony Linear Node workflow');
+  if (!lane.init_commit.ok) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Generated Linear/Node init files could not be committed before doctor readiness.',
+      'Inspect lane.init_commit and ensure the generated project can become clean before workspace provisioning.'
+    );
+  }
+  lane.setup_side_effects = {
+    package_lock_after_setup: false,
+    classification: 'expected_clean_generated_workflow',
+    note: 'The generated setup lane commits intended init files before doctor; no setup-generated lockfile is expected before workspace hooks run.'
+  };
+
+  lane.workflow_source = summarizeWorkflowFile(workflowPath);
+  lane.generated_workflow_checks = readLinearNodeWorkflowChecks(workflowPath, GENERATED_LINEAR_NODE_SLUG);
+  if (!lane.generated_workflow_checks.ok) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Generated Linear/Node WORKFLOW.md failed provenance, Node command, tracker, or lifecycle-state checks.',
+      'Inspect lane.generated_workflow_checks and update profile materialization or trial assertions.'
+    );
+  }
+
+  appendCommand(lane, runCommand('npm', ['test'], { name: 'generated project test command', cwd: projectRoot, env }));
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'setup', '--yes'], { name: 'setup consent', cwd: projectRoot, env }));
+  lane.git_status_after_setup = summarizeGitStatus(projectRoot);
+  if (!lane.git_status_after_setup.clean) {
+    addFinding(
+      lane,
+      'product_friction',
+      'warning',
+      'Generated project setup left local checkout changes after intended init files were committed.',
+      'Inspect lane.git_status_after_setup; classify expected hook side effects or adjust setup behavior.'
+    );
+  }
+  const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], {
+    name: 'doctor JSON',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, doctor, [0, 1, 2]);
+  const doctorSummary = parseDoctorJson(lane, doctor);
+  lane.hosted_credential_behavior = {
+    mode: 'non_hosted_setup',
+    hosted_credentials_required_for_issue_run: true,
+    doctor: summarizeExpectedLinearCredentialBlockers(doctorSummary)
+  };
+  if (
+    doctorSummary &&
+    (doctorSummary.status === 'failure' ||
+      doctorSummary.reason === 'blockers_present' ||
+      doctorSummary.finding_counts.blockers > 0 ||
+      doctor.exit_code === 2) &&
+    !lane.hosted_credential_behavior.doctor.missing_credentials_expected_for_non_hosted_setup
+  ) {
+    const remediation =
+      doctorSummary.findings.find((finding) => finding.remediation)?.remediation ||
+      'Run `symphony doctor --json` in this project root and resolve unexpected blockers before counting this lane as passed.';
+    addFinding(
+      lane,
+      'environment_prerequisite',
+      'blocker',
+      `Doctor reported unexpected blockers for generated Linear/Node setup: ${doctorSummary.reason || 'blockers_present'}.`,
+      remediation
+    );
+  }
+  await runDashboardProof(lane, operator, projectRoot, workflowPath, env, options);
+  lane.generated_files = summarizeGeneratedFiles(projectRoot);
+  lane.status = laneStatus(lane);
+  report.lanes.push(lane);
+}
+
+function getHostedConfig(env, options) {
+  return {
+    linearProjectSlug: options.hostedLinearProjectSlug || env.SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG || null,
+    linearProjectDisposable:
+      options.hostedLinearProjectDisposable === true ||
+      ['1', 'true', 'yes'].includes(String(env.SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE || '').toLowerCase()),
+    linearIssueId: options.hostedLinearIssueId || env.SYMPHONY_TRIAL_LINEAR_ISSUE_ID || null,
+    githubOwner: options.hostedGithubOwner || env.SYMPHONY_TRIAL_GITHUB_OWNER || null,
+    githubRepo: options.hostedGithubRepo || env.SYMPHONY_TRIAL_GITHUB_REPO || null,
+    githubRemoteUrl: options.hostedGithubRemoteUrl || env.SYMPHONY_TRIAL_GITHUB_REMOTE_URL || null
+  };
+}
+
+function addHostedPrerequisiteFinding(lane, summary, remediation) {
+  addFinding(lane, 'environment_prerequisite', 'blocker', summary, remediation);
+}
+
+async function runHostedLinearNodeIssueLane(report, operator, env, tempRoot, options) {
+  const config = getHostedConfig(env, options);
+  const lane = buildLane('hosted-linear-node-issue-run', 'Hosted Linear/Node issue run', 'hosted-generated-linear-node', null, false);
+  lane.counts_for_external_project_evidence = true;
+  lane.hosted_resources = summarizeHostedResources(env, options);
+  lane.tracker_identifiers = [
+    { kind: 'linear', project_slug: config.linearProjectSlug, issue_id: config.linearIssueId, hosted: true },
+    { kind: 'github', owner: config.githubOwner, repo: config.githubRepo, remote_url_present: Boolean(config.githubRemoteUrl), hosted: true }
+  ];
+
+  const missing = [];
+  if (!options.hostedCredentials) {
+    missing.push({
+      name: '--with-hosted-credentials',
+      remediation: 'Rerun with --with-hosted-credentials to make hosted mutation explicit.'
+    });
+  }
+  if (!env.LINEAR_API_KEY && !env.LINEAR_AUTH_TOKEN) {
+    missing.push({ name: 'LINEAR_API_KEY or LINEAR_AUTH_TOKEN', remediation: 'Export a Linear API token for a disposable trial project.' });
+  }
+  if (!env.GITHUB_TOKEN && !env.GH_TOKEN) {
+    missing.push({ name: 'GITHUB_TOKEN or GH_TOKEN', remediation: 'Export a GitHub token scoped to a disposable trial repository.' });
+  }
+  if (!config.linearProjectSlug) {
+    missing.push({
+      name: 'hosted Linear project slug',
+      remediation: 'Pass --hosted-linear-project-slug or set SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG for a disposable project.'
+    });
+  }
+  if (!config.linearProjectDisposable) {
+    missing.push({
+      name: 'isolated disposable Linear project acknowledgement',
+      remediation:
+        'Use a Linear project dedicated to this hosted trial and pass --hosted-linear-project-disposable or set SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE=1. A clearly named issue inside an active real project is not isolated enough because existing Symphony runtimes may dispatch unrelated active issues.'
+    });
+  }
+  if (!config.linearIssueId) {
+    missing.push({
+      name: 'hosted Linear issue id',
+      remediation: 'Pass --hosted-linear-issue-id or set SYMPHONY_TRIAL_LINEAR_ISSUE_ID for a clearly named disposable issue.'
+    });
+  }
+  if (!config.githubOwner) {
+    missing.push({
+      name: 'hosted GitHub owner',
+      remediation: 'Pass --hosted-github-owner or set SYMPHONY_TRIAL_GITHUB_OWNER for a disposable repository.'
+    });
+  }
+  if (!config.githubRepo) {
+    missing.push({
+      name: 'hosted GitHub repository',
+      remediation: 'Pass --hosted-github-repo or set SYMPHONY_TRIAL_GITHUB_REPO for a disposable repository.'
+    });
+  }
+  if (!config.githubRemoteUrl) {
+    missing.push({
+      name: 'hosted GitHub remote URL',
+      remediation: 'Pass --hosted-github-remote-url or set SYMPHONY_TRIAL_GITHUB_REMOTE_URL for the disposable repository.'
+    });
+  }
+
+  if (missing.length > 0) {
+    lane.project_root = null;
+    lane.hosted_prerequisites = { status: 'blocked', missing };
+    for (const item of missing) {
+      addHostedPrerequisiteFinding(lane, `Missing hosted issue-run prerequisite: ${item.name}.`, item.remediation);
+    }
+    lane.status = laneStatus(lane);
+    report.lanes.push(lane);
+    return;
+  }
+
+  const { projectRoot } = createGeneratedNodeProject(tempRoot, 'hosted-linear-node');
+  lane.project_root = projectRoot;
+  const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
+  spawnSync('git', ['remote', 'set-url', 'origin', config.githubRemoteUrl], { cwd: projectRoot, encoding: 'utf8' });
+  const initArgs = ['init', '--bundle', 'linear-node', '--linear-project-slug', config.linearProjectSlug, '--no-input'];
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, ...initArgs, '--dry-run'], { name: 'hosted linear-node init dry-run', cwd: projectRoot, env }));
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, ...initArgs], { name: 'hosted linear-node init write', cwd: projectRoot, env }));
+  lane.init_commit = commitProjectChanges(projectRoot, 'Add generated Symphony Linear Node workflow');
+  if (!lane.init_commit.ok) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Hosted Linear/Node init files could not be committed before doctor readiness.',
+      'Inspect lane.init_commit and ensure the hosted generated project can become clean before workspace provisioning.'
+    );
+  }
+  const pushMain = runCommand('git', ['push', '-u', 'origin', 'main'], {
+    name: 'hosted push main',
+    cwd: projectRoot,
+    env
+  });
+  lane.hosted_main_push = {
+    exit_code: pushMain.exit_code,
+    pushed: pushMain.exit_code === 0,
+    remote: config.githubRemoteUrl ? '<configured-hosted-remote>' : null
+  };
+  appendCommand(lane, pushMain);
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'setup', '--yes'], { name: 'hosted setup consent', cwd: projectRoot, env }));
+  const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], { name: 'hosted doctor JSON', cwd: projectRoot, env });
+  appendCommand(lane, doctor, [0, 1, 2]);
+  parseDoctorJson(lane, doctor, { classifyNonReady: true });
+  if (!lane.findings.some((finding) => finding.severity === 'blocker')) {
+    await runHostedIssueRunProof(lane, operator, projectRoot, workflowPath, env, config, options);
+  } else {
+    lane.issue_run = {
+      status: 'blocked',
+      reason: 'hosted_project_not_ready_for_dispatch',
+      expected_evidence: [
+        'tracker ticket final state',
+        'workspace path',
+        'branch name',
+        'commit SHA',
+        'pushed branch proof',
+        'PR URL',
+        'dashboard/API issue evidence',
+        'Project Execution History evidence'
+      ]
+    };
+  }
+  lane.workflow_source = summarizeWorkflowFile(workflowPath);
+  lane.generated_files = summarizeGeneratedFiles(projectRoot);
+  lane.status = laneStatus(lane);
+  report.lanes.push(lane);
+}
+
 async function runInternalSymphonyLane(report, operator, env, repoRoot, options) {
   const projectRoot = repoRoot;
   const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
@@ -1461,6 +2201,12 @@ async function runTrial(options = {}) {
       linked_shim: operator.linkedShim ?? null
     },
     environment: summarizeEnv(env),
+    environment_handling: {
+      symphony_resolution_env_cleared: PROJECT_RESOLUTION_SYMPHONY_KEYS,
+      symphony_env_recorded: true,
+      hosted_resource_env_recorded: HOSTED_RESOURCE_ENV_KEYS
+    },
+    hosted_resources: summarizeHostedResources(env, options),
     hosted_credentials_requested: Boolean(options.hostedCredentials),
     lanes: [],
     summary: null
@@ -1491,7 +2237,18 @@ async function runTrial(options = {}) {
   } else {
     await runBaselineLane(report, operator, env, tempRoot, options);
     await runGeneratedGenericLane(report, operator, env, tempRoot, options);
+    await runGeneratedLinearNodeLane(report, operator, env, tempRoot, options);
     await runInternalSymphonyLane(report, operator, env, repoRoot, options);
+    if (
+      options.hostedCredentials ||
+      options.hostedLinearProjectSlug ||
+      options.hostedLinearIssueId ||
+      options.hostedGithubOwner ||
+      options.hostedGithubRepo ||
+      options.hostedGithubRemoteUrl
+    ) {
+      await runHostedLinearNodeIssueLane(report, operator, env, tempRoot, options);
+    }
     const realRoots = [...(options.projectRoots || []), ...(options.requiredProjectRoots || [])];
     const syntheticRoots = (options.syntheticProjectRoots || []).map((root) => ({ ...root, synthetic: true }));
     const roots = [...realRoots, ...syntheticRoots];
