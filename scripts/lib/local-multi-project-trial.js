@@ -8,6 +8,22 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DASHBOARD_TIMEOUT_MS = 90_000;
 const SECRET_KEY_PATTERN = /(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE)/i;
 const HOSTED_CREDENTIAL_KEYS = ['LINEAR_API_KEY', 'LINEAR_AUTH_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN'];
+const PROJECT_RESOLUTION_SYMPHONY_KEYS = [
+  'SYMPHONY_WORKFLOW_PATH',
+  'SYMPHONY_PORT',
+  'SYMPHONY_HOST',
+  'SYMPHONY_ENV_FILE',
+  'SYMPHONY_PROFILE'
+];
+const PACKAGE_METADATA_FILES = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock'];
+const INIT_FILE_CANDIDATES = [
+  'WORKFLOW.md',
+  '.gitignore',
+  '.symphony/system/.gitignore',
+  '.env.example',
+  '.worktreeinclude',
+  ...PACKAGE_METADATA_FILES
+];
 
 function isoNow() {
   return new Date().toISOString();
@@ -128,6 +144,10 @@ function summarizeEnv(env) {
 
   return {
     symphony,
+    cleared_for_project_resolution: PROJECT_RESOLUTION_SYMPHONY_KEYS.map((name) => ({
+      name,
+      present: Boolean(env[name])
+    })),
     hosted_credentials: HOSTED_CREDENTIAL_KEYS.map((name) => ({
       name,
       present: Boolean(env[name]),
@@ -296,13 +316,15 @@ function summarizeGeneratedFiles(projectRoot) {
   const candidates = [
     'WORKFLOW.md',
     '.gitignore',
+    '.symphony/system/.gitignore',
     '.symphony/system',
     '.symphony/system/workspaces',
     '.symphony/system/logs',
     '.symphony/system/runtime.sqlite',
     '.symphony/skills',
     '.symphony/prompts',
-    '.symphony/setup-consent.json'
+    '.symphony/setup-consent.json',
+    ...PACKAGE_METADATA_FILES
   ];
   return candidates.map((relativePath) => {
     const filePath = path.join(projectRoot, relativePath);
@@ -437,6 +459,203 @@ function summarizeDoctorPayload(payload, commandRecord) {
     },
     findings: findings.map(summarizeDoctorFinding).filter(Boolean).slice(0, 20)
   };
+}
+
+function findDoctorFinding(summary, id) {
+  return summary?.findings?.find((finding) => finding.id === id) ?? null;
+}
+
+function parseInitFilePlan(text) {
+  const files = [];
+  let current = null;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const fileMatch = line.match(/^\s+\d+\.\s+(.+)$/);
+    if (fileMatch) {
+      current = {
+        path: fileMatch[1].trim(),
+        action: null,
+        overwrite: null,
+        would_write: null,
+        overwrite_approval_required: null
+      };
+      files.push(current);
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    const propertyMatch = line.match(/^\s+([a-z_]+):\s*(.+)$/);
+    if (!propertyMatch) {
+      continue;
+    }
+    const key = propertyMatch[1];
+    const value = propertyMatch[2].trim();
+    if (key === 'action') {
+      current.action = value;
+    } else if (key === 'overwrite') {
+      current.overwrite = value;
+    } else if (key === 'would_write') {
+      current.would_write = value === 'yes';
+    } else if (key === 'overwrite_approval_required') {
+      current.overwrite_approval_required = value === 'yes';
+    }
+  }
+  return { files };
+}
+
+function parseInitWriteSummary(text) {
+  const files = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const match = line.match(/^\s+-\s+(.+?):\s+([a-z]+)(?:\s+written)?$/);
+    if (match) {
+      files.push({
+        path: match[1],
+        action: match[2],
+        written: line.includes(' written')
+      });
+    }
+  }
+  const writesMatch = String(text || '').match(/^Writes performed:\s+(\d+)$/m);
+  const skippedMatch = String(text || '').match(/^Skipped unchanged:\s+(\d+)$/m);
+  return {
+    writes_performed: writesMatch ? Number(writesMatch[1]) : null,
+    skipped_unchanged: skippedMatch ? Number(skippedMatch[1]) : null,
+    files
+  };
+}
+
+function snapshotFileStates(projectRoot, relativePaths) {
+  const states = {};
+  for (const relativePath of relativePaths) {
+    const filePath = path.join(projectRoot, relativePath);
+    if (!fs.existsSync(filePath)) {
+      states[relativePath] = { exists: false, type: null, bytes: null };
+      continue;
+    }
+    const stat = fs.statSync(filePath);
+    states[relativePath] = {
+      exists: true,
+      type: stat.isDirectory() ? 'directory' : 'file',
+      bytes: stat.isFile() ? stat.size : null
+    };
+  }
+  return states;
+}
+
+function verifyDryRunNoWrites(lane, before, after) {
+  const changed = [];
+  for (const relativePath of INIT_FILE_CANDIDATES) {
+    const left = before[relativePath] ?? { exists: false, type: null, bytes: null };
+    const right = after[relativePath] ?? { exists: false, type: null, bytes: null };
+    if (left.exists !== right.exists || left.type !== right.type || left.bytes !== right.bytes) {
+      changed.push(relativePath);
+    }
+  }
+  if (changed.length > 0) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      `Init dry-run changed files: ${changed.join(', ')}`,
+      'Fix init dry-run so it only renders the plan and writes no project files.'
+    );
+  }
+  return { changed_files: changed, passed: changed.length === 0 };
+}
+
+function verifyInitWrite(lane, projectRoot, dryRunPlan, writeSummary) {
+  const expectedWrites = dryRunPlan.files.filter((file) => file.would_write).map((file) => file.path).sort();
+  const actualWrites = writeSummary.files.filter((file) => file.written).map((file) => file.path).sort();
+  const missingWrites = expectedWrites.filter((file) => !actualWrites.includes(file));
+  const extraWrites = actualWrites.filter((file) => !expectedWrites.includes(file));
+  const missingFiles = expectedWrites.filter((file) => !fs.existsSync(path.join(projectRoot, file)));
+  if (missingWrites.length > 0 || extraWrites.length > 0 || missingFiles.length > 0) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Init write summary did not match the dry-run file plan.',
+      'Compare dry-run and write summaries, then fix init materialization reporting or writes.'
+    );
+  }
+  return {
+    expected_writes: expectedWrites,
+    actual_writes: actualWrites,
+    missing_writes: missingWrites,
+    extra_writes: extraWrites,
+    missing_files: missingFiles,
+    passed: missingWrites.length === 0 && extraWrites.length === 0 && missingFiles.length === 0
+  };
+}
+
+function summarizeGeneratedWorkflow(projectRoot) {
+  const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
+  if (!fs.existsSync(workflowPath)) {
+    return {
+      path: workflowPath,
+      exists: false,
+      generated_profile_provenance: false,
+      parse_validation: 'missing'
+    };
+  }
+  const content = fs.readFileSync(workflowPath, 'utf8');
+  const forbiddenTerms = ['Agent Review', 'Human Review', 'Merging', 'Rework', 'workflow:symphony-internal'];
+  const hostedCredentialTerms = ['LINEAR_API_KEY', 'GITHUB_TOKEN'];
+  const nodeCommandTerms = ['npm install', 'npm test', 'pnpm install', 'pnpm test', 'yarn install', 'yarn test'];
+  return {
+    path: workflowPath,
+    exists: true,
+    bytes: Buffer.byteLength(content),
+    generated_profile_provenance: content.includes('symphony-generated-profile'),
+    frontmatter_generated_profile: content.includes('generated_profile:'),
+    memory_tracker: /tracker:\s*\n\s*kind:\s*"memory"/.test(content) || /tracker:\s*\n\s*kind:\s*memory/.test(content),
+    generic_toolchain: /toolchain:\s*\n\s*kind:\s*"generic"/.test(content) || /toolchain:\s*\n\s*kind:\s*generic/.test(content),
+    validation_command: content.match(/validation_command:\s*("?[^"\n]+"?)/)?.[1] ?? null,
+    setup_command: content.match(/setup_command:\s*("?[^"\n]*"?)/)?.[1] ?? null,
+    forbidden_internal_terms_present: forbiddenTerms.filter((term) => content.includes(term)),
+    hosted_credential_terms_present: hostedCredentialTerms.filter((term) => content.includes(term)),
+    node_command_terms_present: nodeCommandTerms.filter((term) => content.includes(term)),
+    prompt_reference_present: /\.symphony\/prompts|prompt=/.test(content),
+    parse_validation: 'checked_by_init_and_doctor'
+  };
+}
+
+function verifyGeneratedWorkflow(lane, summary) {
+  const failures = [];
+  if (!summary.exists) {
+    failures.push('WORKFLOW.md missing');
+  }
+  if (!summary.generated_profile_provenance || !summary.frontmatter_generated_profile) {
+    failures.push('generated profile provenance missing');
+  }
+  if (!summary.memory_tracker) {
+    failures.push('memory tracker config missing');
+  }
+  if (!summary.generic_toolchain) {
+    failures.push('generic toolchain config missing');
+  }
+  if (summary.forbidden_internal_terms_present.length > 0) {
+    failures.push(`internal workflow terms present: ${summary.forbidden_internal_terms_present.join(', ')}`);
+  }
+  if (summary.hosted_credential_terms_present.length > 0) {
+    failures.push(`hosted credential terms present: ${summary.hosted_credential_terms_present.join(', ')}`);
+  }
+  if (summary.node_command_terms_present.length > 0) {
+    failures.push(`node command terms present: ${summary.node_command_terms_present.join(', ')}`);
+  }
+  if (summary.prompt_reference_present) {
+    failures.push('prompt customization reference present');
+  }
+  if (failures.length > 0) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      `Generated generic workflow failed acceptance checks: ${failures.join('; ')}`,
+      'Fix memory-generic materialization before accepting generated non-Node adoption.'
+    );
+  }
+  return { passed: failures.length === 0, failures };
 }
 
 function parseJsonObjectOutput(text) {
@@ -840,6 +1059,17 @@ function createSyntheticProject(tempRoot, name) {
   return projectRoot;
 }
 
+function createGeneratedGenericProject(tempRoot) {
+  const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(tempRoot, 'generated-generic-')));
+  fs.writeFileSync(path.join(projectRoot, 'README.md'), '# Generated generic trial project\n');
+  fs.mkdirSync(path.join(projectRoot, '.symphony', 'skills'), { recursive: true });
+  fs.mkdirSync(path.join(projectRoot, '.symphony', 'prompts'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, '.symphony', 'skills', 'README.md'), 'Reserved for project-owned skills.\n');
+  fs.writeFileSync(path.join(projectRoot, '.symphony', 'prompts', 'README.md'), 'Reserved for project-owned prompts.\n');
+  spawnSync('git', ['init'], { cwd: projectRoot, encoding: 'utf8' });
+  return projectRoot;
+}
+
 function makeBaseEnv(env, tempRoot) {
   const homeDir = path.join(tempRoot, 'home');
   const stateHome = path.join(tempRoot, 'state');
@@ -851,11 +1081,9 @@ function makeBaseEnv(env, tempRoot) {
     SYMPHONY_LOCAL_STATE_HOME: stateHome,
     SYMPHONY_USER_STATE_DIR: stateHome
   };
-  delete next.SYMPHONY_WORKFLOW_PATH;
-  delete next.SYMPHONY_PORT;
-  delete next.SYMPHONY_HOST;
-  delete next.SYMPHONY_ENV_FILE;
-  delete next.SYMPHONY_PROFILE;
+  for (const key of PROJECT_RESOLUTION_SYMPHONY_KEYS) {
+    delete next[key];
+  }
   return next;
 }
 
@@ -888,6 +1116,7 @@ async function runBaselineLane(report, operator, env, tempRoot, options) {
   const projectRoot = createSyntheticProject(tempRoot, 'baseline-memory');
   const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
   const lane = buildLane('synthetic-memory-baseline', 'Synthetic memory baseline', 'synthetic-memory-project', projectRoot, true);
+  lane.environment = summarizeEnv(env);
   lane.workflow_source = summarizeWorkflowFile(workflowPath);
   recordPostCommandEvidence(lane, projectRoot, workflowPath, env);
   lane.tracker_identifiers.push({ kind: 'memory', present: true });
@@ -918,6 +1147,128 @@ async function runBaselineLane(report, operator, env, tempRoot, options) {
   });
   appendCommand(lane, doctor);
   parseDoctorJson(lane, doctor);
+
+  await runDashboardProof(lane, operator, projectRoot, workflowPath, env, options);
+  lane.generated_files = summarizeGeneratedFiles(projectRoot);
+  lane.status = laneStatus(lane);
+  report.lanes.push(lane);
+}
+
+async function runGeneratedGenericLane(report, operator, env, tempRoot, options) {
+  const projectRoot = createGeneratedGenericProject(tempRoot);
+  const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
+  const lane = buildLane(
+    'synthetic-generated-generic',
+    'Synthetic generated generic non-Node project',
+    'synthetic-generated-generic-no-node-metadata',
+    projectRoot,
+    true
+  );
+  lane.environment = summarizeEnv(env);
+  lane.tracker_identifiers.push({ kind: 'memory', present: true });
+  lane.project_facts = {
+    git_repository: fs.existsSync(path.join(projectRoot, '.git')),
+    package_metadata_absent: PACKAGE_METADATA_FILES.every((relativePath) => !fs.existsSync(path.join(projectRoot, relativePath))),
+    reserved_customization_paths: [
+      { path: '.symphony/skills', exists: fs.existsSync(path.join(projectRoot, '.symphony', 'skills')) },
+      { path: '.symphony/prompts', exists: fs.existsSync(path.join(projectRoot, '.symphony', 'prompts')) }
+    ]
+  };
+  if (!lane.project_facts.package_metadata_absent) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Generated generic trial project unexpectedly contains Node package metadata.',
+      'Create the synthetic generic project without package.json or package manager lockfiles.'
+    );
+  }
+
+  const beforeDryRun = snapshotFileStates(projectRoot, INIT_FILE_CANDIDATES);
+  const dryRun = runCommand(operator.command, [...operator.argsPrefix, 'init', '--dry-run', '--bundle', 'memory-generic', '--no-input'], {
+    name: 'generated generic init dry-run',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, dryRun);
+  lane.init = {
+    dry_run: {
+      file_plan: parseInitFilePlan(dryRun._rawStdout),
+      no_write_verification: null
+    },
+    write: null,
+    idempotent_write: null
+  };
+  lane.init.dry_run.no_write_verification = verifyDryRunNoWrites(
+    lane,
+    beforeDryRun,
+    snapshotFileStates(projectRoot, INIT_FILE_CANDIDATES)
+  );
+
+  const write = runCommand(operator.command, [...operator.argsPrefix, 'init', '--bundle', 'memory-generic', '--no-input'], {
+    name: 'generated generic init write',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, write);
+  const writeSummary = parseInitWriteSummary(write._rawStdout);
+  lane.init.write = {
+    summary: writeSummary,
+    verification: verifyInitWrite(lane, projectRoot, lane.init.dry_run.file_plan, writeSummary)
+  };
+
+  const idempotentWrite = runCommand(operator.command, [...operator.argsPrefix, 'init', '--bundle', 'memory-generic', '--no-input'], {
+    name: 'generated generic init idempotent write',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, idempotentWrite);
+  const idempotentSummary = parseInitWriteSummary(idempotentWrite._rawStdout);
+  lane.init.idempotent_write = { summary: idempotentSummary };
+  if (idempotentSummary.writes_performed !== 0 || idempotentSummary.files.some((file) => file.action !== 'skip')) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Repeated memory-generic init did not skip unchanged generated files.',
+      'Fix init idempotence so generated files are skipped when content already matches.'
+    );
+  }
+
+  lane.workflow_source = summarizeWorkflowFile(workflowPath);
+  lane.generated_workflow = summarizeGeneratedWorkflow(projectRoot);
+  lane.generated_workflow.verification = verifyGeneratedWorkflow(lane, lane.generated_workflow);
+
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'setup', '--yes'], { name: 'generated generic setup consent', cwd: projectRoot, env }));
+  const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], {
+    name: 'generated generic doctor JSON',
+    cwd: projectRoot,
+    env
+  });
+  appendCommand(lane, doctor);
+  const doctorSummary = parseDoctorJson(lane, doctor);
+  lane.layout = {
+    runtime_state_root: findDoctorFinding(doctorSummary, 'layout.runtime_state_root'),
+    gitignore_system: findDoctorFinding(doctorSummary, 'layout.gitignore_system'),
+    reserved_customization: findDoctorFinding(doctorSummary, 'layout.reserved_customization'),
+    generated_profile: findDoctorFinding(doctorSummary, 'customization.generated_profile')
+  };
+  lane.validation_behavior = {
+    setup_command: lane.generated_workflow.setup_command,
+    validation_command: lane.generated_workflow.validation_command,
+    node_command_terms_present: lane.generated_workflow.node_command_terms_present,
+    hosted_tracker_credentials_required:
+      findDoctorFinding(doctorSummary, 'tracker.credentials')?.code !== 'tracker_credentials_not_required'
+  };
+  if (lane.validation_behavior.hosted_tracker_credentials_required) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Doctor reported hosted tracker credentials for memory-generic.',
+      'Fix generic memory tracker doctor readiness so hosted tracker credentials are not required.'
+    );
+  }
 
   await runDashboardProof(lane, operator, projectRoot, workflowPath, env, options);
   lane.generated_files = summarizeGeneratedFiles(projectRoot);
@@ -982,6 +1333,7 @@ async function runRealProjectLane(report, operator, env, rootSpec, index, option
     projectRoot,
     Boolean(rootSpec.synthetic)
   );
+  lane.environment = summarizeEnv(env);
   if (!fs.existsSync(projectRoot)) {
     addFinding(
       lane,
@@ -1138,6 +1490,7 @@ async function runTrial(options = {}) {
     report.lanes.push(lane);
   } else {
     await runBaselineLane(report, operator, env, tempRoot, options);
+    await runGeneratedGenericLane(report, operator, env, tempRoot, options);
     await runInternalSymphonyLane(report, operator, env, repoRoot, options);
     const realRoots = [...(options.projectRoots || []), ...(options.requiredProjectRoots || [])];
     const syntheticRoots = (options.syntheticProjectRoots || []).map((root) => ({ ...root, synthetic: true }));
