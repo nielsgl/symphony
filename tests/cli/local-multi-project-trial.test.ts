@@ -8,6 +8,7 @@ const trial = require('../../scripts/lib/local-multi-project-trial.js') as {
     report: string | null;
     projectRoots: Array<{ path: string; required: boolean; shape: string }>;
     requiredProjectRoots: Array<{ path: string; required: boolean; shape: string }>;
+    syntheticProjectRoots: Array<{ path: string; required: boolean; shape: string }>;
   };
   runTrial(options: Record<string, unknown>): Promise<{ report: any; reportPath: string }>;
   summarizeEnv(env: Record<string, string | undefined>): any;
@@ -19,6 +20,7 @@ function createFakeRepo() {
   const buildArtifact = path.join(repoRoot, 'dist', 'src', 'runtime', 'command-router.js');
   fs.mkdirSync(path.dirname(buildArtifact), { recursive: true });
   fs.writeFileSync(buildArtifact, '');
+  fs.writeFileSync(path.join(repoRoot, 'WORKFLOW.md'), trial.workflow('Fake Symphony checkout'));
   return { repoRoot, buildArtifact };
 }
 
@@ -29,8 +31,12 @@ function writeFakeCommand(tempRoot: string) {
     `
 const http = require('node:http');
 const path = require('node:path');
+const repoRoot = __dirname;
 
 const [command, ...args] = process.argv.slice(2);
+const profile = args.includes('--profile') ? args[args.indexOf('--profile') + 1] : 'project';
+const workflowArg = args.includes('--workflow') ? args[args.indexOf('--workflow') + 1] : null;
+const workflowPath = profile === 'symphony-internal' ? path.join(repoRoot, 'WORKFLOW.md') : (workflowArg || path.join(process.cwd(), 'WORKFLOW.md'));
 
 function doctorPayload(status, reason, exitCode, findings = []) {
   return {
@@ -46,8 +52,9 @@ function doctorPayload(status, reason, exitCode, findings = []) {
     },
     ci: true,
     resolution: {
-      projectRoot: process.cwd(),
-      workflowPath: path.join(process.cwd(), 'WORKFLOW.md'),
+      projectRoot: profile === 'symphony-internal' ? repoRoot : process.cwd(),
+      workflowPath,
+      profile,
       envFilePath: path.join(process.cwd(), '.env'),
       host: '127.0.0.1',
       port: 0,
@@ -62,56 +69,91 @@ function doctorPayload(status, reason, exitCode, findings = []) {
 if (command === '--version') {
   console.log('symphony-test 0.0.0');
 } else if (command === 'profile') {
-  console.log('memory-generic');
+  console.log(args.includes('symphony-internal') ? 'symphony-internal' : 'memory-generic');
 } else if (command === 'init') {
   const dryRun = args.includes('--dry-run');
+  const bundle = args[args.indexOf('--bundle') + 1] || 'memory-generic';
   const linearProjectSlug = args[args.indexOf('--linear-project-slug') + 1] || 'SYMPHONY-TRIAL';
+  const isLinearNode = bundle === 'linear-node';
   const workflow = [
     '---',
     'symphony:',
     '  generated_profile:',
     '    profile: "solo-local"',
-    '    bundle: "linear-node"',
+    '    bundle: "' + bundle + '"',
     '    packs:',
-    '      - "tracker:linear"',
-    '      - "workspace:worktree"',
-    '      - "toolchain:node"',
+    isLinearNode ? '      - "tracker:linear"' : '      - "tracker:memory"',
+    isLinearNode ? '      - "workspace:worktree"' : '      - "workspace:none"',
+    isLinearNode ? '      - "toolchain:node"' : '      - "toolchain:generic"',
     '      - "workflow:solo-local"',
     'tracker:',
-    '  kind: "linear"',
-    '  project_slug: "' + linearProjectSlug + '"',
-    '  active_states: ["Todo", "In Progress"]',
-    '  terminal_states: ["Done"]',
+    isLinearNode ? '  kind: "linear"' : '  kind: "memory"',
+    isLinearNode ? '  project_slug: "' + linearProjectSlug + '"' : '  endpoint: "memory://local"',
+    isLinearNode ? '  active_states: ["Todo", "In Progress"]' : '  api_key: ""',
+    isLinearNode ? '  terminal_states: ["Done"]' : '',
     'toolchain:',
-    '  setup_command: "npm install"',
-    '  validation_command: "npm test"',
+    isLinearNode ? '  kind: "node"' : '  kind: "generic"',
+    isLinearNode ? '  setup_command: "npm install"' : '  setup_command: ""',
+    isLinearNode ? '  validation_command: "npm test"' : '  validation_command: "git diff --check"',
     '---',
-    '<!-- symphony-generated-profile: profile=solo-local; bundle=linear-node; packs=tracker:linear,workspace:worktree,toolchain:node,workflow:solo-local; -->',
+    '<!-- symphony-generated-profile: profile=solo-local; bundle=' + bundle + '; packs=' + (isLinearNode ? 'tracker:linear,workspace:worktree,toolchain:node' : 'tracker:memory,workspace:none,toolchain:generic') + ',workflow:solo-local; -->',
+    '# Symphony Workflow',
+    '',
+    isLinearNode ? '- Linear tracker project: ' + linearProjectSlug : '- Memory tracker: no hosted tracker credentials required.',
+    isLinearNode ? '- Validation: npm test' : '- Validation: git diff --check',
     ''
-  ].join('\\n');
+  ].filter(Boolean).join('\\n');
   const files = [
-    ['WORKFLOW.md', workflow],
-    ['.env.example', 'LINEAR_API_KEY=\\n'],
-    ['.worktreeinclude', 'node_modules/**\\n'],
-    [path.join('.symphony', 'system', '.gitignore'), '*\\n!.gitignore\\n'],
-    ['.gitignore', '.symphony/system/\\n']
+    { path: 'WORKFLOW.md', content: workflow },
+    ...(isLinearNode
+      ? [
+          { path: '.env.example', content: 'LINEAR_API_KEY=\\n' },
+          { path: '.worktreeinclude', content: 'node_modules/**\\n' }
+        ]
+      : []),
+    { path: path.join('.symphony', 'system', '.gitignore'), content: '*\\n!.gitignore\\n' },
+    { path: '.gitignore', content: '.symphony/system/\\n' }
   ];
-  if (!dryRun) {
-    for (const [relativePath, content] of files) {
-      require('node:fs').mkdirSync(path.dirname(path.join(process.cwd(), relativePath)), { recursive: true });
-      require('node:fs').writeFileSync(path.join(process.cwd(), relativePath), content);
-    }
+  function actionFor(file) {
+    if (!require('node:fs').existsSync(path.join(process.cwd(), file.path))) return 'create';
+    return require('node:fs').readFileSync(path.join(process.cwd(), file.path), 'utf8') === file.content ? 'skip' : 'overwrite';
   }
-  console.log('Symphony init ' + (dryRun ? 'dry-run' : 'write') + ' file plan');
+  const actions = files.map((file) => ({ ...file, action: actionFor(file) }));
+  if (dryRun) {
+    console.log('Symphony init dry-run file plan');
+    console.log('');
+    console.log('Dry run: yes');
+    console.log('Validation: ok');
+    console.log('');
+    console.log('Files:');
+    actions.forEach((file, index) => {
+      console.log(\`  \${index + 1}. \${file.path}\`);
+      console.log(\`     action: \${file.action}\`);
+      console.log(\`     overwrite: \${file.action === 'create' ? 'absent' : 'exists'}\`);
+      console.log(\`     would_write: \${file.action === 'skip' ? 'no' : 'yes'}\`);
+      console.log('     overwrite_approval_required: no');
+    });
+    return;
+  }
+  let writes = 0;
+  let skipped = 0;
+  for (const file of actions) {
+    if (file.action === 'skip') {
+      skipped += 1;
+      continue;
+    }
+    require('node:fs').mkdirSync(path.dirname(path.join(process.cwd(), file.path)), { recursive: true });
+    require('node:fs').writeFileSync(path.join(process.cwd(), file.path), file.content);
+    writes += 1;
+  }
+  console.log('Symphony init write complete');
   console.log('');
+  console.log('Writes performed: ' + writes);
+  console.log('Skipped unchanged: ' + skipped);
   console.log('Validation: ok');
   console.log('');
   console.log('Files:');
-  files.forEach(([relativePath], index) => {
-    console.log('  ' + (index + 1) + '. ' + relativePath);
-    console.log('     action: create');
-    console.log('     would_write: yes');
-  });
+  actions.forEach((file) => console.log(\`  - \${file.path}: \${file.action}\${file.action === 'skip' ? '' : ' written'}\`));
 } else if (command === 'setup') {
   console.log('setup ok');
 } else if (command === 'doctor') {
@@ -130,9 +172,49 @@ if (command === '--version') {
     ])));
     process.exit(2);
   }
-  console.log(JSON.stringify(doctorPayload('ok', 'ready', 0)));
+  console.log(JSON.stringify(doctorPayload('ok', 'ready', 0, [
+    {
+      id: 'tracker.credentials',
+      code: 'tracker_credentials_not_required',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: 'Memory tracker mode does not require external tracker credentials.',
+      source: { category: 'runtime_probe', present: true }
+    },
+    {
+      id: 'layout.runtime_state_root',
+      code: 'runtime_state_root_reserved',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: '.symphony/system/ is the runtime-owned local state root.',
+      source: { category: 'layout_inspection', present: true }
+    },
+    {
+      id: 'layout.gitignore_system',
+      code: 'system_ignore_present',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: '.gitignore includes .symphony/system/.',
+      source: { category: 'layout_inspection', present: true }
+    },
+    {
+      id: 'layout.reserved_customization',
+      code: 'reserved_customization_reported',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: 'Reserved customization paths are visible and not runtime-loaded.',
+      source: { category: 'layout_inspection', present: true }
+    },
+    {
+      id: 'customization.generated_profile',
+      code: 'generated_profile_provenance_recorded',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: 'Generated workflow provenance is recorded.',
+      source: { category: 'generated_profile', present: true }
+    }
+  ])));
 } else if (command === 'dashboard') {
-  const workflowPath = args[args.indexOf('--workflow') + 1];
   const server = http.createServer((request, response) => {
     response.setHeader('content-type', 'application/json');
     if (request.url === '/api/v1/state') {
@@ -181,12 +263,15 @@ describe('local multi-project trial harness', () => {
       '--project-root',
       '/tmp/project-a',
       '--required-project-root',
-      '/tmp/project-b'
+      '/tmp/project-b',
+      '--synthetic-project-root',
+      '/tmp/project-c'
     ]);
 
     expect(options.projectRoots).toEqual([{ path: '/tmp/project-a', required: false, shape: 'existing-node' }]);
     expect(options.requiredProjectRoots).toEqual([{ path: '/tmp/project-b', required: true, shape: 'existing-node' }]);
-  });
+    expect(options.syntheticProjectRoots).toEqual([{ path: '/tmp/project-c', required: false, shape: 'existing-node' }]);
+  }, 30_000);
 
   it('summarizes SYMPHONY and hosted credential environment without secret values', () => {
     const summary = trial.summarizeEnv({
@@ -211,7 +296,7 @@ describe('local multi-project trial harness', () => {
       present: true,
       value: '<redacted>'
     });
-  });
+  }, 30_000);
 
   it('fails closed when build output is missing and writes report shape', async () => {
     const repoRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-trial-missing-build-')));
@@ -250,11 +335,14 @@ describe('local multi-project trial harness', () => {
   it('records a successful non-hosted baseline lane through the command path', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
     const fakeCommand = writeFakeCommand(repoRoot);
+    const realProject = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'real-existing-project-')));
+    fs.writeFileSync(path.join(realProject, 'WORKFLOW.md'), trial.workflow('Real existing project'));
     const reportPath = path.join(repoRoot, 'trial-report.json');
     const { report } = await trial.runTrial({
       repoRoot,
       report: reportPath,
       env: { PATH: process.env.PATH },
+      projectRoots: [{ path: realProject, required: false, shape: 'existing-node' }],
       operator: {
         source: 'linked-symphony',
         command: process.execPath,
@@ -266,7 +354,7 @@ describe('local multi-project trial harness', () => {
 
     expect(report.summary).toMatchObject({
       status: 'passed',
-      passed: 2,
+      passed: 5,
       failed: 0,
       blocked: 0
     });
@@ -280,7 +368,7 @@ describe('local multi-project trial harness', () => {
         reason: 'ready',
         exit_code: 0,
         finding_counts: {
-          total: 0,
+          total: 5,
           blockers: 0,
           warnings: 0
         }
@@ -291,6 +379,57 @@ describe('local multi-project trial harness', () => {
         health: { ok: true, status: 200 },
         diagnostics: { ok: true, status: 200 },
         shutdown: { clean: true }
+      }
+    });
+    const generatedLane = report.lanes.find((lane: any) => lane.id === 'synthetic-generated-generic');
+    expect(generatedLane).toMatchObject({
+      status: 'passed',
+      synthetic: true,
+      project_shape: 'synthetic-generated-generic-no-node-metadata',
+      project_facts: {
+        git_repository: true,
+        package_metadata_absent: true
+      },
+      init: {
+        dry_run: {
+          no_write_verification: { passed: true, changed_files: [] }
+        },
+        write: {
+          verification: { passed: true }
+        },
+        idempotent_write: {
+          summary: { writes_performed: 0, skipped_unchanged: 3 }
+        }
+      },
+      generated_workflow: {
+        generated_profile_provenance: true,
+        memory_tracker: true,
+        generic_toolchain: true,
+        verification: { passed: true, failures: [] }
+      },
+      validation_behavior: {
+        setup_command: '""',
+        validation_command: '"git diff --check"',
+        node_command_terms_present: [],
+        hosted_tracker_credentials_required: false
+      },
+      dashboard: {
+        status: 'bound',
+        project_identity_match: true,
+        shutdown: { clean: true }
+      }
+    });
+    expect(report.lanes.find((lane: any) => lane.id === 'symphony-internal-profile')).toMatchObject({
+      status: 'passed',
+      counts_for_external_project_evidence: false,
+      doctor: {
+        resolution: {
+          profile: 'symphony-internal',
+          workflow_path: path.join(repoRoot, 'WORKFLOW.md')
+        }
+      },
+      dashboard: {
+        project_identity_match: true
       }
     });
     expect(report.lanes.find((lane: any) => lane.id === 'generated-linear-node-setup')).toMatchObject({
@@ -306,7 +445,77 @@ describe('local multi-project trial harness', () => {
         unintended_symphony_internal_states: []
       }
     });
-  });
+    expect(report.lanes.find((lane: any) => lane.id === 'real-project-1')).toMatchObject({
+      status: 'passed',
+      synthetic: false,
+      counts_for_external_project_evidence: true
+    });
+  }, 30_000);
+
+  it('blocks full trial evidence when no real existing project root is supplied', async () => {
+    const { repoRoot, buildArtifact } = createFakeRepo();
+    const fakeCommand = writeFakeCommand(repoRoot);
+    const { report } = await trial.runTrial({
+      repoRoot,
+      report: path.join(repoRoot, 'trial-report.json'),
+      env: { PATH: process.env.PATH },
+      operator: {
+        source: 'linked-symphony',
+        command: process.execPath,
+        argsPrefix: [fakeCommand],
+        buildArtifact,
+        fallbackEntrypoint: fakeCommand
+      }
+    });
+
+    expect(report.summary).toMatchObject({
+      status: 'blocked',
+      passed: 4,
+      blocked: 1
+    });
+    expect(report.lanes.find((lane: any) => lane.id === 'real-existing-project-missing')).toMatchObject({
+      status: 'blocked',
+      counts_for_external_project_evidence: false,
+      findings: [
+        expect.objectContaining({
+          category: 'environment_prerequisite',
+          severity: 'blocker',
+          summary: expect.stringContaining('No real existing local project root')
+        })
+      ]
+    });
+  }, 30_000);
+
+  it('labels synthetic existing-workflow fixtures without counting them as real external evidence', async () => {
+    const { repoRoot, buildArtifact } = createFakeRepo();
+    const fakeCommand = writeFakeCommand(repoRoot);
+    const syntheticProject = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'synthetic-existing-project-')));
+    fs.writeFileSync(path.join(syntheticProject, 'WORKFLOW.md'), trial.workflow('Synthetic existing project'));
+    const { report } = await trial.runTrial({
+      repoRoot,
+      report: path.join(repoRoot, 'trial-report.json'),
+      env: { PATH: process.env.PATH },
+      syntheticProjectRoots: [{ path: syntheticProject, required: false, shape: 'synthetic-existing-workflow' }],
+      operator: {
+        source: 'linked-symphony',
+        command: process.execPath,
+        argsPrefix: [fakeCommand],
+        buildArtifact,
+        fallbackEntrypoint: fakeCommand
+      }
+    });
+
+    expect(report.summary).toMatchObject({
+      status: 'blocked',
+      passed: 5,
+      blocked: 1
+    });
+    expect(report.lanes.find((lane: any) => lane.id === 'synthetic-existing-project-1')).toMatchObject({
+      status: 'passed',
+      synthetic: true,
+      counts_for_external_project_evidence: false
+    });
+  }, 30_000);
 
   it('blocks real-project lanes when doctor JSON reports blockers', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
@@ -357,13 +566,13 @@ describe('local multi-project trial harness', () => {
     });
     expect(report.summary).toMatchObject({
       status: 'blocked',
-      passed: 2,
+      passed: 4,
       blocked: 1,
       findings_by_category: {
         environment_prerequisite: 1
       }
     });
-  });
+  }, 30_000);
 
   it('fails mixed blocker lanes when implementation defects are present', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
@@ -396,7 +605,7 @@ describe('local multi-project trial harness', () => {
     );
     expect(report.summary).toMatchObject({
       status: 'failed',
-      passed: 2,
+      passed: 4,
       failed: 1,
       blocked: 0,
       findings_by_category: {
@@ -404,7 +613,7 @@ describe('local multi-project trial harness', () => {
         implementation_defect: 1
       }
     });
-  });
+  }, 30_000);
 
   it('blocks hosted issue-run lanes until explicit disposable resources and credentials are supplied', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
@@ -442,8 +651,8 @@ describe('local multi-project trial harness', () => {
     });
     expect(report.summary).toMatchObject({
       status: 'blocked',
-      passed: 2,
-      blocked: 1
+      passed: 4,
+      blocked: 2
     });
-  });
+  }, 30_000);
 });

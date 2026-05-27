@@ -231,20 +231,39 @@ fallback. It writes a JSON evidence report under
 `output/local-multi-project-trial/` by default and prints the exact report path.
 
 The dry baseline does not require hosted tracker credentials. It creates
-synthetic temporary projects and records command availability, profile
-discovery, `init --dry-run`, `doctor --json --ci`, dashboard bind proof,
-`/api/v1/state`, `/api/v1/diagnostics`, Project Identity root/workflow matching,
-and clean dashboard shutdown. It also creates a fresh generated Linear/Node
-project with minimal package metadata and a real `npm test` command, runs
-`symphony init --dry-run` and `symphony init` with an explicit disposable
-project slug, verifies that the write plan matches the dry-run plan, then runs
+synthetic temporary projects, exercises the protected `symphony-internal`
+profile against the checked-in Symphony `WORKFLOW.md`, and records command
+availability, profile discovery/show output, `setup --yes`,
+`doctor --json`, dashboard bind proof, `/api/v1/state`,
+`/api/v1/diagnostics`, Project Identity root/workflow matching, and clean
+dashboard shutdown.
+
+The default run includes a generated generic/non-Node adoption lane. That lane
+starts from a fresh git project without Node package metadata, runs
+`symphony init --dry-run --bundle memory-generic --no-input`, verifies that the
+dry-run file plan writes no files, runs the non-destructive init write path,
+reruns init to prove unchanged generated files are skipped, and then runs
 `symphony setup --yes`, `symphony doctor --json --ci`, and the dashboard probe
-from that generated project root.
+from the generated project. The report captures generated file summaries,
+workflow provenance and validation behavior, doctor findings, reserved
+customization path visibility, runtime state layout, ambient `SYMPHONY_*`
+handling, and dashboard identity/shutdown evidence.
+
+The default run also includes a generated Linear/Node setup lane. That lane
+starts from a fresh Node git project with minimal package metadata and a real
+`npm test` command, runs `symphony init --dry-run` and `symphony init` with an
+explicit disposable project slug, verifies that the write plan matches the
+dry-run plan, commits intended init files, and then runs `symphony setup --yes`,
+`symphony doctor --json --ci`, and the dashboard probe from that generated
+project root.
 
 Synthetic lanes are labeled with `"synthetic": true` and
 `"counts_for_external_project_evidence": false`. They prove harness behavior and
 non-hosted command readiness, but they do not satisfy the existing
 external-project evidence required by the Local Multi-Project Trial parent PRD.
+When no real existing project root is supplied, the report includes a blocked
+`real-existing-project-missing` lane instead of counting synthetic evidence as a
+pass.
 
 Include real local projects only through command arguments, not checked-in paths:
 
@@ -261,12 +280,17 @@ when the lane must be present for a closure run. A missing required root is
 reported as an environment prerequisite with remediation instructions, not as a
 passed lane.
 
-Every real-project lane runs `symphony doctor --json --ci` and promotes the
+Every real-project lane runs `symphony doctor --json` and promotes the
 parsed doctor status into `lane.doctor`. Doctor blockers keep the lane from
 passing even when dashboard startup later succeeds; the report includes the
 doctor reason, exit semantics, summarized findings, and remediation guidance.
 Warning-only doctor results become `passed_with_warnings` so closure evidence
 can distinguish clean adoption from usable-but-frictional adoption.
+
+Automated regression tests may provide synthetic existing-workflow fixtures with
+`--synthetic-project-root /path/to/fixture`. Those lanes use the same command
+surface, but remain explicitly synthetic and never count as full real-project
+evidence.
 
 Hosted tracker credentials are never printed. The report summarizes
 `SYMPHONY_*`, Linear, and GitHub credential variables as present or missing, and
