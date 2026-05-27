@@ -236,6 +236,17 @@ discovery, `init --dry-run`, `doctor --json --ci`, dashboard bind proof,
 `/api/v1/state`, `/api/v1/diagnostics`, Project Identity root/workflow matching,
 and clean dashboard shutdown.
 
+The default run includes a generated generic/non-Node adoption lane. That lane
+starts from a fresh git project without Node package metadata, runs
+`symphony init --dry-run --bundle memory-generic --no-input`, verifies that the
+dry-run file plan writes no files, runs the non-destructive init write path,
+reruns init to prove unchanged generated files are skipped, and then runs
+`symphony setup --yes`, `symphony doctor --json --ci`, and the dashboard probe
+from the generated project. The report captures generated file summaries,
+workflow provenance and validation behavior, doctor findings, reserved
+customization path visibility, runtime state layout, ambient `SYMPHONY_*`
+handling, and dashboard identity/shutdown evidence.
+
 Synthetic lanes are labeled with `"synthetic": true` and
 `"counts_for_external_project_evidence": false`. They prove harness behavior and
 non-hosted command readiness, but they do not satisfy the existing

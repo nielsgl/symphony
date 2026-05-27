@@ -64,7 +64,77 @@ if (command === '--version') {
 } else if (command === 'profile') {
   console.log('memory-generic');
 } else if (command === 'init') {
-  console.log('dry run ok');
+  const dryRun = args.includes('--dry-run');
+  const workflow = [
+    '---',
+    'symphony:',
+    '  generated_profile:',
+    '    profile: "solo-local"',
+    '    bundle: "memory-generic"',
+    '    packs:',
+    '      - "tracker:memory"',
+    '      - "workspace:none"',
+    '      - "toolchain:generic"',
+    '      - "workflow:solo-local"',
+    'tracker:',
+    '  kind: "memory"',
+    '  endpoint: "memory://local"',
+    '  api_key: ""',
+    'toolchain:',
+    '  kind: "generic"',
+    '  setup_command: ""',
+    '  validation_command: "git diff --check"',
+    '---',
+    '<!-- symphony-generated-profile: profile=solo-local; bundle=memory-generic; packs=tracker:memory,workspace:none,toolchain:generic,workflow:solo-local; -->',
+    '# Symphony Workflow',
+    '',
+    '- Memory tracker: no hosted tracker credentials required.',
+    '- Validation: git diff --check',
+    ''
+  ].join('\\n');
+  const files = [
+    { path: 'WORKFLOW.md', content: workflow },
+    { path: path.join('.symphony', 'system', '.gitignore'), content: '*\\n!.gitignore\\n' },
+    { path: '.gitignore', content: '.symphony/system/\\n' }
+  ];
+  function actionFor(file) {
+    if (!require('node:fs').existsSync(path.join(process.cwd(), file.path))) return 'create';
+    return require('node:fs').readFileSync(path.join(process.cwd(), file.path), 'utf8') === file.content ? 'skip' : 'overwrite';
+  }
+  const actions = files.map((file) => ({ ...file, action: actionFor(file) }));
+  if (dryRun) {
+    console.log('Symphony init dry-run file plan');
+    console.log('');
+    console.log('Dry run: yes');
+    console.log('Files:');
+    actions.forEach((file, index) => {
+      console.log(\`  \${index + 1}. \${file.path}\`);
+      console.log(\`     action: \${file.action}\`);
+      console.log(\`     overwrite: \${file.action === 'create' ? 'absent' : 'exists'}\`);
+      console.log(\`     would_write: \${file.action === 'skip' ? 'no' : 'yes'}\`);
+      console.log('     overwrite_approval_required: no');
+    });
+    return;
+  }
+  let writes = 0;
+  let skipped = 0;
+  for (const file of actions) {
+    if (file.action === 'skip') {
+      skipped += 1;
+      continue;
+    }
+    require('node:fs').mkdirSync(path.dirname(path.join(process.cwd(), file.path)), { recursive: true });
+    require('node:fs').writeFileSync(path.join(process.cwd(), file.path), file.content);
+    writes += 1;
+  }
+  console.log('Symphony init write complete');
+  console.log('');
+  console.log('Writes performed: ' + writes);
+  console.log('Skipped unchanged: ' + skipped);
+  console.log('Validation: ok');
+  console.log('');
+  console.log('Files:');
+  actions.forEach((file) => console.log(\`  - \${file.path}: \${file.action}\${file.action === 'skip' ? '' : ' written'}\`));
 } else if (command === 'setup') {
   console.log('setup ok');
 } else if (command === 'doctor') {
@@ -83,7 +153,48 @@ if (command === '--version') {
     ])));
     process.exit(2);
   }
-  console.log(JSON.stringify(doctorPayload('ok', 'ready', 0)));
+  console.log(JSON.stringify(doctorPayload('ok', 'ready', 0, [
+    {
+      id: 'tracker.credentials',
+      code: 'tracker_credentials_not_required',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: 'Memory tracker mode does not require external tracker credentials.',
+      source: { category: 'runtime_probe', present: true }
+    },
+    {
+      id: 'layout.runtime_state_root',
+      code: 'runtime_state_root_reserved',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: '.symphony/system/ is the runtime-owned local state root.',
+      source: { category: 'layout_inspection', present: true }
+    },
+    {
+      id: 'layout.gitignore_system',
+      code: 'system_ignore_present',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: '.gitignore includes .symphony/system/.',
+      source: { category: 'layout_inspection', present: true }
+    },
+    {
+      id: 'layout.reserved_customization',
+      code: 'reserved_customization_reported',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: 'Reserved customization paths are visible and not runtime-loaded.',
+      source: { category: 'layout_inspection', present: true }
+    },
+    {
+      id: 'customization.generated_profile',
+      code: 'generated_profile_provenance_recorded',
+      severity: 'pass',
+      checkStatus: 'ok',
+      message: 'Generated workflow provenance is recorded.',
+      source: { category: 'generated_profile', present: true }
+    }
+  ])));
 } else if (command === 'dashboard') {
   const workflowPath = args[args.indexOf('--workflow') + 1];
   const server = http.createServer((request, response) => {
@@ -219,7 +330,7 @@ describe('local multi-project trial harness', () => {
 
     expect(report.summary).toMatchObject({
       status: 'passed',
-      passed: 1,
+      passed: 2,
       failed: 0,
       blocked: 0
     });
@@ -233,7 +344,7 @@ describe('local multi-project trial harness', () => {
         reason: 'ready',
         exit_code: 0,
         finding_counts: {
-          total: 0,
+          total: 5,
           blockers: 0,
           warnings: 0
         }
@@ -243,6 +354,44 @@ describe('local multi-project trial harness', () => {
         project_identity_match: true,
         health: { ok: true, status: 200 },
         diagnostics: { ok: true, status: 200 },
+        shutdown: { clean: true }
+      }
+    });
+    const generatedLane = report.lanes.find((lane: any) => lane.id === 'synthetic-generated-generic');
+    expect(generatedLane).toMatchObject({
+      status: 'passed',
+      synthetic: true,
+      project_shape: 'synthetic-generated-generic-no-node-metadata',
+      project_facts: {
+        git_repository: true,
+        package_metadata_absent: true
+      },
+      init: {
+        dry_run: {
+          no_write_verification: { passed: true, changed_files: [] }
+        },
+        write: {
+          verification: { passed: true }
+        },
+        idempotent_write: {
+          summary: { writes_performed: 0, skipped_unchanged: 3 }
+        }
+      },
+      generated_workflow: {
+        generated_profile_provenance: true,
+        memory_tracker: true,
+        generic_toolchain: true,
+        verification: { passed: true, failures: [] }
+      },
+      validation_behavior: {
+        setup_command: '""',
+        validation_command: '"git diff --check"',
+        node_command_terms_present: [],
+        hosted_tracker_credentials_required: false
+      },
+      dashboard: {
+        status: 'bound',
+        project_identity_match: true,
         shutdown: { clean: true }
       }
     });
@@ -297,7 +446,7 @@ describe('local multi-project trial harness', () => {
     });
     expect(report.summary).toMatchObject({
       status: 'blocked',
-      passed: 1,
+      passed: 2,
       blocked: 1,
       findings_by_category: {
         environment_prerequisite: 1
@@ -336,7 +485,7 @@ describe('local multi-project trial harness', () => {
     );
     expect(report.summary).toMatchObject({
       status: 'failed',
-      passed: 1,
+      passed: 2,
       failed: 1,
       blocked: 0,
       findings_by_category: {
