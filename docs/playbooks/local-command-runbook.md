@@ -256,6 +256,13 @@ when the lane must be present for a closure run. A missing required root is
 reported as an environment prerequisite with remediation instructions, not as a
 passed lane.
 
+Every real-project lane runs `symphony doctor --json --ci` and promotes the
+parsed doctor status into `lane.doctor`. Doctor blockers keep the lane from
+passing even when dashboard startup later succeeds; the report includes the
+doctor reason, exit semantics, summarized findings, and remediation guidance.
+Warning-only doctor results become `passed_with_warnings` so closure evidence
+can distinguish clean adoption from usable-but-frictional adoption.
+
 Hosted tracker credentials are never printed. The report summarizes
 `SYMPHONY_*`, Linear, and GitHub credential variables as present or missing, and
 secret-like values are redacted from command transcript summaries. To make

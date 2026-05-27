@@ -317,6 +317,103 @@ function appendCommand(lane, commandRecord, expectedCodes = [0]) {
   }
 }
 
+function summarizeDoctorFinding(finding) {
+  if (!finding || typeof finding !== 'object') {
+    return null;
+  }
+  return {
+    id: finding.id ?? null,
+    code: finding.code ?? null,
+    severity: finding.severity ?? null,
+    check_status: finding.checkStatus ?? null,
+    message: finding.message ?? null,
+    source_category: finding.source?.category ?? null,
+    remediation: finding.remediationInfo?.guidance ?? finding.safeFix?.command ?? null
+  };
+}
+
+function summarizeDoctorPayload(payload, commandRecord) {
+  const findings = Array.isArray(payload.findings) ? payload.findings : [];
+  const blockers = findings.filter((finding) => finding?.severity === 'blocker');
+  const warnings = findings.filter((finding) => finding?.severity === 'warning');
+  return {
+    status: payload.status ?? null,
+    reason: payload.reason ?? null,
+    exit_code: payload.exitCode ?? commandRecord.exit_code,
+    command_exit_code: commandRecord.exit_code,
+    exit_semantics: payload.exitSemantics ?? null,
+    workflow_path: payload.resolution?.workflowPath ?? null,
+    project_root: payload.resolution?.projectRoot ?? null,
+    resolution: {
+      project_root: payload.resolution?.projectRoot ?? null,
+      workflow_path: payload.resolution?.workflowPath ?? null,
+      env_file_path: payload.resolution?.envFilePath ?? null,
+      host: payload.resolution?.host ?? null,
+      port: payload.resolution?.port ?? null,
+      consent: payload.resolution?.consent ?? null
+    },
+    finding_counts: {
+      total: findings.length,
+      blockers: blockers.length,
+      warnings: warnings.length
+    },
+    findings: findings.map(summarizeDoctorFinding).filter(Boolean).slice(0, 20)
+  };
+}
+
+function parseDoctorJson(lane, commandRecord, { classifyNonReady = false } = {}) {
+  if (!commandRecord._rawStdout) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Doctor JSON output was empty.',
+      'Fix doctor --json output before accepting this lane.'
+    );
+    return null;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(commandRecord._rawStdout);
+  } catch {
+    addFinding(lane, 'implementation_defect', 'blocker', 'Doctor JSON output was not parseable.', 'Fix doctor --json output.');
+    return null;
+  }
+
+  const summary = summarizeDoctorPayload(payload, commandRecord);
+  lane.doctor = summary;
+
+  if (!classifyNonReady) {
+    return summary;
+  }
+
+  if (summary.status === 'failure' || summary.reason === 'blockers_present' || summary.finding_counts.blockers > 0 || commandRecord.exit_code === 2) {
+    const remediation = summary.findings.find((finding) => finding.remediation)?.remediation || 'Run `symphony doctor --json --ci` in this project root and resolve the reported blockers before counting this lane as passed.';
+    addFinding(
+      lane,
+      'environment_prerequisite',
+      'blocker',
+      `Doctor reported blockers for this real project: ${summary.reason || 'blockers_present'}.`,
+      remediation
+    );
+    return summary;
+  }
+
+  if (summary.status === 'warning' || summary.reason === 'warnings_present' || summary.finding_counts.warnings > 0 || commandRecord.exit_code === 1) {
+    const remediation = summary.findings.find((finding) => finding.remediation)?.remediation || 'Review `symphony doctor --json --ci` warnings before using this lane as clean evidence.';
+    addFinding(
+      lane,
+      'product_friction',
+      'warning',
+      `Doctor reported non-blocking warnings for this real project: ${summary.reason || 'warnings_present'}.`,
+      remediation
+    );
+  }
+
+  return summary;
+}
+
 async function waitForDashboardUrl(child, lane, env, timeoutMs) {
   const startedAt = Date.now();
   let stdout = '';
@@ -600,20 +697,7 @@ async function runBaselineLane(report, operator, env, tempRoot, options) {
     env
   });
   appendCommand(lane, doctor);
-  if (doctor.exit_code === 0 && doctor._rawStdout) {
-    try {
-      const payload = JSON.parse(doctor._rawStdout);
-      lane.doctor = {
-        status: payload.status,
-        reason: payload.reason,
-        exit_semantics: payload.exitSemantics,
-        workflow_path: payload.resolution?.workflowPath ?? null,
-        project_root: payload.resolution?.projectRoot ?? null
-      };
-    } catch {
-      addFinding(lane, 'implementation_defect', 'blocker', 'Doctor JSON output was not parseable.', 'Fix doctor --json output.');
-    }
-  }
+  parseDoctorJson(lane, doctor);
 
   await runDashboardProof(lane, operator, projectRoot, workflowPath, env, options);
   lane.generated_files = summarizeGeneratedFiles(projectRoot);
@@ -652,11 +736,13 @@ async function runRealProjectLane(report, operator, env, rootSpec, index, option
     return;
   }
 
-  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], {
+  const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], {
     name: 'doctor JSON',
     cwd: projectRoot,
     env
-  }), [0, 1, 2]);
+  });
+  appendCommand(lane, doctor, [0, 1, 2]);
+  parseDoctorJson(lane, doctor, { classifyNonReady: true });
   await runDashboardProof(lane, operator, projectRoot, workflowPath, env, options);
   lane.generated_files = summarizeGeneratedFiles(projectRoot);
   lane.status = laneStatus(lane);
