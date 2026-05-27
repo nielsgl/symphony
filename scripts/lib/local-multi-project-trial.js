@@ -5,10 +5,13 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DASHBOARD_TIMEOUT_MS = 90_000;
+const HOSTED_ISSUE_RUN_TIMEOUT_MS = 15 * 60_000;
+const HOSTED_ISSUE_RUN_POLL_MS = 5_000;
 const SECRET_KEY_PATTERN = /(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE)/i;
 const HOSTED_CREDENTIAL_KEYS = ['LINEAR_API_KEY', 'LINEAR_AUTH_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN'];
 const HOSTED_RESOURCE_ENV_KEYS = [
   'SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG',
+  'SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE',
   'SYMPHONY_TRIAL_LINEAR_ISSUE_ID',
   'SYMPHONY_TRIAL_GITHUB_OWNER',
   'SYMPHONY_TRIAL_GITHUB_REPO',
@@ -62,6 +65,7 @@ function parseArgs(argv) {
     projectShape: null,
     hostedCredentials: false,
     hostedLinearProjectSlug: null,
+    hostedLinearProjectDisposable: false,
     hostedLinearIssueId: null,
     hostedGithubOwner: null,
     hostedGithubRepo: null,
@@ -94,6 +98,8 @@ function parseArgs(argv) {
       options.hostedCredentials = true;
     } else if (arg === '--hosted-linear-project-slug') {
       options.hostedLinearProjectSlug = readValue();
+    } else if (arg === '--hosted-linear-project-disposable') {
+      options.hostedLinearProjectDisposable = true;
     } else if (arg === '--hosted-linear-issue-id') {
       options.hostedLinearIssueId = readValue();
     } else if (arg === '--hosted-github-owner') {
@@ -130,6 +136,8 @@ function renderHelp() {
     '  --with-hosted-credentials       Mark hosted credential lanes as intended',
     '  --hosted-linear-project-slug <slug>',
     '                                  Disposable Linear project slug for hosted issue-run proof',
+    '  --hosted-linear-project-disposable',
+    '                                  Acknowledge the Linear project is isolated and disposable',
     '  --hosted-linear-issue-id <id>   Disposable Linear issue identifier for hosted issue-run proof',
     '  --hosted-github-owner <owner>   Disposable GitHub owner for hosted issue-run proof',
     '  --hosted-github-repo <repo>     Disposable GitHub repository for hosted issue-run proof',
@@ -164,10 +172,17 @@ function summarizeEnv(env) {
 
 function summarizeHostedResources(env, options = {}) {
   const read = (optionName, envName) => options[optionName] || env[envName] || null;
+  const disposableProject =
+    options.hostedLinearProjectDisposable === true ||
+    ['1', 'true', 'yes'].includes(String(env.SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE || '').toLowerCase());
   return {
     linear_project_slug: {
       present: Boolean(read('hostedLinearProjectSlug', 'SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG')),
       source: options.hostedLinearProjectSlug ? 'cli' : env.SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG ? 'env' : 'missing'
+    },
+    linear_project_disposable: {
+      present: disposableProject,
+      source: options.hostedLinearProjectDisposable ? 'cli' : env.SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE ? 'env' : 'missing'
     },
     linear_issue_id: {
       present: Boolean(read('hostedLinearIssueId', 'SYMPHONY_TRIAL_LINEAR_ISSUE_ID')),
@@ -629,6 +644,22 @@ async function fetchJson(url) {
   return { ok: response.ok, status: response.status, body };
 }
 
+async function postJson(url, payload = {}) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = { parse_error: text.slice(0, 500) };
+  }
+  return { ok: response.ok, status: response.status, body };
+}
+
 async function waitForDashboardExit(child, timeoutMs = 30_000, options = {}) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return { clean: child.exitCode === 0, exit_code: child.exitCode, signal: child.signalCode };
@@ -795,6 +826,244 @@ async function runDashboardProof(lane, operator, projectRoot, workflowPath, env,
       'Inspect runtime shutdown handling and supervisor logs.'
     );
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchLinearIssueEvidence(env, issueIdentifier) {
+  const apiKey = env.LINEAR_API_KEY || env.LINEAR_AUTH_TOKEN;
+  if (!apiKey || !issueIdentifier) {
+    return { ok: false, reason: 'missing_linear_api_key_or_issue_identifier' };
+  }
+  const query = `
+    query HostedTrialIssue($id: String!) {
+      issue(id: $id) {
+        id
+        identifier
+        title
+        url
+        branchName
+        state { name type }
+        attachments { nodes { title url } }
+      }
+    }
+  `;
+  try {
+    const response = await fetch('https://api.linear.app/graphql', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: apiKey
+      },
+      body: JSON.stringify({ query, variables: { id: issueIdentifier } })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.errors) {
+      return {
+        ok: false,
+        status: response.status,
+        errors: Array.isArray(payload?.errors) ? payload.errors.map((error) => error.message).slice(0, 5) : []
+      };
+    }
+    return { ok: Boolean(payload?.data?.issue), issue: payload?.data?.issue ?? null };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function runGitJson(projectRoot, args) {
+  const result = spawnSync('git', args, { cwd: projectRoot, encoding: 'utf8' });
+  return {
+    exit_code: result.status,
+    stdout: (result.stdout || '').trim(),
+    stderr: (result.stderr || '').trim()
+  };
+}
+
+function readBranchEvidence(projectRoot, branchName) {
+  if (!branchName) {
+    return { branch_name: null, local_present: false, commit_sha: null, pushed: false };
+  }
+  const local = runGitJson(projectRoot, ['rev-parse', '--verify', branchName]);
+  const remote = runGitJson(projectRoot, ['ls-remote', '--heads', 'origin', branchName]);
+  return {
+    branch_name: branchName,
+    local_present: local.exit_code === 0,
+    commit_sha: local.exit_code === 0 ? local.stdout : null,
+    pushed: remote.exit_code === 0 && remote.stdout.length > 0,
+    remote_ref: remote.stdout || null,
+    errors: {
+      local: local.exit_code === 0 ? null : local.stderr || local.stdout || 'branch not found',
+      remote: remote.exit_code === 0 ? null : remote.stderr || 'ls-remote failed'
+    }
+  };
+}
+
+function readPullRequestEvidence(config, branchName) {
+  if (!config.githubOwner || !config.githubRepo) {
+    return { ok: false, reason: 'missing_github_owner_or_repo' };
+  }
+  const result = spawnSync(
+    'gh',
+    [
+      'pr',
+      'list',
+      '--repo',
+      `${config.githubOwner}/${config.githubRepo}`,
+      '--head',
+      branchName,
+      '--state',
+      'all',
+      '--json',
+      'url,state,headRefName,headRefOid,number,title'
+    ],
+    { encoding: 'utf8' }
+  );
+  if (result.status !== 0) {
+    return { ok: false, exit_code: result.status, stderr: (result.stderr || '').trim() };
+  }
+  let prs = [];
+  try {
+    prs = JSON.parse(result.stdout || '[]');
+  } catch {
+    return { ok: false, reason: 'gh_pr_json_parse_failed', stdout: (result.stdout || '').slice(0, 500) };
+  }
+  const pr = prs[0] ?? null;
+  return {
+    ok: Boolean(pr?.url),
+    pr_url: pr?.url ?? null,
+    state: pr?.state ?? null,
+    head_ref: pr?.headRefName ?? null,
+    head_sha: pr?.headRefOid ?? null,
+    number: pr?.number ?? null,
+    title: pr?.title ?? null
+  };
+}
+
+function firstProjectHistoryKey(historyPayload, fallbackProjectRoot) {
+  const runs = Array.isArray(historyPayload?.runs) ? historyPayload.runs : [];
+  for (const run of runs) {
+    const key =
+      run?.identity?.project_key ||
+      run?.project_key ||
+      run?.project_identity?.key ||
+      run?.project_identity?.project_key ||
+      null;
+    if (key) {
+      return key;
+    }
+  }
+  return fallbackProjectRoot ? realpathIfExists(fallbackProjectRoot) : null;
+}
+
+function historyContainsIssue(payload, issueIdentifier) {
+  if (!payload || !issueIdentifier) {
+    return false;
+  }
+  return JSON.stringify(payload).includes(issueIdentifier);
+}
+
+async function runHostedIssueRunProof(lane, operator, projectRoot, workflowPath, env, config, options = {}) {
+  const args = [...operator.argsPrefix, 'dashboard', '--workflow', workflowPath, '--port', '0'];
+  const child = spawn(operator.command, args, {
+    cwd: projectRoot,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const started = await waitForDashboardUrl(child, lane, env, DASHBOARD_TIMEOUT_MS);
+  const proof = {
+    status: started.ok ? 'running' : 'failed_to_bind',
+    url: started.url,
+    issue_identifier: config.linearIssueId,
+    branch_name: config.linearIssueId ? `feature/${config.linearIssueId}` : null,
+    state_samples: [],
+    issue_detail_samples: [],
+    history_samples: [],
+    project_history: null,
+    linear_issue: null,
+    branch: null,
+    pull_request: null,
+    dashboard_shutdown: null
+  };
+  lane.issue_run = proof;
+
+  if (!started.ok || !started.url) {
+    proof.dashboard_shutdown = await stopDashboard(child, null);
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Hosted issue-run dashboard did not bind before dispatch proof.',
+      'Inspect hosted issue-run dashboard stdout/stderr and fix runtime startup.'
+    );
+    return proof;
+  }
+
+  const baseUrl = started.url.replace(/\/$/, '');
+  proof.dashboard = {
+    status: 'bound',
+    url: started.url,
+    state_url: `${baseUrl}/api/v1/state`,
+    issue_url: `${baseUrl}/api/v1/issues/${encodeURIComponent(config.linearIssueId)}`,
+    history_url: `${baseUrl}/api/v1/history?limit=50`
+  };
+
+  const deadline = Date.now() + (options.hostedIssueRunTimeoutMs ?? HOSTED_ISSUE_RUN_TIMEOUT_MS);
+  let completed = false;
+  while (Date.now() < deadline) {
+    await postJson(`${baseUrl}/api/v1/refresh`, { source: 'local-multi-project-trial' }).catch(() => null);
+    const state = await fetchJson(proof.dashboard.state_url).catch((error) => ({ ok: false, error: String(error) }));
+    const issue = await fetchJson(proof.dashboard.issue_url).catch((error) => ({ ok: false, error: String(error) }));
+    const history = await fetchJson(proof.dashboard.history_url).catch((error) => ({ ok: false, error: String(error) }));
+    proof.state_samples.push({ at: isoNow(), ok: state.ok, status: state.status, body: state.body ?? state.error ?? null });
+    proof.issue_detail_samples.push({ at: isoNow(), ok: issue.ok, status: issue.status, body: issue.body ?? issue.error ?? null });
+    proof.history_samples.push({ at: isoNow(), ok: history.ok, status: history.status, body: history.body ?? history.error ?? null });
+
+    proof.linear_issue = await fetchLinearIssueEvidence(env, config.linearIssueId);
+    proof.branch = readBranchEvidence(projectRoot, proof.branch_name);
+    proof.pull_request = readPullRequestEvidence(config, proof.branch_name);
+
+    const projectKey = firstProjectHistoryKey(history.body, projectRoot);
+    if (projectKey) {
+      const listUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets?limit=50`;
+      const detailUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/tickets/${encodeURIComponent(config.linearIssueId)}`;
+      const healthUrl = `${baseUrl}/api/v1/projects/${encodeURIComponent(projectKey)}/history/health`;
+      proof.project_history = {
+        project_key: projectKey,
+        list: await fetchJson(listUrl).catch((error) => ({ ok: false, error: String(error) })),
+        detail: await fetchJson(detailUrl).catch((error) => ({ ok: false, error: String(error) })),
+        health: await fetchJson(healthUrl).catch((error) => ({ ok: false, error: String(error) }))
+      };
+    }
+
+    const finalState = proof.linear_issue?.issue?.state?.name ?? null;
+    const finalStateInactive = finalState && !['Todo', 'In Progress'].includes(finalState);
+    const hasHistory =
+      historyContainsIssue(history.body, config.linearIssueId) ||
+      historyContainsIssue(proof.project_history?.list?.body, config.linearIssueId) ||
+      historyContainsIssue(proof.project_history?.detail?.body, config.linearIssueId);
+    if (finalStateInactive && proof.branch?.commit_sha && proof.branch?.pushed && proof.pull_request?.pr_url && hasHistory) {
+      completed = true;
+      break;
+    }
+
+    await sleep(options.hostedIssueRunPollMs ?? HOSTED_ISSUE_RUN_POLL_MS);
+  }
+
+  proof.status = completed ? 'passed' : 'blocked';
+  proof.dashboard_shutdown = await stopDashboard(child, started.url);
+  if (!completed) {
+    addFinding(
+      lane,
+      'environment_prerequisite',
+      'blocker',
+      'Hosted issue-run did not produce the required external-project evidence before timeout.',
+      'Inspect lane.issue_run for final Linear state, dashboard state, branch, PR, and Project Execution History samples; rerun after resolving the missing hosted-runtime prerequisite.'
+    );
+  }
+  return proof;
 }
 
 function createSyntheticProject(tempRoot, name) {
@@ -994,6 +1263,9 @@ async function runGeneratedLinearNodeLane(report, operator, env, tempRoot, optio
 function getHostedConfig(env, options) {
   return {
     linearProjectSlug: options.hostedLinearProjectSlug || env.SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG || null,
+    linearProjectDisposable:
+      options.hostedLinearProjectDisposable === true ||
+      ['1', 'true', 'yes'].includes(String(env.SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE || '').toLowerCase()),
     linearIssueId: options.hostedLinearIssueId || env.SYMPHONY_TRIAL_LINEAR_ISSUE_ID || null,
     githubOwner: options.hostedGithubOwner || env.SYMPHONY_TRIAL_GITHUB_OWNER || null,
     githubRepo: options.hostedGithubRepo || env.SYMPHONY_TRIAL_GITHUB_REPO || null,
@@ -1032,6 +1304,13 @@ async function runHostedLinearNodeIssueLane(report, operator, env, tempRoot, opt
     missing.push({
       name: 'hosted Linear project slug',
       remediation: 'Pass --hosted-linear-project-slug or set SYMPHONY_TRIAL_LINEAR_PROJECT_SLUG for a disposable project.'
+    });
+  }
+  if (!config.linearProjectDisposable) {
+    missing.push({
+      name: 'isolated disposable Linear project acknowledgement',
+      remediation:
+        'Use a Linear project dedicated to this hosted trial and pass --hosted-linear-project-disposable or set SYMPHONY_TRIAL_LINEAR_PROJECT_DISPOSABLE=1. A clearly named issue inside an active real project is not isolated enough because existing Symphony runtimes may dispatch unrelated active issues.'
     });
   }
   if (!config.linearIssueId) {
@@ -1084,6 +1363,16 @@ async function runHostedLinearNodeIssueLane(report, operator, env, tempRoot, opt
     })
   );
   appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, ...initArgs], { name: 'hosted linear-node init write', cwd: projectRoot, env }));
+  lane.init_commit = commitProjectChanges(projectRoot, 'Add generated Symphony Linear Node workflow');
+  if (!lane.init_commit.ok) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Hosted Linear/Node init files could not be committed before doctor readiness.',
+      'Inspect lane.init_commit and ensure the hosted generated project can become clean before workspace provisioning.'
+    );
+  }
   appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'setup', '--yes'], { name: 'hosted setup consent', cwd: projectRoot, env }));
   const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], {
     name: 'hosted doctor JSON',
@@ -1092,28 +1381,24 @@ async function runHostedLinearNodeIssueLane(report, operator, env, tempRoot, opt
   });
   appendCommand(lane, doctor, [0, 1, 2]);
   parseDoctorJson(lane, doctor, { classifyNonReady: true });
-
-  lane.issue_run = {
-    status: 'blocked',
-    reason: 'operator_dispatch_not_automated_in_harness_yet',
-    expected_evidence: [
-      'tracker ticket final state',
-      'workspace path',
-      'branch name',
-      'commit SHA',
-      'pushed branch proof',
-      'PR URL',
-      'dashboard/API issue evidence',
-      'Project Execution History evidence'
-    ]
-  };
-  addFinding(
-    lane,
-    'implementation_defect',
-    'blocker',
-    'Hosted issue-run dispatch is not yet automated by the trial harness.',
-    'Extend this lane to start the real local runtime, wait for the configured Linear issue, and record branch/commit/PR/tracker/dashboard/history evidence before marking it passed.'
-  );
+  if (!lane.findings.some((finding) => finding.severity === 'blocker')) {
+    await runHostedIssueRunProof(lane, operator, projectRoot, workflowPath, env, config, options);
+  } else {
+    lane.issue_run = {
+      status: 'blocked',
+      reason: 'hosted_project_not_ready_for_dispatch',
+      expected_evidence: [
+        'tracker ticket final state',
+        'workspace path',
+        'branch name',
+        'commit SHA',
+        'pushed branch proof',
+        'PR URL',
+        'dashboard/API issue evidence',
+        'Project Execution History evidence'
+      ]
+    };
+  }
   lane.workflow_source = summarizeWorkflowFile(workflowPath);
   lane.generated_files = summarizeGeneratedFiles(projectRoot);
   lane.status = laneStatus(lane);

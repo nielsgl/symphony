@@ -432,6 +432,7 @@ describe('local multi-project trial harness', () => {
         missing: expect.arrayContaining([
           expect.objectContaining({ name: 'GITHUB_TOKEN or GH_TOKEN' }),
           expect.objectContaining({ name: 'hosted Linear project slug' }),
+          expect.objectContaining({ name: 'isolated disposable Linear project acknowledgement' }),
           expect.objectContaining({ name: 'hosted Linear issue id' }),
           expect.objectContaining({ name: 'hosted GitHub owner' }),
           expect.objectContaining({ name: 'hosted GitHub repository' }),

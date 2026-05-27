@@ -278,6 +278,7 @@ GitHub resources:
 npm run trial:local-multi-project -- \
   --with-hosted-credentials \
   --hosted-linear-project-slug SYMPHONY-TRIAL \
+  --hosted-linear-project-disposable \
   --hosted-linear-issue-id TRI-123 \
   --hosted-github-owner octo-org \
   --hosted-github-repo symphony-trial-node \
@@ -285,10 +286,14 @@ npm run trial:local-multi-project -- \
 ```
 
 The hosted lane fails closed as `environment_prerequisite` when intent,
-credentials, or disposable resource identifiers are missing. A hosted lane must
-not be counted as passed until it records the tracker ticket identifier, final
-tracker state, branch, commit SHA, pushed branch proof, PR URL, dashboard/API
-evidence, and Project Execution History evidence for the external project.
+credentials, disposable resource identifiers, or an isolated disposable Linear
+project acknowledgement are missing. Do not point the hosted lane at an active
+real project slug as a shortcut; existing Symphony runtimes may dispatch other
+active issues from that project before the trial can prove external-project
+isolation. A hosted lane must not be counted as passed until it records the
+tracker ticket identifier, final tracker state, branch, commit SHA, pushed
+branch proof, PR URL, dashboard/API evidence, and Project Execution History
+evidence for the external project.
 
 The report classifies findings as:
 
