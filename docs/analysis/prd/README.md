@@ -19,3 +19,4 @@ proven.
 - `PRD-005-doctor-and-diagnostics.md`
 - `PRD-006-skill-and-prompt-customization.md`
 - `PRD-007-local-multi-project-trial.md`
+- `PRD-007-local-multi-project-trial-closure-audit.md`

@@ -361,3 +361,17 @@ The report classifies findings as:
   remediation.
 - `intentional_out_of_scope`: deliberately skipped evidence such as
   `--no-dashboard`.
+
+### Closure Interpretation
+
+A Local Multi-Project Trial closure run should treat `blocked` as a real
+closure result, not as a soft pass. In particular, `real-existing-project-missing`
+means no supplied real external project with a hand-written `WORKFLOW.md` was
+tested. Synthetic existing-workflow fixtures remain useful regression evidence,
+but they do not satisfy the parent trial gate.
+
+Public npm, Homebrew, standalone binary, and desktop packaging work remains
+deferred until every required lane passes, or the parent PRD owner explicitly
+accepts a documented exception. Use
+`docs/analysis/prd/PRD-007-local-multi-project-trial-closure-audit.md` as the
+current closure checklist.
