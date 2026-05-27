@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -11,7 +12,8 @@ const PROJECT_RESOLUTION_SYMPHONY_KEYS = [
   'SYMPHONY_WORKFLOW_PATH',
   'SYMPHONY_PORT',
   'SYMPHONY_HOST',
-  'SYMPHONY_ENV_FILE'
+  'SYMPHONY_ENV_FILE',
+  'SYMPHONY_PROFILE'
 ];
 const PACKAGE_METADATA_FILES = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock'];
 const INIT_FILE_CANDIDATES = [
@@ -66,6 +68,7 @@ function parseArgs(argv) {
     outputDir: null,
     projectRoots: [],
     requiredProjectRoots: [],
+    syntheticProjectRoots: [],
     projectShape: null,
     hostedCredentials: false,
     noDashboard: false
@@ -90,6 +93,8 @@ function parseArgs(argv) {
       options.projectRoots.push({ path: readValue(), required: false, shape: options.projectShape || 'existing-local' });
     } else if (arg === '--required-project-root') {
       options.requiredProjectRoots.push({ path: readValue(), required: true, shape: options.projectShape || 'existing-local-required' });
+    } else if (arg === '--synthetic-project-root') {
+      options.syntheticProjectRoots.push({ path: readValue(), required: false, shape: options.projectShape || 'synthetic-existing-workflow' });
     } else if (arg === '--project-shape') {
       options.projectShape = readValue();
     } else if (arg === '--with-hosted-credentials') {
@@ -118,6 +123,7 @@ function renderHelp() {
     '  --output-dir <path>             Directory for the default report path',
     '  --project-root <path>           Include an optional real local project root',
     '  --required-project-root <path>  Include a required real local project root',
+    '  --synthetic-project-root <path> Include a synthetic existing-workflow fixture',
     '  --project-shape <name>          Shape label for following project-root args',
     '  --with-hosted-credentials       Mark hosted credential lanes as intended',
     '  --no-dashboard                  Skip dashboard proof and mark it out of scope',
@@ -151,6 +157,17 @@ function summarizeEnv(env) {
   };
 }
 
+function summarizeLaneEnv(env) {
+  const clearedAmbient = ['SYMPHONY_WORKFLOW_PATH', 'SYMPHONY_PORT', 'SYMPHONY_HOST', 'SYMPHONY_ENV_FILE', 'SYMPHONY_PROFILE'];
+  return {
+    ...summarizeEnv(env),
+    cleared_or_unset: clearedAmbient.map((name) => ({
+      name,
+      cleared: !Object.prototype.hasOwnProperty.call(env, name)
+    }))
+  };
+}
+
 function redact(text, env) {
   let output = String(text || '');
   for (const [key, value] of Object.entries(env)) {
@@ -178,6 +195,7 @@ function runCommand(command, args, options) {
     cwd: options.cwd,
     env: options.env,
     encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
     timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   });
   const status = result.status === null ? 1 : result.status;
@@ -299,18 +317,23 @@ function summarizeGeneratedFiles(projectRoot) {
     'WORKFLOW.md',
     '.gitignore',
     '.symphony/system/.gitignore',
+    '.symphony/system',
+    '.symphony/system/workspaces',
+    '.symphony/system/logs',
     '.symphony/system/runtime.sqlite',
     '.symphony/skills',
     '.symphony/prompts',
+    '.symphony/setup-consent.json',
     ...PACKAGE_METADATA_FILES
   ];
   return candidates.map((relativePath) => {
     const filePath = path.join(projectRoot, relativePath);
+    const exists = fs.existsSync(filePath);
     return {
       path: relativePath,
-      exists: fs.existsSync(filePath),
-      type: fs.existsSync(filePath) ? (fs.statSync(filePath).isDirectory() ? 'directory' : 'file') : null,
-      bytes: fs.existsSync(filePath) && fs.statSync(filePath).isFile() ? fs.statSync(filePath).size : null
+      exists,
+      kind: exists ? (fs.statSync(filePath).isDirectory() ? 'directory' : 'file') : null,
+      bytes: exists && fs.statSync(filePath).isFile() ? fs.statSync(filePath).size : null
     };
   });
 }
@@ -324,13 +347,36 @@ function buildLane(id, label, projectShape, projectRoot, synthetic) {
     synthetic,
     counts_for_external_project_evidence: synthetic ? false : true,
     workflow_source: null,
+    environment: null,
+    project_identity: null,
+    setup_consent: null,
+    layout: null,
+    history_isolation: null,
     tracker_identifiers: [],
     status: 'blocked',
     findings: [],
     commands: [],
     generated_files: [],
-    environment: null,
     dashboard: null
+  };
+}
+
+function stableHash(parts) {
+  const hash = createHash('sha256');
+  for (const part of parts) {
+    hash.update(part ?? '');
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+function buildExpectedProjectIdentity(projectRoot, workflowPath) {
+  const root = realpathIfExists(projectRoot);
+  const workflow = realpathIfExists(workflowPath);
+  return {
+    key: stableHash(['project', root, workflow]),
+    project_root: root,
+    workflow_path: workflow
   };
 }
 
@@ -378,10 +424,34 @@ function summarizeDoctorPayload(payload, commandRecord) {
       project_root: payload.resolution?.projectRoot ?? null,
       workflow_path: payload.resolution?.workflowPath ?? null,
       env_file_path: payload.resolution?.envFilePath ?? null,
+      profile: payload.resolution?.profile ?? null,
       host: payload.resolution?.host ?? null,
       port: payload.resolution?.port ?? null,
       consent: payload.resolution?.consent ?? null
     },
+    layout: payload.layout
+      ? {
+          status: payload.layout.status ?? null,
+          runtime_state_root: payload.layout.runtimeStateRoot?.path ?? null,
+          runtime_owned_paths: Array.isArray(payload.layout.runtimeOwnedPaths)
+            ? payload.layout.runtimeOwnedPaths.map((item) => item.path).filter(Boolean)
+            : [],
+          reserved_customization_paths: Array.isArray(payload.layout.reservedCustomizationPaths)
+            ? payload.layout.reservedCustomizationPaths.map((item) => ({
+                path: item.path,
+                loaded_by_runtime: item.loadedByRuntime ?? null,
+                exists: item.exists ?? null
+              }))
+            : [],
+          ignore_status: payload.layout.ignoreAnalysis?.status ?? null,
+          warnings: Array.isArray(payload.layout.warnings)
+            ? payload.layout.warnings.map((warning) => ({
+                code: warning.code,
+                message: warning.message
+              }))
+            : []
+        }
+      : null,
     finding_counts: {
       total: findings.length,
       blockers: blockers.length,
@@ -588,6 +658,53 @@ function verifyGeneratedWorkflow(lane, summary) {
   return { passed: failures.length === 0, failures };
 }
 
+function parseJsonObjectOutput(text) {
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    for (let start = raw.indexOf('{'); start !== -1; start = raw.indexOf('{', start + 1)) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let index = start; index < raw.length; index += 1) {
+        const char = raw[index];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) {
+          continue;
+        }
+        if (char === '{') {
+          depth += 1;
+        } else if (char === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              return JSON.parse(raw.slice(start, index + 1));
+            } catch {
+              break;
+            }
+          }
+        }
+      }
+    }
+    throw new Error('no JSON object found in command output');
+  }
+}
+
 function parseDoctorJson(lane, commandRecord, { classifyNonReady = false } = {}) {
   if (!commandRecord._rawStdout) {
     addFinding(
@@ -602,7 +719,10 @@ function parseDoctorJson(lane, commandRecord, { classifyNonReady = false } = {})
 
   let payload;
   try {
-    payload = JSON.parse(commandRecord._rawStdout);
+    payload = parseJsonObjectOutput(commandRecord._rawStdout);
+    if (!payload) {
+      throw new Error('empty JSON output');
+    }
   } catch {
     addFinding(lane, 'implementation_defect', 'blocker', 'Doctor JSON output was not parseable.', 'Fix doctor --json output.');
     return null;
@@ -616,7 +736,7 @@ function parseDoctorJson(lane, commandRecord, { classifyNonReady = false } = {})
   }
 
   if (summary.status === 'failure' || summary.reason === 'blockers_present' || summary.finding_counts.blockers > 0 || commandRecord.exit_code === 2) {
-    const remediation = summary.findings.find((finding) => finding.remediation)?.remediation || 'Run `symphony doctor --json --ci` in this project root and resolve the reported blockers before counting this lane as passed.';
+    const remediation = summary.findings.find((finding) => finding.remediation)?.remediation || 'Run `symphony doctor --json` in this project root and resolve the reported blockers before counting this lane as passed.';
     addFinding(
       lane,
       'environment_prerequisite',
@@ -628,7 +748,7 @@ function parseDoctorJson(lane, commandRecord, { classifyNonReady = false } = {})
   }
 
   if (summary.status === 'warning' || summary.reason === 'warnings_present' || summary.finding_counts.warnings > 0 || commandRecord.exit_code === 1) {
-    const remediation = summary.findings.find((finding) => finding.remediation)?.remediation || 'Review `symphony doctor --json --ci` warnings before using this lane as clean evidence.';
+    const remediation = summary.findings.find((finding) => finding.remediation)?.remediation || 'Review `symphony doctor --json` warnings before using this lane as clean evidence.';
     addFinding(
       lane,
       'product_friction',
@@ -761,8 +881,7 @@ async function runDashboardProof(lane, operator, projectRoot, workflowPath, env,
   const args = [
     ...operator.argsPrefix,
     'dashboard',
-    '--workflow',
-    workflowPath,
+    ...(options.profile ? ['--profile', options.profile] : ['--workflow', workflowPath]),
     '--port',
     '0',
     '--offline'
@@ -805,6 +924,7 @@ async function runDashboardProof(lane, operator, projectRoot, workflowPath, env,
   dashboard.diagnostics = await fetchJson(dashboard.api_urls.diagnostics);
 
   const runtimeResolution = dashboard.diagnostics.body?.runtime_resolution;
+  const projectLayout = dashboard.diagnostics.body?.project_layout;
   const resolvedWorkflow = runtimeResolution?.workflow_path ? realpathIfExists(runtimeResolution.workflow_path) : null;
   const resolvedRoot = runtimeResolution?.workflow_dir ? realpathIfExists(runtimeResolution.workflow_dir) : null;
   dashboard.project_identity_match =
@@ -813,10 +933,27 @@ async function runDashboardProof(lane, operator, projectRoot, workflowPath, env,
     resolvedWorkflow === realpathIfExists(workflowPath) &&
     resolvedRoot === realpathIfExists(projectRoot);
   dashboard.project_identity = {
+    expected_key: lane.project_identity?.key ?? null,
     expected_project_root: realpathIfExists(projectRoot),
     expected_workflow_path: realpathIfExists(workflowPath),
     reported_workflow_path: resolvedWorkflow,
-    reported_workflow_dir: resolvedRoot
+    reported_workflow_dir: resolvedRoot,
+    reported_workspace_root: runtimeResolution?.workspace_root ?? null,
+    reported_log_root: dashboard.diagnostics.body?.logging?.root ?? null,
+    reported_persistence_path: dashboard.diagnostics.body?.persistence?.db_path ?? null
+  };
+  dashboard.layout = {
+    expected_runtime_state_root: projectLayout?.expected_runtime_state_root?.path ?? null,
+    effective_workspace_root: projectLayout?.effective_workspace_root?.path ?? null,
+    effective_log_root: projectLayout?.effective_log_root?.path ?? null,
+    effective_persistence_path: projectLayout?.effective_persistence_path?.path ?? null,
+    reserved_customization_paths: Array.isArray(projectLayout?.reserved_customization_paths)
+      ? projectLayout.reserved_customization_paths.map((item) => ({
+          path: item.path,
+          loaded_by_runtime: item.loaded_by_runtime ?? null,
+          exists: item.exists ?? null
+        }))
+      : []
   };
   dashboard.shutdown = await stopDashboard(child, started.url);
 
@@ -847,6 +984,71 @@ async function runDashboardProof(lane, operator, projectRoot, workflowPath, env,
       'Inspect runtime shutdown handling and supervisor logs.'
     );
   }
+}
+
+function recordPostCommandEvidence(lane, projectRoot, workflowPath, env) {
+  const consentPath = path.join(projectRoot, '.symphony', 'setup-consent.json');
+  lane.environment = summarizeLaneEnv(env);
+  lane.project_identity = buildExpectedProjectIdentity(projectRoot, workflowPath);
+  lane.setup_consent = {
+    project_checkout_path_exists: fs.existsSync(consentPath),
+    user_local_state_home: env.SYMPHONY_LOCAL_STATE_HOME ?? env.SYMPHONY_USER_STATE_DIR ?? null,
+    scoped_identity_key: lane.project_identity.key
+  };
+  lane.layout = {
+    runtime_state_root: path.join(projectRoot, '.symphony', 'system'),
+    runtime_owned_paths: [
+      path.join(projectRoot, '.symphony', 'system', 'workspaces'),
+      path.join(projectRoot, '.symphony', 'system', 'logs'),
+      path.join(projectRoot, '.symphony', 'system', 'runtime.sqlite')
+    ],
+    project_owned_paths: [
+      path.join(projectRoot, '.symphony', 'skills'),
+      path.join(projectRoot, '.symphony', 'prompts')
+    ]
+  };
+  lane.history_isolation = {
+    expected_project_identity_key: lane.project_identity.key,
+    expected_project_root: lane.project_identity.project_root,
+    expected_workflow_path: lane.project_identity.workflow_path,
+    status: 'recorded_for_dashboard_api_projection'
+  };
+}
+
+function runRequiredCommandSet(lane, operator, env, projectRoot, commandOptions = {}) {
+  const resolverArgs = [
+    ...(commandOptions.profile ? ['--profile', commandOptions.profile] : []),
+    ...(commandOptions.workflowPath ? ['--workflow', commandOptions.workflowPath] : [])
+  ];
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, '--version'], { name: 'symphony --version', cwd: projectRoot, env }));
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'profile', 'list'], { name: 'symphony profile list', cwd: projectRoot, env }));
+  appendCommand(
+    lane,
+    runCommand(operator.command, [...operator.argsPrefix, 'profile', 'show', commandOptions.profileShow || 'memory-generic'], {
+      name: `symphony profile show ${commandOptions.profileShow || 'memory-generic'}`,
+      cwd: projectRoot,
+      env
+    })
+  );
+  appendCommand(
+    lane,
+    runCommand(operator.command, [...operator.argsPrefix, 'setup', '--yes', ...resolverArgs], {
+      name: 'symphony setup --yes',
+      cwd: projectRoot,
+      env
+    })
+  );
+  const doctor = runCommand(
+    operator.command,
+    [...operator.argsPrefix, 'doctor', '--json', ...resolverArgs],
+    {
+      name: 'symphony doctor --json',
+      cwd: projectRoot,
+      env
+    }
+  );
+  appendCommand(lane, doctor, commandOptions.doctorExpectedCodes || [0]);
+  return doctor;
 }
 
 function createSyntheticProject(tempRoot, name) {
@@ -916,10 +1118,19 @@ async function runBaselineLane(report, operator, env, tempRoot, options) {
   const lane = buildLane('synthetic-memory-baseline', 'Synthetic memory baseline', 'synthetic-memory-project', projectRoot, true);
   lane.environment = summarizeEnv(env);
   lane.workflow_source = summarizeWorkflowFile(workflowPath);
+  recordPostCommandEvidence(lane, projectRoot, workflowPath, env);
   lane.tracker_identifiers.push({ kind: 'memory', present: true });
 
-  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, '--version'], { name: 'command availability', cwd: projectRoot, env }));
-  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'profile', 'list'], { name: 'profile discovery', cwd: projectRoot, env }));
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, '--version'], { name: 'symphony --version', cwd: projectRoot, env }));
+  appendCommand(lane, runCommand(operator.command, [...operator.argsPrefix, 'profile', 'list'], { name: 'symphony profile list', cwd: projectRoot, env }));
+  appendCommand(
+    lane,
+    runCommand(operator.command, [...operator.argsPrefix, 'profile', 'show', 'memory-generic'], {
+      name: 'symphony profile show memory-generic',
+      cwd: projectRoot,
+      env
+    })
+  );
   appendCommand(
     lane,
     runCommand(operator.command, [...operator.argsPrefix, 'init', '--dry-run', '--bundle', 'memory-generic', '--no-input'], {
@@ -1065,9 +1276,63 @@ async function runGeneratedGenericLane(report, operator, env, tempRoot, options)
   report.lanes.push(lane);
 }
 
+async function runInternalSymphonyLane(report, operator, env, repoRoot, options) {
+  const projectRoot = repoRoot;
+  const workflowPath = path.join(projectRoot, 'WORKFLOW.md');
+  const lane = buildLane(
+    'symphony-internal-profile',
+    'Symphony checkout protected internal profile',
+    'symphony-checkout-internal-profile',
+    projectRoot,
+    false
+  );
+  lane.counts_for_external_project_evidence = false;
+  lane.workflow_source = summarizeWorkflowFile(workflowPath);
+  recordPostCommandEvidence(lane, projectRoot, workflowPath, env);
+
+  const doctor = runRequiredCommandSet(lane, operator, env, projectRoot, {
+    profile: 'symphony-internal',
+    profileShow: 'symphony-internal',
+    doctorExpectedCodes: [0, 1, 2]
+  });
+  const doctorSummary = parseDoctorJson(lane, doctor, { classifyNonReady: true });
+  if (
+    doctorSummary?.resolution?.workflow_path &&
+    realpathIfExists(doctorSummary.resolution.workflow_path) !== realpathIfExists(workflowPath)
+  ) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Protected internal profile did not resolve the checked-in Symphony WORKFLOW.md.',
+      'Fix symphony-internal profile resolution before using internal adoption evidence.'
+    );
+  }
+  if (lane.workflow_source?.generated_profile) {
+    addFinding(
+      lane,
+      'implementation_defect',
+      'blocker',
+      'Protected internal profile lane resolved a generated workflow.',
+      'The internal lane must bind to the checked-in workflow rather than materializing a generated profile.'
+    );
+  }
+
+  await runDashboardProof(lane, operator, projectRoot, workflowPath, env, { ...options, profile: 'symphony-internal' });
+  lane.generated_files = summarizeGeneratedFiles(projectRoot);
+  lane.status = laneStatus(lane);
+  report.lanes.push(lane);
+}
+
 async function runRealProjectLane(report, operator, env, rootSpec, index, options) {
   const projectRoot = path.resolve(rootSpec.path);
-  const lane = buildLane(`real-project-${index + 1}`, `Real local project ${index + 1}`, rootSpec.shape, projectRoot, false);
+  const lane = buildLane(
+    rootSpec.synthetic ? `synthetic-existing-project-${index + 1}` : `real-project-${index + 1}`,
+    rootSpec.synthetic ? `Synthetic existing-workflow project ${index + 1}` : `Real local project ${index + 1}`,
+    rootSpec.shape,
+    projectRoot,
+    Boolean(rootSpec.synthetic)
+  );
   lane.environment = summarizeEnv(env);
   if (!fs.existsSync(projectRoot)) {
     addFinding(
@@ -1097,15 +1362,35 @@ async function runRealProjectLane(report, operator, env, rootSpec, index, option
     return;
   }
 
-  const doctor = runCommand(operator.command, [...operator.argsPrefix, 'doctor', '--json', '--ci'], {
-    name: 'doctor JSON',
-    cwd: projectRoot,
-    env
+  recordPostCommandEvidence(lane, projectRoot, workflowPath, env);
+  const doctor = runRequiredCommandSet(lane, operator, env, projectRoot, {
+    workflowPath,
+    doctorExpectedCodes: [0, 1, 2]
   });
-  appendCommand(lane, doctor, [0, 1, 2]);
   parseDoctorJson(lane, doctor, { classifyNonReady: true });
   await runDashboardProof(lane, operator, projectRoot, workflowPath, env, options);
   lane.generated_files = summarizeGeneratedFiles(projectRoot);
+  lane.status = laneStatus(lane);
+  report.lanes.push(lane);
+}
+
+function runMissingRealProjectLane(report, env) {
+  const lane = buildLane(
+    'real-existing-project-missing',
+    'Missing real existing-project evidence',
+    'existing-local-required',
+    null,
+    false
+  );
+  lane.counts_for_external_project_evidence = false;
+  lane.environment = summarizeLaneEnv(env);
+  addFinding(
+    lane,
+    'environment_prerequisite',
+    'blocker',
+    'No real existing local project root was supplied to the trial harness.',
+    'Rerun with --project-root or --required-project-root pointing at a real local project that already has a hand-written WORKFLOW.md.'
+  );
   lane.status = laneStatus(lane);
   report.lanes.push(lane);
 }
@@ -1206,7 +1491,13 @@ async function runTrial(options = {}) {
   } else {
     await runBaselineLane(report, operator, env, tempRoot, options);
     await runGeneratedGenericLane(report, operator, env, tempRoot, options);
-    const roots = [...(options.projectRoots || []), ...(options.requiredProjectRoots || [])];
+    await runInternalSymphonyLane(report, operator, env, repoRoot, options);
+    const realRoots = [...(options.projectRoots || []), ...(options.requiredProjectRoots || [])];
+    const syntheticRoots = (options.syntheticProjectRoots || []).map((root) => ({ ...root, synthetic: true }));
+    const roots = [...realRoots, ...syntheticRoots];
+    if (realRoots.length === 0) {
+      runMissingRealProjectLane(report, env);
+    }
     for (let index = 0; index < roots.length; index += 1) {
       await runRealProjectLane(report, operator, env, roots[index], index, options);
     }

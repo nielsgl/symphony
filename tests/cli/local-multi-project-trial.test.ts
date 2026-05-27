@@ -8,6 +8,7 @@ const trial = require('../../scripts/lib/local-multi-project-trial.js') as {
     report: string | null;
     projectRoots: Array<{ path: string; required: boolean; shape: string }>;
     requiredProjectRoots: Array<{ path: string; required: boolean; shape: string }>;
+    syntheticProjectRoots: Array<{ path: string; required: boolean; shape: string }>;
   };
   runTrial(options: Record<string, unknown>): Promise<{ report: any; reportPath: string }>;
   summarizeEnv(env: Record<string, string | undefined>): any;
@@ -19,6 +20,7 @@ function createFakeRepo() {
   const buildArtifact = path.join(repoRoot, 'dist', 'src', 'runtime', 'command-router.js');
   fs.mkdirSync(path.dirname(buildArtifact), { recursive: true });
   fs.writeFileSync(buildArtifact, '');
+  fs.writeFileSync(path.join(repoRoot, 'WORKFLOW.md'), trial.workflow('Fake Symphony checkout'));
   return { repoRoot, buildArtifact };
 }
 
@@ -29,8 +31,12 @@ function writeFakeCommand(tempRoot: string) {
     `
 const http = require('node:http');
 const path = require('node:path');
+const repoRoot = __dirname;
 
 const [command, ...args] = process.argv.slice(2);
+const profile = args.includes('--profile') ? args[args.indexOf('--profile') + 1] : 'project';
+const workflowArg = args.includes('--workflow') ? args[args.indexOf('--workflow') + 1] : null;
+const workflowPath = profile === 'symphony-internal' ? path.join(repoRoot, 'WORKFLOW.md') : (workflowArg || path.join(process.cwd(), 'WORKFLOW.md'));
 
 function doctorPayload(status, reason, exitCode, findings = []) {
   return {
@@ -46,8 +52,9 @@ function doctorPayload(status, reason, exitCode, findings = []) {
     },
     ci: true,
     resolution: {
-      projectRoot: process.cwd(),
-      workflowPath: path.join(process.cwd(), 'WORKFLOW.md'),
+      projectRoot: profile === 'symphony-internal' ? repoRoot : process.cwd(),
+      workflowPath,
+      profile,
       envFilePath: path.join(process.cwd(), '.env'),
       host: '127.0.0.1',
       port: 0,
@@ -62,7 +69,7 @@ function doctorPayload(status, reason, exitCode, findings = []) {
 if (command === '--version') {
   console.log('symphony-test 0.0.0');
 } else if (command === 'profile') {
-  console.log('memory-generic');
+  console.log(args.includes('symphony-internal') ? 'symphony-internal' : 'memory-generic');
 } else if (command === 'init') {
   const dryRun = args.includes('--dry-run');
   const workflow = [
@@ -196,7 +203,6 @@ if (command === '--version') {
     }
   ])));
 } else if (command === 'dashboard') {
-  const workflowPath = args[args.indexOf('--workflow') + 1];
   const server = http.createServer((request, response) => {
     response.setHeader('content-type', 'application/json');
     if (request.url === '/api/v1/state') {
@@ -245,11 +251,14 @@ describe('local multi-project trial harness', () => {
       '--project-root',
       '/tmp/project-a',
       '--required-project-root',
-      '/tmp/project-b'
+      '/tmp/project-b',
+      '--synthetic-project-root',
+      '/tmp/project-c'
     ]);
 
     expect(options.projectRoots).toEqual([{ path: '/tmp/project-a', required: false, shape: 'existing-node' }]);
     expect(options.requiredProjectRoots).toEqual([{ path: '/tmp/project-b', required: true, shape: 'existing-node' }]);
+    expect(options.syntheticProjectRoots).toEqual([{ path: '/tmp/project-c', required: false, shape: 'existing-node' }]);
   });
 
   it('summarizes SYMPHONY and hosted credential environment without secret values', () => {
@@ -314,11 +323,14 @@ describe('local multi-project trial harness', () => {
   it('records a successful non-hosted baseline lane through the command path', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
     const fakeCommand = writeFakeCommand(repoRoot);
+    const realProject = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'real-existing-project-')));
+    fs.writeFileSync(path.join(realProject, 'WORKFLOW.md'), trial.workflow('Real existing project'));
     const reportPath = path.join(repoRoot, 'trial-report.json');
     const { report } = await trial.runTrial({
       repoRoot,
       report: reportPath,
       env: { PATH: process.env.PATH },
+      projectRoots: [{ path: realProject, required: false, shape: 'existing-node' }],
       operator: {
         source: 'linked-symphony',
         command: process.execPath,
@@ -330,7 +342,7 @@ describe('local multi-project trial harness', () => {
 
     expect(report.summary).toMatchObject({
       status: 'passed',
-      passed: 2,
+      passed: 4,
       failed: 0,
       blocked: 0
     });
@@ -395,7 +407,90 @@ describe('local multi-project trial harness', () => {
         shutdown: { clean: true }
       }
     });
+    expect(report.lanes.find((lane: any) => lane.id === 'symphony-internal-profile')).toMatchObject({
+      status: 'passed',
+      counts_for_external_project_evidence: false,
+      doctor: {
+        resolution: {
+          profile: 'symphony-internal',
+          workflow_path: path.join(repoRoot, 'WORKFLOW.md')
+        }
+      },
+      dashboard: {
+        project_identity_match: true
+      }
+    });
+    expect(report.lanes.find((lane: any) => lane.id === 'real-project-1')).toMatchObject({
+      status: 'passed',
+      synthetic: false,
+      counts_for_external_project_evidence: true
+    });
   });
+
+  it('blocks full trial evidence when no real existing project root is supplied', async () => {
+    const { repoRoot, buildArtifact } = createFakeRepo();
+    const fakeCommand = writeFakeCommand(repoRoot);
+    const { report } = await trial.runTrial({
+      repoRoot,
+      report: path.join(repoRoot, 'trial-report.json'),
+      env: { PATH: process.env.PATH },
+      operator: {
+        source: 'linked-symphony',
+        command: process.execPath,
+        argsPrefix: [fakeCommand],
+        buildArtifact,
+        fallbackEntrypoint: fakeCommand
+      }
+    });
+
+    expect(report.summary).toMatchObject({
+      status: 'blocked',
+      passed: 3,
+      blocked: 1
+    });
+    expect(report.lanes.find((lane: any) => lane.id === 'real-existing-project-missing')).toMatchObject({
+      status: 'blocked',
+      counts_for_external_project_evidence: false,
+      findings: [
+        expect.objectContaining({
+          category: 'environment_prerequisite',
+          severity: 'blocker',
+          summary: expect.stringContaining('No real existing local project root')
+        })
+      ]
+    });
+  });
+
+  it('labels synthetic existing-workflow fixtures without counting them as real external evidence', async () => {
+    const { repoRoot, buildArtifact } = createFakeRepo();
+    const fakeCommand = writeFakeCommand(repoRoot);
+    const syntheticProject = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'synthetic-existing-project-')));
+    fs.writeFileSync(path.join(syntheticProject, 'WORKFLOW.md'), trial.workflow('Synthetic existing project'));
+    const { report } = await trial.runTrial({
+      repoRoot,
+      report: path.join(repoRoot, 'trial-report.json'),
+      env: { PATH: process.env.PATH },
+      syntheticProjectRoots: [{ path: syntheticProject, required: false, shape: 'synthetic-existing-workflow' }],
+      operator: {
+        source: 'linked-symphony',
+        command: process.execPath,
+        argsPrefix: [fakeCommand],
+        buildArtifact,
+        fallbackEntrypoint: fakeCommand
+      }
+    });
+
+    expect(report.summary).toMatchObject({
+      status: 'blocked',
+      passed: 4,
+      blocked: 1
+    });
+    expect(report.lanes.find((lane: any) => lane.id === 'synthetic-existing-project-1')).toMatchObject({
+      status: 'passed',
+      synthetic: true,
+      counts_for_external_project_evidence: false
+    });
+  }, 30_000);
 
   it('blocks real-project lanes when doctor JSON reports blockers', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
@@ -446,13 +541,13 @@ describe('local multi-project trial harness', () => {
     });
     expect(report.summary).toMatchObject({
       status: 'blocked',
-      passed: 2,
+      passed: 3,
       blocked: 1,
       findings_by_category: {
         environment_prerequisite: 1
       }
     });
-  });
+  }, 30_000);
 
   it('fails mixed blocker lanes when implementation defects are present', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
@@ -485,7 +580,7 @@ describe('local multi-project trial harness', () => {
     );
     expect(report.summary).toMatchObject({
       status: 'failed',
-      passed: 2,
+      passed: 3,
       failed: 1,
       blocked: 0,
       findings_by_category: {
@@ -493,5 +588,5 @@ describe('local multi-project trial harness', () => {
         implementation_defect: 1
       }
     });
-  });
+  }, 30_000);
 });
