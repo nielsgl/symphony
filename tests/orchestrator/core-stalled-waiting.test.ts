@@ -677,6 +677,154 @@ describe('OrchestratorCore stalled waiting', () => {
     expect(harness.terminated).toEqual([]);
   });
 
+  it('protects residue recovery replacement ownership from late setup-preflight session events', async () => {
+    const completedRuns: Parameters<NonNullable<OrchestratorPersistencePort['completeRun']>>[0][] = [];
+    const harness = createHarness({
+      configOverrides: {
+        progress_stalled_waiting_ms: 1_000,
+        running_wait_stall_threshold_ms: 1_000,
+        worker_opaque_activity_hard_timeout_ms: 1_000,
+        stall_timeout_ms: 60_000,
+        max_retry_backoff_ms: 25_000
+      },
+      persistence: {
+        startRun: async () => `run-residue-${completedRuns.length + 1}`,
+        appendIssueRun: async () => 'issue-run-residue',
+        appendAttempt: async ({ attempt_number }) => `attempt-residue-${attempt_number}`,
+        recordSession: async () => undefined,
+        recordEvent: async () => undefined,
+        completeRun: async (params) => {
+          completedRuns.push(params);
+        }
+      }
+    });
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-residue-recovery', identifier: 'ABC-RESIDUE-RECOVERY', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.tick('interval');
+
+    harness.orchestrator.onWorkerEvent('i-residue-recovery', {
+      timestamp_ms: harness.now.value,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'setup/preflight blocked after package-lock.json was generated',
+      thread_id: 'thread-setup',
+      turn_id: 'turn-setup',
+      session_id: 'session-setup'
+    });
+    harness.now.value += 1_250;
+    await harness.orchestrator.tick('interval');
+
+    expect(harness.orchestrator.getStateSnapshot().retry_attempts.get('i-residue-recovery')).toMatchObject({
+      previous_thread_id: 'thread-setup',
+      previous_turn_id: 'turn-setup',
+      previous_session_id: 'session-setup',
+      recover_workspace_attempt_residue: true
+    });
+
+    harness.tracker.fetch_candidate_issues.mockResolvedValue([
+      makeIssue({ id: 'i-residue-recovery', identifier: 'ABC-RESIDUE-RECOVERY', state: 'In Progress' })
+    ]);
+    await harness.orchestrator.onRetryTimer('i-residue-recovery');
+
+    expect(harness.spawned).toEqual([
+      { issue_id: 'i-residue-recovery', attempt: null, worker_host: null, resume_context: null },
+      expect.objectContaining({
+        issue_id: 'i-residue-recovery',
+        attempt: 1,
+        recover_workspace_attempt_residue: true,
+        resume_context: expect.stringContaining('Workspace attempt residue recovery')
+      })
+    ]);
+
+    harness.orchestrator.onWorkerEvent('i-residue-recovery', {
+      timestamp_ms: harness.now.value + 10,
+      event: CANONICAL_EVENT.codex.phasePlanning,
+      detail: 'late setup session heartbeat after retry dispatch',
+      thread_id: 'thread-setup',
+      turn_id: 'turn-setup',
+      session_id: 'session-setup'
+    });
+    let running = harness.orchestrator.getStateSnapshot().running.get('i-residue-recovery');
+    expect(running).toMatchObject({
+      thread_id: null,
+      turn_id: null,
+      session_id: null,
+      last_event: null,
+      quarantined_event_count: 1
+    });
+    expect(running?.quarantined_events?.[0]).toEqual(
+      expect.objectContaining({
+        event: CANONICAL_EVENT.codex.phasePlanning,
+        thread_id: 'thread-setup',
+        turn_id: 'turn-setup',
+        session_id: 'session-setup',
+        active_thread_id: null,
+        active_turn_id: null,
+        active_session_id: null,
+        reason: 'lineage_mismatch'
+      })
+    );
+
+    harness.orchestrator.onWorkerEvent('i-residue-recovery', {
+      timestamp_ms: harness.now.value + 20,
+      event: CANONICAL_EVENT.codex.turnStarted,
+      detail: 'replacement session owns recovered workspace',
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement'
+    });
+    running = harness.orchestrator.getStateSnapshot().running.get('i-residue-recovery');
+    expect(running).toMatchObject({
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement',
+      last_event: CANONICAL_EVENT.codex.turnStarted,
+      last_message: 'replacement session owns recovered workspace',
+      quarantined_event_count: 1
+    });
+
+    harness.orchestrator.onWorkerEvent('i-residue-recovery', {
+      timestamp_ms: harness.now.value + 30,
+      event: CANONICAL_EVENT.codex.turnWaiting,
+      detail: 'late setup session heartbeat after replacement ownership',
+      thread_id: 'thread-setup',
+      turn_id: 'turn-setup',
+      session_id: 'session-setup'
+    });
+    running = harness.orchestrator.getStateSnapshot().running.get('i-residue-recovery');
+    expect(running).toMatchObject({
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement',
+      last_event: CANONICAL_EVENT.codex.turnStarted,
+      last_message: 'replacement session owns recovered workspace',
+      quarantined_event_count: 2
+    });
+    expect(running?.quarantined_events?.[1]).toEqual(
+      expect.objectContaining({
+        active_thread_id: 'thread-replacement',
+        active_turn_id: 'turn-replacement',
+        active_session_id: 'session-replacement',
+        reason: 'lineage_mismatch'
+      })
+    );
+
+    await harness.orchestrator.onWorkerExit('i-residue-recovery', 'normal', undefined, {
+      completion_reason: REASON_CODES.handoffStateReached,
+      refreshed_state: 'Agent Review',
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement'
+    });
+
+    expect(completedRuns.at(-1)).toMatchObject({
+      terminal_status: 'succeeded',
+      thread_id: 'thread-replacement',
+      turn_id: 'turn-replacement',
+      session_id: 'session-replacement'
+    });
+  });
+
   it('blocks repeated no-progress stalled-wait recoveries with the redispatch circuit breaker', async () => {
     const harness = createHarness({
       configOverrides: {

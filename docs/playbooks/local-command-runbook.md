@@ -324,6 +324,33 @@ tracker ticket identifier, final tracker state, branch, commit SHA, pushed
 branch proof, PR URL, dashboard/API evidence, and Project Execution History
 evidence for the external project.
 
+### NIE-274 Recovered Ownership Evidence
+
+The external Node trial exposed a recovery shape where setup or workspace
+preflight created residue, the first session blocked, and a replacement session
+later completed the tracker handoff. The corrected runtime behavior is:
+
+- issue identifier: `NIE-274` deterministic regression coverage uses
+  `NIE-RESIDUE`, `ABC-BLOCK-RESUME`, and `ABC-RESIDUE-RECOVERY`;
+- first-session lineage: `thread-prev` / `turn-prev` / `session-prev`, and
+  `thread-setup` / `turn-setup` / `session-setup`;
+- replacement lineage: `thread-replacement` / `turn-replacement` /
+  `session-replacement`;
+- branch/PR evidence: record the actual feature branch, commit SHA, pushed
+  branch proof, and PR URL in the ticket workpad/PR for each trial closure;
+- dashboard/API evidence: `/api/v1/state` and issue detail must project the
+  replacement thread/turn/session as the running or completed owner while late
+  first-session events appear only under stale/quarantined diagnostics;
+- Project Execution History evidence: the latest attempt and terminal outcome
+  must reference the replacement attempt/session, not the blocked first
+  session;
+- setup-output classification: generated Node lockfiles such as
+  `package-lock.json` are expected setup output for generated Node workflows,
+  but when they appear as uncommitted issue-workspace residue after a blocked
+  setup/preflight attempt they remain product friction surfaced as a workspace
+  conflict until the operator or recovery path explicitly accepts attempt
+  residue. True active Git operations and non-setup conflicts still fail closed.
+
 The report classifies findings as:
 
 - `implementation_defect`: Symphony behavior that must be fixed before a lane

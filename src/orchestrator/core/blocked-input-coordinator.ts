@@ -638,7 +638,11 @@ export async function resumeBlockedIssue(
   if (eligibility.eligible) {
     await context.hooks.dispatchIssue(issue, blocked.attempt, resume_context, {
       issue_run_id: blocked.issue_run_id,
-      previous_attempt_id: blocked.previous_attempt_id
+      previous_attempt_id: blocked.previous_attempt_id,
+      previous_thread_id: blocked.previous_thread_id ?? null,
+      previous_turn_id: blocked.previous_turn_id ?? null,
+      previous_session_id: blocked.previous_session_id ?? null,
+      recover_workspace_attempt_residue: blocked.stop_reason_code === REASON_CODES.operatorWorkspaceConflict
     });
   } else if (eligibility.reason === 'global_slots_exhausted' || eligibility.reason === 'state_slots_exhausted') {
     await context.hooks.scheduleRetry({
@@ -666,6 +670,7 @@ export async function resumeBlockedIssue(
       previous_thread_id: blocked.previous_thread_id,
       previous_turn_id: blocked.previous_turn_id ?? null,
       previous_session_id: blocked.previous_session_id,
+      recover_workspace_attempt_residue: blocked.stop_reason_code === REASON_CODES.operatorWorkspaceConflict,
       issue_snapshot: issue
     });
   } else {
@@ -694,6 +699,7 @@ export async function resumeBlockedIssue(
       previous_thread_id: blocked.previous_thread_id,
       previous_turn_id: blocked.previous_turn_id ?? null,
       previous_session_id: blocked.previous_session_id,
+      recover_workspace_attempt_residue: blocked.stop_reason_code === REASON_CODES.operatorWorkspaceConflict,
       issue_snapshot: issue
     });
   }

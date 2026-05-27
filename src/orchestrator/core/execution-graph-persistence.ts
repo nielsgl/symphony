@@ -21,6 +21,9 @@ type TicketReferenceKind = 'branch' | 'pull_request' | 'review' | 'merge' | 'evi
 export interface DispatchGraphContext {
   issue_run_id?: string | null;
   previous_attempt_id?: string | null;
+  previous_thread_id?: string | null;
+  previous_turn_id?: string | null;
+  previous_session_id?: string | null;
   recover_workspace_attempt_residue?: boolean;
 }
 
