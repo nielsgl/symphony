@@ -272,6 +272,57 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('prints dashboard command help without resolving or starting the dashboard', async () => {
+    const harness = createHarness();
+    const guardedDeps: Partial<CommandRouterDependencies> = {
+      ...harness.deps,
+      resolveLocalCommand: () => {
+        throw new Error('unexpected dashboard resolver call');
+      },
+      loadEnvFile: () => {
+        throw new Error('unexpected env file load');
+      },
+      runDashboard: async () => {
+        throw new Error('unexpected dashboard startup');
+      }
+    };
+
+    const longHelpExitCode = await runCommandRouter({
+      argv: ['dashboard', '--help'],
+      deps: guardedDeps
+    });
+    const longHelpOutput = harness.stdout;
+
+    expect(longHelpExitCode).toBe(0);
+    expect(longHelpOutput).toContain('Symphony dashboard');
+    expect(longHelpOutput).toContain('symphony dashboard [workflow-path] [options]');
+    expect(longHelpOutput).toContain('symphony dashboard --workflow <path> [options]');
+    expect(longHelpOutput).toContain('--workflow <path>');
+    expect(longHelpOutput).toContain('--port <port>');
+    expect(longHelpOutput).toContain('--host <host>');
+    expect(longHelpOutput).toContain('--env-file <path>');
+    expect(longHelpOutput).toContain('--profile <name>');
+    expect(longHelpOutput).toContain('--offline');
+    expect(longHelpOutput).toContain('--logs-root <path>');
+    expect(harness.dashboardCalls).toEqual([]);
+    expect(harness.envFileLoads).toEqual([]);
+    expect(harness.stderr).toBe('');
+
+    const shortHelpHarness = createHarness();
+    const shortHelpExitCode = await runCommandRouter({
+      argv: ['dashboard', '-h'],
+      deps: {
+        ...guardedDeps,
+        stdout: shortHelpHarness.deps.stdout,
+        stderr: shortHelpHarness.deps.stderr
+      }
+    });
+
+    expect(shortHelpExitCode).toBe(0);
+    expect(shortHelpHarness.stdout).toBe(longHelpOutput);
+    expect(shortHelpHarness.stderr).toBe('');
+  });
+
   it('lists bounded profiles including symphony-internal', async () => {
     const harness = createHarness();
 

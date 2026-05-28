@@ -294,6 +294,28 @@ function renderHelp(): string {
   ].join('\n');
 }
 
+function renderDashboardHelp(): string {
+  return [
+    'Symphony dashboard',
+    '',
+    'Usage:',
+    '  symphony dashboard [workflow-path] [options]',
+    '  symphony dashboard --workflow <path> [options]',
+    '',
+    'Starts the local Symphony dashboard for a resolved project workflow.',
+    '',
+    'Options:',
+    '  --workflow <path>  Use an explicit WORKFLOW.md path',
+    '  --port <port>      Bind the dashboard to a port',
+    '  --host <host>      Bind the dashboard to a host',
+    '  --env-file <path>  Load environment values from an explicit file',
+    '  --profile <name>   Select a bounded local command profile',
+    '  --offline          Start without network-dependent integrations',
+    '  --logs-root <path> Write runtime logs under an explicit directory',
+    '  -h, --help         Show this help'
+  ].join('\n');
+}
+
 function renderSetupHelp(): string {
   return [
     'Symphony setup',
@@ -1124,6 +1146,11 @@ export async function runCommandRouter(options: RunCommandRouterOptions): Promis
   }
 
   if (command === 'dashboard') {
+    if (rest.length === 1 && (rest[0] === '--help' || rest[0] === '-h')) {
+      deps.stdout(`${renderDashboardHelp()}\n`);
+      return 0;
+    }
+
     let resolved: LocalCommandResolution;
     try {
       resolved = deps.resolveLocalCommand({
