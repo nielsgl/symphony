@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { WorkflowLoader } from './loader';
+import { resolvePortableSkillSelection, type PortableSkillSelection } from './portable-skill-catalog';
 import type { ProfilePack, ProfileResolution } from './profile-registry';
 import { validateWorkflowGeneratedProfileProvenance } from './provenance';
 import { ConfigResolver } from './resolver';
@@ -44,6 +45,7 @@ export interface WorkflowFilePlanEntry {
 export interface WorkflowMaterializationPlan {
   dryRun: boolean;
   selections: readonly string[];
+  portableSkills: PortableSkillSelection;
   selectedPacks: string[];
   bundleProvenance: Array<{ bundle: string; packs: string[] }>;
   detectedProjectFacts: DetectedProjectFacts;
@@ -106,6 +108,7 @@ export function materializeWorkflowPlan(options: WorkflowMaterializerOptions): W
   return {
     dryRun: options.choices.dryRun,
     selections: options.choices.selections,
+    portableSkills: resolvePortableSkillSelection(),
     selectedPacks: options.resolution.packs.map((pack) => pack.id),
     bundleProvenance: options.resolution.expandedBundles.map((expansion) => ({
       bundle: expansion.bundle.id,
@@ -154,6 +157,8 @@ export function renderWorkflowFilePlan(plan: WorkflowMaterializationPlan): strin
     `Dry run: ${plan.dryRun ? 'yes' : 'no'}`,
     `Selections: ${plan.selections.join(', ') || '(none)'}`,
     `Selected packs: ${plan.selectedPacks.join(', ')}`,
+    `Portable skills: ${plan.portableSkills.selectedSkillIds.join(', ') || '(none)'}`,
+    `Portable opt-in skills: ${plan.portableSkills.optInSkillIds.join(', ') || '(none)'}`,
     `Bundle provenance: ${formatBundleProvenance(plan)}`,
     `Project root: ${plan.detectedProjectFacts.root}`,
     `Writes performed: ${plan.dryRun ? 'no' : 'pending'}`,

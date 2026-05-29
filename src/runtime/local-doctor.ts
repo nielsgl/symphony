@@ -33,6 +33,11 @@ import {
   readWorkflowGeneratedProfileProvenance,
   validateWorkflowGeneratedProfileProvenance
 } from '../workflow/provenance';
+import {
+  listDefaultPortableSkillIds,
+  listOptInPortableSkillIds,
+  listPortableSkills
+} from '../workflow/portable-skill-catalog';
 
 export type DoctorCheckStatus = 'ok' | 'warning' | 'failure';
 export type DoctorOverallStatus = DoctorCheckStatus;
@@ -219,6 +224,26 @@ interface WorkflowCustomizationReference {
   path: string;
   kind: 'skill' | 'prompt' | 'customization';
   source: string;
+}
+
+export interface DoctorPortableSkillCatalogSummary {
+  skillIds: string[];
+  defaultRecommendedSkillIds: string[];
+  optInSkillIds: string[];
+  targetMaterializationRoot: '.codex/skills';
+  reservedRuntimeSource: '.symphony/skills';
+  runtimeLoadingSupported: false;
+}
+
+export function summarizePortableSkillCatalogForDoctor(): DoctorPortableSkillCatalogSummary {
+  return {
+    skillIds: listPortableSkills().map((skill) => skill.id),
+    defaultRecommendedSkillIds: listDefaultPortableSkillIds(),
+    optInSkillIds: listOptInPortableSkillIds(),
+    targetMaterializationRoot: '.codex/skills',
+    reservedRuntimeSource: '.symphony/skills',
+    runtimeLoadingSupported: false
+  };
 }
 
 const DOCTOR_FLAGS = new Set(['--json', '--ci', '--fix', '--yes', '--accept-high-trust-local-run']);
