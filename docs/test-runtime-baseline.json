@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "source": "NIE-294/NIE-295/NIE-296 profiling baseline after fast/full split and targeted test-speed optimizations",
+  "commands": {
+    "fast": {
+      "command": "npm test",
+      "scope": "Fast deterministic unit suite; excludes profiled git/worktree/process-heavy simulations.",
+      "baseline_wall_clock_ms": 7000,
+      "budget_wall_clock_ms": 30000
+    },
+    "integration": {
+      "command": "npm run test:integration",
+      "scope": "Profiled git/worktree/process-heavy simulation files excluded from the fast path.",
+      "baseline_wall_clock_ms": 180000,
+      "budget_wall_clock_ms": 240000
+    },
+    "full": {
+      "command": "npm run test:full",
+      "scope": "Complete Vitest suite for Agent Review, release handoff, broad runtime changes, or CI-equivalent local proof.",
+      "baseline_wall_clock_ms": 190000,
+      "budget_wall_clock_ms": 300000
+    }
+  },
+  "slow_files": {
+    "tests/cli/local-multi-project-trial.test.ts": {
+      "command": "integration",
+      "baseline_ms": 87390,
+      "budget_ms": 130000,
+      "note": "Process-heavy local multi-project simulation retained outside the fast path."
+    },
+    "tests/runtime/bootstrap.test.ts": {
+      "command": "integration",
+      "baseline_ms": 53210,
+      "budget_ms": 80000,
+      "note": "Runtime bootstrap and git-backed startup simulation."
+    },
+    "tests/cli/meta-check-scripts.test.ts": {
+      "command": "integration",
+      "baseline_ms": 24280,
+      "budget_ms": 45000,
+      "note": "Git/worktree PR metadata simulation."
+    },
+    "tests/runtime/update-manager.test.ts": {
+      "command": "integration",
+      "baseline_ms": 18930,
+      "budget_ms": 35000,
+      "note": "Git/worktree update-manager simulation."
+    },
+    "tests/cli/local-command-router.test.ts": {
+      "command": "integration",
+      "baseline_ms": 14640,
+      "budget_ms": 30000,
+      "note": "Real CLI, temp git repositories, and generated worktree materialization."
+    },
+    "tests/api/server-state.test.ts": {
+      "command": "integration",
+      "baseline_ms": 5960,
+      "budget_ms": 15000,
+      "note": "Server control-plane state simulation with worktree/process-heavy cases."
+    },
+    "tests/cli/doctor-mvp-scenario-matrix.test.ts": {
+      "command": "integration",
+      "baseline_ms": 5290,
+      "budget_ms": 15000,
+      "note": "Real CLI scenario matrix over blocker/pass/warning worktree states."
+    },
+    "tests/cli/workspace-before-remove.test.ts": {
+      "command": "integration",
+      "baseline_ms": 2440,
+      "budget_ms": 10000,
+      "note": "Workspace cleanup hook and git/worktree safety simulation."
+    },
+    "tests/cli/worktree-bootstrap.test.ts": {
+      "command": "integration",
+      "baseline_ms": 2010,
+      "budget_ms": 10000,
+      "note": "Worktree bootstrap command simulation."
+    }
+  }
+}

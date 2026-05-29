@@ -16,6 +16,7 @@
     "test:full": "node scripts/run-vitest-group.js full",
     "test:verbose": "SYMPHONY_TEST_LOGS=1 SYMPHONY_TEST_OPERATIONAL_OUTPUT=1 node scripts/run-vitest-group.js full",
     "test:profile:slow": "node scripts/profile-slow-tests.js",
+    "test:runtime-guardrail": "node scripts/check-test-runtime-budget.js",
     "test:coverage": "vitest run --coverage",
     "test:e2e:web": "playwright test --config=playwright.web.config.ts",
     "test:e2e:desktop-runtime": "playwright test --config=playwright.desktop.config.ts",

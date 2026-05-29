@@ -35,6 +35,14 @@ For each scenario, include expected status, mode, and reason code:
 - [ ] Integration test proves mismatch/conflict behavior.
 - [ ] API tests cover success + all typed failure envelopes.
 - [ ] UI test(s) cover operator-facing state changes for the feature.
+- [ ] Test runtime guardrail is considered for test-speed-sensitive changes:
+  run `npm run test:runtime-guardrail -- --profile fast` or compare a captured
+  profile with `npm run test:runtime-guardrail -- --input <profile.json>
+  --command <fast|integration|full>`.
+- [ ] Any guardrail regression is fixed before Agent Review unless the PR
+  documents an intentional production-path coverage increase or local
+  environment anomaly and updates `docs/test-runtime-baseline.json` with
+  rationale.
 
 ## 5) Observability and auditability
 

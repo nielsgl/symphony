@@ -309,6 +309,7 @@ npm run test:integration
 npm run test:full
 npm run test:verbose
 npm run test:profile:slow
+npm run test:runtime-guardrail
 npm run test:e2e:web
 npm run check:meta
 git --no-pager diff --check
@@ -331,6 +332,10 @@ Use these commands by validation scope:
 - Integration simulations: `npm run test:integration`
 - Agent Review, release handoff, broad runtime changes, or CI-equivalent local
   proof: `npm run build && npm run test:full`
+- Runtime regression guardrail: `npm run test:runtime-guardrail -- --profile
+  fast` for live fast-suite proof, or `npm run test:runtime-guardrail --
+  --input <profile.json> --command <fast|integration|full>` for a lightweight
+  comparison against a captured profile.
 
 Use `npm run test:verbose` when debugging and you need the live runtime logs
 plus helper command stderr for the full suite. The equivalent environment path
@@ -390,6 +395,42 @@ Pass Vitest filters after the script options to profile a subset:
 ```bash
 npm run test:profile:slow -- --limit=5 tests/workspace
 ```
+
+### Test Runtime Guardrail
+
+`npm run test:runtime-guardrail` compares a current slow-test profile against
+the rough budgets in `docs/test-runtime-baseline.json`. The baseline records
+the expected command scope for:
+
+- `fast`: `npm test`
+- `integration`: `npm run test:integration`
+- `full`: `npm run test:full`
+
+The guardrail is intentionally not a strict benchmark. Use it to catch obvious
+slow-test regressions and to make budget changes reviewable without making
+local development brittle. Current command budgets are calibrated to the
+post-split optimization evidence with review headroom: roughly 30s for the fast
+suite, 240s for integration simulations, and 300s for the full suite. For a
+live current-suite check, run:
+
+```bash
+npm run test:runtime-guardrail -- --profile fast
+```
+
+For cheaper review evidence from an existing profile:
+
+```bash
+npm run test:profile:slow -- --json > /tmp/symphony-profile.json
+npm run test:runtime-guardrail -- --input /tmp/symphony-profile.json --command full
+```
+
+When the guardrail fails, its diagnostics name the command or file that exceeded
+budget and include the profiling command to rerun. Fix avoidable setup,
+subprocess, or git/worktree regressions before Agent Review. A runtime increase
+is acceptable only when it is tied to intentional production-path coverage or a
+documented environment anomaly; in that case, update
+`docs/test-runtime-baseline.json` in the same change and explain the rationale
+in the PR verification notes.
 
 ### UI Evidence Gate (`check:meta`)
 
