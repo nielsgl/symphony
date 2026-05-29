@@ -356,12 +356,18 @@ test:integration` and `npm run test:full`:
   worktree/process-heavy cases; profiled at 5.96s.
 - `tests/cli/doctor-mvp-scenario-matrix.test.ts`: real CLI scenario matrix over
   blocker/pass/warning worktree states; profiled at 5.29s.
-- `tests/workspace/workspace-manager.test.ts`: workspace manager git/worktree
-  lifecycle simulation; profiled at 3.14s.
 - `tests/cli/workspace-before-remove.test.ts`: workspace cleanup hook and
   git/worktree safety simulation; profiled at 2.44s.
 - `tests/cli/worktree-bootstrap.test.ts`: worktree bootstrap command
   simulation; profiled at 2.01s.
+
+The fast path still covers workspace preflight behavior in
+`tests/workspace/workspace-manager.test.ts`. Most dirty-state, staged artifact,
+sentinel, and residue classifications use per-test fake Git output so they do
+not pay repeated repository setup cost or share mutable branch/index state. The
+same file retains a real Git contract test for unmerged index detection, and
+`npm run test:full` runs that contract alongside the integration simulations
+above.
 
 ### Slow Test Profiling
 

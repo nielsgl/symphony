@@ -19,7 +19,6 @@ describe('Vitest test group runner', () => {
       'tests/cli/local-command-router.test.ts',
       'tests/api/server-state.test.ts',
       'tests/cli/doctor-mvp-scenario-matrix.test.ts',
-      'tests/workspace/workspace-manager.test.ts',
       'tests/cli/workspace-before-remove.test.ts',
       'tests/cli/worktree-bootstrap.test.ts'
     ]);
