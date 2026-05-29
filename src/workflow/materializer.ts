@@ -88,7 +88,7 @@ export function materializeWorkflowPlan(options: WorkflowMaterializerOptions): W
   }
 
   const portableSkills = resolveInitPortableSkillSelection(options.choices);
-  const workflowContent = renderGeneratedWorkflow(options);
+  const workflowContent = renderGeneratedWorkflow(options, portableSkills);
   const workflowPath = path.join(options.projectFacts.root, 'WORKFLOW.md');
   const workflowValidation = validateWorkflowContent(workflowContent, workflowPath);
   const files: WorkflowFilePlanEntry[] = [
@@ -241,7 +241,7 @@ export function renderWorkflowFilePlan(plan: WorkflowMaterializationPlan): strin
   return `${lines.join('\n')}\n`;
 }
 
-function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
+function renderGeneratedWorkflow(options: WorkflowMaterializerOptions, portableSkills: PortableSkillSelection): string {
   const dimensions = options.resolution.dimensions;
   const tracker = requirePack(dimensions.tracker, 'tracker');
   const workspace = requirePack(dimensions.workspace, 'workspace');
@@ -271,6 +271,8 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     `    bundle: ${yamlString(bundle || 'explicit-packs')}`,
     '    packs:',
     ...options.resolution.packs.map((pack) => `      - ${yamlString(pack.id)}`),
+    '    portable_skills:',
+    ...buildPortableSkillProvenanceFrontmatterLines(portableSkills),
     '    generated_by: "symphony init"',
     'tracker:',
     `  kind: ${yamlString(trackerKind)}`,
@@ -314,6 +316,10 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '',
     ...options.resolution.packs.map((pack) => `- ${pack.id}: ${pack.summary}`),
     '',
+    '## Project-Local Portable Skills',
+    '',
+    ...buildPortableSkillProvenanceLines(portableSkills),
+    '',
     '## Detected Project Facts',
     '',
     '- Project root: .',
@@ -335,6 +341,40 @@ function renderGeneratedWorkflow(options: WorkflowMaterializerOptions): string {
     '- For dry-run initialization, review this generated file plan before enabling any write path.',
     '- Keep generated runtime state under .symphony/system/ and out of version control.'
   ].join('\n');
+}
+
+function buildPortableSkillProvenanceFrontmatterLines(portableSkills: PortableSkillSelection): string[] {
+  if (portableSkills.selectedSkills.length === 0) {
+    return ['      []'];
+  }
+
+  return portableSkills.selectedSkills.flatMap((skill) => [
+    `      - name: ${yamlString(skill.name)}`,
+    `        path: ${yamlString(formatPortableSkillDestination(skill.destinationDirectory))}`
+  ]);
+}
+
+function buildPortableSkillProvenanceLines(portableSkills: PortableSkillSelection): string[] {
+  const lines = [
+    'Copied portable skills are project-local files. This project may customize them after init; Symphony does not secretly update or override local skill customizations.',
+    'Portable skills provide reusable mechanics. Symphony-specific workflow policy remains in this generated `WORKFLOW.md`.',
+    ''
+  ];
+
+  if (portableSkills.selectedSkills.length === 0) {
+    return [...lines, '- Selected portable skills: none.'];
+  }
+
+  return [
+    ...lines,
+    ...portableSkills.selectedSkills.map(
+      (skill) => `- ${skill.name}: installed at \`${formatPortableSkillDestination(skill.destinationDirectory)}\`.`
+    )
+  ];
+}
+
+function formatPortableSkillDestination(destinationDirectory: string): string {
+  return `${destinationDirectory.replace(/\\/g, '/')}/`;
 }
 
 function optionalTrackerStateLines(

@@ -49,6 +49,17 @@ describe('workflow materializer', () => {
     });
     expect(plan.files[0].content).toContain('symphony-generated-profile');
     expect(plan.files[0].content).toContain('bundle_provenance=memory-generic->tracker:memory,workspace:none,toolchain:generic,workflow:solo-local');
+    expect(plan.files[0].content).toContain('    portable_skills:\n      - name: "commit"\n        path: ".codex/skills/commit/"');
+    expect(plan.files[0].content).toContain('## Project-Local Portable Skills');
+    expect(plan.files[0].content).toContain('- commit: installed at `.codex/skills/commit/`.');
+    expect(plan.files[0].content).toContain('- pull: installed at `.codex/skills/pull/`.');
+    expect(plan.files[0].content).toContain('- push: installed at `.codex/skills/push/`.');
+    expect(plan.files[0].content).toContain('- land: installed at `.codex/skills/land/`.');
+    expect(plan.files[0].content).toContain('This project may customize them after init');
+    expect(plan.files[0].content).toContain('Symphony does not secretly update or override local skill customizations');
+    expect(plan.files[0].content).toContain('Portable skills provide reusable mechanics');
+    expect(plan.files[0].content).toContain('Symphony-specific workflow policy remains in this generated `WORKFLOW.md`');
+    expect(plan.files[0].content).not.toContain('.symphony/skills');
     expect(plan.files[0].content).toContain('- Project root: .');
     expect(plan.files[0].content).not.toContain(`- Project root: ${root}`);
     expect(plan.portableSkills.selectedSkillIds).toEqual(['commit', 'pull', 'push', 'land']);
@@ -175,6 +186,55 @@ describe('workflow materializer', () => {
       wouldWrite: true
     });
     expect(helper?.mode).toBe(0o755);
+  });
+
+  it('records no selected portable skills in generated workflow provenance when disabled', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-no-skills-')));
+    const resolution = resolveProfileSelection(['memory-generic']);
+
+    const plan = materializeWorkflowDryRun({
+      resolution,
+      projectFacts: { root, packageManager: 'generic', existingWorkflowPath: null },
+      choices: { dryRun: true, selections: ['memory-generic'], noPortableSkills: true }
+    });
+    const workflow = plan.files.find((file) => file.path === 'WORKFLOW.md')?.content ?? '';
+
+    expect(plan.portableSkills.selectedSkillIds).toEqual([]);
+    expect(plan.files.map((file) => file.path)).toEqual([
+      'WORKFLOW.md',
+      path.join('.symphony', 'system', '.gitignore'),
+      '.gitignore'
+    ]);
+    expect(workflow).toContain('    portable_skills:\n      []');
+    expect(workflow).toContain('## Project-Local Portable Skills');
+    expect(workflow).toContain('- Selected portable skills: none.');
+    expect(workflow).toContain('This project may customize them after init');
+    expect(workflow).not.toContain('.codex/skills/commit/');
+    expect(workflow).not.toContain('.symphony/skills');
+    expect(plan.validation).toMatchObject({ ok: true });
+  });
+
+  it('records custom portable skill selections without default skill destinations', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-custom-skills-')));
+    const resolution = resolveProfileSelection(['memory-generic']);
+
+    const plan = materializeWorkflowDryRun({
+      resolution,
+      projectFacts: { root, packageManager: 'generic', existingWorkflowPath: null },
+      choices: { dryRun: true, selections: ['memory-generic'], portableSkillIds: ['linear-ui-evidence', 'commit'] }
+    });
+    const workflow = plan.files.find((file) => file.path === 'WORKFLOW.md')?.content ?? '';
+
+    expect(plan.portableSkills.selectedSkillIds).toEqual(['linear-ui-evidence', 'commit']);
+    expect(workflow).toContain('      - name: "linear-ui-evidence"\n        path: ".codex/skills/linear-ui-evidence/"');
+    expect(workflow).toContain('      - name: "commit"\n        path: ".codex/skills/commit/"');
+    expect(workflow).toContain('- linear-ui-evidence: installed at `.codex/skills/linear-ui-evidence/`.');
+    expect(workflow).toContain('- commit: installed at `.codex/skills/commit/`.');
+    expect(workflow).not.toContain('.codex/skills/pull/');
+    expect(workflow).not.toContain('.codex/skills/push/');
+    expect(workflow).not.toContain('.codex/skills/land/');
+    expect(workflow).not.toContain('.symphony/skills');
+    expect(plan.validation).toMatchObject({ ok: true });
   });
 
   it('rejects portable skill destinations that escape the intended skill tree', () => {
