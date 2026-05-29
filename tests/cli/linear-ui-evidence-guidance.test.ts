@@ -15,7 +15,7 @@ describe('linear ui evidence guidance', () => {
     expect(skill).toContain('publish-linear-ui-evidence.js');
     expect(skill).toContain('fileUpload(makePublic:false)');
     expect(skill).toContain('comment.bodyData');
-    expect(skill).toContain('Do not hand-author dynamic app-server `linear_graphql` calls');
+    expect(skill).toContain('Do not hand-author raw `linear_graphql` calls');
     expect(skill).toContain('verification.status: "passed"');
   });
 

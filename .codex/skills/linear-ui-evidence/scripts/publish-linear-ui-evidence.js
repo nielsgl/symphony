@@ -114,7 +114,7 @@ function resolveLinearApiKey(env = process.env, cwd = process.cwd()) {
     }
   }
 
-  throw typedError('linear_auth_missing', 'Missing LINEAR_API_KEY. Set it in the environment or repo .env.');
+  throw typedError('linear_auth_missing', 'Missing LINEAR_API_KEY. Set it in the environment or current project .env.');
 }
 
 function splitEvidenceArg(value, flagName) {

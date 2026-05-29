@@ -10,7 +10,9 @@ description:
 ## Prerequisites
 
 - `gh` CLI is installed and available in `PATH`.
-- `gh auth status` succeeds for GitHub operations in this repo.
+- `gh auth status` succeeds for GitHub operations in the current repository.
+- The current repository's required local validation commands are known from
+  project instructions, workflow docs, PR templates, or package scripts.
 
 ## Goals
 
@@ -26,8 +28,10 @@ description:
 ## Steps
 
 1. Identify current branch and confirm remote state.
-2. Run local validation (`npm test`, `npm run build`, `npm run check:meta`)
-   before pushing.
+2. Run the current repository's required local validation before pushing. If
+   the project does not define a validation command, run at least
+   `git diff --check` and record that no stronger project-specific command was
+   found.
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
 4. If push is not clean/rejected:
@@ -47,17 +51,18 @@ description:
      matches the latest scope; update it if it no longer does.
 6. Write/update PR body with a clear structure:
    - `Summary`: what changed and why.
-   - `Spec Alignment`: relevant `SPEC.md` sections.
    - `Verification`: exact commands run and outcomes.
+   - Any project-required sections from local workflow docs or PR templates.
    - If PR already exists, refresh body so it reflects total branch scope (not
      just newest commits).
 7. If a PR template exists in the target repo, follow it exactly. Otherwise use
-   the structured body above and ensure governance checks pass.
-8. Submit/update through the governed wrapper (mandatory):
-   - `npm run submit:pr-governed -- --mode create --title "<clear PR title written for this change>"`
-   - `npm run submit:pr-governed -- --mode edit`
-   - Wrapper sequence is deterministic and mandatory: normalize body -> `check:pr-governance` -> `check:meta` -> `gh pr create/edit --body-file <normalized-file>`.
-9. If body/review text references `output/playwright/*`, replace the local path reference with the Linear issue evidence comment created by the `linear-ui-evidence` skill before wrapper submit.
+   the structured body above.
+8. Create or update the PR using the repository's expected PR publication path:
+   - If project instructions require a wrapper command, use that wrapper.
+   - Otherwise use `gh pr create` or `gh pr edit` with `--body-file`.
+9. If body/review text references local generated artifacts such as
+   `output/playwright/*`, replace the local path reference with durable review
+   evidence before publishing.
 10. Reply with the PR URL from `gh pr view`.
 
 ## Commands
@@ -66,10 +71,10 @@ description:
 # Identify branch
 branch=$(git branch --show-current)
 
-# Validation gate
+# Validation gate. Replace or extend these with the current project's required
+# checks when local workflow docs define a different gate.
 npm test
 npm run build
-npm run check:meta
 
 # Initial push: respect the current origin remote.
 git push -u origin HEAD
@@ -94,17 +99,20 @@ fi
 # Write a clear, human-friendly title that summarizes the shipped change.
 pr_title="<clear PR title written for this change>"
 
-# Write/edit PR body to include Summary, Spec Alignment, and Verification.
+# Write/edit PR body to include Summary, Verification, and any
+# project-required sections. Use a Git-managed temp path so this works in
+# normal repositories and linked worktrees where `.git` may be a file.
 # If this repo has a PR template, follow it; otherwise keep the above sections.
-# Ensure governance checks are green before finalizing push/PR.
-cat > .git/.symphony-pr-body.md <<'MD'
+# If the project requires a PR wrapper, use it instead of direct gh commands.
+pr_body_file=$(git rev-parse --git-path pr-body.md)
+cat > "$pr_body_file" <<'MD'
 <full markdown PR body>
 MD
 if [ -z "$pr_state" ]; then
-  npm run submit:pr-governed -- --mode create --title "$pr_title"
+  gh pr create --title "$pr_title" --body-file "$pr_body_file"
 else
   # Reconsider title on every branch update; edit if scope shifted.
-  npm run submit:pr-governed -- --mode edit
+  gh pr edit --title "$pr_title" --body-file "$pr_body_file"
 fi
 
 # Show PR URL for the reply
