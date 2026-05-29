@@ -998,6 +998,11 @@ async function stopDashboard(child, url) {
 }
 
 async function runDashboardProof(lane, operator, projectRoot, workflowPath, env, options = {}) {
+  if (typeof options.dashboardProof === 'function') {
+    await options.dashboardProof({ lane, operator, projectRoot, workflowPath, env, options });
+    return;
+  }
+
   if (options.noDashboard) {
     lane.dashboard = {
       status: 'skipped',
