@@ -733,6 +733,34 @@ describe('local symphony command router', () => {
     await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
   });
 
+  it('does not prompt for directory skill-file conflicts in interactive init', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-skill-directory-interactive-');
+    await fs.mkdir(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), { recursive: true });
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    harness.deps.stdinIsTTY = () => true;
+    harness.deps.stdoutIsTTY = () => true;
+    let prompted = false;
+    harness.deps.promptInitOverwrite = async () => {
+      prompted = true;
+      return true;
+    };
+
+    const result = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit'],
+      deps: harness.deps
+    });
+
+    expect(result).toBe(1);
+    expect(prompted).toBe(false);
+    expect(harness.stderr).toContain('Symphony init found existing files that would be overwritten');
+    expect(harness.stderr).toContain('.codex/skills/commit/SKILL.md');
+    expect(harness.stderr).toContain('Some conflicting paths are directories');
+    expect(harness.stderr).toContain('Move or remove those directories before rerunning init');
+    expect(harness.stderr).not.toContain('EISDIR');
+    await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
+  });
+
   it('writes clone profile workflows through the real CLI and doctor checks the configured repo root', async () => {
     const projectRoot = await createInitGitRepo('symphony-init-clone-write-');
     await execFileAsync('git', ['config', 'user.email', 'clone-profile@example.test'], { cwd: projectRoot });

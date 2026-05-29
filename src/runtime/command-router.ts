@@ -1198,8 +1198,14 @@ async function runInitCommand(argv: readonly string[], deps: CommandRouterDepend
     }
 
     const conflicts = plan.files.filter((file) => file.requiresOverwriteApproval);
+    const hardConflicts = conflicts.filter((file) => file.conflictType === 'directory');
+    if (hardConflicts.length > 0) {
+      deps.stderr(`${renderInitConflicts(hardConflicts)}\n`);
+      return 1;
+    }
+
     const unresolvedConflicts = conflicts.filter(
-      (file) => file.conflictType === 'directory' || (!parsed.force && !(parsed.forceSkills && isPortableSkillPlanEntry(file)))
+      (file) => !parsed.force && !(parsed.forceSkills && isPortableSkillPlanEntry(file))
     );
     if (unresolvedConflicts.length > 0) {
       if (initPromptsAllowed(parsed, deps)) {
