@@ -290,6 +290,26 @@ if (command === '--version') {
   return scriptPath;
 }
 
+async function fastDashboardProof({ lane, projectRoot }: { lane: any; projectRoot: string }) {
+  const projectIdentityMatches = !projectRoot.includes('dashboard-mismatch');
+  lane.dashboard = {
+    status: 'bound',
+    project_identity_match: projectIdentityMatches,
+    health: { ok: true, status: 200 },
+    diagnostics: { ok: true, status: 200 },
+    shutdown: { clean: true }
+  };
+  if (!projectIdentityMatches) {
+    lane.findings.push({
+      category: 'implementation_defect',
+      severity: 'blocker',
+      status: 'open',
+      summary: 'Dashboard Project Identity did not match the target project root/workflow.',
+      remediation: 'Verify workflow resolution and runtime diagnostics before accepting this lane.'
+    });
+  }
+}
+
 describe('local multi-project trial harness', () => {
   it('parses optional and required project roots without hardcoded paths', () => {
     const options = trial.parseArgs([
@@ -367,6 +387,10 @@ describe('local multi-project trial harness', () => {
     });
   });
 
+  // This is the narrow real-process contract test for the trial harness. It is
+  // intentionally subprocess-heavy because it proves the fake Symphony command
+  // can drive init, setup, doctor, dashboard binding, API probes, and shutdown
+  // through the same process boundary the production harness uses.
   it('records a successful non-hosted baseline lane through the command path', async () => {
     const { repoRoot, buildArtifact } = createFakeRepo();
     const fakeCommand = writeFakeCommand(repoRoot);
@@ -514,7 +538,8 @@ describe('local multi-project trial harness', () => {
         argsPrefix: [fakeCommand],
         buildArtifact,
         fallbackEntrypoint: fakeCommand
-      }
+      },
+      dashboardProof: fastDashboardProof
     });
 
     expect(report.summary).toMatchObject({
@@ -551,7 +576,8 @@ describe('local multi-project trial harness', () => {
         argsPrefix: [fakeCommand],
         buildArtifact,
         fallbackEntrypoint: fakeCommand
-      }
+      },
+      dashboardProof: fastDashboardProof
     });
 
     expect(report.summary).toMatchObject({
@@ -582,7 +608,8 @@ describe('local multi-project trial harness', () => {
         argsPrefix: [fakeCommand],
         buildArtifact,
         fallbackEntrypoint: fakeCommand
-      }
+      },
+      dashboardProof: fastDashboardProof
     });
 
     const realLane = report.lanes.find((lane: any) => lane.id === 'real-project-1');
@@ -641,7 +668,8 @@ describe('local multi-project trial harness', () => {
         argsPrefix: [fakeCommand],
         buildArtifact,
         fallbackEntrypoint: fakeCommand
-      }
+      },
+      dashboardProof: fastDashboardProof
     });
 
     const realLane = report.lanes.find((lane: any) => lane.id === 'real-project-1');
@@ -678,7 +706,8 @@ describe('local multi-project trial harness', () => {
         argsPrefix: [fakeCommand],
         buildArtifact,
         fallbackEntrypoint: fakeCommand
-      }
+      },
+      dashboardProof: fastDashboardProof
     });
 
     const hostedLane = report.lanes.find((lane: any) => lane.id === 'hosted-linear-node-issue-run');
