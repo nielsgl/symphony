@@ -125,7 +125,9 @@ paths and status only; it does not print `.env` values or consent-store
 contents.
 
 For generated workflows, doctor also reports project-local portable skill
-provenance. Init copies portable skills into `.codex/skills/`, where Codex can
+provenance, selected skill installation, catalog helper scripts, relevant tool
+or Linear credential prerequisites, and Codex app-server visibility when it can
+be checked. Init copies portable skills into `.codex/skills/`, where Codex can
 load project-local skills; `.symphony/skills/` and `.symphony/prompts/` remain
 reserved, git-visible paths and are not active runtime skill-loading locations.
 

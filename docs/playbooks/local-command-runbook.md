@@ -133,9 +133,15 @@ consent, and dashboard supervisor prerequisites. It reports paths and status;
 it does not print `.env` values or consent-store contents.
 
 For generated workflows, doctor also reports generated profile and portable
-skill provenance as observable project content. It treats `.codex/skills/` as
-the materialization root and `.symphony/skills/` as reserved, not as an active
-runtime source.
+skill provenance as observable project content. For selected portable skills,
+it reports installed or missing `SKILL.md` files, missing helper scripts
+separately from missing skills, selected-skill prerequisites, Linear credential
+presence for Linear helper skills, and Codex app-server skill visibility when
+that check is available. If Codex visibility cannot be checked, is partial, or
+the workflow records an unrecognized portable skill, doctor reports a warning
+with remediation instead of treating the skill as silently loaded. It treats
+`.codex/skills/` as the materialization root and `.symphony/skills/` as
+reserved, not as an active runtime source.
 
 Exit codes:
 

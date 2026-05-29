@@ -254,10 +254,21 @@ destinations that resolve outside the target project or `.codex/skills/` tree
 are refused instead of deleted or followed.
 
 `symphony doctor` reports generated workflow provenance and explicit
-customization references as observable project content. It can summarize the
-portable skill catalog, including the `.codex/skills/` target root, default and
-opt-in skill ids, and the reserved `.symphony/skills/` source. Doctor does not
-claim runtime loading from `.symphony/skills/` or `.symphony/prompts/`.
+customization references as observable project content. For selected portable
+skills, doctor reports whether each expected `.codex/skills/<skill>/SKILL.md`
+file is installed, whether catalog-declared helper scripts are present, and
+which selected-skill prerequisites are available. Tool prerequisites are checked
+only when relevant to the selected skills, including `git`, `gh`, `uv`, `node`,
+and Python. Linear helper skills additionally report whether Linear credentials
+are present without printing secret values.
+
+Doctor also checks Codex project-local skill visibility when the workflow
+`codex.command` uses `codex app-server`. If discovery is unavailable, not using
+app-server, partial, or blocked by unrecognized portable-skill provenance,
+doctor reports a warning/degraded state instead of pretending that discovery
+passed. Unknown portable-skill provenance in `WORKFLOW.md` is a warning with
+regeneration guidance. Doctor does not claim runtime loading from
+`.symphony/skills/` or `.symphony/prompts/`.
 
 Generated profiles, bundles, and packs are init inputs only. When `symphony
 init` materializes a project, it records reviewable provenance in the root
