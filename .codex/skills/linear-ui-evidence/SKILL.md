@@ -1,12 +1,12 @@
 ---
 name: linear-ui-evidence
-description: Publish Playwright screenshots and screencasts for UI-affecting Symphony work into Linear issue comments as rendered rich media. Use before moving UI changes from In Progress to Agent Review.
+description: Publish Playwright screenshots and screencasts for UI-affecting Linear-tracked work into Linear issue comments as rendered rich media. Use before handing off UI changes for review.
 ---
 
 # Linear UI Evidence
 
-Use this skill when a Symphony issue has user-visible UI changes and Playwright
-screenshots or screencasts need to be published for review.
+Use this skill when a Linear-tracked issue has user-visible UI changes and
+Playwright screenshots or screencasts need to be published for review.
 
 This workflow is the intentional GraphQL-only exception to routine Linear MCP
 operations. Routine issue lookup, comments, and state changes should use Linear
@@ -15,8 +15,8 @@ publisher because it needs private `fileUpload(makePublic:false)`, signed upload
 PUTs, rich `bodyData` image/video nodes, and a verification re-read of
 `comment.bodyData`.
 
-Do not hand-author dynamic app-server `linear_graphql` calls for screenshots or
-screencasts. Capture media locally, then run the publisher script below.
+Do not hand-author raw `linear_graphql` calls for screenshots or screencasts.
+Capture media locally, then run the publisher script below.
 
 ## Required flow
 
@@ -60,7 +60,8 @@ UI evidence: not applicable
 - `--comment-id` updates that explicit existing comment; without it, the script
   creates one new evidence comment. The script does not auto-discover old
   evidence comments.
-- Existing `LINEAR_API_KEY` wins. If absent, the script loads repo `.env`.
+- Existing `LINEAR_API_KEY` wins. If absent, the script loads the current
+  project's `.env`.
 
 The script uploads media with private Linear `fileUpload(makePublic:false)` and
 creates rich `bodyData` `image`/`video` nodes. It must not use Linear

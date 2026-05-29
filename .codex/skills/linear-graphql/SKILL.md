@@ -1,14 +1,15 @@
 ---
 name: linear-graphql
 description: |
-  Use Symphony's `linear_graphql` client tool for raw Linear GraphQL
+  Use the configured `linear_graphql` client tool for raw Linear GraphQL
   operations such as private upload flows, rich `bodyData`, targeted
   introspection, and rare unsupported Linear API operations.
 ---
 
 # Linear GraphQL
 
-Use this skill for raw Linear GraphQL work during Symphony app-server sessions.
+Use this skill for raw Linear GraphQL work in projects that expose a configured
+`linear_graphql` tool.
 
 Use Linear MCP tools for routine issue-management work: issue lookup, comment
 listing, workpad discovery, plain comment/workpad create or update, issue state
@@ -38,8 +39,8 @@ rich `bodyData` image/video comments, and verification by re-reading
 
 ## Primary tool
 
-Use the `linear_graphql` client tool exposed by Symphony's app-server session.
-It reuses Symphony's configured Linear auth for the session.
+Use the `linear_graphql` client tool exposed in the current session. It should
+reuse the session's configured Linear auth.
 
 Tool input:
 
