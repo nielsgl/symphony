@@ -407,11 +407,13 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('symphony init --help');
     expect(harness.stdout).toContain('symphony init --bundle memory-generic');
     expect(harness.stdout).toContain('symphony init --dry-run --bundle memory-generic');
+    expect(harness.stdout).toContain('symphony init --force-skills --bundle memory-generic');
     expect(harness.stdout).toContain('symphony init --dry-run --bundle memory-generic --skill commit --skill land');
     expect(harness.stdout).toContain('symphony init --dry-run --bundle memory-generic --no-skills');
     expect(harness.stdout).toContain('Use --skill <name> repeatedly or --skills <name,name> to select an explicit set.');
     expect(harness.stdout).toContain('Use --no-skills to opt out of project-local skill materialization.');
     expect(harness.stdout).toContain('interactive confirmation or --force');
+    expect(harness.stdout).toContain('Use --force-skills to overwrite only');
     expect(harness.stdout).toContain('Dry-run renders the same file plan without writing files');
     expect(harness.stderr).toBe('');
   });
@@ -562,6 +564,110 @@ describe('local symphony command router', () => {
     expect(await fs.readFile(path.join(projectRoot, '.symphony', 'system', '.gitignore'), 'utf8')).toBe('*\n!.gitignore\n');
     expect(await fs.readFile(path.join(projectRoot, '.gitignore'), 'utf8')).toBe('.symphony/system/\n');
     await expect(fs.access(path.join(projectRoot, '.symphony', 'config.yaml'))).rejects.toThrow();
+  });
+
+  it('writes selected project-local skills with helper scripts through init', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-write-skills-');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit,land', '--no-input'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stderr).toBe('');
+    expect(harness.stdout).toContain('Symphony init write complete');
+    expect(harness.stdout).toContain('.codex/skills/commit/SKILL.md: create written');
+    expect(harness.stdout).toContain('.codex/skills/land/scripts/land_watch.py: create written');
+    expect(await fs.readFile(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), 'utf8')).toContain(
+      '# Commit'
+    );
+    expect(await fs.readFile(path.join(projectRoot, '.codex', 'skills', 'land', 'scripts', 'land_watch.py'), 'utf8')).toContain(
+      'async def watch_pr'
+    );
+    expect((await fs.stat(path.join(projectRoot, '.codex', 'skills', 'land', 'scripts', 'land_watch.py'))).mode & 0o777).toBe(
+      0o755
+    );
+    await expect(fs.access(path.join(projectRoot, '.symphony', 'skills'))).rejects.toThrow();
+  });
+
+  it('fails closed for customized project-local skills in non-interactive init', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-skill-conflict-write-');
+    const firstHarness = createHarness();
+    firstHarness.deps.cwd = projectRoot;
+    const first = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit', '--no-input'],
+      deps: firstHarness.deps
+    });
+    expect(first).toBe(0);
+    await fs.writeFile(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), 'custom local skill\n', 'utf8');
+    const secondHarness = createHarness();
+    secondHarness.deps.cwd = projectRoot;
+
+    const second = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit', '--no-input'],
+      deps: secondHarness.deps
+    });
+
+    expect(second).toBe(1);
+    expect(secondHarness.stderr).toContain('Symphony init found existing files that would be overwritten');
+    expect(secondHarness.stderr).toContain('.codex/skills/commit/SKILL.md');
+    expect(secondHarness.stderr).toContain('--force-skills for .codex/skills conflicts only');
+    expect(await fs.readFile(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), 'utf8')).toBe(
+      'custom local skill\n'
+    );
+  });
+
+  it('force-overwrites selected skills without pruning extra user files', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-force-skills-');
+    const firstHarness = createHarness();
+    firstHarness.deps.cwd = projectRoot;
+    const first = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit', '--no-input'],
+      deps: firstHarness.deps
+    });
+    expect(first).toBe(0);
+    const skillPath = path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md');
+    const extraPath = path.join(projectRoot, '.codex', 'skills', 'commit', 'notes.local.md');
+    await fs.writeFile(skillPath, 'custom local skill\n', 'utf8');
+    await fs.writeFile(extraPath, 'keep me\n', 'utf8');
+    const forcedHarness = createHarness();
+    forcedHarness.deps.cwd = projectRoot;
+
+    const forced = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit', '--force-skills', '--no-input'],
+      deps: forcedHarness.deps
+    });
+
+    expect(forced).toBe(0);
+    expect(forcedHarness.stderr).toBe('');
+    expect(await fs.readFile(skillPath, 'utf8')).toContain('# Commit');
+    expect(await fs.readFile(extraPath, 'utf8')).toBe('keep me\n');
+    await expect(fs.access(path.join(projectRoot, '.symphony', 'skills'))).rejects.toThrow();
+  });
+
+  it('keeps skill-scoped force from overwriting unrelated init files', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-force-skills-scoped-');
+    await fs.writeFile(path.join(projectRoot, 'WORKFLOW.md'), 'custom workflow\n', 'utf8');
+    await fs.mkdir(path.join(projectRoot, '.codex', 'skills', 'commit'), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), 'custom skill\n', 'utf8');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const result = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit', '--force-skills', '--no-input'],
+      deps: harness.deps
+    });
+
+    expect(result).toBe(1);
+    expect(harness.stderr).toContain('WORKFLOW.md');
+    expect(harness.stderr).not.toContain('.codex/skills/commit/SKILL.md');
+    expect(await fs.readFile(path.join(projectRoot, 'WORKFLOW.md'), 'utf8')).toBe('custom workflow\n');
+    expect(await fs.readFile(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), 'utf8')).toBe(
+      'custom skill\n'
+    );
   });
 
   it('writes clone profile workflows through the real CLI and doctor checks the configured repo root', async () => {
