@@ -66,6 +66,31 @@ function makeProfile(root: string, overrides: { wallClockMs?: number; localTrial
   };
 }
 
+function makeFastProfile(root: string, overrides: { wallClockMs?: number } = {}) {
+  return {
+    measured_at: '2026-05-29T00:00:00.000Z',
+    environment: {
+      cwd: root,
+      node: process.version,
+      platform: `${process.platform}/${process.arch}`,
+      sha: 'fixture'
+    },
+    command: 'npm test',
+    vitest_command: 'input report',
+    wall_clock_ms: overrides.wallClockMs ?? 7000,
+    result: {
+      success: true,
+      total_files: 103,
+      total_tests: 1005,
+      passed_tests: 1005,
+      failed_tests: 0
+    },
+    groups: [],
+    slowest_files: [],
+    expensive_patterns: []
+  };
+}
+
 function runScript(args: string[], cwd: string) {
   return spawnSync(process.execPath, [path.join(process.cwd(), 'scripts/check-test-runtime-budget.js'), ...args], {
     cwd,
@@ -118,6 +143,22 @@ describe('test runtime budget guardrail', () => {
     expect(report).toContain(runtimeGuardrail.ERROR_CODE);
     expect(report).toContain('tests/cli/local-multi-project-trial.test.ts');
     expect(report).toContain('fix avoidable setup or update the baseline with rationale');
+  });
+
+  it('reports obvious fast-suite command regressions', () => {
+    const baseline = JSON.parse(fs.readFileSync('docs/test-runtime-baseline.json', 'utf8'));
+    const result = runtimeGuardrail.compareRuntime(makeFastProfile(process.cwd(), { wallClockMs: 100000 }), baseline, 'fast');
+    const report = runtimeGuardrail.formatResult(result);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        kind: 'command_wall_clock',
+        message: 'fast wall clock 100.00s exceeds budget 30.00s (baseline 7.00s)'
+      })
+    ]);
+    expect(report).toContain(runtimeGuardrail.ERROR_CODE);
+    expect(report).toContain('rerun the relevant profile');
   });
 
   it('reports failed test profiles as explicit diagnostics', () => {

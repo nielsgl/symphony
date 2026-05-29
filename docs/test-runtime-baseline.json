@@ -5,20 +5,20 @@
     "fast": {
       "command": "npm test",
       "scope": "Fast deterministic unit suite; excludes profiled git/worktree/process-heavy simulations.",
-      "baseline_wall_clock_ms": 90000,
-      "budget_wall_clock_ms": 150000
+      "baseline_wall_clock_ms": 7000,
+      "budget_wall_clock_ms": 30000
     },
     "integration": {
       "command": "npm run test:integration",
       "scope": "Profiled git/worktree/process-heavy simulation files excluded from the fast path.",
       "baseline_wall_clock_ms": 180000,
-      "budget_wall_clock_ms": 300000
+      "budget_wall_clock_ms": 240000
     },
     "full": {
       "command": "npm run test:full",
       "scope": "Complete Vitest suite for Agent Review, release handoff, broad runtime changes, or CI-equivalent local proof.",
-      "baseline_wall_clock_ms": 240000,
-      "budget_wall_clock_ms": 420000
+      "baseline_wall_clock_ms": 190000,
+      "budget_wall_clock_ms": 300000
     }
   },
   "slow_files": {

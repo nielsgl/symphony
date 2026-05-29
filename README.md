@@ -408,7 +408,10 @@ the expected command scope for:
 
 The guardrail is intentionally not a strict benchmark. Use it to catch obvious
 slow-test regressions and to make budget changes reviewable without making
-local development brittle. For a live current-suite check, run:
+local development brittle. Current command budgets are calibrated to the
+post-split optimization evidence with review headroom: roughly 30s for the fast
+suite, 240s for integration simulations, and 300s for the full suite. For a
+live current-suite check, run:
 
 ```bash
 npm run test:runtime-guardrail -- --profile fast
