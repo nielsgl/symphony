@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 export type PortableSkillId =
   | 'commit'
   | 'pull'
@@ -46,6 +49,34 @@ export interface PortableSkillSelection {
   selectedSkills: readonly PortableSkillCatalogEntry[];
   defaultRecommendedSkillIds: readonly PortableSkillId[];
   optInSkillIds: readonly PortableSkillId[];
+}
+
+export type PortableSkillAssetSource = 'source' | 'dist';
+
+export interface ResolvedPortableSkillHelperScript extends PortableSkillHelperScript {
+  absolutePath: string;
+}
+
+export interface ResolvedPortableSkillAsset {
+  id: PortableSkillId;
+  sourceDirectory: string;
+  destinationDirectory: string;
+  absoluteSourceDirectory: string;
+  absoluteTemplatePath: string;
+  helperScripts: readonly ResolvedPortableSkillHelperScript[];
+}
+
+export interface PortableSkillAssetSet {
+  packageRoot: string;
+  assetRoot: string;
+  source: PortableSkillAssetSource;
+  selectedSkillIds: readonly PortableSkillId[];
+  selectedSkills: readonly ResolvedPortableSkillAsset[];
+}
+
+export interface PortableSkillAssetLookupOptions {
+  packageRoot?: string;
+  moduleDirectory?: string;
 }
 
 export const PORTABLE_SKILL_DESTINATION_ROOT = '.codex/skills';
@@ -218,4 +249,109 @@ export function resolvePortableSkillSelection(
     defaultRecommendedSkillIds: listDefaultPortableSkillIds(),
     optInSkillIds: listOptInPortableSkillIds()
   };
+}
+
+export function resolvePortableSkillAssetSet(
+  requestedSkillIds: readonly PortableSkillId[] = PORTABLE_SKILL_CATALOG.map((skill) => skill.id),
+  options: PortableSkillAssetLookupOptions = {}
+): PortableSkillAssetSet {
+  const packageRoot = options.packageRoot ?? findPackageRoot(options.moduleDirectory ?? __dirname);
+  const moduleDirectory = options.moduleDirectory ?? __dirname;
+  const candidates = buildAssetRootCandidates(packageRoot, moduleDirectory);
+  const selection = resolvePortableSkillSelection(requestedSkillIds);
+  const missingByCandidate: string[] = [];
+
+  for (const candidate of candidates) {
+    const resolvedSkills = resolveSkillsFromAssetRoot(selection.selectedSkills, candidate.assetRoot);
+    const missing = findMissingResolvedAssets(resolvedSkills);
+    if (missing.length === 0) {
+      return {
+        packageRoot,
+        assetRoot: candidate.assetRoot,
+        source: candidate.source,
+        selectedSkillIds: selection.selectedSkillIds,
+        selectedSkills: resolvedSkills
+      };
+    }
+    missingByCandidate.push(`${candidate.source}:${path.relative(packageRoot, candidate.assetRoot)} missing ${missing.join(', ')}`);
+  }
+
+  throw new Error(`Portable skill assets are missing from packaged runtime roots: ${missingByCandidate.join('; ')}`);
+}
+
+function findPackageRoot(startDirectory: string): string {
+  let current = path.resolve(startDirectory);
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (fs.existsSync(path.join(current, 'package.json'))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return process.cwd();
+}
+
+function buildAssetRootCandidates(
+  packageRoot: string,
+  moduleDirectory: string
+): Array<{ source: PortableSkillAssetSource; assetRoot: string }> {
+  const sourceRoot = path.join(packageRoot, PORTABLE_SKILL_DESTINATION_ROOT);
+  const distRoot = path.join(packageRoot, 'dist', PORTABLE_SKILL_DESTINATION_ROOT);
+  const relativeModuleDirectory = path.relative(packageRoot, path.resolve(moduleDirectory));
+  const runningFromDist = relativeModuleDirectory === 'dist' || relativeModuleDirectory.startsWith(`dist${path.sep}`);
+
+  return runningFromDist
+    ? [{ source: 'dist', assetRoot: distRoot }]
+    : [
+        { source: 'source', assetRoot: sourceRoot },
+        { source: 'dist', assetRoot: distRoot }
+      ];
+}
+
+function resolveSkillsFromAssetRoot(
+  skills: readonly PortableSkillCatalogEntry[],
+  assetRoot: string
+): ResolvedPortableSkillAsset[] {
+  return skills.map((skill) => {
+    const skillRelativePath = path.relative(PORTABLE_SKILL_DESTINATION_ROOT, skill.sourceDirectory);
+    return {
+      id: skill.id,
+      sourceDirectory: skill.sourceDirectory,
+      destinationDirectory: skill.destinationDirectory,
+      absoluteSourceDirectory: path.join(assetRoot, skillRelativePath),
+      absoluteTemplatePath: path.join(assetRoot, skillRelativePath, 'SKILL.md'),
+      helperScripts: skill.helperScripts.map((helper) => {
+        const helperRelativePath = path.relative(PORTABLE_SKILL_DESTINATION_ROOT, helper.path);
+        return {
+          ...helper,
+          absolutePath: path.join(assetRoot, helperRelativePath)
+        };
+      })
+    };
+  });
+}
+
+function findMissingResolvedAssets(skills: readonly ResolvedPortableSkillAsset[]): string[] {
+  const missing: string[] = [];
+
+  for (const skill of skills) {
+    if (!fs.existsSync(skill.absoluteSourceDirectory) || !fs.statSync(skill.absoluteSourceDirectory).isDirectory()) {
+      missing.push(skill.sourceDirectory);
+    }
+    if (!fs.existsSync(skill.absoluteTemplatePath) || !fs.statSync(skill.absoluteTemplatePath).isFile()) {
+      missing.push(path.join(skill.sourceDirectory, 'SKILL.md'));
+    }
+
+    for (const helper of skill.helperScripts) {
+      if (!fs.existsSync(helper.absolutePath) || !fs.statSync(helper.absolutePath).isFile()) {
+        missing.push(helper.path);
+      }
+    }
+  }
+
+  return missing;
 }
