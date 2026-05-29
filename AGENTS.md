@@ -49,10 +49,12 @@ Baseline hygiene checks:
 - Add or update automated tests alongside runtime code changes.
 
 Test logging controls:
-- Default `npm test` suppresses routine Symphony structured runtime logs from stderr.
+- Default `npm test` keeps test identity, pass/fail counts, and timing visible while suppressing routine Symphony structured runtime logs, helper Git progress, and operational child-process stderr during passing runs.
 - Use `SYMPHONY_TEST_LOGS=1 npm test` to show live runtime logs while testing.
 - Use `SYMPHONY_TEST_LOG_LEVEL=info|warn|error` with `SYMPHONY_TEST_LOGS=1`
   to choose the minimum visible live log level.
+- Use `npm run test:verbose` or `SYMPHONY_TEST_OPERATIONAL_OUTPUT=1 npm test`
+  to show helper command stderr such as Git clone/fetch/push progress while debugging.
 - Passing tests keep captured runtime logs quiet; failing tests print the captured log buffer.
 - Use `SYMPHONY_TEST_LOG_CAPTURE_LINES=<number>` to change the captured-log buffer size.
 - Use `SYMPHONY_TEST_LOG_CAPTURE=0` to disable captured runtime logs during tests.

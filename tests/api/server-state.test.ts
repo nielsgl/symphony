@@ -29,6 +29,7 @@ import {
   replayForensicsBundle
 } from './server-test-harness';
 import type { DurableIdentity, ForensicsBundle } from './server-test-harness';
+import { operationalCommandStdio } from '../helpers/quiet-operational-output';
 import { SqlitePersistenceStore } from '../../src/persistence';
 import { LocalRuntimeUpdateManager } from '../../src/runtime/update-manager';
 
@@ -44,7 +45,7 @@ closeServerAfterEach(
 );
 
 function git(cwd: string, args: string[]) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: operationalCommandStdio() }).trim();
 }
 
 function makeRuntimeUpdateRepoPair() {

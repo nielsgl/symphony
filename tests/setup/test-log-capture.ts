@@ -2,6 +2,8 @@ import { beforeEach } from 'vitest';
 
 import { clearCapturedTestLogs, isTestLogCaptureEnabled, readCapturedTestLogs } from '../../src/observability';
 
+process.setMaxListeners(Math.max(process.getMaxListeners(), 64));
+
 beforeEach((context) => {
   clearCapturedTestLogs();
 
