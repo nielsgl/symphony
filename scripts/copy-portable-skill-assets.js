@@ -22,9 +22,18 @@ for (const skill of listPortableSkills()) {
   if (!fs.existsSync(sourceDirectory) || !fs.statSync(sourceDirectory).isDirectory()) {
     throw new Error(`Portable skill source directory is missing: ${skill.sourceDirectory}`);
   }
+  const sourceTemplate = path.join(sourceDirectory, 'SKILL.md');
+  if (!fs.existsSync(sourceTemplate) || !fs.statSync(sourceTemplate).isFile()) {
+    throw new Error(`Portable skill template is missing: ${skill.sourceDirectory}/SKILL.md`);
+  }
 
   fs.mkdirSync(path.dirname(destinationDirectory), { recursive: true });
   fs.cpSync(sourceDirectory, destinationDirectory, { recursive: true, force: true });
+
+  const packagedTemplate = path.join(destinationDirectory, 'SKILL.md');
+  if (!fs.existsSync(packagedTemplate) || !fs.statSync(packagedTemplate).isFile()) {
+    throw new Error(`Portable skill template was not packaged: ${skill.sourceDirectory}/SKILL.md`);
+  }
 
   for (const helper of skill.helperScripts) {
     const helperPath = path.join(repoRoot, 'dist', helper.path);

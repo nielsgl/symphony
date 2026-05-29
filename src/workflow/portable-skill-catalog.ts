@@ -62,6 +62,7 @@ export interface ResolvedPortableSkillAsset {
   sourceDirectory: string;
   destinationDirectory: string;
   absoluteSourceDirectory: string;
+  absoluteTemplatePath: string;
   helperScripts: readonly ResolvedPortableSkillHelperScript[];
 }
 
@@ -325,6 +326,7 @@ function resolveSkillsFromAssetRoot(
       sourceDirectory: skill.sourceDirectory,
       destinationDirectory: skill.destinationDirectory,
       absoluteSourceDirectory: path.join(assetRoot, skillRelativePath),
+      absoluteTemplatePath: path.join(assetRoot, skillRelativePath, 'SKILL.md'),
       helperScripts: skill.helperScripts.map((helper) => {
         const helperRelativePath = path.relative(PORTABLE_SKILL_DESTINATION_ROOT, helper.path);
         return {
@@ -342,6 +344,9 @@ function findMissingResolvedAssets(skills: readonly ResolvedPortableSkillAsset[]
   for (const skill of skills) {
     if (!fs.existsSync(skill.absoluteSourceDirectory) || !fs.statSync(skill.absoluteSourceDirectory).isDirectory()) {
       missing.push(skill.sourceDirectory);
+    }
+    if (!fs.existsSync(skill.absoluteTemplatePath) || !fs.statSync(skill.absoluteTemplatePath).isFile()) {
+      missing.push(path.join(skill.sourceDirectory, 'SKILL.md'));
     }
 
     for (const helper of skill.helperScripts) {

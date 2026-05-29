@@ -105,7 +105,7 @@ describe('portable skill catalog', () => {
     expect(assetSet.assetRoot).toBe(path.join(repoRoot, '.codex', 'skills'));
     for (const skill of assetSet.selectedSkills) {
       expect(fs.statSync(skill.absoluteSourceDirectory).isDirectory()).toBe(true);
-      expect(fs.existsSync(path.join(skill.absoluteSourceDirectory, 'SKILL.md'))).toBe(true);
+      expect(fs.statSync(skill.absoluteTemplatePath).isFile()).toBe(true);
       for (const helper of skill.helperScripts) {
         expect(fs.statSync(helper.absolutePath).isFile()).toBe(true);
       }
@@ -137,6 +137,33 @@ describe('portable skill catalog', () => {
     expect(assetSet.selectedSkills.map((skill) => skill.absoluteSourceDirectory)).toEqual(
       listPortableSkills().map((skill) => path.join(packageRoot, 'dist', skill.sourceDirectory))
     );
+    expect(assetSet.selectedSkills.map((skill) => skill.absoluteTemplatePath)).toEqual(
+      listPortableSkills().map((skill) => path.join(packageRoot, 'dist', skill.sourceDirectory, 'SKILL.md'))
+    );
+  });
+
+  it('fails dist asset lookup when a selected skill template is missing from the packaged runtime set', () => {
+    const packageRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-portable-skills-missing-template-'))
+    );
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), '{"name":"symphony-test"}\n', 'utf8');
+
+    for (const skill of listPortableSkills()) {
+      const skillDirectory = path.join(packageRoot, 'dist', skill.sourceDirectory);
+      fs.mkdirSync(skillDirectory, { recursive: true });
+      for (const helper of skill.helperScripts) {
+        const helperPath = path.join(packageRoot, 'dist', helper.path);
+        fs.mkdirSync(path.dirname(helperPath), { recursive: true });
+        fs.writeFileSync(helperPath, '# helper\n', 'utf8');
+      }
+    }
+
+    expect(() =>
+      resolvePortableSkillAssetSet(['land'], {
+        packageRoot,
+        moduleDirectory: path.join(packageRoot, 'dist', 'src', 'workflow')
+      })
+    ).toThrow('.codex/skills/land/SKILL.md');
   });
 
   it('fails dist asset lookup when a selected helper script is missing from the packaged runtime set', () => {
