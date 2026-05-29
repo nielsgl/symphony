@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { materializeWorkflowDryRun, materializeWorkflowPlan, validateWorkflowContent } from '../../src/workflow/materializer';
+import { PORTABLE_SKILL_CATALOG, type PortableSkillCatalogEntry } from '../../src/workflow/portable-skill-catalog';
 import { resolveProfileSelection } from '../../src/workflow/profile-registry';
 import { ConfigResolver } from '../../src/workflow/resolver';
 import { ConfigValidator } from '../../src/workflow/validator';
@@ -154,6 +155,55 @@ describe('workflow materializer', () => {
       requiresOverwriteApproval: true
     });
     expect(fs.readFileSync(path.join(root, 'WORKFLOW.md'), 'utf8')).toBe('existing workflow\n');
+  });
+
+  it('includes selected portable skills in non-dry-run write plans', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-write-skills-')));
+    const resolution = resolveProfileSelection(['memory-generic']);
+
+    const plan = materializeWorkflowPlan({
+      resolution,
+      projectFacts: { root, packageManager: 'generic', existingWorkflowPath: null },
+      choices: { dryRun: false, selections: ['memory-generic'], portableSkillIds: ['land'] }
+    });
+
+    expect(plan.files.map((file) => file.path)).toContain(path.join('.codex', 'skills', 'land', 'SKILL.md'));
+    const helper = plan.files.find((file) => file.path === path.join('.codex', 'skills', 'land', 'scripts', 'land_watch.py'));
+    expect(helper).toMatchObject({
+      action: 'create',
+      overwriteStatus: 'absent',
+      wouldWrite: true
+    });
+    expect(helper?.mode).toBe(0o755);
+  });
+
+  it('rejects portable skill destinations that escape the intended skill tree', () => {
+    const skill = PORTABLE_SKILL_CATALOG.find((entry) => entry.id === 'commit') as PortableSkillCatalogEntry;
+    const originalDestination = skill.destinationDirectory;
+    try {
+      (skill as { destinationDirectory: string }).destinationDirectory = path.join('.codex', 'skills', 'commit');
+      (skill as { helperScripts: PortableSkillCatalogEntry['helperScripts'] }).helperScripts = [
+        {
+          path: '.codex/skills/commit/SKILL.md',
+          destinationPath: path.join('.codex', 'skills', 'commit', '..', 'escape.js'),
+          runtime: 'node',
+          required: true,
+          description: 'unsafe test helper'
+        }
+      ];
+      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-materializer-unsafe-skill-')));
+
+      expect(() =>
+        materializeWorkflowPlan({
+          resolution: resolveProfileSelection(['memory-generic']),
+          projectFacts: { root, packageManager: 'generic', existingWorkflowPath: null },
+          choices: { dryRun: false, selections: ['memory-generic'], portableSkillIds: ['commit'] }
+        })
+      ).toThrow('escapes the allowed root');
+    } finally {
+      (skill as { destinationDirectory: string }).destinationDirectory = originalDestination;
+      (skill as { helperScripts: PortableSkillCatalogEntry['helperScripts'] }).helperScripts = [];
+    }
   });
 
   it('rejects protected internal workflows before planning generated files', () => {
