@@ -620,15 +620,27 @@ function addProjectLocalSkillMaterializationChecks(
   selectedSkills: readonly PortableSkillCatalogEntry[],
   unknown: readonly { name: string; path: string; source: string }[]
 ): void {
+  const unknownNames = unknown.map((entry) => entry.name);
   addCheck(checks, {
     id: 'project_local_skills.selection',
     title: 'Project-local portable skill selection is recorded',
-    status: 'ok',
-    reason: selectedSkills.length > 0 || unknown.length > 0 ? 'portable_skills_selected' : 'portable_skills_not_selected',
+    status: unknown.length > 0 ? 'warning' : 'ok',
+    reason:
+      unknown.length > 0
+        ? 'portable_skill_selection_unrecognized'
+        : selectedSkills.length > 0
+          ? 'portable_skills_selected'
+          : 'portable_skills_not_selected',
     summary:
-      selectedSkills.length > 0
+      unknown.length > 0
+        ? `Workflow records ${unknown.length} unrecognized project-local portable skill(s): ${unknownNames.join(', ')}.`
+        : selectedSkills.length > 0
         ? `Workflow selected ${selectedSkills.length} project-local portable skill(s): ${selectedSkills.map((skill) => skill.id).join(', ')}.`
         : 'Workflow did not select project-local portable skills.',
+    remediation:
+      unknown.length > 0
+        ? 'Regenerate WORKFLOW.md with this Symphony version or install a Symphony version that recognizes the recorded portable skill catalog entry.'
+        : undefined,
     details: {
       selectedSkillIds: selectedSkills.map((skill) => skill.id),
       unknown
@@ -813,16 +825,34 @@ async function probeCodexSkillDiscovery(params: {
   env: NodeJS.ProcessEnv;
   projectRoot: string;
   selectedSkills: readonly PortableSkillCatalogEntry[];
+  unknown: readonly { name: string; path: string; source: string }[];
   timeoutMs?: number;
 }): Promise<DoctorFindingInput> {
+  const selectedSkillIds = params.selectedSkills.map((skill) => skill.id);
+  const unknownSkillNames = params.unknown.map((entry) => entry.name);
   if (params.selectedSkills.length === 0) {
+    if (params.unknown.length > 0) {
+      return {
+        id: 'project_local_skills.codex_visibility',
+        title: 'Codex-visible project-local skill discovery is checked',
+        status: 'warning',
+        reason: 'codex_skill_discovery_unknown_provenance',
+        summary: `Codex skill discovery was not checked because workflow provenance contains unrecognized project-local portable skill(s): ${unknownSkillNames.join(', ')}.`,
+        remediation: 'Regenerate WORKFLOW.md with this Symphony version or install a Symphony version that recognizes the recorded portable skill catalog entry.',
+        details: {
+          selectedSkillIds,
+          unknownSkillNames,
+          unknown: params.unknown
+        }
+      };
+    }
     return {
       id: 'project_local_skills.codex_visibility',
       title: 'Codex-visible project-local skill discovery is checked',
       status: 'ok',
       reason: 'codex_skill_discovery_not_required',
       summary: 'No project-local portable skills are selected, so Codex skill discovery is not required.',
-      details: { selectedSkillIds: [] }
+      details: { selectedSkillIds }
     };
   }
 
@@ -836,7 +866,7 @@ async function probeCodexSkillDiscovery(params: {
       reason: 'codex_skill_discovery_not_app_server',
       summary: `Codex skill discovery could not be checked because codex.command is not an app-server command: ${params.command}`,
       remediation: 'Use `codex app-server` as the workflow codex.command to enable doctor skill visibility checks.',
-      details: { command: params.command, selectedSkillIds: params.selectedSkills.map((skill) => skill.id) }
+      details: { command: params.command, selectedSkillIds, unknownSkillNames }
     };
   }
 
@@ -857,7 +887,7 @@ async function probeCodexSkillDiscovery(params: {
         reason: 'codex_skill_discovery_unavailable',
         summary: 'Codex app-server skill discovery timed out before returning skills/list.',
         remediation: 'Run `codex app-server` manually in the project root and inspect `skills/list` support.',
-        details: { selectedSkillIds: params.selectedSkills.map((skill) => skill.id), timeoutMs: params.timeoutMs ?? 2500 }
+        details: { selectedSkillIds, unknownSkillNames, timeoutMs: params.timeoutMs ?? 2500 }
       });
     }, params.timeoutMs ?? 2500);
 
@@ -879,7 +909,7 @@ async function probeCodexSkillDiscovery(params: {
         reason: 'codex_skill_discovery_unavailable',
         summary: `Codex app-server skill discovery could not start: ${error.message}`,
         remediation: 'Install Codex or fix codex.command before relying on project-local skill discovery.',
-        details: { selectedSkillIds: params.selectedSkills.map((skill) => skill.id), error: error.message }
+        details: { selectedSkillIds, unknownSkillNames, error: error.message }
       });
     });
     child.stdout?.on('data', (chunk) => {
@@ -897,17 +927,31 @@ async function probeCodexSkillDiscovery(params: {
       finish({
         id: 'project_local_skills.codex_visibility',
         title: 'Codex-visible project-local skill discovery is checked',
-        status: missing.length === 0 ? 'ok' : 'warning',
-        reason: missing.length === 0 ? 'codex_skill_discovery_visible' : 'codex_skill_discovery_partial',
+        status: missing.length === 0 && params.unknown.length === 0 ? 'ok' : 'warning',
+        reason:
+          missing.length > 0
+            ? 'codex_skill_discovery_partial'
+            : params.unknown.length > 0
+              ? 'codex_skill_discovery_unknown_provenance'
+              : 'codex_skill_discovery_visible',
         summary:
-          missing.length === 0
-            ? `Codex app-server reports all selected project-local skills as visible: ${visible.join(', ')}.`
-            : `Codex app-server did not report ${missing.length} selected project-local skill(s): ${missing.join(', ')}.`,
-        remediation: missing.length === 0 ? undefined : 'Open the project with Codex from the project root and verify .codex/skills discovery.',
+          missing.length > 0
+            ? `Codex app-server did not report ${missing.length} selected project-local skill(s): ${missing.join(', ')}.`
+            : params.unknown.length > 0
+              ? `Codex app-server reports all recognized selected project-local skills as visible, but workflow provenance contains unrecognized skill(s): ${unknownSkillNames.join(', ')}.`
+              : `Codex app-server reports all selected project-local skills as visible: ${visible.join(', ')}.`,
+        remediation:
+          missing.length > 0
+            ? 'Open the project with Codex from the project root and verify .codex/skills discovery.'
+            : params.unknown.length > 0
+              ? 'Regenerate WORKFLOW.md with this Symphony version or install a Symphony version that recognizes the recorded portable skill catalog entry.'
+              : undefined,
         details: {
-          selectedSkillIds: params.selectedSkills.map((skill) => skill.id),
+          selectedSkillIds,
           visibleSkillNames: visible,
           missingSkillNames: missing,
+          unknownSkillNames,
+          unknown: params.unknown,
           discoveryResponseShape: 'skills/list'
         }
       });
@@ -927,7 +971,8 @@ async function probeCodexSkillDiscovery(params: {
         summary: `Codex app-server exited before returning skills/list (exit ${code ?? 'signal'}).`,
         remediation: 'Run `codex app-server` manually in the project root and inspect startup errors.',
         details: {
-          selectedSkillIds: params.selectedSkills.map((skill) => skill.id),
+          selectedSkillIds,
+          unknownSkillNames,
           exitCode: code,
           stderrPreview: stderr.trim().slice(0, 500)
         }
@@ -1955,7 +2000,8 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
           command: workflowValidation.effectiveConfig.codex.command,
           env: dashboardEnv,
           projectRoot: resolved.currentProjectRoot,
-          selectedSkills: portableSkillSelection.selectedSkills
+          selectedSkills: portableSkillSelection.selectedSkills,
+          unknown: portableSkillSelection.unknown
         })
       );
     }

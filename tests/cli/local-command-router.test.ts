@@ -1985,6 +1985,53 @@ describe('local symphony command router', () => {
     expect(harness.stderr).toBe('');
   });
 
+  it('warns on unknown project-local portable skill provenance without false discovery success', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    await writeFakeCodexAppServer(binDir, []);
+    const projectRoot = await createDoctorProject(projectLocalSkillsWorkflow([]).replace(
+      '    portable_skills:\n',
+      [
+        '    portable_skills:',
+        '      - name: "unknown-skill"',
+        '        path: ".codex/skills/unknown-skill/"',
+        ''
+      ].join('\n')
+    ));
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--ci', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(1);
+    expect(doctorFinding(payload, 'project_local_skills.selection')).toMatchObject({
+      status: 'warning',
+      reason: 'portable_skill_selection_unrecognized',
+      summary: expect.stringContaining('unknown-skill'),
+      details: {
+        selectedSkillIds: [],
+        unknown: [{ name: 'unknown-skill', path: '.codex/skills/unknown-skill/', source: 'workflow_frontmatter' }]
+      }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.codex_visibility')).toMatchObject({
+      status: 'warning',
+      reason: 'codex_skill_discovery_unknown_provenance',
+      summary: expect.stringContaining('unknown-skill'),
+      details: {
+        selectedSkillIds: [],
+        unknownSkillNames: ['unknown-skill']
+      }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.codex_visibility')).not.toMatchObject({
+      reason: 'codex_skill_discovery_not_required'
+    });
+    expect(harness.stderr).toBe('');
+  });
+
   it('reports selected-skill prerequisite and Linear credential status without leaking secrets', async () => {
     const { repoRoot, binDir } = await createDoctorRepo();
     await writeFakeCodexAppServer(binDir, ['linear-ui-evidence']);
