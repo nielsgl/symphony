@@ -693,6 +693,46 @@ describe('local symphony command router', () => {
     await expect(fs.access(path.join(projectRoot, '.symphony'))).rejects.toThrow();
   });
 
+  it('refuses skill destinations that resolve outside the skill tree through internal symlinks', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-skill-internal-symlink-');
+    await fs.mkdir(path.join(projectRoot, 'docs'), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, 'docs', 'SKILL.md'), 'custom docs skill\n', 'utf8');
+    await fs.mkdir(path.join(projectRoot, '.codex', 'skills'), { recursive: true });
+    await fs.symlink(path.join('..', '..', 'docs'), path.join(projectRoot, '.codex', 'skills', 'commit'), 'dir');
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const result = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit', '--force-skills', '--no-input'],
+      deps: harness.deps
+    });
+
+    expect(result).toBe(1);
+    expect(harness.stderr).toContain('portable skill destination .codex/skills/commit/SKILL.md escapes');
+    expect(await fs.readFile(path.join(projectRoot, 'docs', 'SKILL.md'), 'utf8')).toBe('custom docs skill\n');
+    await expect(fs.access(path.join(projectRoot, '.symphony'))).rejects.toThrow();
+  });
+
+  it('reports directory skill-file conflicts without raw filesystem errors', async () => {
+    const projectRoot = await createInitGitRepo('symphony-init-skill-directory-conflict-');
+    await fs.mkdir(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), { recursive: true });
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const result = await runCommandRouter({
+      argv: ['init', '--bundle', 'memory-generic', '--skills', 'commit', '--force-skills', '--no-input'],
+      deps: harness.deps
+    });
+
+    expect(result).toBe(1);
+    expect(harness.stderr).toContain('Symphony init found existing files that would be overwritten');
+    expect(harness.stderr).toContain('.codex/skills/commit/SKILL.md');
+    expect(harness.stderr).toContain('Some conflicting paths are directories');
+    expect(harness.stderr).toContain('Move or remove those directories before rerunning init');
+    expect(harness.stderr).not.toContain('EISDIR');
+    await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
+  });
+
   it('writes clone profile workflows through the real CLI and doctor checks the configured repo root', async () => {
     const projectRoot = await createInitGitRepo('symphony-init-clone-write-');
     await execFileAsync('git', ['config', 'user.email', 'clone-profile@example.test'], { cwd: projectRoot });

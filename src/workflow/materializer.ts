@@ -42,6 +42,7 @@ export interface WorkflowFilePlanEntry {
   action: FilePlanAction;
   overwriteStatus: FilePlanOverwriteStatus;
   wouldWrite: boolean;
+  conflictType?: 'directory';
   mode?: number;
   content?: string;
   contentPreview: string;
@@ -578,6 +579,23 @@ function buildFilePlanEntry(params: {
   const absolutePath = path.join(params.root, params.relativePath);
   assertPathInside(params.root, absolutePath, `init destination ${params.relativePath}`);
   const exists = fs.existsSync(absolutePath);
+  if (exists && fs.statSync(absolutePath).isDirectory()) {
+    return {
+      path: params.relativePath,
+      action: 'overwrite',
+      overwriteStatus: 'exists',
+      wouldWrite: true,
+      conflictType: 'directory',
+      mode: params.mode,
+      content: params.content,
+      contentPreview: preview(params.content),
+      validationNotes: [
+        ...params.notes,
+        'existing path is a directory; move or remove it before rerunning init'
+      ],
+      requiresOverwriteApproval: true
+    };
+  }
   const existingContent = exists ? fs.readFileSync(absolutePath, 'utf8') : null;
   const action: FilePlanAction = exists ? (existingContent === params.content ? 'skip' : 'overwrite') : 'create';
   return {
@@ -607,6 +625,7 @@ function buildSkillFilePlanEntry(params: {
   assertPathInside(projectRoot, skillRoot, `portable skill destination ${params.skillDirectory}`);
   assertPathInside(projectRoot, destinationPath, `portable skill destination ${params.relativePath}`);
   assertPathInside(skillRoot, destinationPath, `portable skill destination ${params.relativePath}`);
+  assertResolvedPathInsideLexicalRoot(skillRoot, destinationPath, `portable skill destination ${params.relativePath}`);
   return buildFilePlanEntry(params);
 }
 
@@ -616,6 +635,14 @@ function validatePortableSkillAssetContainment(assetRoot: string, absolutePath: 
 
 function assertPathInside(root: string, candidate: string, label: string): void {
   const relative = path.relative(realpathNearest(root), realpathNearest(candidate));
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+    return;
+  }
+  throw new Error(`${label} escapes the allowed root ${root}. Refusing to materialize portable skill assets.`);
+}
+
+function assertResolvedPathInsideLexicalRoot(root: string, candidate: string, label: string): void {
+  const relative = path.relative(path.resolve(root), realpathNearest(candidate));
   if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
     return;
   }

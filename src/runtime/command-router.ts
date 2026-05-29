@@ -1070,9 +1070,18 @@ function nonInteractiveSelectionGuidance(parsed: ParsedInitSelections): string {
 }
 
 function renderInitConflicts(conflicts: readonly WorkflowFilePlanEntry[]): string {
+  const directoryConflicts = conflicts.filter((file) => file.conflictType === 'directory');
   return [
     'Symphony init found existing files that would be overwritten:',
     ...conflicts.map((file) => `  - ${file.path}`),
+    ...(directoryConflicts.length > 0
+      ? [
+          '',
+          'Some conflicting paths are directories at locations where Symphony needs to write files:',
+          ...directoryConflicts.map((file) => `  - ${file.path}`),
+          'Move or remove those directories before rerunning init; --force-skills does not delete directories.'
+        ]
+      : []),
     '',
     'To preserve local customizations, Symphony did not write any conflicting files.',
     'Resolve by moving or editing the listed paths, re-run interactively and confirm,',
@@ -1190,7 +1199,7 @@ async function runInitCommand(argv: readonly string[], deps: CommandRouterDepend
 
     const conflicts = plan.files.filter((file) => file.requiresOverwriteApproval);
     const unresolvedConflicts = conflicts.filter(
-      (file) => !parsed.force && !(parsed.forceSkills && isPortableSkillPlanEntry(file))
+      (file) => file.conflictType === 'directory' || (!parsed.force && !(parsed.forceSkills && isPortableSkillPlanEntry(file)))
     );
     if (unresolvedConflicts.length > 0) {
       if (initPromptsAllowed(parsed, deps)) {
