@@ -15,18 +15,27 @@ description:
 - Merge the PR with a merge commit (`--merge`) to preserve commits.
 - Do not yield to the user until the PR is merged; keep the watcher loop running
   unless blocked.
-- No need to delete remote branches after merge; the repo auto-deletes head
-  branches.
+- Follow the current repository's branch cleanup policy after merge; some
+  repositories auto-delete head branches, while others expect manual cleanup.
 
 ## Preconditions
 
 - `gh` CLI is authenticated.
 - You are on the PR branch with a clean working tree.
+- The current repository's local validation commands and PR publication
+  requirements are known from project instructions, workflow docs, package
+  scripts, or PR templates.
+- Optional helper scripts under this skill directory may be used when their
+  runtime prerequisites are available; otherwise use the equivalent `gh`
+  commands shown below.
 
 ## Steps
 
 1. Locate the PR for the current branch.
-2. Confirm the full gauntlet is green locally before any push.
+2. Confirm the current project's required local validation is green before any
+   push. If the project does not define validation commands, run at least
+   `git diff --check` and record that no stronger project-specific command was
+   found.
 3. If the working tree has uncommitted changes, commit with the `commit` skill
    and push with the `push` skill before proceeding.
 4. Check mergeability and conflicts against main.
@@ -38,12 +47,12 @@ description:
 8. If checks fail, pull logs, fix the issue, commit with the `commit` skill,
    push with the `push` skill, and re-run checks.
 9. When all checks are green and review feedback is addressed, merge with
-   merge-commit semantics (`--merge`) and
-   delete the branch using the PR title/body for the merge subject/body.
-9.1 Before final merge, run the governed submit wrapper so body normalization and evidence gates are enforced at submit boundary:
-   - `npm run submit:pr-governed -- --mode edit`
-   - Wrapper sequence is mandatory: normalize body -> `check:pr-governance` -> `check:meta` -> `gh pr edit --body-file <normalized-file>`.
-   - Any `output/playwright/*` references must be replaced with the Linear issue evidence comment created by the `linear-ui-evidence` skill or merge is blocked.
+   merge-commit semantics (`--merge`) using the PR title/body for the merge
+   subject/body, then follow the current repository's branch cleanup policy.
+9.1 Before final merge, refresh the PR body through the repository's expected PR
+   publication path when project instructions require it. If the project uses a
+   wrapper for body normalization, metadata checks, or evidence gates, run that
+   wrapper. Otherwise confirm the current PR body is accurate with `gh pr view`.
 10. **Context guard:** Before implementing review feedback, confirm it does not
     conflict with the user’s stated intent or task context. If it conflicts,
     respond inline with a justification and ask the user before changing code.
@@ -77,8 +86,8 @@ if [ "$mergeable" = "CONFLICTING" ]; then
   # Then run the `push` skill to publish the updated branch.
 fi
 
-# Preferred: use the Async Watch Helper below. The manual loop is a fallback
-# when Python cannot run or the helper script is unavailable.
+# Preferred when available: use the Async Watch Helper below. The manual loop is
+# a fallback when Python, uv, gh auth, or the helper script is unavailable.
 # Wait for review feedback: Codex reviews arrive as issue comments that start
 # with "## Codex Review — <persona>". Treat them like reviewer feedback: reply
 # with a `[codex]` issue comment acknowledging the findings and whether you're
@@ -136,8 +145,10 @@ Exit codes:
 - Codex review jobs retry on failure and are non-blocking; use the presence of
   `## Codex Review — <persona>` issue comments (not job status) as the signal
   that review feedback is available.
-- Do not enable auto-merge; this repo has no required checks so auto-merge can
-  skip tests.
+- Follow the current repository's auto-merge policy. Enable auto-merge only
+  when project instructions allow it and required checks/reviews are configured
+  to protect the merge; otherwise perform an explicit merge after validation is
+  complete.
 - If the remote PR branch advanced due to your own prior force-push or merge,
   avoid redundant merges; re-run the formatter locally if needed and
   `git push --force-with-lease`.

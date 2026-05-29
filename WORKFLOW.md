@@ -357,6 +357,14 @@ Use this only when completion is blocked by missing required tools or missing au
       attachments; use raw GraphQL only when richer Linear-specific attachment
       metadata is required and MCP cannot express it.
     - Ensure the GitHub PR has label `symphony` (add it if missing).
+    - Publish or update the PR through the governed submit wrapper so Symphony
+      PR body normalization, governance checks, and metadata/evidence gates run
+      at the submit boundary:
+      `npm run submit:pr-governed -- --mode create --title "<title>"` for new
+      PRs, or `npm run submit:pr-governed -- --mode edit` for existing PRs.
+      The PR body must include Summary, Spec Alignment with relevant `SPEC.md`
+      or extension/workflow references, and Verification with exact command
+      outcomes.
     - If there is no PR URL, treat the run as incomplete and do not move state forward.
 9.  Before review handoff, verify branch freshness without doing a mandatory
     late merge:
