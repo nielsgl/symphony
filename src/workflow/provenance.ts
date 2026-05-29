@@ -4,10 +4,17 @@ export interface WorkflowCustomizationReference {
   source: string;
 }
 
+export interface WorkflowPortableSkillProvenance {
+  name: string;
+  path: string;
+  source: string;
+}
+
 export interface WorkflowGeneratedProfileProvenance {
   profile: string | null;
   bundle: string | null;
   packs: string[];
+  portableSkills: WorkflowPortableSkillProvenance[];
   references: WorkflowCustomizationReference[];
   sources: string[];
 }
@@ -99,6 +106,43 @@ function referencesFromFields(
   return references;
 }
 
+function portableSkillsFromFields(
+  fields: Record<string, unknown>,
+  source: string,
+  errors: string[]
+): WorkflowPortableSkillProvenance[] {
+  const raw = fields.portable_skills ?? fields.portableSkills;
+  if (typeof raw === 'undefined' || raw === null) {
+    return [];
+  }
+  if (!Array.isArray(raw)) {
+    errors.push(`${source}.portable_skills must be a list`);
+    return [];
+  }
+
+  const portableSkills: WorkflowPortableSkillProvenance[] = [];
+  for (const [index, item] of raw.entries()) {
+    const record = readRecord(item);
+    if (!record) {
+      errors.push(`${source}.portable_skills[${index}] must be an object`);
+      continue;
+    }
+    const name = readString(record.name);
+    const skillPath = readString(record.path);
+    if (!name) {
+      errors.push(`${source}.portable_skills[${index}].name must be a non-empty string`);
+    }
+    if (!skillPath) {
+      errors.push(`${source}.portable_skills[${index}].path must be a non-empty string`);
+    }
+    if (name && skillPath) {
+      portableSkills.push({ name, path: skillPath, source });
+    }
+  }
+
+  return portableSkills;
+}
+
 function requireStringField(
   fields: Record<string, unknown>,
   field: 'profile' | 'bundle',
@@ -145,6 +189,7 @@ function metadataFromFields(
     packs: requireStringListField(fields, 'packs', source, errors, {
       allowCommaString: source === 'workflow_comment'
     }),
+    portableSkills: portableSkillsFromFields(fields, source, errors),
     references: referencesFromFields(fields, source, errors),
     sources: [source]
   };
@@ -205,6 +250,7 @@ function mergeCustomizationMetadata(
     profile: left.profile ?? right.profile,
     bundle: left.bundle ?? right.bundle,
     packs: [...new Set([...left.packs, ...right.packs])],
+    portableSkills: [...left.portableSkills, ...right.portableSkills],
     references: [...left.references, ...right.references],
     sources: [...new Set([...left.sources, ...right.sources])]
   };

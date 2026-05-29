@@ -170,6 +170,68 @@ async function createDoctorProject(workflowContent = VALID_WORKFLOW): Promise<st
   return projectRoot;
 }
 
+async function writeExecutable(filePath: string, content = '#!/usr/bin/env bash\nexit 0\n'): Promise<void> {
+  await fs.writeFile(filePath, content, { encoding: 'utf8', mode: 0o755 });
+}
+
+async function writeFakeCodexAppServer(binDir: string, visibleSkillNames: string[]): Promise<void> {
+  await writeExecutable(
+    path.join(binDir, 'codex'),
+    [
+      `#!${process.execPath}`,
+      "const readline = require('node:readline');",
+      "const rl = readline.createInterface({ input: process.stdin });",
+      'rl.on("line", (line) => {',
+      '  let message;',
+      '  try { message = JSON.parse(line); } catch { return; }',
+      '  if (message.method === "initialize") {',
+      '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "fake-codex", codexHome: process.cwd(), platformFamily: "unix", platformOs: "macos" } }) + "\\n");',
+      '  }',
+      '  if (message.method === "skills/list") {',
+      '    const cwd = message.params && Array.isArray(message.params.cwds) ? message.params.cwds[0] : process.cwd();',
+      `    const names = ${JSON.stringify(visibleSkillNames)};`,
+      '    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [{ cwd, skills: names.map((name) => ({ name, description: name, path: cwd + "/.codex/skills/" + name + "/SKILL.md", scope: "repo", enabled: true })), errors: [] }] } }) + "\\n");',
+      '  }',
+      '});',
+      ''
+    ].join('\n')
+  );
+}
+
+function projectLocalSkillsWorkflow(skillIds: string[]): string {
+  return [
+    '---',
+    'symphony:',
+    '  generated_profile:',
+    '    profile: "solo-local"',
+    '    bundle: "memory-generic"',
+    '    packs:',
+    '      - "tracker:memory"',
+    '    portable_skills:',
+    ...skillIds.flatMap((skillId) => [
+      `      - name: "${skillId}"`,
+      `        path: ".codex/skills/${skillId}/"`
+    ]),
+    'tracker:',
+    '  kind: memory',
+    'codex:',
+    '  command: codex app-server',
+    '---',
+    'workflow'
+  ].join('\n');
+}
+
+async function installProjectSkill(projectRoot: string, skillId: string, helpers: string[] = []): Promise<void> {
+  const skillRoot = path.join(projectRoot, '.codex', 'skills', skillId);
+  await fs.mkdir(skillRoot, { recursive: true });
+  await fs.writeFile(path.join(skillRoot, 'SKILL.md'), `# ${skillId}\n`, 'utf8');
+  for (const helper of helpers) {
+    const helperPath = path.join(projectRoot, helper);
+    await fs.mkdir(path.dirname(helperPath), { recursive: true });
+    await fs.writeFile(helperPath, '#!/usr/bin/env bash\nexit 0\n', { encoding: 'utf8', mode: 0o755 });
+  }
+}
+
 async function createInitGitRepo(prefix = 'symphony-init-real-cli-'): Promise<string> {
   const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
   await execFileAsync('git', ['init'], { cwd: projectRoot });
@@ -188,6 +250,7 @@ function runRealDoctor(projectRoot: string) {
   return spawnSync(process.execPath, [realCliScript, 'doctor', '--json', '--ci'], {
     cwd: projectRoot,
     encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
     env: {
       ...process.env,
       LINEAR_API_KEY: 'generated-validation-placeholder',
@@ -825,7 +888,7 @@ describe('local symphony command router', () => {
       ].join('\n'),
       { encoding: 'utf8', mode: 0o755 }
     );
-    await fs.writeFile(path.join(binDir, 'codex'), '#!/usr/bin/env bash\nexit 0\n', { encoding: 'utf8', mode: 0o755 });
+    await writeFakeCodexAppServer(binDir, ['commit', 'pull', 'push', 'land']);
     const stateHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-clone-state-')));
     const cliEnv = {
       ...process.env,
@@ -845,6 +908,7 @@ describe('local symphony command router', () => {
     const doctor = spawnSync(process.execPath, [realCliScript, 'doctor', '--json', '--ci'], {
       cwd: projectRoot,
       encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
       env: cliEnv
     });
     const payload = JSON.parse(doctor.stdout.toString()) as {
@@ -1815,6 +1879,296 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('Found 1 legacy runtime state path');
     expect(harness.stdout).toContain('doctor will not remove broad ignores');
     expect(harness.stdout).toContain('Migrate runtime state to .symphony/system/ manually');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('reports clean project-local skills, helpers, prerequisites, and Codex visibility', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    await writeFakeCodexAppServer(binDir, ['commit', 'land']);
+    await writeExecutable(path.join(binDir, 'git'));
+    await writeExecutable(path.join(binDir, 'gh'));
+    await writeExecutable(path.join(binDir, 'uv'));
+    await writeExecutable(path.join(binDir, 'python3'));
+    const projectRoot = await createDoctorProject(projectLocalSkillsWorkflow(['commit', 'land']));
+    await installProjectSkill(projectRoot, 'commit');
+    await installProjectSkill(projectRoot, 'land', ['.codex/skills/land/scripts/land_watch.py']);
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(0);
+    expect(doctorFinding(payload, 'project_local_skills.selection')).toMatchObject({
+      status: 'ok',
+      reason: 'portable_skills_selected',
+      details: { selectedSkillIds: ['commit', 'land'] }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.skill.commit')).toMatchObject({
+      status: 'ok',
+      reason: 'portable_skill_installed',
+      details: { path: path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), exists: true }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.helper.land.codex_skills_land_scripts_land_watch_py')).toMatchObject({
+      status: 'ok',
+      reason: 'portable_skill_helper_present',
+      details: { path: path.join(projectRoot, '.codex', 'skills', 'land', 'scripts', 'land_watch.py'), exists: true }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.prerequisite.github-cli')).toMatchObject({
+      status: 'ok',
+      reason: 'portable_skill_prerequisite_present',
+      details: { tool: 'gh' }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.prerequisite.uv')).toMatchObject({
+      status: 'ok',
+      reason: 'portable_skill_prerequisite_present',
+      details: { tool: 'uv' }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.prerequisite.git')).toMatchObject({
+      status: 'ok',
+      reason: 'portable_skill_prerequisite_present',
+      details: { tool: 'git' }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.prerequisite.python')).toMatchObject({
+      status: 'ok',
+      reason: 'portable_skill_prerequisite_present',
+      details: { tool: 'python3', command: 'python3', commandCandidates: ['python3', 'python'] }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.codex_visibility')).toMatchObject({
+      status: 'ok',
+      reason: 'codex_skill_discovery_visible',
+      details: { visibleSkillNames: ['commit', 'land'], missingSkillNames: [] }
+    });
+    expect(harness.stderr).toBe('');
+  });
+
+  it('reports missing project-local skill files separately from missing helper scripts', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    await writeFakeCodexAppServer(binDir, ['commit']);
+    await writeExecutable(path.join(binDir, 'git'));
+    await writeExecutable(path.join(binDir, 'gh'));
+    await writeExecutable(path.join(binDir, 'uv'));
+    await writeExecutable(path.join(binDir, 'python3'));
+    const projectRoot = await createDoctorProject(projectLocalSkillsWorkflow(['commit', 'land']));
+    await installProjectSkill(projectRoot, 'commit');
+    await fs.mkdir(path.join(projectRoot, '.codex', 'skills', 'land'), { recursive: true });
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--ci', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(2);
+    expect(doctorFinding(payload, 'project_local_skills.skill.land')).toMatchObject({
+      status: 'failure',
+      reason: 'portable_skill_missing',
+      details: { path: path.join(projectRoot, '.codex', 'skills', 'land', 'SKILL.md'), exists: false }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.helper.land.codex_skills_land_scripts_land_watch_py')).toMatchObject({
+      status: 'failure',
+      reason: 'portable_skill_helper_missing',
+      details: { path: path.join(projectRoot, '.codex', 'skills', 'land', 'scripts', 'land_watch.py'), exists: false }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.codex_visibility')).toMatchObject({
+      status: 'warning',
+      reason: 'codex_skill_discovery_partial',
+      details: { visibleSkillNames: ['commit'], missingSkillNames: ['land'] }
+    });
+    expect(harness.stderr).toBe('');
+  });
+
+  it('warns on unknown project-local portable skill provenance without false discovery success', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    await writeFakeCodexAppServer(binDir, []);
+    const projectRoot = await createDoctorProject(projectLocalSkillsWorkflow([]).replace(
+      '    portable_skills:\n',
+      [
+        '    portable_skills:',
+        '      - name: "unknown-skill"',
+        '        path: ".codex/skills/unknown-skill/"',
+        ''
+      ].join('\n')
+    ));
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--ci', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(1);
+    expect(doctorFinding(payload, 'project_local_skills.selection')).toMatchObject({
+      status: 'warning',
+      reason: 'portable_skill_selection_unrecognized',
+      summary: expect.stringContaining('unknown-skill'),
+      details: {
+        selectedSkillIds: [],
+        unknown: [{ name: 'unknown-skill', path: '.codex/skills/unknown-skill/', source: 'workflow_frontmatter' }]
+      }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.codex_visibility')).toMatchObject({
+      status: 'warning',
+      reason: 'codex_skill_discovery_unknown_provenance',
+      summary: expect.stringContaining('unknown-skill'),
+      details: {
+        selectedSkillIds: [],
+        unknownSkillNames: ['unknown-skill']
+      }
+    });
+    expect(doctorFinding(payload, 'project_local_skills.codex_visibility')).not.toMatchObject({
+      reason: 'codex_skill_discovery_not_required'
+    });
+    expect(harness.stderr).toBe('');
+  });
+
+  it('reports selected-skill prerequisite and Linear credential status without leaking secrets', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    await writeFakeCodexAppServer(binDir, ['linear-ui-evidence']);
+    const projectRoot = await createDoctorProject(projectLocalSkillsWorkflow(['linear-ui-evidence']));
+    await installProjectSkill(projectRoot, 'linear-ui-evidence', [
+      '.codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js'
+    ]);
+    const missingHarness = createHarness({ repoRoot });
+    missingHarness.deps.cwd = projectRoot;
+    missingHarness.deps.env = { PATH: binDir, LINEAR_API_KEY: '' };
+
+    const missingExitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--ci', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: missingHarness.deps
+    });
+    const missingPayload = JSON.parse(missingHarness.stdout);
+    expect(missingExitCode).toBe(2);
+    expect(doctorFinding(missingPayload, 'project_local_skills.prerequisite.node')).toMatchObject({
+      status: 'failure',
+      reason: 'portable_skill_prerequisite_missing',
+      details: { tool: 'node' }
+    });
+    expect(doctorFinding(missingPayload, 'project_local_skills.credentials.linear')).toMatchObject({
+      status: 'failure',
+      reason: 'linear_skill_credentials_missing',
+      details: {
+        envVarName: 'LINEAR_API_KEY',
+        present: false,
+        sources: { environmentVariable: { present: false } }
+      }
+    });
+
+    await writeExecutable(path.join(binDir, 'node'));
+    const presentHarness = createHarness({ repoRoot });
+    presentHarness.deps.cwd = projectRoot;
+    presentHarness.deps.env = { PATH: binDir, LINEAR_API_KEY: 'linear-secret-value' };
+    const presentExitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: presentHarness.deps
+    });
+    const presentPayload = JSON.parse(presentHarness.stdout);
+
+    expect(presentExitCode).toBe(0);
+    expect(doctorFinding(presentPayload, 'project_local_skills.prerequisite.node')).toMatchObject({
+      status: 'ok',
+      reason: 'portable_skill_prerequisite_present'
+    });
+    expect(doctorFinding(presentPayload, 'project_local_skills.credentials.linear')).toMatchObject({
+      status: 'ok',
+      reason: 'linear_skill_credentials_present',
+      source: { category: 'environment_variable', value: 'LINEAR_API_KEY', present: true }
+    });
+    expect(JSON.stringify(presentPayload)).not.toContain('linear-secret-value');
+    expect(presentHarness.stderr).toBe('');
+  });
+
+  it('reports missing git and Python prerequisites for selected project-local skills', async () => {
+    const missingGit = await createDoctorRepo();
+    await writeFakeCodexAppServer(missingGit.binDir, ['commit']);
+    const gitProjectRoot = await createDoctorProject(projectLocalSkillsWorkflow(['commit']));
+    await installProjectSkill(gitProjectRoot, 'commit');
+    const missingGitHarness = createHarness({ repoRoot: missingGit.repoRoot });
+    missingGitHarness.deps.cwd = gitProjectRoot;
+    missingGitHarness.deps.env = { PATH: missingGit.binDir };
+
+    const missingGitExitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--ci', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: missingGitHarness.deps
+    });
+    const missingGitPayload = JSON.parse(missingGitHarness.stdout);
+
+    expect(missingGitExitCode).toBe(2);
+    expect(doctorFinding(missingGitPayload, 'project_local_skills.prerequisite.git')).toMatchObject({
+      status: 'failure',
+      reason: 'portable_skill_prerequisite_missing',
+      summary: expect.stringContaining('git'),
+      details: { kind: 'git', tool: 'git', executablePath: null, requiredBySelectedSkills: true }
+    });
+    expect(missingGitHarness.stderr).toBe('');
+
+    const missingPython = await createDoctorRepo();
+    await writeFakeCodexAppServer(missingPython.binDir, ['land']);
+    await writeExecutable(path.join(missingPython.binDir, 'git'));
+    await writeExecutable(path.join(missingPython.binDir, 'gh'));
+    await writeExecutable(path.join(missingPython.binDir, 'uv'));
+    const pythonProjectRoot = await createDoctorProject(projectLocalSkillsWorkflow(['land']));
+    await installProjectSkill(pythonProjectRoot, 'land', ['.codex/skills/land/scripts/land_watch.py']);
+    const missingPythonHarness = createHarness({ repoRoot: missingPython.repoRoot });
+    missingPythonHarness.deps.cwd = pythonProjectRoot;
+    missingPythonHarness.deps.env = { PATH: missingPython.binDir };
+
+    const missingPythonExitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--ci', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: missingPythonHarness.deps
+    });
+    const missingPythonPayload = JSON.parse(missingPythonHarness.stdout);
+
+    expect(missingPythonExitCode).toBe(2);
+    expect(doctorFinding(missingPythonPayload, 'project_local_skills.prerequisite.python')).toMatchObject({
+      status: 'failure',
+      reason: 'portable_skill_prerequisite_missing',
+      summary: expect.stringContaining('python3 or python'),
+      details: {
+        kind: 'python',
+        tool: 'python3',
+        command: 'python3',
+        commandCandidates: ['python3', 'python'],
+        executablePath: null,
+        requiredBySelectedSkills: true
+      }
+    });
+    expect(missingPythonHarness.stderr).toBe('');
+  });
+
+  it('reports degraded Codex skill discovery when app-server visibility is unavailable', async () => {
+    const { repoRoot, binDir } = await createDoctorRepo();
+    await writeExecutable(path.join(binDir, 'git'));
+    await writeExecutable(path.join(binDir, 'gh'));
+    const projectRoot = await createDoctorProject(projectLocalSkillsWorkflow(['push']));
+    await installProjectSkill(projectRoot, 'push');
+    const harness = createHarness({ repoRoot });
+    harness.deps.cwd = projectRoot;
+    harness.deps.env = { PATH: binDir };
+
+    const exitCode = await runCommandRouter({
+      argv: ['doctor', '--json', '--i-understand-that-this-will-be-running-without-the-usual-guardrails'],
+      deps: harness.deps
+    });
+    const payload = JSON.parse(harness.stdout);
+
+    expect(exitCode).toBe(1);
+    expect(doctorFinding(payload, 'project_local_skills.codex_visibility')).toMatchObject({
+      status: 'warning',
+      reason: 'codex_skill_discovery_unavailable'
+    });
+    expect(harness.stdout).toContain('Codex-visible project-local skill discovery is checked');
+    expect(harness.stdout).toContain('Codex app-server exited before returning skills/list');
     expect(harness.stderr).toBe('');
   });
 
