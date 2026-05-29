@@ -615,11 +615,25 @@ function validatePortableSkillAssetContainment(assetRoot: string, absolutePath: 
 }
 
 function assertPathInside(root: string, candidate: string, label: string): void {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  const relative = path.relative(realpathNearest(root), realpathNearest(candidate));
   if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
     return;
   }
   throw new Error(`${label} escapes the allowed root ${root}. Refusing to materialize portable skill assets.`);
+}
+
+function realpathNearest(inputPath: string): string {
+  const resolved = path.resolve(inputPath);
+  if (fs.existsSync(resolved)) {
+    return fs.realpathSync(resolved);
+  }
+
+  const parent = path.dirname(resolved);
+  if (parent === resolved) {
+    return resolved;
+  }
+
+  return path.join(realpathNearest(parent), path.basename(resolved));
 }
 
 function buildGitignorePlanEntry(params: { root: string; ignorePath: string; entry: string }): WorkflowFilePlanEntry {
