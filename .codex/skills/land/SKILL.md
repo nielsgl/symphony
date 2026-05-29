@@ -145,8 +145,10 @@ Exit codes:
 - Codex review jobs retry on failure and are non-blocking; use the presence of
   `## Codex Review — <persona>` issue comments (not job status) as the signal
   that review feedback is available.
-- Do not enable auto-merge; this repo has no required checks so auto-merge can
-  skip tests.
+- Follow the current repository's auto-merge policy. Enable auto-merge only
+  when project instructions allow it and required checks/reviews are configured
+  to protect the merge; otherwise perform an explicit merge after validation is
+  complete.
 - If the remote PR branch advanced due to your own prior force-push or merge,
   avoid redundant merges; re-run the formatter locally if needed and
   `git push --force-with-lease`.
