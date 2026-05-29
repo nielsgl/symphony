@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -59,5 +60,12 @@ describe('Vitest test group runner', () => {
       help: false,
       vitestArgs: ['--reporter=dot']
     });
+  });
+
+  it('keeps README validation guidance on local npm test commands', () => {
+    const readme = readFileSync('README.md', 'utf8');
+
+    expect(readme).toMatch(/npm\s+run\s+test:full\s+--\s+<file-or-filter>/);
+    expect(readme).not.toContain('npx vitest run');
   });
 });

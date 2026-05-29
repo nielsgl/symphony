@@ -325,9 +325,9 @@ test:profile:slow`; run `npm run test:integration` for those simulations, or
 Use these commands by validation scope:
 
 - Fast/local iteration: `npm test`
-- Targeted proof: `npm test -- <file-or-filter>` for fast-path files, or `npx
-  vitest run <file-or-filter>` when the target is intentionally outside the
-  fast path.
+- Targeted proof: `npm test -- <file-or-filter>` for fast-path files, or `npm
+  run test:full -- <file-or-filter>` when the target is intentionally outside
+  the fast path.
 - Integration simulations: `npm run test:integration`
 - Agent Review, release handoff, broad runtime changes, or CI-equivalent local
   proof: `npm run build && npm run test:full`
