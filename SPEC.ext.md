@@ -206,6 +206,59 @@ project-owned customization and make those files unreviewable.
 customization paths. They are intentionally visible to git and intentionally
 not loaded by the runtime in this extension.
 
+### 4.1 Project-Local Portable Skills
+
+The `symphony init` MVP may copy selected portable skill templates into
+`.codex/skills/` in the target project. `.codex/skills/` is used because it is
+the Codex project-local skill location; `.symphony/skills/` remains a reserved
+future Symphony customization path and is not a hidden runtime skill-loading
+source.
+
+Copied skills are committed project files. After init, a project may edit,
+replace, or delete its local copies to match its workflow. Symphony does not
+secretly refresh, merge, or override those local customizations at runtime.
+Generated `WORKFLOW.md` provenance records the selected portable skills so
+operators and `symphony doctor` can report what init planned or materialized.
+
+The initial portable skill catalog is:
+
+- `commit`: small atomic Commitizen-style commits with validation evidence.
+  Requires Codex project-local skill loading and `git`.
+- `pull`: merge-based sync from `origin/main` into a feature branch. Requires
+  Codex project-local skill loading and `git`.
+- `push`: push branch updates and create or update the matching pull request.
+  Requires Codex project-local skill loading, `git`, and authenticated
+  GitHub CLI.
+- `land`: watch PR readiness and land approved work through the merge loop.
+  Requires Codex project-local skill loading, `git`, authenticated GitHub CLI,
+  `uv`, and Python for the helper script.
+- `linear-graphql`: narrow raw Linear GraphQL operations for cases not covered
+  by Linear MCP. Requires Codex project-local skill loading and a configured
+  Linear GraphQL client.
+- `linear-ui-evidence`: publish Playwright screenshots and screencasts to
+  Linear as rendered rich media. Requires Codex project-local skill loading,
+  Node.js, and Linear MCP or equivalent Linear upload access.
+
+By default, init selects `commit`, `pull`, `push`, and `land`. Operators may
+select an explicit set with repeated `--skill <name>` flags or
+`--skills <name,name>`. `--no-skills` selects no portable skills and cannot be
+combined with `--skill` or `--skills`.
+
+`--dry-run` renders the same file plan without writing any files. Existing
+generated targets are non-destructive by default: dry-run marks them as
+overwrites, and write mode requires interactive confirmation or `--force`.
+`--force-skills` overwrites only `.codex/skills/` targets and does not authorize
+overwriting unrelated init outputs such as `WORKFLOW.md`. It also does not
+prune extra user files under a skill directory. Directory conflicts and skill
+destinations that resolve outside the target project or `.codex/skills/` tree
+are refused instead of deleted or followed.
+
+`symphony doctor` reports generated workflow provenance and explicit
+customization references as observable project content. It can summarize the
+portable skill catalog, including the `.codex/skills/` target root, default and
+opt-in skill ids, and the reserved `.symphony/skills/` source. Doctor does not
+claim runtime loading from `.symphony/skills/` or `.symphony/prompts/`.
+
 Generated profiles, bundles, and packs are init inputs only. When `symphony
 init` materializes a project, it records reviewable provenance in the root
 `WORKFLOW.md` so operators and `symphony doctor` can inspect which profile
@@ -245,6 +298,12 @@ workflow config:
 13. `.symphony/skills/` and `.symphony/prompts/` must remain visible to git
     until a future project-owned customization implementation changes that
     contract deliberately.
+14. Init-selected portable skills must be materialized under `.codex/skills/`,
+    not `.symphony/skills/`.
+15. Init must preserve existing project-local skill customizations unless the
+    operator explicitly confirms overwrite or uses a scoped force flag.
+16. Doctor must report project-local skill provenance and prerequisites as
+    observable project metadata, not as hidden runtime policy.
 
 These invariants are config-contract requirements and runtime preconditions.
 

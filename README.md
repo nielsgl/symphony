@@ -124,6 +124,11 @@ high-trust setup consent, and dashboard supervisor prerequisites. It reports
 paths and status only; it does not print `.env` values or consent-store
 contents.
 
+For generated workflows, doctor also reports project-local portable skill
+provenance. Init copies portable skills into `.codex/skills/`, where Codex can
+load project-local skills; `.symphony/skills/` and `.symphony/prompts/` remain
+reserved, git-visible paths and are not active runtime skill-loading locations.
+
 Exit codes are stable for automation:
 
 - `0`: clean, no findings.

@@ -92,6 +92,12 @@ customization paths. They are intentionally visible to git today and are not
 loaded by the runtime until a future customization implementation deliberately
 adds that behavior.
 
+Project-local portable skills are copied to `.codex/skills/`, not
+`.symphony/skills/`, because `.codex/skills/` is the Codex project-local skill
+location. The copied files are intentionally owned by the target project after
+init. Operators may edit the local `SKILL.md` files or helper scripts, and
+Symphony will not secretly update or override those edits at runtime.
+
 During migration, a repository may still contain old runtime state such as
 `.symphony/workspaces/`, `.symphony/log/`, `.symphony/logs/`,
 `.symphony/runtime.sqlite`, `.symphony/runtime.sqlite-*`, or
@@ -126,6 +132,11 @@ resolution, effective workflow config, `.env` path, host/port readiness, setup
 consent, and dashboard supervisor prerequisites. It reports paths and status;
 it does not print `.env` values or consent-store contents.
 
+For generated workflows, doctor also reports generated profile and portable
+skill provenance as observable project content. It treats `.codex/skills/` as
+the materialization root and `.symphony/skills/` as reserved, not as an active
+runtime source.
+
 Exit codes:
 
 - `0`: clean.
@@ -152,6 +163,10 @@ symphony init --help
 symphony init
 symphony init --dry-run --bundle memory-generic
 symphony init --bundle memory-generic
+symphony init --dry-run --bundle memory-generic --skill commit --skill land
+symphony init --dry-run --bundle memory-generic --skills commit,land
+symphony init --dry-run --bundle memory-generic --no-skills
+symphony init --bundle memory-generic --force-skills
 symphony init --no-input --bundle linear-node --linear-project-slug SYMPHONY
 symphony init --no-input --bundle github-node --github-owner octo-org --github-repo octo-repo
 ```
@@ -167,6 +182,33 @@ bundles. In an interactive terminal, `symphony init` prompts for missing
 tracker, workspace, toolchain, workflow-style, and hosted tracker inputs. Use
 `--dry-run` to inspect the file plan before writing; existing generated targets
 require confirmation or `--force`.
+
+Init selects the portable `commit`, `pull`, `push`, and `land` skills by
+default. `linear-graphql` and `linear-ui-evidence` are opt-in. Use repeated
+`--skill <name>` flags or comma-separated `--skills <name,name>` to select an
+explicit set. Use `--no-skills` to materialize no skills; it cannot be combined
+with `--skill` or `--skills`.
+
+The first portable skill pack has these prerequisites:
+
+- `commit`: Codex project-local skill loading and `git`.
+- `pull`: Codex project-local skill loading and `git`.
+- `push`: Codex project-local skill loading, `git`, and authenticated GitHub
+  CLI.
+- `land`: Codex project-local skill loading, `git`, authenticated GitHub CLI,
+  `uv`, and Python.
+- `linear-graphql`: Codex project-local skill loading and a configured Linear
+  GraphQL client.
+- `linear-ui-evidence`: Codex project-local skill loading, Node.js, and Linear
+  MCP or equivalent Linear upload access.
+
+Write mode is non-destructive by default. If a generated target already exists,
+init stops unless the operator confirms interactively or passes `--force`.
+`--force-skills` is narrower: it overwrites only `.codex/skills/` files and
+does not overwrite unrelated init outputs such as `WORKFLOW.md`. Extra user
+files under a copied skill directory are preserved. Directory conflicts and
+skill destinations that resolve outside the target project or `.codex/skills/`
+tree are refused.
 
 Automation should use `--no-input` or `CI=true` with explicit selections. Hosted
 tracker workflows also require runtime-critical hosted inputs: Linear needs
