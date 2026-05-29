@@ -7,7 +7,7 @@
     "symphony": "scripts/symphony.js"
   },
   "scripts": {
-    "build": "npm run build:dashboard-client && tsc --project tsconfig.json",
+    "build": "npm run build:dashboard-client && tsc --project tsconfig.json && node scripts/copy-portable-skill-assets.js",
     "build:dashboard-client": "node scripts/build-dashboard-client.js",
     "check:dashboard-client": "node scripts/build-dashboard-client.js --check",
     "build:desktop:prepare": "npm run build && node scripts/build-desktop-backend-sidecar.js",

@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -5,9 +9,12 @@ import {
   listDefaultPortableSkillIds,
   listOptInPortableSkillIds,
   listPortableSkills,
+  resolvePortableSkillAssetSet,
   resolvePortableSkillSelection
 } from '../../src/workflow/portable-skill-catalog';
 import { summarizePortableSkillCatalogForDoctor } from '../../src/runtime/local-doctor';
+
+const repoRoot = path.resolve(__dirname, '..', '..');
 
 describe('portable skill catalog', () => {
   it('contains exactly the initial portable skills in stable order', () => {
@@ -86,5 +93,145 @@ describe('portable skill catalog', () => {
       reservedRuntimeSource: '.symphony/skills',
       runtimeLoadingSupported: false
     });
+  });
+
+  it('resolves source-checkout portable skill assets and helper scripts', () => {
+    const assetSet = resolvePortableSkillAssetSet(
+      listPortableSkills().map((skill) => skill.id),
+      { packageRoot: repoRoot, moduleDirectory: path.join(repoRoot, 'src', 'workflow') }
+    );
+
+    expect(assetSet.source).toBe('source');
+    expect(assetSet.assetRoot).toBe(path.join(repoRoot, '.codex', 'skills'));
+    for (const skill of assetSet.selectedSkills) {
+      expect(fs.statSync(skill.absoluteSourceDirectory).isDirectory()).toBe(true);
+      expect(fs.statSync(skill.absoluteTemplatePath).isFile()).toBe(true);
+      for (const helper of skill.helperScripts) {
+        expect(fs.statSync(helper.absolutePath).isFile()).toBe(true);
+      }
+    }
+  });
+
+  it('resolves built dist portable skill assets without falling back to source paths', () => {
+    const packageRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-portable-skills-dist-')));
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), '{"name":"symphony-test"}\n', 'utf8');
+
+    for (const skill of listPortableSkills()) {
+      const skillDirectory = path.join(packageRoot, 'dist', skill.sourceDirectory);
+      fs.mkdirSync(skillDirectory, { recursive: true });
+      fs.writeFileSync(path.join(skillDirectory, 'SKILL.md'), `# ${skill.name}\n`, 'utf8');
+      for (const helper of skill.helperScripts) {
+        const helperPath = path.join(packageRoot, 'dist', helper.path);
+        fs.mkdirSync(path.dirname(helperPath), { recursive: true });
+        fs.writeFileSync(helperPath, '# helper\n', 'utf8');
+      }
+    }
+
+    const assetSet = resolvePortableSkillAssetSet(
+      listPortableSkills().map((skill) => skill.id),
+      { packageRoot, moduleDirectory: path.join(packageRoot, 'dist', 'src', 'workflow') }
+    );
+
+    expect(assetSet.source).toBe('dist');
+    expect(assetSet.assetRoot).toBe(path.join(packageRoot, 'dist', '.codex', 'skills'));
+    expect(assetSet.selectedSkills.map((skill) => skill.absoluteSourceDirectory)).toEqual(
+      listPortableSkills().map((skill) => path.join(packageRoot, 'dist', skill.sourceDirectory))
+    );
+    expect(assetSet.selectedSkills.map((skill) => skill.absoluteTemplatePath)).toEqual(
+      listPortableSkills().map((skill) => path.join(packageRoot, 'dist', skill.sourceDirectory, 'SKILL.md'))
+    );
+  });
+
+  it('fails dist asset lookup when a selected skill template is missing from the packaged runtime set', () => {
+    const packageRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-portable-skills-missing-template-'))
+    );
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), '{"name":"symphony-test"}\n', 'utf8');
+
+    for (const skill of listPortableSkills()) {
+      const skillDirectory = path.join(packageRoot, 'dist', skill.sourceDirectory);
+      fs.mkdirSync(skillDirectory, { recursive: true });
+      for (const helper of skill.helperScripts) {
+        const helperPath = path.join(packageRoot, 'dist', helper.path);
+        fs.mkdirSync(path.dirname(helperPath), { recursive: true });
+        fs.writeFileSync(helperPath, '# helper\n', 'utf8');
+      }
+    }
+
+    expect(() =>
+      resolvePortableSkillAssetSet(['land'], {
+        packageRoot,
+        moduleDirectory: path.join(packageRoot, 'dist', 'src', 'workflow')
+      })
+    ).toThrow('.codex/skills/land/SKILL.md');
+  });
+
+  it('does not fall back to source templates when dist execution has incomplete packaged assets', () => {
+    const packageRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-portable-skills-linked-template-'))
+    );
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), '{"name":"symphony-test"}\n', 'utf8');
+
+    fs.mkdirSync(path.join(packageRoot, '.codex', 'skills', 'land'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, '.codex', 'skills', 'land', 'SKILL.md'), '# source land\n', 'utf8');
+    fs.mkdirSync(path.join(packageRoot, 'dist', '.codex', 'skills', 'land'), { recursive: true });
+
+    expect(() =>
+      resolvePortableSkillAssetSet(['land'], {
+        packageRoot,
+        moduleDirectory: path.join(packageRoot, 'dist', 'src', 'workflow')
+      })
+    ).toThrow('.codex/skills/land/SKILL.md');
+  });
+
+  it('fails dist asset lookup when a selected helper script is missing from the packaged runtime set', () => {
+    const packageRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-portable-skills-missing-')));
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), '{"name":"symphony-test"}\n', 'utf8');
+
+    for (const skill of listPortableSkills()) {
+      const skillDirectory = path.join(packageRoot, 'dist', skill.sourceDirectory);
+      fs.mkdirSync(skillDirectory, { recursive: true });
+      fs.writeFileSync(path.join(skillDirectory, 'SKILL.md'), `# ${skill.name}\n`, 'utf8');
+    }
+
+    expect(() =>
+      resolvePortableSkillAssetSet(['linear-ui-evidence'], {
+        packageRoot,
+        moduleDirectory: path.join(packageRoot, 'dist', 'src', 'workflow')
+      })
+    ).toThrow('.codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js');
+  });
+
+  it('does not fall back to source helpers when dist execution has incomplete packaged assets', () => {
+    const packageRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-portable-skills-linked-helper-'))
+    );
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), '{"name":"symphony-test"}\n', 'utf8');
+
+    const skill = listPortableSkills().find((entry) => entry.id === 'linear-ui-evidence');
+    expect(skill).toBeDefined();
+    if (!skill) {
+      throw new Error('linear-ui-evidence skill fixture missing');
+    }
+
+    const sourceSkillDirectory = path.join(packageRoot, skill.sourceDirectory);
+    fs.mkdirSync(sourceSkillDirectory, { recursive: true });
+    fs.writeFileSync(path.join(sourceSkillDirectory, 'SKILL.md'), '# source linear-ui-evidence\n', 'utf8');
+    for (const helper of skill.helperScripts) {
+      const sourceHelperPath = path.join(packageRoot, helper.path);
+      fs.mkdirSync(path.dirname(sourceHelperPath), { recursive: true });
+      fs.writeFileSync(sourceHelperPath, '# source helper\n', 'utf8');
+    }
+
+    const distSkillDirectory = path.join(packageRoot, 'dist', skill.sourceDirectory);
+    fs.mkdirSync(distSkillDirectory, { recursive: true });
+    fs.writeFileSync(path.join(distSkillDirectory, 'SKILL.md'), '# dist linear-ui-evidence\n', 'utf8');
+
+    expect(() =>
+      resolvePortableSkillAssetSet(['linear-ui-evidence'], {
+        packageRoot,
+        moduleDirectory: path.join(packageRoot, 'dist', 'src', 'workflow')
+      })
+    ).toThrow('.codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js');
   });
 });
