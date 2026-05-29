@@ -89,6 +89,7 @@ export interface WorkspaceManagerOptions {
     timeoutMs: number;
   }) => Promise<{ timedOut: boolean; error?: string }>;
   probeTool?: (params: { command: string; args: string[]; cwd: string }) => Promise<boolean>;
+  runGit?: (params: { cwd: string; args: string[] }) => Promise<string | null>;
   onHookResult?: (result: HookExecutionResult) => void;
   onPreflightResult?: (result: {
     identifier: string;

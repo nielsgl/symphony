@@ -88,6 +88,18 @@ async function defaultProbeTool(params: {
   });
 }
 
+async function defaultRunGit(params: { cwd: string; args: string[] }): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn('git', params.args, { cwd: params.cwd, stdio: ['ignore', 'pipe', 'ignore'] });
+    let stdout = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => resolve(code === 0 ? stdout : null));
+  });
+}
+
 function normalizeHookReasonCode(reason: string): string {
   return reason
     .trim()
@@ -126,6 +138,7 @@ export class WorkspaceManager {
   private readonly nowMs: () => number;
   private readonly runShell: NonNullable<WorkspaceManagerOptions['runShell']>;
   private readonly probeTool: NonNullable<WorkspaceManagerOptions['probeTool']>;
+  private readonly runGit: NonNullable<WorkspaceManagerOptions['runGit']>;
   private readonly onHookResult?: WorkspaceManagerOptions['onHookResult'];
   private readonly onProvisionerResult?: WorkspaceManagerOptions['onProvisionerResult'];
   private copyIgnored: WorkspaceManagerOptions['copyIgnored'];
@@ -139,6 +152,7 @@ export class WorkspaceManager {
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.runShell = options.runShell ?? defaultRunShell;
     this.probeTool = options.probeTool ?? defaultProbeTool;
+    this.runGit = options.runGit ?? defaultRunGit;
     this.onHookResult = options.onHookResult;
     this.onProvisionerResult = options.onProvisionerResult;
     this.copyIgnored = options.copyIgnored;
@@ -369,7 +383,7 @@ export class WorkspaceManager {
   }
 
   private async normalizeKnownWorkspaceDrift(workspacePath: string, options: WorkspacePrepareAttemptOptions): Promise<void> {
-    const statusOutput = await this.runGit(workspacePath, ['status', '--porcelain']);
+    const statusOutput = await this.runGit({ cwd: workspacePath, args: ['status', '--porcelain'] });
     if (!statusOutput) {
       return;
     }
@@ -398,11 +412,11 @@ export class WorkspaceManager {
         continue;
       }
       if (entry.staged !== ' ') {
-        await this.runGit(workspacePath, ['restore', '--staged', '--', normalizedPath]);
+        await this.runGit({ cwd: workspacePath, args: ['restore', '--staged', '--', normalizedPath] });
         cleanupActions.push({ path: normalizedPath, action: 'unstage' });
       }
       if (normalizedPath.startsWith('output/playwright/') && entry.staged !== '?') {
-        await this.runGit(workspacePath, ['rm', '--cached', '-f', '--ignore-unmatch', '--', normalizedPath]);
+        await this.runGit({ cwd: workspacePath, args: ['rm', '--cached', '-f', '--ignore-unmatch', '--', normalizedPath] });
         cleanupActions.push({ path: normalizedPath, action: 'untrack' });
       }
       await fs.rm(path.join(workspacePath, normalizedPath), { recursive: true, force: true });
@@ -411,11 +425,11 @@ export class WorkspaceManager {
 
     const sentinel = entries.find((entry) => entry.path.replace(/\\/g, '/') === SENTINEL_UI_PATH);
     if (sentinel && sentinel.staged !== ' ' && sentinel.unstaged !== ' ') {
-      await this.runGit(workspacePath, ['restore', '--staged', '--', SENTINEL_UI_PATH]);
+      await this.runGit({ cwd: workspacePath, args: ['restore', '--staged', '--', SENTINEL_UI_PATH] });
       cleanupActions.push({ path: SENTINEL_UI_PATH, action: 'unstage' });
     }
 
-    const remaining = this.parseStatusPorcelain((await this.runGit(workspacePath, ['status', '--porcelain'])) ?? '');
+    const remaining = this.parseStatusPorcelain((await this.runGit({ cwd: workspacePath, args: ['status', '--porcelain'] })) ?? '');
     for (const entry of remaining) {
       const normalizedPath = entry.path.replace(/\\/g, '/');
       if (normalizedPath === SENTINEL_UI_PATH) {
@@ -529,7 +543,7 @@ export class WorkspaceManager {
       'rebase-apply'
     ];
     for (const gitStatePath of gitStatePaths) {
-      const resolved = await this.runGit(workspacePath, ['rev-parse', '--git-path', gitStatePath]);
+      const resolved = await this.runGit({ cwd: workspacePath, args: ['rev-parse', '--git-path', gitStatePath] });
       const candidate = resolved?.trim();
       if (!candidate) {
         continue;
@@ -539,23 +553,11 @@ export class WorkspaceManager {
         return true;
       }
     }
-    const unmergedEntries = await this.runGit(workspacePath, ['ls-files', '-u']);
+    const unmergedEntries = await this.runGit({ cwd: workspacePath, args: ['ls-files', '-u'] });
     if (unmergedEntries?.trim()) {
       return true;
     }
     return false;
-  }
-
-  private async runGit(cwd: string, args: string[]): Promise<string | null> {
-    return new Promise((resolve) => {
-      const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
-      let stdout = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString('utf8');
-      });
-      child.on('error', () => resolve(null));
-      child.on('close', (code) => resolve(code === 0 ? stdout : null));
-    });
   }
 
   private parseStatusPorcelain(output: string): Array<{ staged: string; unstaged: string; path: string }> {

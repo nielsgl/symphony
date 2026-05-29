@@ -29,6 +29,28 @@ function git(cwd: string, args: string[]): void {
   }
 }
 
+function fakeGit(params: { statusOutputs?: string[]; unmergedEntries?: string } = {}) {
+  // Keep fake Git state inside each test so porcelain/status mutations cannot leak between tests.
+  const statusOutputs = [...(params.statusOutputs ?? [])];
+  let lastStatus = statusOutputs.at(-1) ?? '';
+  return vi.fn(async ({ args }: { cwd: string; args: string[] }) => {
+    if (args[0] === 'status') {
+      const nextStatus = statusOutputs.shift();
+      if (nextStatus !== undefined) {
+        lastStatus = nextStatus;
+      }
+      return nextStatus ?? lastStatus;
+    }
+    if (args[0] === 'rev-parse' && args[1] === '--git-path') {
+      return `.git/${args[2]}\n`;
+    }
+    if (args[0] === 'ls-files' && args[1] === '-u') {
+      return params.unmergedEntries ?? '';
+    }
+    return '';
+  });
+}
+
 describe('WorkspaceManager', () => {
   const cleanupPaths: string[] = [];
 
@@ -141,53 +163,55 @@ describe('WorkspaceManager', () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);
     const preflightResults: Array<{ status: string; cleaned_files: Array<{ path: string; action: string }> }> = [];
+    const runGit = fakeGit({
+      statusOutputs: [
+        'A  output/playwright/demo.webm\nMM src/api/dashboard-assets.ts\n',
+        ' M src/api/dashboard-assets.ts\n'
+      ]
+    });
     const manager = new WorkspaceManager({
       root,
       hooks: { timeout_ms: 1000 },
+      runGit,
       onPreflightResult: (result) => {
         preflightResults.push(result);
       }
     });
 
     const workspace = await manager.ensureWorkspace('ABC-1');
-    git(workspace.path, ['init']);
-    git(workspace.path, ['config', 'user.email', 'test@example.com']);
-    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
     await fs.mkdir(path.join(workspace.path, 'src/api'), { recursive: true });
     await fs.writeFile(path.join(workspace.path, 'src/api/dashboard-assets.ts'), 'export const a = 1;\n', 'utf8');
-    git(workspace.path, ['add', '.']);
-    git(workspace.path, ['commit', '-m', 'initial']);
-
     await fs.mkdir(path.join(workspace.path, 'output/playwright'), { recursive: true });
     await fs.writeFile(path.join(workspace.path, 'output/playwright/demo.webm'), 'artifact', 'utf8');
-    git(workspace.path, ['add', '-f', 'output/playwright/demo.webm']);
-    await fs.appendFile(path.join(workspace.path, 'src/api/dashboard-assets.ts'), '// staged\n', 'utf8');
-    git(workspace.path, ['add', 'src/api/dashboard-assets.ts']);
-    await fs.appendFile(path.join(workspace.path, 'src/api/dashboard-assets.ts'), '// unstaged\n', 'utf8');
 
     await manager.prepareAttempt(workspace.path);
-    const status = spawnSync('git', ['status', '--porcelain'], { cwd: workspace.path, encoding: 'utf8' }).stdout;
 
-    expect(status).not.toContain('output/playwright/demo.webm');
+    await expect(exists(path.join(workspace.path, 'output/playwright/demo.webm'))).resolves.toBe(false);
     expect(preflightResults.some((entry) => entry.status === 'cleaned')).toBe(true);
+    expect(runGit).toHaveBeenCalledWith({
+      cwd: workspace.path,
+      args: ['restore', '--staged', '--', 'output/playwright/demo.webm']
+    });
+    expect(runGit).toHaveBeenCalledWith({
+      cwd: workspace.path,
+      args: ['rm', '--cached', '-f', '--ignore-unmatch', '--', 'output/playwright/demo.webm']
+    });
   }, GIT_PREFLIGHT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('preflight blocks when tracked output/playwright artifacts remain', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);
+    const runGit = fakeGit({
+      statusOutputs: [' M output/playwright/demo.webm\n', ' M output/playwright/demo.webm\n']
+    });
     const manager = new WorkspaceManager({
       root,
-      hooks: { timeout_ms: 1000 }
+      hooks: { timeout_ms: 1000 },
+      runGit
     });
     const workspace = await manager.ensureWorkspace('ABC-2');
-    git(workspace.path, ['init']);
-    git(workspace.path, ['config', 'user.email', 'test@example.com']);
-    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
     await fs.mkdir(path.join(workspace.path, 'output/playwright'), { recursive: true });
     await fs.writeFile(path.join(workspace.path, 'output/playwright/demo.webm'), 'stub-video\n', 'utf8');
-    git(workspace.path, ['add', '-f', 'output/playwright/demo.webm']);
-    git(workspace.path, ['commit', '-m', 'track artifact']);
-    await fs.appendFile(path.join(workspace.path, 'output/playwright/demo.webm'), 'changed\n', 'utf8');
 
     await expect(manager.prepareAttempt(workspace.path)).rejects.toMatchObject({
       code: 'workspace_unprovisioned_conflict',
@@ -202,24 +226,18 @@ describe('WorkspaceManager', () => {
       status: string;
       conflict_files: Array<{ path: string; status: string; classification?: string }>;
     }> = [];
+    const runGit = fakeGit({
+      statusOutputs: [' D tests/orchestrator/core.test.ts\n?? tests/orchestrator/core-dispatch.test.ts\n']
+    });
     const manager = new WorkspaceManager({
       root,
       hooks: { timeout_ms: 1000 },
+      runGit,
       onPreflightResult: (result) => {
         preflightResults.push(result);
       }
     });
     const workspace = await manager.ensureWorkspace('ABC-RESIDUE');
-    git(workspace.path, ['init']);
-    git(workspace.path, ['config', 'user.email', 'test@example.com']);
-    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
-    await fs.mkdir(path.join(workspace.path, 'tests/orchestrator'), { recursive: true });
-    await fs.writeFile(path.join(workspace.path, 'tests/orchestrator/core.test.ts'), 'test("old", () => {});\n', 'utf8');
-    git(workspace.path, ['add', '.']);
-    git(workspace.path, ['commit', '-m', 'initial']);
-
-    await fs.rm(path.join(workspace.path, 'tests/orchestrator/core.test.ts'));
-    await fs.writeFile(path.join(workspace.path, 'tests/orchestrator/core-dispatch.test.ts'), 'test("new", () => {});\n', 'utf8');
 
     await manager.prepareAttempt(workspace.path, { allow_attempt_residue: true });
 
@@ -237,23 +255,17 @@ describe('WorkspaceManager', () => {
   it('preflight does not allow attempt residue while a git merge is active', async () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);
+    const runGit = fakeGit({
+      statusOutputs: [' M README.md\n']
+    });
     const manager = new WorkspaceManager({
       root,
-      hooks: { timeout_ms: 1000 }
+      hooks: { timeout_ms: 1000 },
+      runGit
     });
     const workspace = await manager.ensureWorkspace('ABC-MERGE');
-    git(workspace.path, ['init']);
-    git(workspace.path, ['config', 'user.email', 'test@example.com']);
-    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
-    await fs.writeFile(path.join(workspace.path, 'README.md'), 'base\n', 'utf8');
-    git(workspace.path, ['add', '.']);
-    git(workspace.path, ['commit', '-m', 'initial']);
-    await fs.writeFile(path.join(workspace.path, 'README.md'), 'dirty\n', 'utf8');
-    const mergeHeadPath = spawnSync('git', ['rev-parse', '--git-path', 'MERGE_HEAD'], {
-      cwd: workspace.path,
-      encoding: 'utf8'
-    }).stdout.trim();
-    await fs.writeFile(path.resolve(workspace.path, mergeHeadPath), '0000000000000000000000000000000000000000\n', 'utf8');
+    await fs.mkdir(path.join(workspace.path, '.git'), { recursive: true });
+    await fs.writeFile(path.join(workspace.path, '.git/MERGE_HEAD'), '0000000000000000000000000000000000000000\n', 'utf8');
 
     await expect(manager.prepareAttempt(workspace.path, { allow_attempt_residue: true })).rejects.toMatchObject({
       code: 'workspace_unprovisioned_conflict',
@@ -266,24 +278,16 @@ describe('WorkspaceManager', () => {
     async (sentinelName) => {
       const root = await makeTempRoot();
       cleanupPaths.push(root);
+      const runGit = fakeGit({
+        statusOutputs: [' M README.md\n']
+      });
       const manager = new WorkspaceManager({
         root,
-        hooks: { timeout_ms: 1000 }
+        hooks: { timeout_ms: 1000 },
+        runGit
       });
       const workspace = await manager.ensureWorkspace(`ABC-${sentinelName}`);
-      git(workspace.path, ['init']);
-      git(workspace.path, ['config', 'user.email', 'test@example.com']);
-      git(workspace.path, ['config', 'user.name', 'Workspace Test']);
-      await fs.writeFile(path.join(workspace.path, 'README.md'), 'base\n', 'utf8');
-      git(workspace.path, ['add', '.']);
-      git(workspace.path, ['commit', '-m', 'initial']);
-      await fs.writeFile(path.join(workspace.path, 'README.md'), 'dirty\n', 'utf8');
-
-      const sentinelPath = spawnSync('git', ['rev-parse', '--git-path', sentinelName], {
-        cwd: workspace.path,
-        encoding: 'utf8'
-      }).stdout.trim();
-      const absoluteSentinelPath = path.resolve(workspace.path, sentinelPath);
+      const absoluteSentinelPath = path.join(workspace.path, '.git', sentinelName);
       await fs.mkdir(path.dirname(absoluteSentinelPath), { recursive: true });
       if (sentinelName === 'sequencer') {
         await fs.mkdir(absoluteSentinelPath, { recursive: true });
@@ -332,20 +336,16 @@ describe('WorkspaceManager', () => {
     const root = await makeTempRoot();
     cleanupPaths.push(root);
     const preflightResults: Array<{ status: string }> = [];
+    const runGit = fakeGit({ statusOutputs: [''] });
     const manager = new WorkspaceManager({
       root,
       hooks: { timeout_ms: 1000 },
+      runGit,
       onPreflightResult: (result) => {
         preflightResults.push(result);
       }
     });
     const workspace = await manager.ensureWorkspace('ABC-3');
-    git(workspace.path, ['init']);
-    git(workspace.path, ['config', 'user.email', 'test@example.com']);
-    git(workspace.path, ['config', 'user.name', 'Workspace Test']);
-    await fs.writeFile(path.join(workspace.path, 'README.md'), 'ok\n', 'utf8');
-    git(workspace.path, ['add', '.']);
-    git(workspace.path, ['commit', '-m', 'initial']);
 
     await manager.prepareAttempt(workspace.path);
     expect(preflightResults).toEqual([]);

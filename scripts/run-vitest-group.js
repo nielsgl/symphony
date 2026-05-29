@@ -36,10 +36,6 @@ const INTEGRATION_TEST_FILES = [
     reason: 'real CLI scenario matrix over blocker/pass/warning worktree states; profiled at 5.29s'
   },
   {
-    file: 'tests/workspace/workspace-manager.test.ts',
-    reason: 'workspace manager git/worktree lifecycle simulation; profiled at 3.14s'
-  },
-  {
     file: 'tests/cli/workspace-before-remove.test.ts',
     reason: 'workspace cleanup hook and git/worktree safety simulation; profiled at 2.44s'
   },
