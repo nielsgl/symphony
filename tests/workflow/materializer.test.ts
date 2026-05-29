@@ -45,6 +45,8 @@ describe('workflow materializer', () => {
     expect(plan.files[0].content).toContain('bundle_provenance=memory-generic->tracker:memory,workspace:none,toolchain:generic,workflow:solo-local');
     expect(plan.files[0].content).toContain('- Project root: .');
     expect(plan.files[0].content).not.toContain(`- Project root: ${root}`);
+    expect(plan.portableSkills.selectedSkillIds).toEqual(['commit', 'pull', 'push', 'land']);
+    expect(plan.portableSkills.optInSkillIds).toEqual(['linear-graphql', 'linear-ui-evidence']);
     expect(plan.validation).toMatchObject({ ok: true });
 
     const definition = new WorkflowLoader().parse(plan.files[0].content ?? '');
