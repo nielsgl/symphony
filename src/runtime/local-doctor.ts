@@ -700,14 +700,25 @@ function addProjectLocalSkillPrerequisiteChecks(
   envFilePath: string
 ): void {
   const kinds = requiredPrerequisiteKinds(selectedSkills);
-  const tools: Array<{ kind: PortableSkillPrerequisiteKind; command: string; label: string }> = [
-    { kind: 'github-cli', command: 'gh', label: 'GitHub CLI' },
-    { kind: 'uv', command: 'uv', label: 'uv' },
-    { kind: 'node', command: 'node', label: 'Node.js' }
+  const tools: Array<{ kind: PortableSkillPrerequisiteKind; commands: string[]; label: string }> = [
+    { kind: 'git', commands: ['git'], label: 'Git CLI' },
+    { kind: 'github-cli', commands: ['gh'], label: 'GitHub CLI' },
+    { kind: 'uv', commands: ['uv'], label: 'uv' },
+    { kind: 'node', commands: ['node'], label: 'Node.js' },
+    { kind: 'python', commands: ['python3', 'python'], label: 'Python' }
   ];
 
   for (const tool of tools.filter((candidate) => kinds.includes(candidate.kind))) {
-    const executablePath = findCommandOnPath(tool.command, env);
+    let resolvedCommand: string | null = null;
+    let executablePath: string | null = null;
+    for (const command of tool.commands) {
+      executablePath = findCommandOnPath(command, env);
+      if (executablePath) {
+        resolvedCommand = command;
+        break;
+      }
+    }
+    const commandSummary = tool.commands.join(' or ');
     addCheck(checks, {
       id: `project_local_skills.prerequisite.${tool.kind}`,
       title: `${tool.label} is available for selected project-local skills`,
@@ -715,9 +726,16 @@ function addProjectLocalSkillPrerequisiteChecks(
       reason: executablePath ? 'portable_skill_prerequisite_present' : 'portable_skill_prerequisite_missing',
       summary: executablePath
         ? `${tool.label} prerequisite resolves to ${executablePath}.`
-        : `${tool.label} prerequisite is missing for selected project-local skills: ${tool.command}`,
-      remediation: executablePath ? undefined : `Install ${tool.command} or put it on PATH before using the selected project-local skills.`,
-      details: { kind: tool.kind, tool: tool.command, executablePath, requiredBySelectedSkills: true }
+        : `${tool.label} prerequisite is missing for selected project-local skills: ${commandSummary}`,
+      remediation: executablePath ? undefined : `Install ${commandSummary} or put it on PATH before using the selected project-local skills.`,
+      details: {
+        kind: tool.kind,
+        tool: tool.commands[0],
+        command: resolvedCommand ?? tool.commands[0],
+        commandCandidates: tool.commands,
+        executablePath,
+        requiredBySelectedSkills: true
+      }
     });
   }
 
