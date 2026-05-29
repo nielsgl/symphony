@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { WorkflowLoader } from './loader';
-import { resolvePortableSkillSelection, type PortableSkillSelection } from './portable-skill-catalog';
+import {
+  resolvePortableSkillAssetSet,
+  resolvePortableSkillSelection,
+  type PortableSkillSelection
+} from './portable-skill-catalog';
 import type { ProfilePack, ProfileResolution } from './profile-registry';
 import { validateWorkflowGeneratedProfileProvenance } from './provenance';
 import { ConfigResolver } from './resolver';
@@ -23,6 +27,8 @@ export interface DetectedProjectFacts {
 export interface InitUserChoices {
   dryRun: boolean;
   selections: readonly string[];
+  portableSkillIds?: readonly string[];
+  noPortableSkills?: boolean;
   linearProjectSlug?: string | null;
   githubOwner?: string | null;
   githubRepo?: string | null;
@@ -79,6 +85,7 @@ export function materializeWorkflowPlan(options: WorkflowMaterializerOptions): W
     throw new Error(hostedInputErrors.join('\n'));
   }
 
+  const portableSkills = resolveInitPortableSkillSelection(options.choices);
   const workflowContent = renderGeneratedWorkflow(options);
   const workflowPath = path.join(options.projectFacts.root, 'WORKFLOW.md');
   const workflowValidation = validateWorkflowContent(workflowContent, workflowPath);
@@ -102,13 +109,14 @@ export function materializeWorkflowPlan(options: WorkflowMaterializerOptions): W
       root: options.projectFacts.root,
       ignorePath: '.gitignore',
       entry: '.symphony/system/'
-    })
+    }),
+    ...buildPortableSkillDryRunFiles(options, portableSkills)
   ];
 
   return {
     dryRun: options.choices.dryRun,
     selections: options.choices.selections,
-    portableSkills: resolvePortableSkillSelection(),
+    portableSkills,
     selectedPacks: options.resolution.packs.map((pack) => pack.id),
     bundleProvenance: options.resolution.expandedBundles.map((expansion) => ({
       bundle: expansion.bundle.id,
@@ -118,6 +126,47 @@ export function materializeWorkflowPlan(options: WorkflowMaterializerOptions): W
     files,
     validation: workflowValidation
   };
+}
+
+function resolveInitPortableSkillSelection(choices: InitUserChoices): PortableSkillSelection {
+  if (choices.noPortableSkills) {
+    return resolvePortableSkillSelection([]);
+  }
+  return resolvePortableSkillSelection(choices.portableSkillIds);
+}
+
+function buildPortableSkillDryRunFiles(
+  options: WorkflowMaterializerOptions,
+  portableSkills: PortableSkillSelection
+): WorkflowFilePlanEntry[] {
+  if (!options.choices.dryRun || portableSkills.selectedSkillIds.length === 0) {
+    return [];
+  }
+
+  const assets = resolvePortableSkillAssetSet(portableSkills.selectedSkillIds);
+  const files: WorkflowFilePlanEntry[] = [];
+  for (const skill of assets.selectedSkills) {
+    files.push(
+      buildFilePlanEntry({
+        root: options.projectFacts.root,
+        relativePath: path.join(skill.destinationDirectory, 'SKILL.md'),
+        content: fs.readFileSync(skill.absoluteTemplatePath, 'utf8'),
+        notes: [`plans project-local portable skill template from ${skill.sourceDirectory}`]
+      })
+    );
+    for (const helper of skill.helperScripts) {
+      files.push(
+        buildFilePlanEntry({
+          root: options.projectFacts.root,
+          relativePath: helper.destinationPath,
+          content: fs.readFileSync(helper.absolutePath, 'utf8'),
+          notes: [`plans ${helper.runtime} helper script for portable skill ${skill.id}`]
+        })
+      );
+    }
+  }
+
+  return files;
 }
 
 function validateHostedTrackerInputs(options: WorkflowMaterializerOptions): string[] {

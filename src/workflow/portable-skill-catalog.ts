@@ -231,10 +231,19 @@ export function listOptInPortableSkillIds(): PortableSkillId[] {
   return PORTABLE_SKILL_CATALOG.filter((skill) => !skill.defaultRecommended).map((skill) => skill.id);
 }
 
-export function resolvePortableSkillSelection(
-  requestedSkillIds: readonly PortableSkillId[] = listDefaultPortableSkillIds()
-): PortableSkillSelection {
-  const uniqueSkillIds = [...new Set(requestedSkillIds)];
+export function resolvePortableSkillSelection(requestedSkillIds: readonly string[] = listDefaultPortableSkillIds()): PortableSkillSelection {
+  const uniqueSkillIds: PortableSkillId[] = [];
+  for (const id of requestedSkillIds) {
+    const skill = getPortableSkill(id);
+    if (!skill) {
+      throw new Error(
+        `Unknown portable skill '${id}'. Choose one of: ${PORTABLE_SKILL_CATALOG.map((entry) => entry.id).join(', ')}.`
+      );
+    }
+    if (!uniqueSkillIds.includes(skill.id)) {
+      uniqueSkillIds.push(skill.id);
+    }
+  }
   const selectedSkills = uniqueSkillIds.map((id) => {
     const skill = getPortableSkill(id);
     if (!skill) {
