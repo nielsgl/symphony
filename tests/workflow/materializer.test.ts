@@ -34,7 +34,12 @@ describe('workflow materializer', () => {
     expect(plan.files.map((file) => file.path)).toEqual([
       'WORKFLOW.md',
       path.join('.symphony', 'system', '.gitignore'),
-      '.gitignore'
+      '.gitignore',
+      path.join('.codex', 'skills', 'commit', 'SKILL.md'),
+      path.join('.codex', 'skills', 'pull', 'SKILL.md'),
+      path.join('.codex', 'skills', 'push', 'SKILL.md'),
+      path.join('.codex', 'skills', 'land', 'SKILL.md'),
+      path.join('.codex', 'skills', 'land', 'scripts', 'land_watch.py')
     ]);
     expect(plan.files[0]).toMatchObject({
       action: 'create',
@@ -47,6 +52,11 @@ describe('workflow materializer', () => {
     expect(plan.files[0].content).not.toContain(`- Project root: ${root}`);
     expect(plan.portableSkills.selectedSkillIds).toEqual(['commit', 'pull', 'push', 'land']);
     expect(plan.portableSkills.optInSkillIds).toEqual(['linear-graphql', 'linear-ui-evidence']);
+    expect(plan.files.find((file) => file.path === path.join('.codex', 'skills', 'land', 'scripts', 'land_watch.py'))).toMatchObject({
+      action: 'create',
+      overwriteStatus: 'absent',
+      wouldWrite: true
+    });
     expect(plan.validation).toMatchObject({ ok: true });
 
     const definition = new WorkflowLoader().parse(plan.files[0].content ?? '');
@@ -221,7 +231,12 @@ describe('workflow materializer', () => {
       '.env.example',
       '.worktreeinclude',
       path.join('.symphony', 'system', '.gitignore'),
-      '.gitignore'
+      '.gitignore',
+      path.join('.codex', 'skills', 'commit', 'SKILL.md'),
+      path.join('.codex', 'skills', 'pull', 'SKILL.md'),
+      path.join('.codex', 'skills', 'push', 'SKILL.md'),
+      path.join('.codex', 'skills', 'land', 'SKILL.md'),
+      path.join('.codex', 'skills', 'land', 'scripts', 'land_watch.py')
     ]);
     expect(plan.files.find((file) => file.path === '.env.example')?.content).toContain('LINEAR_API_KEY=');
     expect(plan.files.find((file) => file.path === '.worktreeinclude')?.content).toContain('.env.local');

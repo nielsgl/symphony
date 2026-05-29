@@ -407,6 +407,11 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('symphony init --help');
     expect(harness.stdout).toContain('symphony init --bundle memory-generic');
     expect(harness.stdout).toContain('symphony init --dry-run --bundle memory-generic');
+    expect(harness.stdout).toContain('symphony init --dry-run --bundle memory-generic --skill commit --skill land');
+    expect(harness.stdout).toContain('symphony init --dry-run --bundle memory-generic --no-skills');
+    expect(harness.stdout).toContain('Use --skill <name> repeatedly or --skills <name,name> to select an explicit set.');
+    expect(harness.stdout).toContain('Use --no-skills to opt out of project-local skill materialization.');
+    expect(harness.stdout).toContain('interactive confirmation or --force');
     expect(harness.stdout).toContain('Dry-run renders the same file plan without writing files');
     expect(harness.stderr).toBe('');
   });
@@ -429,10 +434,96 @@ describe('local symphony command router', () => {
     expect(harness.stdout).toContain('Writes performed: no');
     expect(harness.stdout).toContain('would_write: yes');
     expect(harness.stdout).toContain('WORKFLOW.md');
+    expect(harness.stdout).toContain('.codex/skills/commit/SKILL.md');
+    expect(harness.stdout).toContain('.codex/skills/land/SKILL.md');
+    expect(harness.stdout).toContain('.codex/skills/land/scripts/land_watch.py');
+    expect(harness.stdout).not.toContain('.symphony/skills/');
     expect(harness.stdout).toContain('<!-- symphony-generated-profile: profile=solo-local; bundle=memory-generic; packs=tracker:memory,workspace:none,toolchain:generic,workflow:solo-local;');
     expect(harness.stdout).not.toContain('workflow:symphony-internal');
     await expect(fs.access(path.join(projectRoot, 'WORKFLOW.md'))).rejects.toThrow();
     await expect(fs.access(path.join(projectRoot, '.symphony'))).rejects.toThrow();
+    await expect(fs.access(path.join(projectRoot, '.codex'))).rejects.toThrow();
+    expect(harness.stderr).toBe('');
+  });
+
+  it('renders explicitly selected portable skills and helper scripts in dry-run output', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-skills-')));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'memory-generic', '--skill', 'linear-ui-evidence', '--skill', 'land'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Portable skills: linear-ui-evidence, land');
+    expect(harness.stdout).toContain('.codex/skills/linear-ui-evidence/SKILL.md');
+    expect(harness.stdout).toContain('.codex/skills/linear-ui-evidence/scripts/publish-linear-ui-evidence.js');
+    expect(harness.stdout).toContain('.codex/skills/land/scripts/land_watch.py');
+    expect(harness.stdout).not.toContain('.codex/skills/commit/SKILL.md');
+    await expect(fs.access(path.join(projectRoot, '.codex'))).rejects.toThrow();
+    expect(harness.stderr).toBe('');
+  });
+
+  it('supports no-skills dry-run mode without prompting', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-no-skills-')));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--no-input', '--bundle', 'memory-generic', '--no-skills'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('Portable skills: (none)');
+    expect(harness.stdout).not.toContain('.codex/skills/');
+    expect(harness.stderr).toBe('');
+  });
+
+  it('fails closed for unknown portable skill names before prompting', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-bad-skill-')));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    harness.deps.stdinIsTTY = () => true;
+    harness.deps.stdoutIsTTY = () => true;
+    let prompted = false;
+    harness.deps.promptInitInputs = async () => {
+      prompted = true;
+      throw new Error('unexpected init prompt');
+    };
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'memory-generic', '--skill', 'missing-skill'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(1);
+    expect(prompted).toBe(false);
+    expect(harness.stderr).toContain("Unknown portable skill 'missing-skill'. Choose one of:");
+  });
+
+  it('marks existing portable skill dry-run destinations as conflicts', async () => {
+    const projectRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-skill-conflict-')));
+    const harness = createHarness();
+    harness.deps.cwd = projectRoot;
+    await fs.mkdir(path.join(projectRoot, '.codex', 'skills', 'commit'), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), 'existing local skill\n', 'utf8');
+
+    const exitCode = await runCommandRouter({
+      argv: ['init', '--dry-run', '--bundle', 'memory-generic', '--skills', 'commit'],
+      deps: harness.deps
+    });
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout).toContain('.codex/skills/commit/SKILL.md');
+    expect(harness.stdout).toContain('action: overwrite');
+    expect(harness.stdout).toContain('overwrite: exists');
+    expect(harness.stdout).toContain('overwrite_approval_required: yes');
+    expect(await fs.readFile(path.join(projectRoot, '.codex', 'skills', 'commit', 'SKILL.md'), 'utf8')).toBe(
+      'existing local skill\n'
+    );
     expect(harness.stderr).toBe('');
   });
 

@@ -41,6 +41,7 @@ import {
   type WorkflowMaterializerOptions,
   type WorkflowFilePlanEntry
 } from '../workflow/materializer';
+import { getPortableSkill, listPortableSkills } from '../workflow/portable-skill-catalog';
 
 export interface DashboardLaunchContext {
   cwd: string;
@@ -458,6 +459,9 @@ function renderInitHelp(): string {
     '  symphony init --bundle memory-generic',
     '  symphony init --dry-run --bundle memory-generic',
     '  symphony init --force --bundle memory-generic',
+    '  symphony init --dry-run --bundle memory-generic --skill commit --skill land',
+    '  symphony init --dry-run --bundle memory-generic --skills commit,land',
+    '  symphony init --dry-run --bundle memory-generic --no-skills',
     '  symphony init --dry-run --pack tracker:memory --pack workspace:none --pack toolchain:generic --pack workflow:solo-local',
     '  symphony init --tracker memory --workspace none --toolchain generic --workflow solo-local',
     '  symphony init --bundle linear-node --linear-project-slug SYMPHONY',
@@ -466,6 +470,17 @@ function renderInitHelp(): string {
     '',
     'Writes are non-destructive by default. Existing generated targets require',
     'interactive confirmation or --force. Dry-run renders the same file plan without writing files.',
+    '',
+    'Portable skills:',
+    `  Default: ${listPortableSkills()
+      .filter((skill) => skill.defaultRecommended)
+      .map((skill) => skill.id)
+      .join(', ')}`,
+    `  Available: ${listPortableSkills()
+      .map((skill) => skill.id)
+      .join(', ')}`,
+    '  Use --skill <name> repeatedly or --skills <name,name> to select an explicit set.',
+    '  Use --no-skills to opt out of project-local skill materialization.',
     '',
     'When run from a TTY, missing init selections and hosted tracker inputs are',
     'prompted interactively. Use --no-input, explicit flags, or CI=true for',
@@ -656,6 +671,8 @@ interface ParsedInitSelections {
   force: boolean;
   noInput: boolean;
   selections: string[];
+  portableSkillIds: string[] | null;
+  noPortableSkills: boolean;
   errors: string[];
   linearProjectSlug: string | null;
   githubOwner: string | null;
@@ -681,6 +698,8 @@ function parseInitSelections(argv: readonly string[]): ParsedInitSelections {
   let dryRun = false;
   let force = false;
   let noInput = false;
+  let portableSkillIds: string[] | null = null;
+  let noPortableSkills = false;
   let linearProjectSlug: string | null = null;
   let githubOwner: string | null = null;
   let githubRepo: string | null = null;
@@ -697,6 +716,21 @@ function parseInitSelections(argv: readonly string[]): ParsedInitSelections {
     }
     if (arg === '--no-input' || arg === '--ci') {
       noInput = true;
+      continue;
+    }
+    if (arg === '--no-skills') {
+      noPortableSkills = true;
+      continue;
+    }
+    if (arg === '--skill' || arg === '--skills') {
+      const value = argv[index + 1];
+      if (!value) {
+        errors.push(`${arg} requires a value.`);
+      } else {
+        portableSkillIds = portableSkillIds ?? [];
+        portableSkillIds.push(...parsePortableSkillList(value));
+        index += 1;
+      }
       continue;
     }
     if (arg === '--bundle' || arg === '--pack') {
@@ -752,7 +786,36 @@ function parseInitSelections(argv: readonly string[]): ParsedInitSelections {
     errors.push(`Unsupported init option: ${arg}`);
   }
 
-  return { dryRun, force, noInput, selections, errors, linearProjectSlug, githubOwner, githubRepo };
+  if (noPortableSkills && portableSkillIds && portableSkillIds.length > 0) {
+    errors.push('--no-skills cannot be combined with --skill or --skills.');
+  }
+  if (portableSkillIds) {
+    for (const id of portableSkillIds) {
+      if (!getPortableSkill(id)) {
+        errors.push(`Unknown portable skill '${id}'. Choose one of: ${listPortableSkills().map((skill) => skill.id).join(', ')}.`);
+      }
+    }
+  }
+
+  return {
+    dryRun,
+    force,
+    noInput,
+    selections,
+    portableSkillIds,
+    noPortableSkills,
+    errors,
+    linearProjectSlug,
+    githubOwner,
+    githubRepo
+  };
+}
+
+function parsePortableSkillList(value: string): string[] {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function detectInitProjectFacts(cwd: string): {
@@ -1087,6 +1150,8 @@ async function runInitCommand(argv: readonly string[], deps: CommandRouterDepend
       choices: {
         dryRun: parsed.dryRun,
         selections: parsed.selections,
+        portableSkillIds: parsed.portableSkillIds ?? undefined,
+        noPortableSkills: parsed.noPortableSkills,
         linearProjectSlug: parsed.linearProjectSlug,
         githubOwner: parsed.githubOwner,
         githubRepo: parsed.githubRepo
