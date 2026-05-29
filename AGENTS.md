@@ -22,7 +22,9 @@ same change.
 
 ## Build, Test, and Development Commands
 Primary validation commands:
-- `npm test` - run the automated test suite.
+- `npm test` - run the fast deterministic unit suite.
+- `npm run test:integration` - run the profiled git/worktree/process-heavy simulations excluded from the fast path.
+- `npm run test:full` - run the complete Vitest suite for Agent Review, release handoff, or broad runtime changes.
 - `npm run build` - validate TypeScript build output.
 
 Baseline hygiene checks:
@@ -44,17 +46,19 @@ Baseline hygiene checks:
 
 ## Testing Guidelines
 - Run `npm test` and `npm run build` for every change unless explicitly scoped otherwise.
+- Run `npm run test:integration` when changing git/worktree/process-heavy behavior or a file excluded from the fast path.
+- Run `npm run test:full` before Agent Review, release handoff, or broad runtime changes; do not treat `npm test` alone as complete release evidence.
 - Validate behavior against relevant `SPEC.md` sections.
 - Document manual verification steps and outputs in PRs.
 - Add or update automated tests alongside runtime code changes.
 
 Test logging controls:
-- Default `npm test` keeps test identity, pass/fail counts, and timing visible while suppressing routine Symphony structured runtime logs, helper Git progress, and operational child-process stderr during passing runs.
-- Use `SYMPHONY_TEST_LOGS=1 npm test` to show live runtime logs while testing.
+- Default `npm test` keeps fast-suite test identity, pass/fail counts, and timing visible while suppressing routine Symphony structured runtime logs, helper Git progress, and operational child-process stderr during passing runs.
+- Use `SYMPHONY_TEST_LOGS=1 npm test` for fast-suite live runtime logs, or `SYMPHONY_TEST_LOGS=1 npm run test:full` for full-suite live runtime logs.
 - Use `SYMPHONY_TEST_LOG_LEVEL=info|warn|error` with `SYMPHONY_TEST_LOGS=1`
   to choose the minimum visible live log level.
-- Use `npm run test:verbose` or `SYMPHONY_TEST_OPERATIONAL_OUTPUT=1 npm test`
-  to show helper command stderr such as Git clone/fetch/push progress while debugging.
+- Use `npm run test:verbose` or `SYMPHONY_TEST_OPERATIONAL_OUTPUT=1 npm run test:full`
+  to show helper command stderr such as Git clone/fetch/push progress while debugging the full suite.
 - Passing tests keep captured runtime logs quiet; failing tests print the captured log buffer.
 - Use `SYMPHONY_TEST_LOG_CAPTURE_LINES=<number>` to change the captured-log buffer size.
 - Use `SYMPHONY_TEST_LOG_CAPTURE=0` to disable captured runtime logs during tests.
