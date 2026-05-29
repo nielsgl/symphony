@@ -459,6 +459,7 @@ function renderInitHelp(): string {
     '  symphony init --bundle memory-generic',
     '  symphony init --dry-run --bundle memory-generic',
     '  symphony init --force --bundle memory-generic',
+    '  symphony init --force-skills --bundle memory-generic',
     '  symphony init --dry-run --bundle memory-generic --skill commit --skill land',
     '  symphony init --dry-run --bundle memory-generic --skills commit,land',
     '  symphony init --dry-run --bundle memory-generic --no-skills',
@@ -469,7 +470,8 @@ function renderInitHelp(): string {
     '  symphony init --no-input --bundle memory-generic',
     '',
     'Writes are non-destructive by default. Existing generated targets require',
-    'interactive confirmation or --force. Dry-run renders the same file plan without writing files.',
+    'interactive confirmation or --force. Use --force-skills to overwrite only',
+    'project-local portable skills. Dry-run renders the same file plan without writing files.',
     '',
     'Portable skills:',
     `  Default: ${listPortableSkills()
@@ -669,6 +671,7 @@ function runProfileCommand(argv: readonly string[], deps: CommandRouterDependenc
 interface ParsedInitSelections {
   dryRun: boolean;
   force: boolean;
+  forceSkills: boolean;
   noInput: boolean;
   selections: string[];
   portableSkillIds: string[] | null;
@@ -697,6 +700,7 @@ function parseInitSelections(argv: readonly string[]): ParsedInitSelections {
   const errors: string[] = [];
   let dryRun = false;
   let force = false;
+  let forceSkills = false;
   let noInput = false;
   let portableSkillIds: string[] | null = null;
   let noPortableSkills = false;
@@ -712,6 +716,10 @@ function parseInitSelections(argv: readonly string[]): ParsedInitSelections {
     }
     if (arg === '--force') {
       force = true;
+      continue;
+    }
+    if (arg === '--force-skills' || arg === '--force-portable-skills') {
+      forceSkills = true;
       continue;
     }
     if (arg === '--no-input' || arg === '--ci') {
@@ -800,6 +808,7 @@ function parseInitSelections(argv: readonly string[]): ParsedInitSelections {
   return {
     dryRun,
     force,
+    forceSkills,
     noInput,
     selections,
     portableSkillIds,
@@ -1061,12 +1070,29 @@ function nonInteractiveSelectionGuidance(parsed: ParsedInitSelections): string {
 }
 
 function renderInitConflicts(conflicts: readonly WorkflowFilePlanEntry[]): string {
+  const directoryConflicts = conflicts.filter((file) => file.conflictType === 'directory');
   return [
     'Symphony init found existing files that would be overwritten:',
     ...conflicts.map((file) => `  - ${file.path}`),
+    ...(directoryConflicts.length > 0
+      ? [
+          '',
+          'Some conflicting paths are directories at locations where Symphony needs to write files:',
+          ...directoryConflicts.map((file) => `  - ${file.path}`),
+          'Move or remove those directories before rerunning init; --force-skills does not delete directories.'
+        ]
+      : []),
     '',
-    'Re-run interactively and confirm the overwrite, or pass --force when the overwrite is intentional.'
+    'To preserve local customizations, Symphony did not write any conflicting files.',
+    'Resolve by moving or editing the listed paths, re-run interactively and confirm,',
+    'or pass --force-skills for .codex/skills conflicts only. Use --force only when all',
+    'generated init overwrites are intentional.'
   ].join('\n');
+}
+
+function isPortableSkillPlanEntry(file: WorkflowFilePlanEntry): boolean {
+  const normalized = file.path.split(path.sep).join('/');
+  return normalized === '.codex/skills' || normalized.startsWith('.codex/skills/');
 }
 
 function writeInitFilePlan(plan: WorkflowMaterializationPlan): void {
@@ -1077,6 +1103,9 @@ function writeInitFilePlan(plan: WorkflowMaterializationPlan): void {
     const absolutePath = path.join(plan.detectedProjectFacts.root, file.path);
     fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
     fs.writeFileSync(absolutePath, file.content ?? '', 'utf8');
+    if (typeof file.mode === 'number') {
+      fs.chmodSync(absolutePath, file.mode & 0o777);
+    }
   }
 }
 
@@ -1169,10 +1198,24 @@ async function runInitCommand(argv: readonly string[], deps: CommandRouterDepend
     }
 
     const conflicts = plan.files.filter((file) => file.requiresOverwriteApproval);
-    if (conflicts.length > 0 && !parsed.force) {
-      const approved = await deps.promptInitOverwrite(conflicts);
-      if (!approved) {
-        deps.stderr(`${renderInitConflicts(conflicts)}\n`);
+    const hardConflicts = conflicts.filter((file) => file.conflictType === 'directory');
+    if (hardConflicts.length > 0) {
+      deps.stderr(`${renderInitConflicts(hardConflicts)}\n`);
+      return 1;
+    }
+
+    const unresolvedConflicts = conflicts.filter(
+      (file) => !parsed.force && !(parsed.forceSkills && isPortableSkillPlanEntry(file))
+    );
+    if (unresolvedConflicts.length > 0) {
+      if (initPromptsAllowed(parsed, deps)) {
+        const approved = await deps.promptInitOverwrite(unresolvedConflicts);
+        if (!approved) {
+          deps.stderr(`${renderInitConflicts(unresolvedConflicts)}\n`);
+          return 1;
+        }
+      } else {
+        deps.stderr(`${renderInitConflicts(unresolvedConflicts)}\n`);
         return 1;
       }
     }

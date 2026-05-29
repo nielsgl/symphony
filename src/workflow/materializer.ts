@@ -42,6 +42,8 @@ export interface WorkflowFilePlanEntry {
   action: FilePlanAction;
   overwriteStatus: FilePlanOverwriteStatus;
   wouldWrite: boolean;
+  conflictType?: 'directory';
+  mode?: number;
   content?: string;
   contentPreview: string;
   validationNotes: string[];
@@ -110,7 +112,7 @@ export function materializeWorkflowPlan(options: WorkflowMaterializerOptions): W
       ignorePath: '.gitignore',
       entry: '.symphony/system/'
     }),
-    ...buildPortableSkillDryRunFiles(options, portableSkills)
+    ...buildPortableSkillFiles(options, portableSkills)
   ];
 
   return {
@@ -135,31 +137,38 @@ function resolveInitPortableSkillSelection(choices: InitUserChoices): PortableSk
   return resolvePortableSkillSelection(choices.portableSkillIds);
 }
 
-function buildPortableSkillDryRunFiles(
+function buildPortableSkillFiles(
   options: WorkflowMaterializerOptions,
   portableSkills: PortableSkillSelection
 ): WorkflowFilePlanEntry[] {
-  if (!options.choices.dryRun || portableSkills.selectedSkillIds.length === 0) {
+  if (portableSkills.selectedSkillIds.length === 0) {
     return [];
   }
 
   const assets = resolvePortableSkillAssetSet(portableSkills.selectedSkillIds);
   const files: WorkflowFilePlanEntry[] = [];
   for (const skill of assets.selectedSkills) {
+    validatePortableSkillAssetContainment(assets.assetRoot, skill.absoluteSourceDirectory, skill.sourceDirectory);
+    validatePortableSkillAssetContainment(assets.assetRoot, skill.absoluteTemplatePath, path.join(skill.sourceDirectory, 'SKILL.md'));
     files.push(
-      buildFilePlanEntry({
+      buildSkillFilePlanEntry({
         root: options.projectFacts.root,
+        skillDirectory: skill.destinationDirectory,
         relativePath: path.join(skill.destinationDirectory, 'SKILL.md'),
         content: fs.readFileSync(skill.absoluteTemplatePath, 'utf8'),
+        mode: fs.statSync(skill.absoluteTemplatePath).mode & 0o777,
         notes: [`plans project-local portable skill template from ${skill.sourceDirectory}`]
       })
     );
     for (const helper of skill.helperScripts) {
+      validatePortableSkillAssetContainment(assets.assetRoot, helper.absolutePath, helper.path);
       files.push(
-        buildFilePlanEntry({
+        buildSkillFilePlanEntry({
           root: options.projectFacts.root,
+          skillDirectory: skill.destinationDirectory,
           relativePath: helper.destinationPath,
           content: fs.readFileSync(helper.absolutePath, 'utf8'),
+          mode: fs.statSync(helper.absolutePath).mode & 0o777,
           notes: [`plans ${helper.runtime} helper script for portable skill ${skill.id}`]
         })
       );
@@ -564,10 +573,29 @@ function buildFilePlanEntry(params: {
   root: string;
   relativePath: string;
   content: string;
+  mode?: number;
   notes: string[];
 }): WorkflowFilePlanEntry {
   const absolutePath = path.join(params.root, params.relativePath);
+  assertPathInside(params.root, absolutePath, `init destination ${params.relativePath}`);
   const exists = fs.existsSync(absolutePath);
+  if (exists && fs.statSync(absolutePath).isDirectory()) {
+    return {
+      path: params.relativePath,
+      action: 'overwrite',
+      overwriteStatus: 'exists',
+      wouldWrite: true,
+      conflictType: 'directory',
+      mode: params.mode,
+      content: params.content,
+      contentPreview: preview(params.content),
+      validationNotes: [
+        ...params.notes,
+        'existing path is a directory; move or remove it before rerunning init'
+      ],
+      requiresOverwriteApproval: true
+    };
+  }
   const existingContent = exists ? fs.readFileSync(absolutePath, 'utf8') : null;
   const action: FilePlanAction = exists ? (existingContent === params.content ? 'skip' : 'overwrite') : 'create';
   return {
@@ -575,11 +603,64 @@ function buildFilePlanEntry(params: {
     action,
     overwriteStatus: exists ? 'exists' : 'absent',
     wouldWrite: action !== 'skip',
+    mode: params.mode,
     content: params.content,
     contentPreview: preview(params.content),
     validationNotes: action === 'skip' ? [...params.notes, 'existing content already matches generated content'] : params.notes,
     requiresOverwriteApproval: action === 'overwrite'
   };
+}
+
+function buildSkillFilePlanEntry(params: {
+  root: string;
+  skillDirectory: string;
+  relativePath: string;
+  content: string;
+  mode: number;
+  notes: string[];
+}): WorkflowFilePlanEntry {
+  const projectRoot = path.resolve(params.root);
+  const skillRoot = path.resolve(projectRoot, params.skillDirectory);
+  const destinationPath = path.resolve(projectRoot, params.relativePath);
+  assertPathInside(projectRoot, skillRoot, `portable skill destination ${params.skillDirectory}`);
+  assertPathInside(projectRoot, destinationPath, `portable skill destination ${params.relativePath}`);
+  assertPathInside(skillRoot, destinationPath, `portable skill destination ${params.relativePath}`);
+  assertResolvedPathInsideLexicalRoot(skillRoot, destinationPath, `portable skill destination ${params.relativePath}`);
+  return buildFilePlanEntry(params);
+}
+
+function validatePortableSkillAssetContainment(assetRoot: string, absolutePath: string, label: string): void {
+  assertPathInside(path.resolve(assetRoot), path.resolve(absolutePath), `portable skill source ${label}`);
+}
+
+function assertPathInside(root: string, candidate: string, label: string): void {
+  const relative = path.relative(realpathNearest(root), realpathNearest(candidate));
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+    return;
+  }
+  throw new Error(`${label} escapes the allowed root ${root}. Refusing to materialize portable skill assets.`);
+}
+
+function assertResolvedPathInsideLexicalRoot(root: string, candidate: string, label: string): void {
+  const relative = path.relative(path.resolve(root), realpathNearest(candidate));
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+    return;
+  }
+  throw new Error(`${label} escapes the allowed root ${root}. Refusing to materialize portable skill assets.`);
+}
+
+function realpathNearest(inputPath: string): string {
+  const resolved = path.resolve(inputPath);
+  if (fs.existsSync(resolved)) {
+    return fs.realpathSync(resolved);
+  }
+
+  const parent = path.dirname(resolved);
+  if (parent === resolved) {
+    return resolved;
+  }
+
+  return path.join(realpathNearest(parent), path.basename(resolved));
 }
 
 function buildGitignorePlanEntry(params: { root: string; ignorePath: string; entry: string }): WorkflowFilePlanEntry {
