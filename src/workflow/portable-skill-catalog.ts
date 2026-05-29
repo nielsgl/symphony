@@ -305,10 +305,7 @@ function buildAssetRootCandidates(
   const runningFromDist = relativeModuleDirectory === 'dist' || relativeModuleDirectory.startsWith(`dist${path.sep}`);
 
   return runningFromDist
-    ? [
-        { source: 'dist', assetRoot: distRoot },
-        { source: 'source', assetRoot: sourceRoot }
-      ]
+    ? [{ source: 'dist', assetRoot: distRoot }]
     : [
         { source: 'source', assetRoot: sourceRoot },
         { source: 'dist', assetRoot: distRoot }
