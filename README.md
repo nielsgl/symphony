@@ -36,6 +36,8 @@ implements the base contract in `SPEC.md` plus documented local extensions in
 	npm test
 	```
 
+	Use `npm run test:full` for release or Agent Review evidence.
+
 ## Workflow Learning Path
 
 Start here for a practical end-to-end workflow:
@@ -303,6 +305,8 @@ Resumes an issue in blocked-input state and returns it to dispatch lifecycle.
 ```bash
 npm run build
 npm test
+npm run test:integration
+npm run test:full
 npm run test:verbose
 npm run test:profile:slow
 npm run test:e2e:web
@@ -310,15 +314,54 @@ npm run check:meta
 git --no-pager diff --check
 ```
 
-`npm test` keeps Vitest test identity, pass/fail counts, and timing visible while
-suppressing routine operational noise from helper Git commands, child-process
-stderr, and structured runtime logs during passing runs. Use
-`npm run test:verbose` when debugging and you need the live runtime logs plus
-helper command stderr. The equivalent environment path is
-`SYMPHONY_TEST_LOGS=1 SYMPHONY_TEST_OPERATIONAL_OUTPUT=1 npm test`. Captured
-Symphony runtime logs still print on failing tests by default; set
-`SYMPHONY_TEST_LOG_CAPTURE=0` only when that failure buffer is intentionally
-not needed.
+`npm test` is the fast deterministic unit gate. It keeps Vitest test identity,
+pass/fail counts, and timing visible while suppressing routine operational
+noise from helper Git commands, child-process stderr, and structured runtime
+logs during passing runs. The fast gate excludes the slowest
+git/worktree/process-heavy simulations identified by `npm run
+test:profile:slow`; run `npm run test:integration` for those simulations, or
+`npm run test:full` for the complete Vitest surface.
+
+Use these commands by validation scope:
+
+- Fast/local iteration: `npm test`
+- Targeted proof: `npm test -- <file-or-filter>` for fast-path files, or `npm
+  run test:full -- <file-or-filter>` when the target is intentionally outside
+  the fast path.
+- Integration simulations: `npm run test:integration`
+- Agent Review, release handoff, broad runtime changes, or CI-equivalent local
+  proof: `npm run build && npm run test:full`
+
+Use `npm run test:verbose` when debugging and you need the live runtime logs
+plus helper command stderr for the full suite. The equivalent environment path
+is `SYMPHONY_TEST_LOGS=1 SYMPHONY_TEST_OPERATIONAL_OUTPUT=1 npm run test:full`.
+Captured Symphony runtime logs still print on failing tests by default; set
+`SYMPHONY_TEST_LOG_CAPTURE=0` only when that failure buffer is intentionally not
+needed.
+
+The files moved out of the fast path remain covered by `npm run
+test:integration` and `npm run test:full`:
+
+- `tests/cli/local-multi-project-trial.test.ts`: process-heavy local
+  multi-project simulation; slowest profiled file at 87.39s.
+- `tests/runtime/bootstrap.test.ts`: runtime bootstrap and git-backed startup
+  simulation; profiled at 53.21s.
+- `tests/cli/meta-check-scripts.test.ts`: git/worktree PR metadata simulation;
+  profiled at 24.28s.
+- `tests/runtime/update-manager.test.ts`: git/worktree update-manager
+  simulation; profiled at 18.93s.
+- `tests/cli/local-command-router.test.ts`: real CLI, temp git repositories,
+  and generated worktree materialization; profiled at 14.64s.
+- `tests/api/server-state.test.ts`: server control-plane state simulation with
+  worktree/process-heavy cases; profiled at 5.96s.
+- `tests/cli/doctor-mvp-scenario-matrix.test.ts`: real CLI scenario matrix over
+  blocker/pass/warning worktree states; profiled at 5.29s.
+- `tests/workspace/workspace-manager.test.ts`: workspace manager git/worktree
+  lifecycle simulation; profiled at 3.14s.
+- `tests/cli/workspace-before-remove.test.ts`: workspace cleanup hook and
+  git/worktree safety simulation; profiled at 2.44s.
+- `tests/cli/worktree-bootstrap.test.ts`: worktree bootstrap command
+  simulation; profiled at 2.01s.
 
 ### Slow Test Profiling
 
