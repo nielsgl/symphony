@@ -1,6 +1,7 @@
 export * from './errors';
 export * from './loader';
 export * from './materializer';
+export * from './portable-skill-catalog';
 export * from './profile-registry';
 export * from './provenance';
 export * from './resolver';
