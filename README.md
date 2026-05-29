@@ -303,10 +303,21 @@ Resumes an issue in blocked-input state and returns it to dispatch lifecycle.
 ```bash
 npm run build
 npm test
+npm run test:verbose
 npm run test:e2e:web
 npm run check:meta
 git --no-pager diff --check
 ```
+
+`npm test` keeps Vitest test identity, pass/fail counts, and timing visible while
+suppressing routine operational noise from helper Git commands, child-process
+stderr, and structured runtime logs during passing runs. Use
+`npm run test:verbose` when debugging and you need the live runtime logs plus
+helper command stderr. The equivalent environment path is
+`SYMPHONY_TEST_LOGS=1 SYMPHONY_TEST_OPERATIONAL_OUTPUT=1 npm test`. Captured
+Symphony runtime logs still print on failing tests by default; set
+`SYMPHONY_TEST_LOG_CAPTURE=0` only when that failure buffer is intentionally
+not needed.
 
 ### UI Evidence Gate (`check:meta`)
 

@@ -12,6 +12,7 @@
     "check:dashboard-client": "node scripts/build-dashboard-client.js --check",
     "build:desktop:prepare": "npm run build && node scripts/build-desktop-backend-sidecar.js",
     "test": "vitest run",
+    "test:verbose": "SYMPHONY_TEST_LOGS=1 SYMPHONY_TEST_OPERATIONAL_OUTPUT=1 vitest run",
     "test:coverage": "vitest run --coverage",
     "test:e2e:web": "playwright test --config=playwright.web.config.ts",
     "test:e2e:desktop-runtime": "playwright test --config=playwright.desktop.config.ts",
