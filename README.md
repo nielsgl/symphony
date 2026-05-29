@@ -318,11 +318,12 @@ a pasteable timing baseline:
 npm run test:profile:slow -- --limit=10
 ```
 
-The command runs the normal Vitest unit-test workflow with the JSON reporter,
-then prints the command, environment, wall-clock duration, slowest files, and
-slowest individual test patterns. Files and test names that match git,
-worktree, workspace, subprocess, desktop, or process-heavy patterns are grouped
-as `git/worktree/process-heavy`; the rest are grouped as `routine unit`.
+The command runs Vitest from the nearest local `node_modules/.bin` directory
+with the JSON reporter, then prints the command, environment, wall-clock
+duration, slowest files, and slowest individual test patterns. Files and test
+names that match git, worktree, workspace, subprocess, desktop, or process-heavy
+patterns are grouped as `git/worktree/process-heavy`; the rest are grouped as
+`routine unit`.
 
 Pass Vitest filters after the script options to profile a subset:
 

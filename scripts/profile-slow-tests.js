@@ -243,16 +243,34 @@ function formatReport(profile, limit = DEFAULT_LIMIT) {
   return `${lines.join('\n')}\n`;
 }
 
+function resolveLocalVitestBin(cwd) {
+  const binaryName = process.platform === 'win32' ? 'vitest.cmd' : 'vitest';
+  let current = path.resolve(cwd);
+  while (true) {
+    const binaryPath = path.join(current, 'node_modules', '.bin', binaryName);
+    if (fs.existsSync(binaryPath)) {
+      return binaryPath;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  throw new Error(`Local Vitest binary not found under ${path.resolve(cwd)} or its parent directories. Run npm install before profiling.`);
+}
+
 function runVitest(args) {
   const outputFile = path.join(os.tmpdir(), `symphony-slow-tests-${process.pid}-${Date.now()}.json`);
-  const vitestArgs = ['vitest', 'run', '--reporter=json', `--outputFile=${outputFile}`, ...args.vitestArgs];
+  const vitestBin = resolveLocalVitestBin(process.cwd());
+  const vitestArgs = ['run', '--reporter=json', `--outputFile=${outputFile}`, ...args.vitestArgs];
   const startedAt = process.hrtime.bigint();
-  const result = spawnSync('npx', vitestArgs, { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const result = spawnSync(vitestBin, vitestArgs, { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const endedAt = process.hrtime.bigint();
   const wallClockMs = Number(endedAt - startedAt) / 1_000_000;
 
   if (!fs.existsSync(outputFile)) {
-    throw new Error(`Vitest JSON report was not created. stderr: ${result.stderr.trim()}`);
+    throw new Error(`Vitest JSON report was not created. stderr: ${(result.stderr || '').trim()}`);
   }
 
   const payload = JSON.parse(fs.readFileSync(outputFile, 'utf8'));
@@ -266,7 +284,7 @@ function runVitest(args) {
     payload,
     wallClockMs,
     status: result.status ?? 1,
-    vitestCommand: `npx ${vitestArgs.join(' ')}`
+    vitestCommand: `${path.relative(process.cwd(), vitestBin)} ${vitestArgs.join(' ')}`
   };
 }
 
@@ -311,5 +329,6 @@ module.exports = {
   parseArgs,
   classifyHeavy,
   buildProfile,
-  formatReport
+  formatReport,
+  resolveLocalVitestBin
 };

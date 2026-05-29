@@ -30,6 +30,7 @@ const slowTestProfile = require('../../scripts/profile-slow-tests.js') as {
     expensive_patterns: Array<{ file: string; name: string; duration_ms: number; category: string }>;
   };
   formatReport: (profile: unknown, limit?: number) => string;
+  resolveLocalVitestBin: (cwd: string) => string;
 };
 
 function vitestFixture(root: string) {
@@ -93,6 +94,31 @@ function runScript(args: string[], cwd: string) {
   });
 }
 
+function writeFakeVitest(root: string) {
+  const binDir = path.join(root, 'node_modules', '.bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const binPath = path.join(binDir, process.platform === 'win32' ? 'vitest.cmd' : 'vitest');
+  fs.writeFileSync(
+    binPath,
+    [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "const outputArg = process.argv.find((arg) => arg.startsWith('--outputFile='));",
+      "if (!outputArg) process.exit(2);",
+      "fs.writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({",
+      '  success: true,',
+      '  numTotalTests: 0,',
+      '  numPassedTests: 0,',
+      '  numFailedTests: 0,',
+      '  testResults: []',
+      '}));'
+    ].join('\n'),
+    'utf8'
+  );
+  fs.chmodSync(binPath, 0o755);
+  return binPath;
+}
+
 describe('slow test profile report', () => {
   it('parses report options while preserving Vitest filters', () => {
     const parsed = slowTestProfile.parseArgs([
@@ -130,7 +156,7 @@ describe('slow test profile report', () => {
       cwd: root,
       wallClockMs: 6200,
       command: 'npm run test:profile:slow',
-      vitestCommand: 'npx vitest run --reporter=json'
+      vitestCommand: 'node_modules/.bin/vitest run --reporter=json'
     });
     const report = slowTestProfile.formatReport(profile, 2);
 
@@ -164,6 +190,32 @@ describe('slow test profile report', () => {
     const parsed = JSON.parse(json.stdout);
     expect(parsed.result.success).toBe(true);
     expect(parsed.groups).toHaveLength(2);
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('runs Vitest through the checkout-local binary instead of npx', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-slow-profile-local-bin-'));
+    const binPath = writeFakeVitest(tempRoot);
+
+    expect(slowTestProfile.resolveLocalVitestBin(tempRoot)).toBe(binPath);
+
+    const result = runScript(['--limit=1'], tempRoot);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Vitest command: node_modules/.bin/vitest run --reporter=json');
+    expect(result.stdout).not.toContain('npx');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('fails clearly when the local Vitest binary is unavailable', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-slow-profile-missing-bin-'));
+
+    const result = runScript(['--limit=1'], tempRoot);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(slowTestProfile.ERROR_CODE);
+    expect(result.stderr).toContain('Local Vitest binary not found');
+    expect(result.stderr).toContain('Run npm install before profiling');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
