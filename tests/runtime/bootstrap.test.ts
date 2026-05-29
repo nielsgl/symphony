@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { operationalCommandStdio } from '../helpers/quiet-operational-output';
 import { CANONICAL_EVENT } from '../../src/observability/events';
 import { REASON_CODES } from '../../src/observability/reason-codes';
 import { createRuntimeEnvironment, createRuntimeTerminateWorkerPort, toWorkerEvent } from '../../src/runtime';
@@ -135,7 +136,7 @@ Issue {{ issue.identifier }} attempt {{ attempt }}
 }
 
 function git(cwd: string, args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: operationalCommandStdio() }).trim();
 }
 
 async function writeTestFile(filePath: string, contents: string): Promise<void> {

@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
+import { operationalCommandStdio } from '../helpers/quiet-operational-output';
 import type { ApiDrainQuiescenceProjection } from '../../src/api/types';
 import { REASON_CODES } from '../../src/observability';
 import { detectRuntimeUpdateReadiness, LocalRuntimeUpdateManager } from '../../src/runtime/update-manager';
@@ -12,7 +13,7 @@ import { detectRuntimeUpdateReadiness, LocalRuntimeUpdateManager } from '../../s
 const GIT_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
 
 function git(cwd: string, args: string[]) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: operationalCommandStdio() }).trim();
 }
 
 async function writeFile(filePath: string, contents: string) {
