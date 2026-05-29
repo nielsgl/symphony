@@ -303,9 +303,31 @@ Resumes an issue in blocked-input state and returns it to dispatch lifecycle.
 ```bash
 npm run build
 npm test
+npm run test:profile:slow
 npm run test:e2e:web
 npm run check:meta
 git --no-pager diff --check
+```
+
+### Slow Test Profiling
+
+Use the slow-test profile when planning test-speed work or when a handoff needs
+a pasteable timing baseline:
+
+```bash
+npm run test:profile:slow -- --limit=10
+```
+
+The command runs the normal Vitest unit-test workflow with the JSON reporter,
+then prints the command, environment, wall-clock duration, slowest files, and
+slowest individual test patterns. Files and test names that match git,
+worktree, workspace, subprocess, desktop, or process-heavy patterns are grouped
+as `git/worktree/process-heavy`; the rest are grouped as `routine unit`.
+
+Pass Vitest filters after the script options to profile a subset:
+
+```bash
+npm run test:profile:slow -- --limit=5 tests/workspace
 ```
 
 ### UI Evidence Gate (`check:meta`)
