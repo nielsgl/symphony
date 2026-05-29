@@ -100,17 +100,19 @@ fi
 pr_title="<clear PR title written for this change>"
 
 # Write/edit PR body to include Summary, Verification, and any
-# project-required sections.
+# project-required sections. Use a Git-managed temp path so this works in
+# normal repositories and linked worktrees where `.git` may be a file.
 # If this repo has a PR template, follow it; otherwise keep the above sections.
 # If the project requires a PR wrapper, use it instead of direct gh commands.
-cat > .git/pr-body.md <<'MD'
+pr_body_file=$(git rev-parse --git-path pr-body.md)
+cat > "$pr_body_file" <<'MD'
 <full markdown PR body>
 MD
 if [ -z "$pr_state" ]; then
-  gh pr create --title "$pr_title" --body-file .git/pr-body.md
+  gh pr create --title "$pr_title" --body-file "$pr_body_file"
 else
   # Reconsider title on every branch update; edit if scope shifted.
-  gh pr edit --title "$pr_title" --body-file .git/pr-body.md
+  gh pr edit --title "$pr_title" --body-file "$pr_body_file"
 fi
 
 # Show PR URL for the reply

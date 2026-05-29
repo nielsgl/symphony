@@ -15,8 +15,8 @@ description:
 - Merge the PR with a merge commit (`--merge`) to preserve commits.
 - Do not yield to the user until the PR is merged; keep the watcher loop running
   unless blocked.
-- No need to delete remote branches after merge; the repo auto-deletes head
-  branches.
+- Follow the current repository's branch cleanup policy after merge; some
+  repositories auto-delete head branches, while others expect manual cleanup.
 
 ## Preconditions
 
@@ -47,8 +47,8 @@ description:
 8. If checks fail, pull logs, fix the issue, commit with the `commit` skill,
    push with the `push` skill, and re-run checks.
 9. When all checks are green and review feedback is addressed, merge with
-   merge-commit semantics (`--merge`) and
-   delete the branch using the PR title/body for the merge subject/body.
+   merge-commit semantics (`--merge`) using the PR title/body for the merge
+   subject/body, then follow the current repository's branch cleanup policy.
 9.1 Before final merge, refresh the PR body through the repository's expected PR
    publication path when project instructions require it. If the project uses a
    wrapper for body normalization, metadata checks, or evidence gates, run that
