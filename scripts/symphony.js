@@ -4,11 +4,14 @@ const { runCommandRouter } = require('../dist/src/runtime/command-router');
 
 async function main() {
   const exitCode = await runCommandRouter({ argv: process.argv.slice(2) });
-  process.exit(exitCode);
+  process.exitCode = exitCode;
 }
 
 if (require.main === module) {
-  void main();
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
 }
 
 module.exports = {

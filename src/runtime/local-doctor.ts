@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import dotenv from 'dotenv';
 
 import { ConfigResolver, ConfigValidator, WorkflowLoader } from '../workflow';
@@ -36,7 +36,11 @@ import {
 import {
   listDefaultPortableSkillIds,
   listOptInPortableSkillIds,
-  listPortableSkills
+  listPortableSkills,
+  getPortableSkill,
+  type PortableSkillCatalogEntry,
+  type PortableSkillId,
+  type PortableSkillPrerequisiteKind
 } from '../workflow/portable-skill-catalog';
 
 export type DoctorCheckStatus = 'ok' | 'warning' | 'failure';
@@ -55,7 +59,11 @@ export type DoctorFindingProvenanceCategory =
   | 'path_lookup'
   | 'local_checkout'
   | 'git_repository'
-  | 'runtime_probe';
+  | 'runtime_probe'
+  | 'project_file'
+  | 'tool_prerequisite'
+  | 'credential_configuration'
+  | 'codex_app_server';
 
 export interface DoctorFindingSource {
   category: DoctorFindingProvenanceCategory;
@@ -216,6 +224,7 @@ interface WorkflowCustomizationMetadata {
   profile: string | null;
   bundle: string | null;
   packs: string[];
+  portableSkills: Array<{ name: string; path: string; source: string }>;
   references: WorkflowCustomizationReference[];
   sources: string[];
 }
@@ -435,6 +444,21 @@ function sourceForFinding(check: DoctorFindingInput): DoctorFindingSource {
   if (check.id.startsWith('customization.reference.')) {
     return { category: 'generated_profile', present: check.status === 'ok' };
   }
+  if (check.id.startsWith('project_local_skills.skill.') || check.id.startsWith('project_local_skills.helper.')) {
+    return { category: 'project_file', present: check.status === 'ok' };
+  }
+  if (check.id.startsWith('project_local_skills.prerequisite.')) {
+    return { category: 'tool_prerequisite', present: check.status === 'ok' };
+  }
+  if (check.id.startsWith('project_local_skills.credentials.')) {
+    return { category: 'credential_configuration', present: check.status === 'ok' };
+  }
+  if (check.id === 'project_local_skills.selection') {
+    return { category: 'generated_profile', present: check.status === 'ok' };
+  }
+  if (check.id === 'project_local_skills.codex_visibility') {
+    return { category: 'codex_app_server', present: check.status === 'ok' };
+  }
   if (check.id === 'setup.consent') {
     return check.reason === 'setup_consent_flag'
       ? { category: 'cli_flag', value: 'guardrail_ack', present: true }
@@ -546,6 +570,367 @@ function addCustomizationChecks(
       }
     });
   }
+}
+
+function normalizeSkillPath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/\/+$/g, '');
+}
+
+function skillIdFromPortableSkillProvenance(entry: { name: string; path: string }): PortableSkillId | null {
+  const byName = getPortableSkill(entry.name);
+  if (byName) {
+    return byName.id;
+  }
+
+  const normalizedPath = normalizeSkillPath(entry.path);
+  const byPath = listPortableSkills().find((skill) => normalizeSkillPath(skill.destinationDirectory) === normalizedPath);
+  return byPath?.id ?? null;
+}
+
+function selectedPortableSkillsFromMetadata(metadata: WorkflowCustomizationMetadata | null): {
+  selectedSkills: PortableSkillCatalogEntry[];
+  unknown: Array<{ name: string; path: string; source: string }>;
+} {
+  const selectedSkillIds: PortableSkillId[] = [];
+  const unknown: Array<{ name: string; path: string; source: string }> = [];
+  for (const entry of metadata?.portableSkills ?? []) {
+    const id = skillIdFromPortableSkillProvenance(entry);
+    if (!id) {
+      unknown.push(entry);
+      continue;
+    }
+    if (!selectedSkillIds.includes(id)) {
+      selectedSkillIds.push(id);
+    }
+  }
+
+  return {
+    selectedSkills: selectedSkillIds.map((id) => getPortableSkill(id)).filter((skill): skill is PortableSkillCatalogEntry => Boolean(skill)),
+    unknown
+  };
+}
+
+function projectRelativePath(projectRoot: string, relativePath: string): string {
+  return path.join(projectRoot, relativePath);
+}
+
+function addProjectLocalSkillMaterializationChecks(
+  checks: DoctorFinding[],
+  projectRoot: string,
+  selectedSkills: readonly PortableSkillCatalogEntry[],
+  unknown: readonly { name: string; path: string; source: string }[]
+): void {
+  addCheck(checks, {
+    id: 'project_local_skills.selection',
+    title: 'Project-local portable skill selection is recorded',
+    status: 'ok',
+    reason: selectedSkills.length > 0 || unknown.length > 0 ? 'portable_skills_selected' : 'portable_skills_not_selected',
+    summary:
+      selectedSkills.length > 0
+        ? `Workflow selected ${selectedSkills.length} project-local portable skill(s): ${selectedSkills.map((skill) => skill.id).join(', ')}.`
+        : 'Workflow did not select project-local portable skills.',
+    details: {
+      selectedSkillIds: selectedSkills.map((skill) => skill.id),
+      unknown
+    }
+  });
+
+  for (const skill of selectedSkills) {
+    const skillPath = projectRelativePath(projectRoot, path.join(skill.destinationDirectory, 'SKILL.md'));
+    const exists = fs.existsSync(skillPath) && fs.statSync(skillPath).isFile();
+    addCheck(checks, {
+      id: `project_local_skills.skill.${skill.id}`,
+      title: `Project-local skill ${skill.id} is installed`,
+      status: exists ? 'ok' : 'failure',
+      reason: exists ? 'portable_skill_installed' : 'portable_skill_missing',
+      summary: exists ? `Project-local skill file is present: ${skillPath}` : `Project-local skill file is missing: ${skillPath}`,
+      remediation: exists ? undefined : `Rerun \`symphony init --force-skills --skill ${skill.id}\` or restore ${skillPath}.`,
+      details: {
+        skillId: skill.id,
+        path: skillPath,
+        exists
+      }
+    });
+
+    for (const helper of skill.helperScripts) {
+      const helperPath = projectRelativePath(projectRoot, helper.destinationPath);
+      const helperExists = fs.existsSync(helperPath) && fs.statSync(helperPath).isFile();
+      addCheck(checks, {
+        id: `project_local_skills.helper.${skill.id}.${safeReferenceId({ path: helper.destinationPath, kind: 'skill', source: 'catalog' })}`,
+        title: `Project-local skill helper for ${skill.id} is installed`,
+        status: helperExists ? 'ok' : helper.required ? 'failure' : 'warning',
+        reason: helperExists ? 'portable_skill_helper_present' : 'portable_skill_helper_missing',
+        summary: helperExists
+          ? `Required helper script is present: ${helperPath}`
+          : `Required helper script is missing: ${helperPath}`,
+        remediation: helperExists
+          ? undefined
+          : `Rerun \`symphony init --force-skills --skill ${skill.id}\` or restore ${helperPath}.`,
+        details: {
+          skillId: skill.id,
+          path: helperPath,
+          runtime: helper.runtime,
+          required: helper.required,
+          exists: helperExists
+        }
+      });
+    }
+  }
+}
+
+function requiredPrerequisiteKinds(selectedSkills: readonly PortableSkillCatalogEntry[]): PortableSkillPrerequisiteKind[] {
+  const kinds: PortableSkillPrerequisiteKind[] = [];
+  for (const skill of selectedSkills) {
+    for (const prerequisite of skill.prerequisites) {
+      if (!prerequisite.required) {
+        continue;
+      }
+      if (!kinds.includes(prerequisite.kind)) {
+        kinds.push(prerequisite.kind);
+      }
+    }
+  }
+  return kinds;
+}
+
+function addProjectLocalSkillPrerequisiteChecks(
+  checks: DoctorFinding[],
+  selectedSkills: readonly PortableSkillCatalogEntry[],
+  env: NodeJS.ProcessEnv,
+  envFilePath: string
+): void {
+  const kinds = requiredPrerequisiteKinds(selectedSkills);
+  const tools: Array<{ kind: PortableSkillPrerequisiteKind; command: string; label: string }> = [
+    { kind: 'github-cli', command: 'gh', label: 'GitHub CLI' },
+    { kind: 'uv', command: 'uv', label: 'uv' },
+    { kind: 'node', command: 'node', label: 'Node.js' }
+  ];
+
+  for (const tool of tools.filter((candidate) => kinds.includes(candidate.kind))) {
+    const executablePath = findCommandOnPath(tool.command, env);
+    addCheck(checks, {
+      id: `project_local_skills.prerequisite.${tool.kind}`,
+      title: `${tool.label} is available for selected project-local skills`,
+      status: executablePath ? 'ok' : 'failure',
+      reason: executablePath ? 'portable_skill_prerequisite_present' : 'portable_skill_prerequisite_missing',
+      summary: executablePath
+        ? `${tool.label} prerequisite resolves to ${executablePath}.`
+        : `${tool.label} prerequisite is missing for selected project-local skills: ${tool.command}`,
+      remediation: executablePath ? undefined : `Install ${tool.command} or put it on PATH before using the selected project-local skills.`,
+      details: { kind: tool.kind, tool: tool.command, executablePath, requiredBySelectedSkills: true }
+    });
+  }
+
+  if (kinds.includes('linear-mcp') || kinds.includes('linear-graphql')) {
+    const envFileValues = fs.existsSync(envFilePath) ? readEnvFileValues(envFilePath) : {};
+    const envPresent = typeof env.LINEAR_API_KEY === 'string' && env.LINEAR_API_KEY.length > 0;
+    const envFilePresent = typeof envFileValues.LINEAR_API_KEY === 'string' && envFileValues.LINEAR_API_KEY.length > 0;
+    const present = envPresent || envFilePresent;
+    const sourceCategory = envPresent ? 'environment_variable' : envFilePresent ? 'environment_file' : 'credential_configuration';
+    addCheck(checks, {
+      id: 'project_local_skills.credentials.linear',
+      title: 'Linear credentials are configured for selected project-local skills',
+      status: present ? 'ok' : 'failure',
+      reason: present ? 'linear_skill_credentials_present' : 'linear_skill_credentials_missing',
+      summary: present
+        ? `Linear credential configuration is present from ${envPresent ? 'environment variable' : 'project env file'}.`
+        : 'Linear credential configuration is missing for selected project-local Linear helper skills.',
+      remediation: present ? undefined : 'Set LINEAR_API_KEY in the process environment or project .env before using Linear helper skills.',
+      source: { category: sourceCategory, value: envPresent ? 'LINEAR_API_KEY' : envFilePresent ? envFilePath : 'LINEAR_API_KEY', present },
+      details: {
+        envVarName: 'LINEAR_API_KEY',
+        present,
+        sources: {
+          environmentVariable: { present: envPresent },
+          projectEnvFile: { path: envFilePath, present: envFilePresent, exists: fs.existsSync(envFilePath) }
+        }
+      }
+    });
+  }
+}
+
+function splitCommand(command: string): string[] {
+  return command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) => part.replace(/^(['"])(.*)\1$/, '$2')) ?? [];
+}
+
+function readJsonLines(buffer: string): unknown[] {
+  return buffer
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter((line): line is unknown => line !== null);
+}
+
+function extractSkillNamesFromDiscovery(payload: unknown, projectRoot: string): string[] {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
+  const result = record.result && typeof record.result === 'object' && !Array.isArray(record.result) ? (record.result as Record<string, unknown>) : {};
+  const data = Array.isArray(result.data) ? result.data : [];
+  const names: string[] = [];
+  for (const entry of data) {
+    const entryRecord = entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>) : {};
+    const cwd = typeof entryRecord.cwd === 'string' ? entryRecord.cwd : '';
+    if (cwd && path.resolve(cwd) !== path.resolve(projectRoot)) {
+      continue;
+    }
+    const skills = Array.isArray(entryRecord.skills) ? entryRecord.skills : [];
+    for (const skill of skills) {
+      const skillRecord = skill && typeof skill === 'object' && !Array.isArray(skill) ? (skill as Record<string, unknown>) : {};
+      if (typeof skillRecord.name === 'string' && skillRecord.enabled !== false) {
+        names.push(skillRecord.name);
+      }
+    }
+  }
+  return names;
+}
+
+async function probeCodexSkillDiscovery(params: {
+  command: string;
+  env: NodeJS.ProcessEnv;
+  projectRoot: string;
+  selectedSkills: readonly PortableSkillCatalogEntry[];
+  timeoutMs?: number;
+}): Promise<DoctorFindingInput> {
+  if (params.selectedSkills.length === 0) {
+    return {
+      id: 'project_local_skills.codex_visibility',
+      title: 'Codex-visible project-local skill discovery is checked',
+      status: 'ok',
+      reason: 'codex_skill_discovery_not_required',
+      summary: 'No project-local portable skills are selected, so Codex skill discovery is not required.',
+      details: { selectedSkillIds: [] }
+    };
+  }
+
+  const commandParts = splitCommand(params.command);
+  const appServerIndex = commandParts.lastIndexOf('app-server');
+  if (commandParts.length === 0 || appServerIndex < 0) {
+    return {
+      id: 'project_local_skills.codex_visibility',
+      title: 'Codex-visible project-local skill discovery is checked',
+      status: 'warning',
+      reason: 'codex_skill_discovery_not_app_server',
+      summary: `Codex skill discovery could not be checked because codex.command is not an app-server command: ${params.command}`,
+      remediation: 'Use `codex app-server` as the workflow codex.command to enable doctor skill visibility checks.',
+      details: { command: params.command, selectedSkillIds: params.selectedSkills.map((skill) => skill.id) }
+    };
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn(commandParts[0], commandParts.slice(1), {
+      cwd: params.projectRoot,
+      env: params.env,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timeout = setTimeout(() => {
+      finish({
+        id: 'project_local_skills.codex_visibility',
+        title: 'Codex-visible project-local skill discovery is checked',
+        status: 'warning',
+        reason: 'codex_skill_discovery_unavailable',
+        summary: 'Codex app-server skill discovery timed out before returning skills/list.',
+        remediation: 'Run `codex app-server` manually in the project root and inspect `skills/list` support.',
+        details: { selectedSkillIds: params.selectedSkills.map((skill) => skill.id), timeoutMs: params.timeoutMs ?? 2500 }
+      });
+    }, params.timeoutMs ?? 2500);
+
+    function finish(finding: DoctorFindingInput): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      child.kill('SIGTERM');
+      resolve(finding);
+    }
+
+    child.once('error', (error) => {
+      finish({
+        id: 'project_local_skills.codex_visibility',
+        title: 'Codex-visible project-local skill discovery is checked',
+        status: 'warning',
+        reason: 'codex_skill_discovery_unavailable',
+        summary: `Codex app-server skill discovery could not start: ${error.message}`,
+        remediation: 'Install Codex or fix codex.command before relying on project-local skill discovery.',
+        details: { selectedSkillIds: params.selectedSkills.map((skill) => skill.id), error: error.message }
+      });
+    });
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString();
+      const response = readJsonLines(stdout).find(
+        (line) => typeof line === 'object' && line !== null && (line as Record<string, unknown>).id === 2
+      );
+      if (!response) {
+        return;
+      }
+      const visibleNames = extractSkillNamesFromDiscovery(response, params.projectRoot);
+      const expectedNames = params.selectedSkills.map((skill) => skill.name);
+      const missing = expectedNames.filter((name) => !visibleNames.includes(name));
+      const visible = expectedNames.filter((name) => visibleNames.includes(name));
+      finish({
+        id: 'project_local_skills.codex_visibility',
+        title: 'Codex-visible project-local skill discovery is checked',
+        status: missing.length === 0 ? 'ok' : 'warning',
+        reason: missing.length === 0 ? 'codex_skill_discovery_visible' : 'codex_skill_discovery_partial',
+        summary:
+          missing.length === 0
+            ? `Codex app-server reports all selected project-local skills as visible: ${visible.join(', ')}.`
+            : `Codex app-server did not report ${missing.length} selected project-local skill(s): ${missing.join(', ')}.`,
+        remediation: missing.length === 0 ? undefined : 'Open the project with Codex from the project root and verify .codex/skills discovery.',
+        details: {
+          selectedSkillIds: params.selectedSkills.map((skill) => skill.id),
+          visibleSkillNames: visible,
+          missingSkillNames: missing,
+          discoveryResponseShape: 'skills/list'
+        }
+      });
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.once('exit', (code) => {
+      if (settled) {
+        return;
+      }
+      finish({
+        id: 'project_local_skills.codex_visibility',
+        title: 'Codex-visible project-local skill discovery is checked',
+        status: 'warning',
+        reason: 'codex_skill_discovery_unavailable',
+        summary: `Codex app-server exited before returning skills/list (exit ${code ?? 'signal'}).`,
+        remediation: 'Run `codex app-server` manually in the project root and inspect startup errors.',
+        details: {
+          selectedSkillIds: params.selectedSkills.map((skill) => skill.id),
+          exitCode: code,
+          stderrPreview: stderr.trim().slice(0, 500)
+        }
+      });
+    });
+
+    child.stdin?.write(
+      `${JSON.stringify({
+        id: 1,
+        method: 'initialize',
+        params: {
+          clientInfo: { name: 'symphony-doctor', version: '0.1.0' },
+          capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: [] }
+        }
+      })}\n`
+    );
+    child.stdin?.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`);
+    child.stdin?.write(
+      `${JSON.stringify({ id: 2, method: 'skills/list', params: { cwds: [params.projectRoot], forceReload: true } })}\n`
+    );
+  });
 }
 
 function isSensitiveKey(key: string): boolean {
@@ -1530,7 +1915,32 @@ export async function runLocalDoctor(options: RunLocalDoctorOptions): Promise<{
     } catch {
       workflowConfig = {};
     }
-    addCustomizationChecks(checks, resolved, readWorkflowCustomizationMetadata(resolved.workflowPath, workflowConfig));
+    const customizationMetadata = readWorkflowCustomizationMetadata(resolved.workflowPath, workflowConfig);
+    addCustomizationChecks(checks, resolved, customizationMetadata);
+    const portableSkillSelection = selectedPortableSkillsFromMetadata(customizationMetadata);
+    addProjectLocalSkillMaterializationChecks(
+      checks,
+      resolved.currentProjectRoot,
+      portableSkillSelection.selectedSkills,
+      portableSkillSelection.unknown
+    );
+    addProjectLocalSkillPrerequisiteChecks(
+      checks,
+      portableSkillSelection.selectedSkills,
+      dashboardEnv,
+      resolved.envFilePath
+    );
+    if (workflowValidation.effectiveConfig) {
+      addCheck(
+        checks,
+        await probeCodexSkillDiscovery({
+          command: workflowValidation.effectiveConfig.codex.command,
+          env: dashboardEnv,
+          projectRoot: resolved.currentProjectRoot,
+          selectedSkills: portableSkillSelection.selectedSkills
+        })
+      );
+    }
 
     const portAvailable = await canListen(resolved.host.host, resolved.port.port);
     addCheck(checks, {
