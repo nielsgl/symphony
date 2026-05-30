@@ -33,19 +33,19 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
         <span id="connection-badge" class="badge badge-live">Live</span>
       </div>
       <div class="chrome-token">
-        <span class="status-kicker">Runtime Build</span>
+        <span class="status-kicker">Build</span>
         <strong>v1.42.3</strong>
       </div>
-      <div class="chrome-token">
-        <span class="status-kicker">System Health</span>
-        <strong id="connection-detail">Live updates are connected.</strong>
+      <div class="chrome-token chrome-token-readable">
+        <span class="status-kicker">Health</span>
+        <strong id="connection-detail">Live updates connected.</strong>
       </div>
       <div class="chrome-token chrome-token-audit">
         <span class="status-kicker">Audit</span>
         <strong>Recording</strong>
       </div>
-      <div class="chrome-token chrome-token-refresh">
-        <span class="status-kicker">Snapshot</span>
+      <div class="chrome-token chrome-token-refresh chrome-token-readable">
+        <span class="status-kicker">Freshness</span>
         <strong id="last-updated">Waiting for first snapshot</strong>
       </div>
       <div class="hero-actions">

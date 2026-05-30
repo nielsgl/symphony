@@ -47,8 +47,8 @@ body {
   z-index: 5;
   min-height: 92px;
   display: grid;
-  grid-template-columns: 86px minmax(250px, 350px) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 78px minmax(240px, 324px) minmax(0, 1fr);
+  gap: 14px;
   align-items: center;
   padding: 10px 28px;
   border: 1px solid rgba(122, 177, 219, 0.18);
@@ -119,7 +119,7 @@ h1 {
 .hero-status-card {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(112px, 1.05fr) minmax(106px, 0.86fr) minmax(118px, 0.92fr) minmax(96px, 0.76fr) minmax(122px, 1fr) auto;
+  grid-template-columns: minmax(114px, 0.76fr) minmax(92px, 0.56fr) minmax(190px, 1.18fr) minmax(96px, 0.64fr) minmax(210px, 1.32fr) auto;
   align-items: center;
   gap: 0;
   border: 1px solid rgba(122, 177, 219, 0.16);
@@ -135,7 +135,7 @@ h1 {
   display: grid;
   align-content: center;
   gap: 2px;
-  padding: 8px 18px;
+  padding: 8px 14px;
   border-right: 1px solid rgba(122, 177, 219, 0.16);
 }
 
@@ -162,6 +162,14 @@ h1 {
   line-height: 1.22;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chrome-token-readable strong {
+  display: -webkit-box;
+  line-height: 1.12;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .chrome-token-wide strong::after,
