@@ -8,6 +8,7 @@ import { renderRunning, renderRetry, renderBlocked } from './issues';
 import { renderStoppedRunRecovery, mergeStoppedRunRecoveryPayload } from './stopped-runs';
 import { loadIssue } from './issue-detail';
 import { renderProjectHistory, loadProjectHistory, projectKeyFromHistoryPayload } from './project-history';
+import { renderAppleConstellation } from './apple-constellation';
 
 let issueDetailRefreshInFlight = false;
 let issueDetailRefreshQueued = false;
@@ -181,6 +182,7 @@ export function applyPayload(payload: any, source: any) {
     renderBlocked(payload);
     renderStoppedRunRecovery(payload);
     renderRuntimeEvents(payload);
+    renderAppleConstellation(payload);
     setLastUpdated(payload.generated_at || new Date().toISOString());
     refreshSelectedIssueDetail();
     if (source === 'stream') {
@@ -197,6 +199,7 @@ export function applyPayload(payload: any, source: any) {
 export function updateRuntimeClock() {
     if (state.lastGoodPayload) {
       renderOverview(state.lastGoodPayload);
+      renderAppleConstellation(state.lastGoodPayload);
     }
     const runtimeCells = document.querySelectorAll('.runtime-cell');
     for (const runtimeCell of runtimeCells) {

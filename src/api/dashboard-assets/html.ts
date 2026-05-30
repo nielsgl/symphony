@@ -1,4 +1,5 @@
 import type { DashboardClientConfig } from './types';
+import { renderAppleConstellationHtml } from './apple-constellation-html';
 
 export function renderDashboardHtml(_config?: DashboardClientConfig): string {
   const revision = encodeURIComponent(_config?.asset_revision || 'dev');
@@ -63,7 +64,9 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     <span id="api-degraded-summary"></span>
   </section>
 
-  <main class="layout">
+  ${renderAppleConstellationHtml()}
+
+  <main class="layout legacy-dashboard-panels" aria-label="Legacy dashboard data sinks">
     <section id="snapshot-error-panel" class="panel panel-wide snapshot-error hidden">
       <div class="panel-head">
         <h2>Snapshot Unavailable</h2>

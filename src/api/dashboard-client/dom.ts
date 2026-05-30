@@ -90,6 +90,18 @@ export function resolveDashboardElements(doc = document) {
     runtimeEventsList: doc.getElementById('runtime-events-list'),
     diagnosticsOutput: doc.getElementById('diagnostics-output'),
     historyList: doc.getElementById('history-list')
+    ,
+    constellationIssueList: doc.getElementById('constellation-issue-list'),
+    constellationRefreshPulse: doc.getElementById('constellation-refresh-pulse'),
+    constellationCore: doc.getElementById('constellation-core'),
+    constellationInterlockList: doc.getElementById('constellation-interlock-list'),
+    constellationEvidencePath: doc.getElementById('constellation-evidence-path'),
+    constellationActions: doc.getElementById('constellation-actions'),
+    constellationOperator: doc.getElementById('constellation-operator'),
+    constellationRuntimeClock: doc.getElementById('constellation-runtime-clock'),
+    constellationApiHealth: doc.getElementById('constellation-api-health'),
+    constellationWorkerCount: doc.getElementById('constellation-worker-count'),
+    constellationQueueCount: doc.getElementById('constellation-queue-count')
   };
 }
 

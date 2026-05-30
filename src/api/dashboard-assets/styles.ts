@@ -1,3 +1,5 @@
+import { renderAppleConstellationStyles } from './apple-constellation-styles';
+
 export function renderDashboardStylesCss(): string {
   return `:root {
   --bg: #eef3ea;
@@ -1324,5 +1326,7 @@ details summary {
     align-items: stretch;
   }
 }
+
+${renderAppleConstellationStyles()}
 `;
 }
