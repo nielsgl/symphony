@@ -510,18 +510,21 @@ afterEach(() => {
 });
 
 describe('dashboard assets', () => {
-  it('styles the Refresh Now button with the ticket pink treatment', () => {
+  it('styles the Refresh Pulse button with compact constellation chrome', () => {
     const css = renderDashboardStylesCss();
 
-    expect(css).toContain('.refresh-now-button {\n  background: #ec4899;');
-    expect(css).toContain('.refresh-now-button:hover {\n  background: #db2777;');
-    expect(css).toContain('.refresh-now-button:focus-visible {\n  outline: 2px solid #f9a8d4;');
+    expect(css).toContain('.refresh-now-button {\n  border: 1px solid rgba(122, 177, 219, 0.28);');
+    expect(css).toContain('background: rgba(5, 17, 26, 0.82);');
+    expect(css).toContain('.refresh-now-button:hover {\n  background: rgba(15, 39, 58, 0.92);');
+    expect(css).toContain('.refresh-now-button:focus-visible {\n  outline: 2px solid rgba(90, 174, 255, 0.76);');
   });
 
-  it('renders the operator control subtitle as outcome-focused copy', () => {
+  it('renders the Living Agent Lens status chrome', () => {
     const html = renderDashboardHtml();
 
-    expect(html).toContain('Turn every run from first signal to confident handoff.');
+    expect(html).toContain('Symphony Control Constellation');
+    expect(html).toContain('Living Agent Lens');
+    expect(html).toContain('Refresh Pulse');
     expect(html).not.toContain('Live orchestration visibility with retry control, issue drilldown, and desktop/browser parity.');
   });
 
