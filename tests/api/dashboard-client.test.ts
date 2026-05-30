@@ -82,6 +82,7 @@ import {
   recoveryStatusLabel
 } from '../../src/api/dashboard-client/stopped-runs';
 import { state } from '../../src/api/dashboard-client/state';
+import { renderConstellationGravity } from '../../src/api/dashboard-client/apple-constellation-gravity';
 
 class FakeElement {
   textContent = '';
@@ -522,6 +523,47 @@ describe('dashboard browser client modules', () => {
     });
     expect(collectText(elements.blockedRows)).toContain('NIE-217');
     expect(collectText(elements.blockedRows)).toContain('Reply');
+  });
+
+  it('renders the constellation gravity rail with fallback and focused Chatty rows', () => {
+    const constellationIssueList = new FakeElement();
+    setDashboardElements({ ...elements, constellationIssueList });
+
+    renderConstellationGravity({ running: [], blocked: [], retry: [] });
+    expect(collectText(constellationIssueList)).toContain('NIE-300');
+    expect(collectText(constellationIssueList)).toContain('Chatty');
+    expect(constellationIssueList.children).toHaveLength(6);
+    expect(constellationIssueList.children[3].className).toContain('gravity-row-focus');
+
+    renderConstellationGravity({
+      running: [
+        {
+          issue_identifier: 'NIE-301',
+          title: 'Snapshot Diffing',
+          current_phase: 'implementation'
+        },
+        {
+          issue_identifier: 'NIE-300',
+          title: 'Chatty',
+          current_phase: 'conversation_stream'
+        }
+      ],
+      blocked: [
+        {
+          issue_identifier: 'NIE-276',
+          title: 'UI Refactor',
+          stop_reason_code: 'operator_action_required'
+        }
+      ],
+      retry: [],
+      focus: { issue_identifier: 'NIE-301' }
+    });
+
+    const rendered = collectText(constellationIssueList);
+    expect(rendered).toContain('NIE-300');
+    expect(rendered).toContain('0.91');
+    expect(rendered).toContain('NIE-276');
+    expect(constellationIssueList.children[0].className).toContain('gravity-row-focus');
   });
 
   it('renders blocked-row actions from backend advertised capabilities', () => {
