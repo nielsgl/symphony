@@ -37,14 +37,17 @@ export function renderConstellationCoreStyles(): string {
   position: absolute;
   inset: 0;
   min-height: 620px;
-  overflow: visible;
+  overflow: hidden;
   border-radius: 999px;
+  isolation: isolate;
+  perspective: 900px;
   background:
-    radial-gradient(circle at 50% 52%, rgba(79, 179, 255, 0.28) 0 2px, transparent 3px),
-    radial-gradient(circle at 50% 52%, rgba(20, 142, 255, 0.36) 0 8%, transparent 14%),
-    radial-gradient(circle at 50% 52%, rgba(27, 107, 197, 0.18) 0 31%, transparent 46%),
-    radial-gradient(circle at 46% 46%, rgba(77, 200, 255, 0.1), transparent 0 42%, transparent 58%),
-    linear-gradient(135deg, rgba(6, 18, 29, 0.44), rgba(2, 9, 15, 0.14));
+    radial-gradient(circle at 50% 52%, rgba(255, 255, 255, 0.82) 0 1px, transparent 2px),
+    radial-gradient(circle at 50% 52%, rgba(44, 184, 255, 0.34) 0 7%, transparent 14%),
+    radial-gradient(circle at 50% 52%, rgba(44, 125, 255, 0.22) 0 26%, transparent 48%),
+    radial-gradient(circle at 48% 50%, rgba(119, 220, 255, 0.12), transparent 0 44%, transparent 60%),
+    radial-gradient(circle at 50% 52%, rgba(2, 8, 18, 0) 0 56%, rgba(2, 8, 18, 0.86) 74%, rgba(2, 8, 18, 0.98) 100%),
+    linear-gradient(135deg, rgba(3, 13, 24, 0.94), rgba(2, 8, 15, 0.54));
 }
 
 .lens-system::before,
@@ -67,10 +70,117 @@ export function renderConstellationCoreStyles(): string {
   inset: 90px;
   border: 1px dashed rgba(54, 164, 255, 0.32);
   box-shadow: inset 0 0 80px rgba(5, 45, 82, 0.58);
+  animation: lens-plane-spin 32s linear infinite reverse;
+}
+
+.lens-depth-field,
+.lens-orbit-tracks {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.lens-depth-field {
+  opacity: 0.95;
+  transform: translateZ(-80px);
+}
+
+.lens-depth-plane {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-repeat: repeat;
+  mix-blend-mode: screen;
+}
+
+.lens-depth-plane-back {
+  opacity: 0.48;
+  background-image:
+    radial-gradient(circle at 12% 18%, rgba(154, 217, 255, 0.62) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 68% 28%, rgba(111, 191, 255, 0.42) 0 1px, transparent 1.7px),
+    radial-gradient(circle at 34% 72%, rgba(255, 255, 255, 0.46) 0 1px, transparent 1.8px);
+  background-size: 152px 132px, 208px 186px, 176px 214px;
+  animation: lens-star-drift 48s linear infinite;
+}
+
+.lens-depth-plane-mid {
+  inset: 34px;
+  opacity: 0.64;
+  background-image:
+    radial-gradient(circle at 20% 22%, rgba(104, 201, 255, 0.76) 0 1px, transparent 1.9px),
+    radial-gradient(circle at 62% 66%, rgba(185, 237, 255, 0.58) 0 1px, transparent 2px),
+    radial-gradient(circle at 82% 38%, rgba(123, 130, 255, 0.44) 0 1px, transparent 1.8px);
+  background-size: 132px 148px, 190px 160px, 216px 190px;
+  animation: lens-star-drift 34s linear infinite reverse;
+}
+
+.lens-depth-plane-front {
+  inset: 86px;
+  opacity: 0.46;
+  background-image:
+    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.88) 0 1px, transparent 2.2px),
+    radial-gradient(circle at 76% 64%, rgba(90, 214, 255, 0.7) 0 1px, transparent 2px);
+  background-size: 96px 104px, 142px 136px;
+  filter: blur(0.2px);
+  animation: lens-star-drift 24s linear infinite;
+}
+
+.lens-orbit-tracks {
+  left: 50%;
+  top: 52%;
+  width: min(640px, 93%);
+  height: min(640px, 93%);
+  inset: auto;
+  transform: translate(-50%, -50%) rotateX(58deg) rotateZ(-18deg);
+  transform-style: preserve-3d;
+}
+
+.lens-orbit-track {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 999px;
+  border: 1px solid rgba(92, 190, 255, 0.32);
+  transform: translate(-50%, -50%);
+  box-shadow:
+    0 0 22px rgba(72, 169, 255, 0.28),
+    inset 0 0 18px rgba(91, 202, 255, 0.08);
+}
+
+.lens-orbit-track-alpha {
+  width: 92%;
+  height: 92%;
+  animation: lens-orbit-glow 8s ease-in-out infinite;
+}
+
+.lens-orbit-track-beta {
+  width: 72%;
+  height: 52%;
+  border-color: rgba(121, 219, 255, 0.26);
+  transform: translate(-50%, -50%) rotateZ(24deg);
+  animation: lens-orbit-glow 10s ease-in-out infinite reverse;
+}
+
+.lens-orbit-track-gamma {
+  width: 54%;
+  height: 79%;
+  border-color: rgba(130, 126, 255, 0.24);
+  transform: translate(-50%, -50%) rotateZ(-42deg);
+}
+
+.lens-orbit-track-delta {
+  width: 36%;
+  height: 36%;
+  border-color: rgba(118, 237, 143, 0.3);
+  border-style: dashed;
+  animation: lens-orbit-glow 7s ease-in-out infinite;
 }
 
 .lens-ring {
   position: absolute;
+  z-index: 1;
   left: 50%;
   top: 52%;
   width: var(--lens-size);
@@ -83,6 +193,7 @@ export function renderConstellationCoreStyles(): string {
 .lens-ring-outer {
   --lens-size: min(590px, 88%);
   border: 2px solid rgba(72, 160, 255, 0.68);
+  animation: lens-ring-precession 42s linear infinite;
   box-shadow:
     0 0 18px rgba(82, 177, 255, 0.96),
     0 0 72px rgba(52, 138, 255, 0.42),
@@ -95,11 +206,13 @@ export function renderConstellationCoreStyles(): string {
   background:
     repeating-radial-gradient(circle, transparent 0 10px, rgba(56, 150, 255, 0.07) 11px 12px),
     conic-gradient(from 18deg, transparent 0 18deg, rgba(69, 181, 255, 0.4) 20deg 22deg, transparent 24deg 74deg);
+  animation: lens-ring-precession 26s linear infinite reverse;
 }
 
 .lens-ring-inner {
   --lens-size: min(200px, 34%);
   border: 1px solid rgba(121, 205, 255, 0.62);
+  animation: lens-energy-breathe 5.8s ease-in-out infinite;
   box-shadow:
     0 0 24px rgba(68, 163, 255, 0.78),
     inset 0 0 26px rgba(68, 163, 255, 0.34);
@@ -107,7 +220,7 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-focus-pill {
   position: absolute;
-  z-index: 6;
+  z-index: 9;
   top: 58px;
   left: 50%;
   min-width: 180px;
@@ -166,7 +279,7 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-current-message {
   position: absolute;
-  z-index: 5;
+  z-index: 8;
   top: 224px;
   left: 11%;
   width: min(270px, 35%);
@@ -202,7 +315,7 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-role-stream {
   position: absolute;
-  z-index: 5;
+  z-index: 8;
   left: 12%;
   top: 430px;
   width: min(255px, 37%);
@@ -284,28 +397,58 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-event-orbit {
   position: absolute;
-  z-index: 7;
+  z-index: 4;
   left: 50%;
   top: 52%;
   width: 1px;
   height: 1px;
+  transform-style: preserve-3d;
 }
 
 .lens-event-node {
   --orbit-angle: 0deg;
+  --orbit-counter-angle: 0deg;
+  --orbit-radius: 168px;
+  --orbit-speed: 26s;
+  --orbit-delay: 0s;
+  --orbit-scale: 1;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  transform: rotate(var(--orbit-angle));
+  transform-origin: 0 0;
+  transform-style: preserve-3d;
+}
+
+.lens-event-path {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  animation: lens-event-orbit var(--orbit-speed) linear infinite;
+  animation-delay: var(--orbit-delay);
+  transform-origin: 0 0;
+  transform-style: preserve-3d;
+}
+
+.lens-event-body {
   position: absolute;
   left: 0;
   top: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  transform:
-    rotate(var(--orbit-angle))
-    translateX(168px)
-    rotate(calc(-1 * var(--orbit-angle)));
+  min-width: 150px;
+  animation: lens-event-counter var(--orbit-speed) linear infinite;
+  animation-delay: var(--orbit-delay);
+  transform-origin: 0 0;
 }
 
 .lens-event-bead {
+  flex: 0 0 auto;
   display: grid;
   place-items: center;
   width: 44px;
@@ -345,6 +488,7 @@ export function renderConstellationCoreStyles(): string {
 .lens-event-copy {
   display: grid;
   min-width: 86px;
+  max-width: 112px;
   gap: 2px;
   transform: translateY(1px);
 }
@@ -379,6 +523,7 @@ export function renderConstellationCoreStyles(): string {
     0 0 22px rgba(87, 185, 255, 0.94),
     0 0 76px rgba(55, 153, 255, 0.54),
     inset 0 0 34px rgba(92, 201, 255, 0.32);
+  animation: lens-core-float 7.2s ease-in-out infinite;
 }
 
 .lens-star-pulse,
@@ -393,6 +538,7 @@ export function renderConstellationCoreStyles(): string {
   inset: 18px;
   border: 1px solid rgba(132, 220, 255, 0.62);
   box-shadow: 0 0 18px rgba(93, 200, 255, 0.76);
+  animation: lens-pulse-wave 3.8s ease-in-out infinite;
 }
 
 .lens-star-point {
@@ -402,6 +548,7 @@ export function renderConstellationCoreStyles(): string {
     0 0 12px #ffffff,
     0 0 32px rgba(88, 194, 255, 1),
     0 0 70px rgba(54, 144, 255, 0.92);
+  animation: lens-energy-breathe 2.8s ease-in-out infinite;
 }
 
 .lens-star-grid {
@@ -410,11 +557,12 @@ export function renderConstellationCoreStyles(): string {
     linear-gradient(90deg, rgba(132, 213, 255, 0.16) 1px, transparent 1px);
   background-size: 18px 18px;
   mask-image: radial-gradient(circle, #000 0 48%, transparent 72%);
+  animation: lens-grid-drift 14s linear infinite;
 }
 
 .lens-confidence {
   position: absolute;
-  z-index: 5;
+  z-index: 8;
   top: 126px;
   right: 8%;
   display: grid;
@@ -435,7 +583,7 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-context-meter {
   position: absolute;
-  z-index: 5;
+  z-index: 8;
   left: 50%;
   bottom: 78px;
   width: 270px;
@@ -478,9 +626,9 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-evidence-dock {
   position: absolute;
-  z-index: 6;
+  z-index: 8;
   left: 50%;
-  bottom: 18px;
+  bottom: 42px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -515,6 +663,106 @@ export function renderConstellationCoreStyles(): string {
   position: absolute;
   left: 3px;
   color: #79e497;
+}
+
+@keyframes lens-star-drift {
+  from {
+    background-position: 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 152px -132px, -208px 186px, 176px 214px;
+  }
+}
+
+@keyframes lens-plane-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes lens-ring-precession {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+@keyframes lens-orbit-glow {
+  0%,
+  100% {
+    opacity: 0.58;
+    filter: drop-shadow(0 0 4px rgba(92, 190, 255, 0.22));
+  }
+  50% {
+    opacity: 0.95;
+    filter: drop-shadow(0 0 12px rgba(92, 190, 255, 0.44));
+  }
+}
+
+@keyframes lens-event-orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes lens-event-counter {
+  from {
+    transform: translateX(var(--orbit-radius)) rotate(var(--orbit-counter-angle)) scale(var(--orbit-scale));
+  }
+  to {
+    transform: translateX(var(--orbit-radius)) rotate(calc(var(--orbit-counter-angle) - 360deg)) scale(var(--orbit-scale));
+  }
+}
+
+@keyframes lens-core-float {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate(-50%, -50%) translate3d(0, -7px, 20px);
+  }
+}
+
+@keyframes lens-pulse-wave {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scale(0.86);
+  }
+  50% {
+    opacity: 0.94;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes lens-energy-breathe {
+  0%,
+  100% {
+    opacity: 0.78;
+    filter: saturate(1);
+  }
+  50% {
+    opacity: 1;
+    filter: saturate(1.35);
+  }
+}
+
+@keyframes lens-grid-drift {
+  from {
+    background-position: 0 0, 0 0;
+  }
+  to {
+    background-position: 18px 18px, -18px 18px;
+  }
 }
 
 @media (max-width: 1180px) {
@@ -563,10 +811,26 @@ export function renderConstellationCoreStyles(): string {
   }
 
   .lens-event-node {
-    transform:
-      rotate(var(--orbit-angle))
-      translateX(116px)
-      rotate(calc(-1 * var(--orbit-angle)));
+    --orbit-radius: 116px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lens-system::after,
+  .lens-depth-plane,
+  .lens-orbit-track,
+  .lens-ring,
+  .lens-event-path,
+  .lens-event-body,
+  .lens-core-star,
+  .lens-star-pulse,
+  .lens-star-point,
+  .lens-star-grid {
+    animation: none !important;
+  }
+
+  .lens-event-body {
+    transform: translateX(var(--orbit-radius)) rotate(var(--orbit-counter-angle)) scale(var(--orbit-scale));
   }
 }
 `;

@@ -360,6 +360,10 @@ function collectText(node: any): string {
   return [node.textContent, ...(node.children || []).map(collectText)].filter(Boolean).join(' ');
 }
 
+function collectClasses(node: any): string {
+  return [node.className, ...(node.children || []).map(collectClasses)].filter(Boolean).join(' ');
+}
+
 describe('dashboard browser client modules', () => {
   beforeEach(() => {
     resetDashboardModuleState();
@@ -595,6 +599,9 @@ describe('dashboard browser client modules', () => {
     expect(rendered).toContain('0.92');
     expect(rendered).toContain('120 messages');
     expect(rendered).toContain('thread_01JX7');
+    expect(collectClasses(constellationCore)).toContain('lens-depth-field');
+    expect(collectClasses(constellationCore)).toContain('lens-orbit-track-alpha');
+    expect(collectClasses(constellationCore)).toContain('lens-event-body');
   });
 
   it('renders live Chatty agent activity in the constellation core and prefers it as focus', () => {
