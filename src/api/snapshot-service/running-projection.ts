@@ -1,5 +1,6 @@
 import type { OrchestratorState, RunningEntry } from '../../orchestrator';
 import { explainOperatorRuntimeState, REASON_CODES, toOperatorExplainerHint } from '../../observability';
+import { buildRunningConversationLatest } from '../agent-conversation';
 import { projectMissingToolOutputRecovery } from '../missing-tool-output-recovery';
 import { resolveNotBlockedExplainer, resolveProgressSignal, resolveRunningTurnControl, resolveTokenTelemetryQuality } from '../runtime-visibility';
 import type { ApiStateResponse } from '../types';
@@ -152,6 +153,7 @@ export function toStateRunningRow(
     current_blocker_class: operatorExplainer.actionability === 'none' ? null : operatorExplainer.classification,
     time_since_progress: timeSinceProgress,
     last_successful_step: resolveLastSuccessfulStep(entry),
+    conversation_latest: buildRunningConversationLatest(issueId, entry),
     transcript_tool_call_diagnostic_summary: projectTranscriptToolCallDiagnosticSummary(entry),
     ...notBlockedExplainer,
     operator_actions: (operatorActions?.get(issueId) ?? [])

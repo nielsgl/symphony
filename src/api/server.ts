@@ -1959,7 +1959,12 @@ export class LocalApiServer {
               let parsed: {
                 state?: {
                   selected_issue?: string | null;
-                  filters?: { status?: 'all' | 'running' | 'retrying' | 'blocked'; query?: string };
+                  filters?: {
+                    status?: 'all' | 'running' | 'retrying' | 'blocked';
+                    query?: string;
+                    conversation_role?: 'all' | 'system' | 'user' | 'assistant' | 'tool' | 'runtime';
+                    conversation_density?: 'comfortable' | 'compact';
+                  };
                   event_feed_filter?: 'all' | 'warn' | 'error';
                   panels?: { throughput_open?: boolean; runtime_events_open?: boolean };
                   panel_state?: { issue_detail_open?: boolean };
@@ -1969,7 +1974,12 @@ export class LocalApiServer {
                 parsed = JSON.parse(payloadText) as {
                   state?: {
                     selected_issue?: string | null;
-                    filters?: { status?: 'all' | 'running' | 'retrying' | 'blocked'; query?: string };
+                    filters?: {
+                      status?: 'all' | 'running' | 'retrying' | 'blocked';
+                      query?: string;
+                      conversation_role?: 'all' | 'system' | 'user' | 'assistant' | 'tool' | 'runtime';
+                      conversation_density?: 'comfortable' | 'compact';
+                    };
                     event_feed_filter?: 'all' | 'warn' | 'error';
                     panels?: { throughput_open?: boolean; runtime_events_open?: boolean };
                     panel_state?: { issue_detail_open?: boolean };
@@ -1984,11 +1994,25 @@ export class LocalApiServer {
                 throw new LocalApiError('invalid_ui_state', 'state object is required', 400);
               }
 
+              const conversationRole = state.filters?.conversation_role;
+              const normalizedConversationRole =
+                conversationRole === 'system' ||
+                conversationRole === 'user' ||
+                conversationRole === 'assistant' ||
+                conversationRole === 'tool' ||
+                conversationRole === 'runtime'
+                  ? conversationRole
+                  : 'all';
+              const normalizedConversationDensity =
+                state.filters?.conversation_density === 'compact' ? 'compact' : 'comfortable';
+
               this.diagnosticsSource.setUiState({
                 selected_issue: state.selected_issue ?? null,
                 filters: {
                   status: state.filters?.status ?? 'all',
-                  query: state.filters?.query ?? ''
+                  query: state.filters?.query ?? '',
+                  conversation_role: normalizedConversationRole,
+                  conversation_density: normalizedConversationDensity
                 },
                 event_feed_filter: state.event_feed_filter ?? 'all',
                 panels: {
@@ -2282,7 +2306,12 @@ export class LocalApiServer {
             handler: async (_request, response, match) => {
               const issueIdentifier = decodeURIComponent(match[1]);
               const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
-              const payload = this.snapshotService.projectIssue(state, issueIdentifier);
+              const payload = this.snapshotService.projectIssue(state, issueIdentifier, {
+                runHistory: this.diagnosticsSource?.listRunHistory(200),
+                lineage:
+                  this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier?.(issueIdentifier) ??
+                  null
+              });
               this.enrichLiveTokenFallbackIssue(payload);
               this.logger?.log({
                 level: 'info',
@@ -2308,7 +2337,12 @@ export class LocalApiServer {
             handler: async (_request, response, match) => {
               const issueIdentifier = decodeURIComponent(match[1]);
               const state = this.snapshotSource.getStateSnapshot({ includeTranscriptToolCallDiagnostics: false });
-              const payload = this.snapshotService.projectIssue(state, issueIdentifier);
+              const payload = this.snapshotService.projectIssue(state, issueIdentifier, {
+                runHistory: this.diagnosticsSource?.listRunHistory(200),
+                lineage:
+                  this.diagnosticsSource?.reconstructLatestThreadLineageByIssueIdentifier?.(issueIdentifier) ??
+                  null
+              });
               this.enrichLiveTokenFallbackIssue(payload);
               this.logger?.log({
                 level: 'info',

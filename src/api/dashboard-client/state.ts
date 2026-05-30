@@ -33,7 +33,9 @@ export const state: any = {
       query: '',
       status: 'all',
       eventFeedSeverity: 'all',
-      blockedReason: 'all'
+      blockedReason: 'all',
+      conversationRole: 'all',
+      conversationDensity: 'comfortable'
     },
     panels: {
       throughputOpen: true,

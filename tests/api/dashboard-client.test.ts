@@ -27,8 +27,10 @@ import {
 import { elements, setDashboardElements } from '../../src/api/dashboard-client/dom';
 import {
   formatDiagnosticSummary,
+  formatConversationSummary,
   formatInputDecisionContext,
   loadIssue,
+  renderConversation,
   renderIssueExplainer,
   renderThreadDiagnostics,
   renderTimelineLane,
@@ -213,6 +215,10 @@ function makeDashboardElements() {
     issueLoad: new FakeElement(),
     issueOpenJson: new FakeElement(),
     issueSummary: new FakeElement(),
+    conversationSummary: new FakeElement(),
+    conversationList: new FakeElement(),
+    conversationRoleFilter: new FakeElement(),
+    conversationDensity: new FakeElement(),
     issueExplainerCard: new FakeElement(),
     issueExplainerActionability: new FakeElement(),
     issueExplainerHeadline: new FakeElement(),
@@ -270,7 +276,9 @@ function resetDashboardModuleState() {
       query: '',
       status: 'all',
       eventFeedSeverity: 'all',
-      blockedReason: 'all'
+      blockedReason: 'all',
+      conversationRole: 'all',
+      conversationDensity: 'comfortable'
     },
     panels: {
       throughputOpen: true,
@@ -484,12 +492,19 @@ describe('dashboard browser client modules', () => {
           token_telemetry_confidence: 'observed_live',
           current_blocker_class: 'none',
           last_successful_step: 'tests',
+          conversation_latest: {
+            role: 'assistant',
+            source: 'runtime_event',
+            summary: 'latest agent thought',
+            at: '2026-05-21T10:01:00.000Z'
+          },
           last_event_at: '2026-05-21T10:01:00.000Z'
         }
       ]
     });
     expect(collectText(elements.runningRows)).toContain('NIE-217');
     expect(collectText(elements.runningRows)).toContain('Split unavailable');
+    expect(collectText(elements.runningRows)).toContain('latest agent thought');
 
     renderRetry({ retrying: [] });
     expect(collectText(elements.retryRows)).toContain('No issues are waiting for retry.');
@@ -1445,7 +1460,19 @@ describe('dashboard browser client modules', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse({ error: 'missing' }, false))
       .mockRejectedValueOnce(new Error('network down'))
-      .mockResolvedValueOnce(jsonResponse({ state: null }));
+      .mockResolvedValueOnce(jsonResponse({ state: null }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          state: {
+            selected_issue: '',
+            filters: {
+              conversation_role: 'invalid-role',
+              conversation_density: 'dense'
+            },
+            panel_state: { issue_detail_open: false }
+          }
+        })
+      );
     vi.stubGlobal('fetch', fetchMock);
 
     await loadUiState();
@@ -1459,6 +1486,13 @@ describe('dashboard browser client modules', () => {
     await loadUiState();
     expect(state.uiStateLoaded).toBe(true);
     expect(state.selectedIssue).toBe('');
+
+    state.uiStateLoaded = false;
+    await loadUiState();
+    expect(state.filter.conversationRole).toBe('all');
+    expect(state.filter.conversationDensity).toBe('comfortable');
+    expect(elements.conversationRoleFilter.value).toBe('all');
+    expect(elements.conversationDensity.value).toBe('comfortable');
   });
 
   it('renders issue detail diagnostics, timelines, raw events, and load fallbacks directly', async () => {
@@ -1495,6 +1529,45 @@ describe('dashboard browser client modules', () => {
     expect(elements.issueExplainerHeadline.textContent).toBe('Operator needed');
     expect(elements.issueExplainerAction.textContent).toBe('answer');
 
+    expect(formatConversationSummary(null)).toBe('Conversation: no evidence loaded');
+    renderConversation({
+      latest: { role: 'assistant', source: 'runtime_event', summary: 'Implemented the feature' },
+      metadata: {
+        included_count: 2,
+        total_available_count: 4,
+        truncated: true,
+        role_counts: { system: 0, user: 1, assistant: 1, tool: 0, runtime: 0 }
+      },
+      messages: [
+        {
+          at: '2026-05-21T10:00:00.000Z',
+          role: 'user',
+          source: 'runtime_event',
+          event: 'pending_input',
+          content: 'Please continue',
+          thread_id: 'thread-1'
+        },
+        {
+          at: '2026-05-21T10:01:00.000Z',
+          role: 'assistant',
+          source: 'app_server_ledger',
+          event: 'assistant_text',
+          content: 'Implemented the feature',
+          truncated: true
+        }
+      ]
+    });
+    expect(elements.conversationSummary.textContent).toContain('latest assistant: Implemented the feature');
+    expect(collectText(elements.conversationList)).toContain('Please continue');
+    state.filter.conversationRole = 'tool';
+    renderConversation({
+      latest: {},
+      metadata: { included_count: 1, total_available_count: 1, truncated: false, role_counts: {} },
+      messages: [{ at: '2026-05-21T10:00:00.000Z', role: 'assistant', source: 'runtime_event', content: 'hidden' }]
+    });
+    expect(collectText(elements.conversationList)).toContain('No messages match this role filter.');
+    state.filter.conversationRole = 'all';
+
     renderThreadDiagnostics(null);
     expect(elements.threadRawEvents.textContent).toBe('Detailed diagnostics are not loaded.');
     renderThreadDiagnostics({
@@ -1521,6 +1594,24 @@ describe('dashboard browser client modules', () => {
             token_telemetry_confidence: 'observed_live',
             transcript_tool_call_diagnostic_summary: { total_count: 1 }
           },
+          conversation: {
+            latest: { role: 'assistant', source: 'runtime_event', summary: 'latest implementation note' },
+            metadata: {
+              included_count: 1,
+              total_available_count: 1,
+              truncated: false,
+              role_counts: { assistant: 1 }
+            },
+            messages: [
+              {
+                at: '2026-05-21T10:00:01.000Z',
+                role: 'assistant',
+                source: 'runtime_event',
+                event: 'turn.completed',
+                content: 'latest implementation note'
+              }
+            ]
+          },
           phase_timeline: [{ at: '2026-05-21T10:00:00.000Z', phase: 'implementation', attempt: 1 }]
         })
       )
@@ -1532,11 +1623,68 @@ describe('dashboard browser client modules', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/NIE-217', undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/issues/NIE-217/diagnostics', undefined);
     expect(elements.issueSummary.textContent).toContain('Detailed diagnostics: loaded');
+    expect(elements.conversationSummary.textContent).toContain('latest assistant: latest implementation note');
     expect(elements.issueOutput.textContent).toContain('Execution Timeline');
 
     await loadIssue('NIE-218');
     expect(elements.issueSummary.textContent).toBe('Issue detail degraded: fallback mode active.');
     expect(elements.issueOutput.textContent).toContain('Issue load failed: Error: issue down');
+  });
+
+  it('ignores stale issue detail responses when selected-agent refreshes overlap', async () => {
+    let resolveOldIssue: (value: any) => void = () => {};
+    const oldIssueResponse = new Promise((resolve) => {
+      resolveOldIssue = resolve;
+    });
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/v1/NIE-OLD') {
+        return oldIssueResponse;
+      }
+      if (url === '/api/v1/NIE-NEW') {
+        return Promise.resolve(
+          jsonResponse({
+            status: 'running',
+            snapshot_freshness_state: 'fresh',
+            snapshot_age_ms: 1,
+            conversation: {
+              latest: { role: 'assistant', source: 'runtime_event', summary: 'new detail wins' },
+              metadata: { included_count: 1, total_available_count: 1, truncated: false, role_counts: { assistant: 1 } },
+              messages: [{ at: '2026-05-21T10:01:00.000Z', role: 'assistant', source: 'runtime_event', content: 'new detail wins' }]
+            },
+            phase_timeline: []
+          })
+        );
+      }
+      if (url === '/api/v1/issues/NIE-OLD/diagnostics' || url === '/api/v1/issues/NIE-NEW/diagnostics') {
+        return Promise.resolve(jsonResponse({ timeline: [] }));
+      }
+      throw new Error('unexpected fetch ' + url);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const oldLoad = loadIssue('NIE-OLD');
+    const newLoad = loadIssue('NIE-NEW');
+    await newLoad;
+    expect(elements.conversationSummary.textContent).toContain('new detail wins');
+
+    resolveOldIssue(
+      jsonResponse({
+        status: 'running',
+        snapshot_freshness_state: 'fresh',
+        snapshot_age_ms: 99,
+        conversation: {
+          latest: { role: 'assistant', source: 'runtime_event', summary: 'stale detail lost' },
+          metadata: { included_count: 1, total_available_count: 1, truncated: false, role_counts: { assistant: 1 } },
+          messages: [{ at: '2026-05-21T10:00:00.000Z', role: 'assistant', source: 'runtime_event', content: 'stale detail lost' }]
+        },
+        phase_timeline: []
+      })
+    );
+    await oldLoad;
+
+    expect(elements.issueInput.value).toBe('NIE-NEW');
+    expect(elements.conversationSummary.textContent).toContain('new detail wins');
+    expect(elements.conversationSummary.textContent).not.toContain('stale detail lost');
   });
 
   it('submits operator actions through direct module functions with endpoint and failure assertions', async () => {
