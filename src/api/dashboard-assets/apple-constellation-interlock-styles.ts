@@ -42,20 +42,45 @@ export function renderConstellationInterlockStyles(): string {
 .interlock-step::before {
   content: "";
   position: absolute;
-  left: -118px;
-  top: 48%;
-  width: 136px;
-  height: 58px;
-  border-left: 1px solid rgba(var(--interlock-accent-rgb), 0.44);
-  border-top: 1px solid rgba(var(--interlock-accent-rgb), 0.62);
-  border-radius: 999px 0 0 0;
+  z-index: 0;
+  left: calc(-1 * var(--interlock-route-width, 188px) + 32px);
+  top: 50%;
+  width: var(--interlock-route-width, 188px);
+  height: var(--interlock-route-bend, 96px);
+  border: 1px solid transparent;
+  border-top-color: rgba(var(--interlock-accent-rgb), 0.66);
+  border-left-color: rgba(var(--interlock-accent-rgb), 0.48);
+  border-radius: 50%;
+  transform:
+    translateY(calc(-50% + var(--interlock-route-lift, 0px)))
+    rotate(var(--interlock-route-tilt, 0deg))
+    scaleY(var(--interlock-route-sweep, 1));
+  transform-origin: 100% 50%;
   filter: drop-shadow(0 0 9px rgba(var(--interlock-accent-rgb), 0.8));
-  opacity: 0.8;
+  opacity: 0.84;
   pointer-events: none;
 }
 
-.interlock-step:nth-child(2n)::before {
-  transform: translateY(-30%) scaleY(-1);
+.interlock-step::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: calc(-1 * var(--interlock-route-width, 188px) + 42px);
+  top: 50%;
+  width: calc(var(--interlock-route-width, 188px) - 26px);
+  height: calc(var(--interlock-route-bend, 96px) - 18px);
+  border: 1px dotted rgba(239, 248, 255, 0.38);
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: 50%;
+  transform:
+    translateY(calc(-50% + var(--interlock-route-lift, 0px)))
+    rotate(var(--interlock-route-tilt, 0deg))
+    scaleY(var(--interlock-route-sweep, 1));
+  transform-origin: 100% 50%;
+  opacity: 0.54;
+  pointer-events: none;
+  mask-image: linear-gradient(90deg, transparent, #000 14%, #000 88%, transparent);
 }
 
 .interlock-step-verified {
@@ -100,6 +125,7 @@ export function renderConstellationInterlockStyles(): string {
 
 .interlock-step-body {
   position: relative;
+  z-index: 1;
   min-width: 0;
   padding: 12px 16px;
   border: 1px solid rgba(var(--interlock-accent-rgb), 0.18);
@@ -247,30 +273,30 @@ export function renderConstellationInterlockStyles(): string {
 
 .constellation-evidence {
   position: relative;
-  margin-top: -104px;
+  margin-top: -66px;
   padding: 0;
   pointer-events: none;
 }
 
 .constellation-evidence-path {
   position: relative;
-  min-height: 112px;
-  width: min(620px, 46vw);
+  min-height: 86px;
+  width: min(640px, 48vw);
   margin: 0 auto;
 }
 
 .evidence-rail {
   position: relative;
-  min-height: 74px;
+  min-height: 64px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(96px, 1fr));
+  grid-template-columns: repeat(4, minmax(112px, 1fr));
   align-items: center;
-  gap: 0;
-  padding: 12px 46px;
+  gap: 12px;
+  padding: 12px 30px;
   border: 1px solid rgba(129, 255, 149, 0.28);
-  border-radius: 999px;
+  border-radius: 28px;
   background:
-    radial-gradient(circle at 50% 0%, rgba(129, 255, 149, 0.17), transparent 0 44%, transparent 68%),
+    radial-gradient(circle at 50% -10%, rgba(129, 255, 149, 0.17), transparent 0 48%, transparent 72%),
     linear-gradient(180deg, rgba(15, 40, 30, 0.76), rgba(3, 14, 13, 0.72));
   box-shadow:
     0 0 26px rgba(129, 255, 149, 0.18),
@@ -278,36 +304,57 @@ export function renderConstellationInterlockStyles(): string {
 }
 
 .evidence-rail::before {
-  content: "Evidence Path";
+  content: "";
   position: absolute;
-  left: 0;
-  bottom: -22px;
-  color: #4bff74;
+  left: 48px;
+  right: 48px;
+  top: 50%;
+  height: 1px;
+  border-radius: 999px;
+  background:
+    repeating-linear-gradient(90deg, rgba(126, 255, 151, 0.14) 0 10px, transparent 10px 18px),
+    linear-gradient(90deg, transparent, rgba(126, 255, 151, 0.58), transparent);
+  box-shadow: 0 0 18px rgba(126, 255, 151, 0.24);
+}
+
+.evidence-rail::after {
+  content: "Evidence path";
+  position: absolute;
+  left: 22px;
+  top: -19px;
+  color: #74f58b;
   font-size: 10px;
   font-weight: 850;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  text-shadow: 0 0 14px rgba(84, 255, 116, 0.62);
+  text-shadow: 0 0 14px rgba(84, 255, 116, 0.56);
 }
 
 .evidence-node {
   --evidence-accent: #63b7ff;
   --evidence-accent-rgb: 99, 183, 255;
   position: relative;
+  z-index: 1;
   min-width: 0;
   display: grid;
   gap: 2px;
-  padding-left: 28px;
+  min-height: 40px;
+  align-content: center;
+  padding: 6px 12px 6px 30px;
+  border: 1px solid rgba(var(--evidence-accent-rgb), 0.15);
+  border-radius: 18px;
   color: #dbeefc;
+  background: rgba(3, 14, 14, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .evidence-node::before {
   content: "";
   position: absolute;
-  left: 2px;
+  left: 10px;
   top: 50%;
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
   border: 1px solid rgba(var(--evidence-accent-rgb), 0.74);
   border-radius: 50%;
   transform: translateY(-50%);
@@ -316,16 +363,27 @@ export function renderConstellationInterlockStyles(): string {
 }
 
 .evidence-node::after {
-  content: ">";
+  content: "";
   position: absolute;
-  right: 12px;
-  top: 50%;
-  color: rgba(219, 238, 252, 0.42);
-  transform: translateY(-50%);
+  left: 15px;
+  top: -10px;
+  width: 1px;
+  height: 10px;
+  background: linear-gradient(180deg, transparent, rgba(var(--evidence-accent-rgb), 0.44));
 }
 
 .evidence-node:last-child::after {
-  display: none;
+  display: block;
+}
+
+.evidence-node:nth-child(2n) {
+  transform: translateY(8px);
+}
+
+.evidence-node:nth-child(2n)::after {
+  top: auto;
+  bottom: -10px;
+  background: linear-gradient(180deg, rgba(var(--evidence-accent-rgb), 0.44), transparent);
 }
 
 .evidence-node-green {
@@ -345,9 +403,10 @@ export function renderConstellationInterlockStyles(): string {
 
 .evidence-node-label {
   color: var(--evidence-accent);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 850;
   letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .evidence-node-detail {
@@ -361,12 +420,7 @@ export function renderConstellationInterlockStyles(): string {
 }
 
 .evidence-cards {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) minmax(140px, 0.8fr);
-  gap: 14px;
-  width: 72%;
-  margin: 10px auto 0;
+  display: none;
 }
 
 .evidence-card {
