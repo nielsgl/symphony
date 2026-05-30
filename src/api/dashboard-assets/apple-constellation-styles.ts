@@ -1,3 +1,7 @@
+import { renderConstellationCoreStyles } from './apple-constellation-core-styles';
+import { renderConstellationGravityStyles } from './apple-constellation-gravity-styles';
+import { renderConstellationInterlockStyles } from './apple-constellation-interlock-styles';
+
 export function renderAppleConstellationStyles(): string {
   return `
 .legacy-dashboard-panels {
@@ -84,5 +88,9 @@ export function renderAppleConstellationStyles(): string {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+${renderConstellationGravityStyles()}
+${renderConstellationCoreStyles()}
+${renderConstellationInterlockStyles()}
 `;
 }
