@@ -482,6 +482,22 @@ export function renderConstellationInterlockStyles(): string {
   font: inherit;
   padding: 10px 16px;
   text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.constellation-action:hover,
+.constellation-action:focus-visible {
+  border-color: rgba(var(--action-accent-rgb), 0.58);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 20px 48px rgba(0, 0, 0, 0.34),
+    0 0 30px rgba(var(--action-accent-rgb), 0.28);
+  outline: none;
+  transform: translateY(-2px);
 }
 
 .constellation-action-blue {
@@ -567,6 +583,69 @@ export function renderConstellationInterlockStyles(): string {
 
 .constellation-action-neutral .constellation-action-detail {
   display: none;
+}
+
+.constellation-more-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 12px);
+  z-index: 5;
+  width: min(320px, calc(100vw - 40px));
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(141, 163, 182, 0.32);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(90, 174, 255, 0.16), transparent 42%),
+    rgba(4, 14, 22, 0.96);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.11),
+    0 24px 62px rgba(0, 0, 0, 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px) scale(0.98);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.constellation-more-panel-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.constellation-more-item {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid rgba(141, 163, 182, 0.18);
+  border-radius: 12px;
+  color: #dcecf7;
+  background: rgba(11, 28, 40, 0.72);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.constellation-more-item:hover,
+.constellation-more-item:focus-visible {
+  border-color: rgba(90, 174, 255, 0.44);
+  background: rgba(16, 43, 61, 0.86);
+  outline: none;
+}
+
+.constellation-more-label {
+  color: #bcd5ea;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.constellation-more-detail {
+  color: #7f93a4;
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 .constellation-footer {

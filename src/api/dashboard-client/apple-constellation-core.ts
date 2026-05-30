@@ -415,12 +415,13 @@ function renderEventOrbit(lens: LensModel): HTMLElement {
     const angle = lens.events.length > 1 ? -130 + index * (260 / (lens.events.length - 1)) : -28;
     const radius = isRearOrbit ? 178 + (index % 2) * 34 : 182 + index * 48;
     const speed = 22 + index * 4;
+    const phase = ((Date.now() / 1000) + index * 3) % speed;
     const scale = isRearOrbit ? 0.74 : index % 3 === 0 ? 0.88 : 1.02;
     setStyleProperty(node, '--orbit-angle', String(angle) + 'deg');
     setStyleProperty(node, '--orbit-counter-angle', String(-angle) + 'deg');
     setStyleProperty(node, '--orbit-radius', String(radius) + 'px');
     setStyleProperty(node, '--orbit-speed', String(speed) + 's');
-    setStyleProperty(node, '--orbit-delay', String(-index * 3) + 's');
+    setStyleProperty(node, '--orbit-delay', '-' + phase.toFixed(2) + 's');
     setStyleProperty(node, '--orbit-scale', String(scale));
     const bead = createElement('span', 'lens-event-bead', event.label.slice(0, 1).toUpperCase());
     const copy = createElement('span', 'lens-event-copy');

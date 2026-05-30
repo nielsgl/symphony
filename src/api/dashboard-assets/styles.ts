@@ -219,11 +219,52 @@ h1 {
 }
 
 .hero-actions {
+  position: relative;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   padding: 8px 12px;
-  min-width: 132px;
+  min-width: 148px;
+}
+
+#refresh-status {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 12px;
+  z-index: 5;
+  width: max-content;
+  max-width: 240px;
+  min-height: 24px;
+  padding: 5px 9px;
+  border: 1px solid rgba(122, 177, 219, 0.24);
+  border-radius: 999px;
+  color: #a9c6dc;
+  background: rgba(5, 17, 26, 0.92);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  font-size: 11px;
+  line-height: 1.15;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  white-space: nowrap;
+}
+
+#refresh-status:not(:empty) {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+#refresh-status.status-error {
+  border-color: rgba(255, 111, 99, 0.36);
+  color: #ffb3ad;
+  background: rgba(41, 14, 16, 0.94);
+}
+
+#refresh-status.status-ok {
+  border-color: rgba(138, 245, 155, 0.24);
+  color: #a9eeb4;
 }
 
 .action-required-banner {

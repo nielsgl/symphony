@@ -113,7 +113,18 @@ class FakeElement {
         .filter((name) => name && !removeSet.has(name))
         .join(' ');
     },
-    contains: (name: string) => this.className.split(/\s+/).includes(name)
+    contains: (name: string) => this.className.split(/\s+/).includes(name),
+    toggle: (name: string, force?: boolean) => {
+      const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+      const shouldAdd = force === undefined ? !classes.has(name) : force;
+      if (shouldAdd) {
+        classes.add(name);
+      } else {
+        classes.delete(name);
+      }
+      this.className = Array.from(classes).join(' ');
+      return shouldAdd;
+    }
   };
 
   append(...children: FakeElement[]) {
@@ -150,6 +161,10 @@ class FakeElement {
 
   select() {
     // no-op for copy fallback tests
+  }
+
+  scrollIntoView() {
+    // no-op for interaction tests
   }
 }
 
@@ -304,7 +319,9 @@ function resetDashboardModuleState() {
   setDashboardElements(makeDashboardElements());
   vi.stubGlobal('document', {
     createElement: () => new FakeElement(),
-    querySelectorAll: () => []
+    querySelector: () => new FakeElement(),
+    querySelectorAll: () => [],
+    body: new FakeElement()
   });
   const localStorageValues = new Map<string, string>([['symphony.stoppedRunAcknowledged', '[]']]);
   vi.stubGlobal('window', {
@@ -582,6 +599,10 @@ describe('dashboard browser client modules', () => {
     expect(rendered).toContain('0.91');
     expect(rendered).toContain('NIE-276');
     expect(constellationIssueList.children[0].className).toContain('gravity-row-focus');
+    expect(constellationIssueList.children[0].getAttribute('role')).toBe('button');
+    expect(constellationIssueList.children[0].getAttribute('tabindex')).toBe('0');
+    expect(constellationIssueList.children[0].getAttribute('data-issue-identifier')).toBe('NIE-300');
+    expect(constellationIssueList.children[0].title).toBe('Open NIE-300 issue detail');
   });
 
   it('renders the constellation core with fallback lens telemetry', () => {
@@ -764,6 +785,12 @@ describe('dashboard browser client modules', () => {
     expect(actionText).toContain('Export Audit');
     expect(actionText).toContain('Wait for Drain');
     expect(actionText).toContain('More');
+    expect(constellationActions.children[5].getAttribute('data-constellation-action')).toBe('more');
+    expect(constellationActions.children[5].getAttribute('aria-expanded')).toBe('false');
+    expect(collectText(constellationActions)).toContain('Runtime Panels');
+    constellationActions.children[5].click();
+    expect(constellationActions.children[5].getAttribute('aria-expanded')).toBe('true');
+    expect(constellationActions.children[6].className).toContain('constellation-more-panel-open');
 
     expect(constellationOperator.textContent).toBe('niels');
     expect(constellationApiHealth.textContent).toBe('Healthy');

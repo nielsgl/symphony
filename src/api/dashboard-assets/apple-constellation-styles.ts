@@ -8,6 +8,10 @@ export function renderAppleConstellationStyles(): string {
   display: none;
 }
 
+body.constellation-more-open .legacy-dashboard-panels {
+  display: grid;
+}
+
 .apple-constellation {
   position: relative;
   z-index: 1;

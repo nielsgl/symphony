@@ -251,10 +251,31 @@ function setStyleProperty(element: HTMLElement, name: string, value: string): vo
   (element.style as any)[name] = value;
 }
 
+function openConstellationIssue(identifier: string): void {
+  if (!identifier || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent('symphony:constellation-issue', { detail: { identifier } }));
+}
+
 function renderRow(item: GravityItem, index: number): HTMLElement {
   const row = document.createElement('article');
   row.className = 'gravity-row gravity-row-' + item.tone;
+  row.setAttribute('role', 'button');
+  row.setAttribute('tabindex', '0');
+  row.setAttribute('data-issue-identifier', item.identifier);
   row.setAttribute('aria-label', item.identifier + ' ' + item.title + ' priority ' + item.gravity.toFixed(2));
+  row.title = 'Open ' + item.identifier + ' issue detail';
+  row.addEventListener('click', function () {
+    openConstellationIssue(item.identifier);
+  });
+  row.addEventListener('keydown', function (event: KeyboardEvent) {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return;
+    }
+    event.preventDefault();
+    openConstellationIssue(item.identifier);
+  });
 
   const glyph = createTextElement('gravity-glyph', glyphForTone(item.tone));
   const copy = document.createElement('span');

@@ -14,6 +14,25 @@ export function wireEvents() {
       void refreshNow();
     });
 
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('symphony:constellation-issue', function (event: any) {
+        const identifier = String(event.detail && event.detail.identifier ? event.detail.identifier : '').trim();
+        if (!identifier) {
+          return;
+        }
+        elements.issueInput.value = identifier;
+        state.selectedIssue = identifier;
+        state.suppressIssuePanelToggleLoad = true;
+        elements.issuePanel.open = true;
+        if (document.body && document.body.classList) {
+          document.body.classList.add('constellation-more-open');
+        }
+        void loadIssue(identifier);
+        elements.issuePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        scheduleStateSave();
+      });
+    }
+
     elements.issueLoad.addEventListener('click', function () {
       void loadIssue(elements.issueInput.value);
     });

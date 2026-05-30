@@ -1,6 +1,7 @@
 import { elements } from './dom';
 
 type StepTone = 'verified' | 'attention' | 'receipt';
+type ActionTone = 'blue' | 'green' | 'violet' | 'amber' | 'neutral';
 
 interface InterlockStep {
   number: string;
@@ -16,6 +17,13 @@ interface EvidenceNode {
   label: string;
   detail: string;
   tone: 'blue' | 'green' | 'amber' | 'violet';
+}
+
+interface ConstellationAction {
+  id: string;
+  label: string;
+  detail: string;
+  tone: ActionTone;
 }
 
 function cleanText(value: unknown): string {
@@ -319,26 +327,97 @@ function renderEvidence(model: any): void {
   elements.constellationEvidencePath.replaceChildren(rail);
 }
 
+function scrollToDashboardTarget(selector: string): void {
+  const target = document.querySelector(selector) as HTMLElement | null;
+  if (!target) {
+    return;
+  }
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function toggleMorePanel(button: HTMLButtonElement, panel: HTMLElement): void {
+  const open = !panel.classList.contains('constellation-more-panel-open');
+  panel.classList.toggle('constellation-more-panel-open', open);
+  button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (document.body && document.body.classList) {
+    document.body.classList.toggle('constellation-more-open', open);
+  }
+}
+
+function createMorePanel(): HTMLElement {
+  const panel = document.createElement('div');
+  panel.className = 'constellation-more-panel';
+  panel.setAttribute('aria-label', 'Additional dashboard controls');
+
+  const controls = [
+    { label: 'Runtime Panels', detail: 'Open detailed counters', target: '.legacy-dashboard-panels' },
+    { label: 'Event Feed', detail: 'Inspect live runtime events', target: '#runtime-events-panel' },
+    { label: 'Project History', detail: 'Review ticket timeline', target: '#project-history-load' }
+  ];
+
+  panel.append(
+    ...controls.map((control) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'constellation-more-item';
+      item.append(
+        createTextElement('strong', 'constellation-more-label', control.label),
+        createTextElement('span', 'constellation-more-detail', control.detail)
+      );
+      item.addEventListener('click', function (event) {
+        event.stopPropagation();
+        if (document.body && document.body.classList) {
+          document.body.classList.add('constellation-more-open');
+        }
+        scrollToDashboardTarget(control.target);
+      });
+      return item;
+    })
+  );
+
+  return panel;
+}
+
 function renderActions(): void {
   if (!elements.constellationActions) {
     return;
   }
-  const actions = [
-    ['Send Input', 'Provide operator direction', 'blue'],
-    ['Resume Agent', 'Continue blocked run', 'blue'],
-    ['Open Evidence', 'View transcript path', 'green'],
-    ['Export Audit', 'Bundle run artifacts', 'violet'],
-    ['Wait for Drain', 'Pause new work', 'amber'],
-    ['More', 'Additional controls', 'neutral']
+  if (elements.constellationActions.children.length) {
+    return;
+  }
+  const actions: ConstellationAction[] = [
+    { id: 'send-input', label: 'Send Input', detail: 'Provide operator direction', tone: 'blue' },
+    { id: 'resume-agent', label: 'Resume Agent', detail: 'Continue blocked run', tone: 'blue' },
+    { id: 'open-evidence', label: 'Open Evidence', detail: 'View transcript path', tone: 'green' },
+    { id: 'export-audit', label: 'Export Audit', detail: 'Bundle run artifacts', tone: 'violet' },
+    { id: 'wait-for-drain', label: 'Wait for Drain', detail: 'Pause new work', tone: 'amber' },
+    { id: 'more', label: 'More', detail: 'Additional controls', tone: 'neutral' }
   ];
+  const morePanel = createMorePanel();
+  const buttons = actions.map((action) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'constellation-action constellation-action-' + action.tone;
+    button.setAttribute('data-constellation-action', action.id);
+    button.setAttribute('aria-label', action.label + ': ' + action.detail);
+    if (action.id === 'more') {
+      button.setAttribute('aria-haspopup', 'true');
+      button.setAttribute('aria-expanded', 'false');
+      button.addEventListener('click', function (event) {
+        event.stopPropagation();
+        toggleMorePanel(button, morePanel);
+      });
+    }
+    button.append(
+      createTextElement('span', 'constellation-action-orb', action.id === 'more' ? '...' : action.label.slice(0, 1)),
+      createTextElement('strong', 'constellation-action-label', action.label),
+      createTextElement('span', 'constellation-action-detail', action.detail)
+    );
+    return button;
+  });
   elements.constellationActions.replaceChildren(
-    ...actions.map(([label, detail, tone]) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'constellation-action constellation-action-' + tone;
-      button.append(createTextElement('span', 'constellation-action-orb', label === 'More' ? '...' : label.slice(0, 1)), createTextElement('strong', 'constellation-action-label', label), createTextElement('span', 'constellation-action-detail', detail));
-      return button;
-    })
+    ...buttons,
+    morePanel
   );
 }
 

@@ -517,6 +517,8 @@ describe('dashboard assets', () => {
     expect(css).toContain('background: rgba(5, 17, 26, 0.82);');
     expect(css).toContain('.refresh-now-button:hover {\n  background: rgba(15, 39, 58, 0.92);');
     expect(css).toContain('.refresh-now-button:focus-visible {\n  outline: 2px solid rgba(90, 174, 255, 0.76);');
+    expect(css).toContain('#refresh-status {\n  position: absolute;');
+    expect(css).toContain('#refresh-status.status-ok');
   });
 
   it('renders the operator console status chrome', () => {
@@ -530,6 +532,9 @@ describe('dashboard assets', () => {
     expect(css).toContain('.lens-depth-field');
     expect(css).toContain('.lens-orbit-track-alpha');
     expect(css).toContain('@keyframes lens-event-orbit');
+    expect(css).toContain('body.constellation-more-open .legacy-dashboard-panels');
+    expect(css).toContain('.constellation-more-panel-open');
+    expect(css).toContain('.gravity-row:hover');
     expect(css).toContain('@media (prefers-reduced-motion: reduce)');
   });
 

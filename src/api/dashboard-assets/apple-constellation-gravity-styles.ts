@@ -56,7 +56,12 @@ export function renderConstellationGravityStyles(): string {
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
     inset 0 -18px 34px rgba(0, 0, 0, 0.22),
     0 18px 46px rgba(0, 0, 0, 0.24);
+  cursor: pointer;
   overflow: visible;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
 }
 
 .gravity-row::after {
@@ -95,6 +100,18 @@ export function renderConstellationGravityStyles(): string {
 .gravity-row-blocked {
   --gravity-accent: #ff6f63;
   --gravity-accent-rgb: 255, 111, 99;
+}
+
+.gravity-row:hover,
+.gravity-row:focus-visible {
+  border-color: rgba(var(--gravity-accent-rgb), 0.68);
+  box-shadow:
+    0 0 0 1px rgba(var(--gravity-accent-rgb), 0.16),
+    0 0 26px rgba(var(--gravity-accent-rgb), 0.36),
+    0 22px 58px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  outline: none;
+  transform: translateX(7px);
 }
 
 .gravity-glyph {
@@ -252,6 +269,27 @@ export function renderConstellationGravityStyles(): string {
 .gravity-row-focus .gravity-strand::before {
   border-top-width: 2px;
   border-right-width: 2px;
+}
+
+.gravity-row:hover .gravity-strand,
+.gravity-row:focus-visible .gravity-strand {
+  filter: drop-shadow(0 0 13px rgba(var(--gravity-accent-rgb), 0.98));
+  opacity: 1;
+}
+
+.gravity-row:hover .gravity-dot,
+.gravity-row:focus-visible .gravity-dot {
+  animation: gravity-dot-pulse 1100ms ease-in-out infinite;
+}
+
+@keyframes gravity-dot-pulse {
+  0%,
+  100% {
+    transform: translateY(-50%) scale(1);
+  }
+  50% {
+    transform: translateY(-50%) scale(1.22);
+  }
 }
 
 @media (max-width: 1180px) {

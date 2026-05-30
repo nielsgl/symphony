@@ -199,7 +199,6 @@ export function applyPayload(payload: any, source: any) {
 export function updateRuntimeClock() {
     if (state.lastGoodPayload) {
       renderOverview(state.lastGoodPayload);
-      renderAppleConstellation(state.lastGoodPayload);
     }
     const runtimeCells = document.querySelectorAll('.runtime-cell');
     for (const runtimeCell of runtimeCells) {
