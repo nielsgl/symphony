@@ -287,6 +287,31 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
             <button id="issue-open-json" type="button">Open JSON</button>
           </div>
           <p id="issue-summary" class="muted">No issue selected.</p>
+          <section class="conversation-panel" aria-live="polite">
+            <div class="conversation-panel-head">
+              <div>
+                <h3>Agent Conversation</h3>
+                <p id="conversation-summary" class="muted">No conversation evidence loaded.</p>
+              </div>
+              <div class="toolbar compact-toolbar" role="group" aria-label="Conversation display controls">
+                <select id="conversation-role-filter" aria-label="Conversation role filter">
+                  <option value="all">All roles</option>
+                  <option value="system">System</option>
+                  <option value="user">User</option>
+                  <option value="assistant">Assistant</option>
+                  <option value="tool">Tool</option>
+                  <option value="runtime">Runtime</option>
+                </select>
+                <select id="conversation-density" aria-label="Conversation density">
+                  <option value="comfortable">Comfortable</option>
+                  <option value="compact">Compact</option>
+                </select>
+              </div>
+            </div>
+            <ol id="conversation-list" class="conversation-list">
+              <li class="muted">Select an issue to inspect messages.</li>
+            </ol>
+          </section>
           <div id="issue-explainer-card" class="operator-explainer hidden" aria-live="polite">
             <div class="operator-explainer-head">
               <span id="issue-explainer-actionability" class="status-pill">none</span>

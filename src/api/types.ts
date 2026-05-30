@@ -475,6 +475,59 @@ export interface ApiCodexSessionTranscriptScanBudget {
   };
 }
 
+export type ApiAgentConversationRole = 'system' | 'user' | 'assistant' | 'tool' | 'runtime';
+export type ApiAgentConversationSource =
+  | 'runtime_event'
+  | 'app_server_ledger'
+  | 'thread_diagnostics'
+  | 'run_history';
+
+export interface ApiAgentConversationMessage {
+  id: string;
+  at: string;
+  at_ms: number;
+  role: ApiAgentConversationRole;
+  source: ApiAgentConversationSource;
+  event: string | null;
+  content: string;
+  thread_id: string | null;
+  turn_id: string | null;
+  session_id: string | null;
+  tool_name: string | null;
+  tool_call_id: string | null;
+  detail_status:
+    | 'absent'
+    | 'summary'
+    | 'summary_only'
+    | 'redacted_excerpt'
+    | 'redacted_truncated_excerpt'
+    | 'unavailable_policy'
+    | 'unavailable_source';
+  truncated: boolean;
+}
+
+export interface ApiAgentConversationProjection {
+  issue_identifier: string;
+  issue_id: string | null;
+  latest: {
+    at: string | null;
+    at_ms: number | null;
+    role: ApiAgentConversationRole | null;
+    source: ApiAgentConversationSource | null;
+    summary: string | null;
+  };
+  messages: ApiAgentConversationMessage[];
+  metadata: {
+    total_available_count: number;
+    included_count: number;
+    limit: number;
+    truncated: boolean;
+    sources: ApiAgentConversationSource[];
+    role_counts: Record<ApiAgentConversationRole, number>;
+    detail: string;
+  };
+}
+
 export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFields {
   generated_at: string;
   runtime_identity: ApiRuntimeBuildIdentityProjection | null;
@@ -591,6 +644,7 @@ export interface ApiStateResponse extends SnapshotFreshnessFields, ApiDegradedFi
     current_blocker_class: string | null;
     time_since_progress: number | null;
     last_successful_step: string | null;
+    conversation_latest: ApiAgentConversationProjection['latest'];
     transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
@@ -1272,6 +1326,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     not_blocked_explainer_code: NotBlockedExplainerCode;
     not_blocked_explainer_text: string | null;
     operator_actions: OperatorActionProjection[];
+    conversation_latest: ApiAgentConversationProjection['latest'];
     transcript_tool_call_diagnostic_summary: ApiTranscriptToolCallDiagnosticSummary;
     rate_limits: Record<string, unknown> | null;
     protocol_warnings: CodexProtocolWarningEvidence[];
@@ -1468,6 +1523,7 @@ export interface ApiIssueResponse extends SnapshotFreshnessFields, ApiDegradedFi
     thread_id: string | null;
     session_id: string | null;
   }>;
+  conversation: ApiAgentConversationProjection;
   recent_events: Array<{
     at: string;
     event: string;

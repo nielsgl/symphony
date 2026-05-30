@@ -207,7 +207,21 @@ export function renderRunning(payload: any) {
       eventCell.textContent = entry.last_event_summary || entry.last_event || 'n/a';
 
       const messageCell = document.createElement('td');
-      messageCell.textContent = entry.last_message || 'n/a';
+      const conversationLatest = entry.conversation_latest || null;
+      const messageValue = document.createElement('div');
+      messageValue.textContent = (conversationLatest && conversationLatest.summary) || entry.last_message || 'n/a';
+      messageCell.append(messageValue);
+      if (conversationLatest && conversationLatest.role) {
+        const conversationMeta = document.createElement('div');
+        conversationMeta.className = 'muted';
+        conversationMeta.textContent =
+          'Conversation latest: ' +
+          conversationLatest.role +
+          ' via ' +
+          (conversationLatest.source || 'unknown') +
+          (conversationLatest.at ? ' @ ' + formatDate(conversationLatest.at) : '');
+        messageCell.append(conversationMeta);
+      }
 
       const lastEventAtCell = document.createElement('td');
       lastEventAtCell.textContent = formatDate(entry.last_event_at);

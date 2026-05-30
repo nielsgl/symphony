@@ -1,5 +1,6 @@
 export * from './errors';
 export * from './dashboard-assets';
+export * from './agent-conversation';
 export * from './control-plane-health';
 export * from './event-loop-health';
 export * from './forensics';

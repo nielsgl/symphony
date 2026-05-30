@@ -292,6 +292,10 @@ button:hover {
   font-size: 12px;
 }
 
+.compact-toolbar {
+  align-items: center;
+}
+
 input,
 select {
   border: 1px solid var(--line);
@@ -1074,6 +1078,95 @@ td {
 .operator-explainer-grid dd {
   margin: 3px 0 0;
   overflow-wrap: anywhere;
+}
+
+.conversation-panel {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7fbff;
+  padding: 10px;
+}
+
+.conversation-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.conversation-panel h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.conversation-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.conversation-item {
+  border-left: 4px solid #6f8496;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+}
+
+.conversation-density-compact .conversation-item {
+  padding: 5px 8px;
+}
+
+.conversation-density-compact .conversation-item p {
+  margin-top: 3px;
+}
+
+.conversation-role-system {
+  border-left-color: #455a64;
+}
+
+.conversation-role-user {
+  border-left-color: #1f7a5d;
+}
+
+.conversation-role-assistant {
+  border-left-color: #2563eb;
+}
+
+.conversation-role-tool {
+  border-left-color: #9a4f17;
+}
+
+.conversation-role-runtime {
+  border-left-color: #7c4d93;
+}
+
+.conversation-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.conversation-role {
+  color: var(--ink);
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.conversation-item p {
+  margin: 5px 0 0;
+  line-height: 1.4;
 }
 
 .thread-detail {

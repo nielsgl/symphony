@@ -122,6 +122,22 @@ export function wireEvents() {
       scheduleStateSave();
     });
 
+    elements.conversationRoleFilter.addEventListener('change', function (event: any) {
+      state.filter.conversationRole = event.target && event.target.value ? event.target.value : 'all';
+      if (state.selectedIssue && elements.issuePanel.open) {
+        void loadIssue(state.selectedIssue, { openPanel: false });
+      }
+      scheduleStateSave();
+    });
+
+    elements.conversationDensity.addEventListener('change', function (event: any) {
+      state.filter.conversationDensity = event.target && event.target.value ? event.target.value : 'comfortable';
+      if (state.selectedIssue && elements.issuePanel.open) {
+        void loadIssue(state.selectedIssue, { openPanel: false });
+      }
+      scheduleStateSave();
+    });
+
     elements.issuePanel.addEventListener('toggle', function () {
       if (state.suppressIssuePanelToggleLoad) {
         state.suppressIssuePanelToggleLoad = false;

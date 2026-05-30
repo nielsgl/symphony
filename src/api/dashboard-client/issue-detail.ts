@@ -5,6 +5,8 @@ import { fetchJson, loadStateViaPoll, scheduleStateSave, setRefreshStatus } from
 import { renderRunning } from './issues';
 import { deriveOperatorTransitionRows } from './overview';
 
+let issueDetailRequestSequence = 0;
+
 export function createStateBadge(stateValue: any) {
     const badge = document.createElement('span');
     badge.className = 'state-badge';
@@ -274,6 +276,72 @@ export function formatDiagnosticSummary(summary: any) {
     return 'Summary diagnostics: ' + parts.join(' | ');
   }
 
+export function formatConversationSummary(conversation: any) {
+    if (!conversation || !conversation.metadata) {
+      return 'Conversation: no evidence loaded';
+    }
+    const latest = conversation.latest || {};
+    const counts = conversation.metadata.role_counts || {};
+    const countParts = ['system', 'user', 'assistant', 'tool', 'runtime']
+      .filter(function (role) {
+        return counts[role] > 0;
+      })
+      .map(function (role) {
+        return role + ' ' + counts[role];
+      });
+    const latestText = latest.summary ? 'latest ' + (latest.role || 'message') + ': ' + latest.summary : 'latest unavailable';
+    return (
+      'Conversation: ' +
+      formatNumber(conversation.metadata.included_count || 0) +
+      ' shown' +
+      (conversation.metadata.truncated ? ' of ' + formatNumber(conversation.metadata.total_available_count || 0) : '') +
+      (countParts.length ? ' | ' + countParts.join(', ') : '') +
+      ' | ' +
+      latestText
+    );
+  }
+
+export function renderConversation(conversation: any) {
+    const roleFilter = (state.filter && state.filter.conversationRole) || 'all';
+    const density = (state.filter && state.filter.conversationDensity) || 'comfortable';
+    elements.conversationSummary.textContent = formatConversationSummary(conversation);
+    elements.conversationList.className = 'conversation-list conversation-density-' + density;
+    const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+    const visibleMessages = messages.filter(function (message: any) {
+      return roleFilter === 'all' || message.role === roleFilter;
+    });
+    if (!visibleMessages.length) {
+      const empty = document.createElement('li');
+      empty.className = 'muted';
+      empty.textContent = messages.length ? 'No messages match this role filter.' : 'No conversation evidence is available yet.';
+      elements.conversationList.replaceChildren(empty);
+      return;
+    }
+    const nodes = visibleMessages.map(function (message: any) {
+      const item = document.createElement('li');
+      item.className = 'conversation-item conversation-role-' + (message.role || 'runtime');
+      const meta = document.createElement('div');
+      meta.className = 'conversation-meta';
+      const role = document.createElement('span');
+      role.className = 'conversation-role';
+      role.textContent = message.role || 'runtime';
+      const source = document.createElement('span');
+      source.textContent =
+        formatDate(message.at) +
+        ' | ' +
+        (message.source || 'unknown') +
+        (message.event ? ' | ' + message.event : '') +
+        (message.thread_id ? ' | thread ' + message.thread_id : '') +
+        (message.tool_name ? ' | tool ' + message.tool_name : '');
+      meta.append(role, source);
+      const body = document.createElement('p');
+      body.textContent = (message.content || 'n/a') + (message.truncated ? ' [truncated]' : '');
+      item.append(meta, body);
+      return item;
+    });
+    elements.conversationList.replaceChildren(...nodes);
+  }
+
 export function formatInputDecisionContext(detail: any) {
     if (!detail) {
       return null;
@@ -335,6 +403,7 @@ export async function loadIssue(identifier: any, options?: any) {
     if (!issueId) {
       return;
     }
+    const requestSequence = ++issueDetailRequestSequence;
     const loadOptions = options || {};
     if (loadOptions.openPanel !== false && !elements.issuePanel.open) {
       state.suppressIssuePanelToggleLoad = true;
@@ -353,6 +422,9 @@ export async function loadIssue(identifier: any, options?: any) {
       } catch (_diagnosticsError) {
         diagnosticsLoadFailed = true;
         diagnostics = null;
+      }
+      if (requestSequence !== issueDetailRequestSequence) {
+        return;
       }
       state.selectedIssue = issueId;
       elements.issueInput.value = issueId;
@@ -430,6 +502,7 @@ export async function loadIssue(identifier: any, options?: any) {
         summaryParts.push('Runtime workspace root: ' + state.runtimeResolution.workspace_root);
       }
       elements.issueSummary.textContent = summaryParts.join(' • ');
+      renderConversation(payload.conversation || null);
       renderIssueExplainer(payload.operator_explainer || null);
       renderThreadDiagnostics(diagnostics);
       const timeline = Array.isArray(payload.phase_timeline) ? payload.phase_timeline : [];
@@ -496,7 +569,11 @@ export async function loadIssue(identifier: any, options?: any) {
       }
       scheduleStateSave();
     } catch (error) {
+      if (requestSequence !== issueDetailRequestSequence) {
+        return;
+      }
       elements.issueSummary.textContent = 'Issue detail degraded: fallback mode active.';
+      renderConversation(null);
       renderIssueExplainer(null);
       renderThreadDiagnostics(null);
       elements.issueOutput.textContent =
