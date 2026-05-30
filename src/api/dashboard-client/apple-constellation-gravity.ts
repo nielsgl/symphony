@@ -254,7 +254,7 @@ function setStyleProperty(element: HTMLElement, name: string, value: string): vo
 function renderRow(item: GravityItem, index: number): HTMLElement {
   const row = document.createElement('article');
   row.className = 'gravity-row gravity-row-' + item.tone;
-  row.setAttribute('aria-label', item.identifier + ' ' + item.title + ' gravity ' + item.gravity.toFixed(2));
+  row.setAttribute('aria-label', item.identifier + ' ' + item.title + ' priority ' + item.gravity.toFixed(2));
 
   const glyph = createTextElement('gravity-glyph', glyphForTone(item.tone));
   const copy = document.createElement('span');
@@ -267,7 +267,7 @@ function renderRow(item: GravityItem, index: number): HTMLElement {
 
   const value = document.createElement('span');
   value.className = 'gravity-value';
-  value.append(createTextElement('gravity-score', item.gravity.toFixed(2)), createTextElement('gravity-unit', 'gravity'));
+  value.append(createTextElement('gravity-score', item.gravity.toFixed(2)), createTextElement('gravity-unit', 'priority'));
 
   const strand = document.createElement('span');
   strand.className = 'gravity-strand';

@@ -184,16 +184,16 @@ function buildSteps(model: any): InterlockStep[] {
     },
     {
       number: '2',
-      title: 'Safe Intervention',
-      subtitle: 'Operator intent',
+      title: 'Operator Input',
+      subtitle: 'Intent to send',
       tone: 'attention',
       rows: [{ label: operatorIntent(focus), verified: true }],
-      action: 'Steer: Clarify direction'
+      action: 'Send: Clarify direction'
     },
     {
       number: '3',
-      title: 'Endpoint Preview',
-      subtitle: 'What will be sent',
+      title: 'Request Preview',
+      subtitle: 'API request to send',
       tone: 'attention',
       rows: [],
       preview: endpointPreview(focus)
@@ -275,8 +275,8 @@ function evidenceNodes(model: any): EvidenceNode[] {
   return [
     { label: 'thread', detail: threadIdForFocus(focus), tone: 'blue' },
     { label: 'transcript', detail: transcriptPath(focus), tone: 'green' },
-    { label: 'api snapshot', detail: shortText(payload.generated_at, 'live state', 20), tone: 'green' },
-    { label: 'audit', detail: receiptId(model, payload), tone: 'amber' }
+    { label: 'state snapshot', detail: shortText(payload.generated_at, 'live state', 20), tone: 'green' },
+    { label: 'audit receipt', detail: receiptId(model, payload), tone: 'amber' }
   ];
 }
 
@@ -300,7 +300,7 @@ function renderEvidence(model: any): void {
   pathCards.className = 'evidence-cards';
   pathCards.append(
     createTextElement('div', 'evidence-card evidence-card-main', transcriptPath(focusFromModel(model))),
-    createTextElement('div', 'evidence-card evidence-card-small', 'api snapshot OK')
+    createTextElement('div', 'evidence-card evidence-card-small', 'state snapshot OK')
   );
 
   elements.constellationEvidencePath.replaceChildren(rail, pathCards);
@@ -311,11 +311,11 @@ function renderActions(): void {
     return;
   }
   const actions = [
-    ['Steer', 'Guide agent safely', 'blue'],
-    ['Resume', 'Unblock with input', 'blue'],
-    ['Inspect Evidence', 'Open transcript path', 'green'],
-    ['Export Forensics', 'Bundle run artifacts', 'violet'],
-    ['Drain: Wait', 'Quiesce new work', 'amber'],
+    ['Send Input', 'Provide operator direction', 'blue'],
+    ['Resume Agent', 'Continue blocked run', 'blue'],
+    ['Open Evidence', 'View transcript path', 'green'],
+    ['Export Audit', 'Bundle run artifacts', 'violet'],
+    ['Wait for Drain', 'Pause new work', 'amber'],
     ['More', 'Additional controls', 'neutral']
   ];
   elements.constellationActions.replaceChildren(

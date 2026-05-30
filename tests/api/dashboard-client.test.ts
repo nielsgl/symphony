@@ -687,7 +687,7 @@ describe('dashboard browser client modules', () => {
     expect(rendered).toContain('Linear');
     expect(rendered).toContain('assistant');
     expect(rendered).toContain('120 messages');
-    expect(rendered).toContain('80 clipped');
+    expect(rendered).toContain('120 visible / 80 clipped');
     expect(collectText(constellationIssueList)).toContain('NIE-300');
   });
 
@@ -746,23 +746,23 @@ describe('dashboard browser client modules', () => {
     expect(interlockText).toContain('Preconditions');
     expect(interlockText).toContain('4 / 4 verified');
     expect(interlockText).toContain('Workspace clean');
-    expect(interlockText).toContain('Safe Intervention');
-    expect(interlockText).toContain('Steer: Clarify direction');
+    expect(interlockText).toContain('Operator Input');
+    expect(interlockText).toContain('Send: Clarify direction');
     expect(interlockText).toContain('POST /api/v1/agent/threads/01JX7/resume');
     expect(interlockText).toContain('receipt_8f2a7c');
 
     const evidenceText = collectText(constellationEvidencePath);
     expect(evidenceText).toContain('thread');
     expect(evidenceText).toContain('transcript');
-    expect(evidenceText).toContain('api snapshot');
-    expect(evidenceText).toContain('audit');
+    expect(evidenceText).toContain('state snapshot');
+    expect(evidenceText).toContain('audit receipt');
 
     const actionText = collectText(constellationActions);
-    expect(actionText).toContain('Steer');
-    expect(actionText).toContain('Resume');
-    expect(actionText).toContain('Inspect Evidence');
-    expect(actionText).toContain('Export Forensics');
-    expect(actionText).toContain('Drain: Wait');
+    expect(actionText).toContain('Send Input');
+    expect(actionText).toContain('Resume Agent');
+    expect(actionText).toContain('Open Evidence');
+    expect(actionText).toContain('Export Audit');
+    expect(actionText).toContain('Wait for Drain');
     expect(actionText).toContain('More');
 
     expect(constellationOperator.textContent).toBe('niels');

@@ -278,7 +278,7 @@ export function renderConstellationInterlockStyles(): string {
 }
 
 .evidence-rail::before {
-  content: "Evidence Path";
+  content: "Run Evidence";
   position: absolute;
   left: 0;
   bottom: -22px;
