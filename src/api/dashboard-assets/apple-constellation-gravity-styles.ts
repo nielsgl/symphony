@@ -174,44 +174,84 @@ export function renderConstellationGravityStyles(): string {
 }
 
 .gravity-strand {
+  --strand-width: 224px;
+  --strand-bend: 72px;
+  --strand-tilt: 0deg;
+  --strand-sweep: 1;
   position: absolute;
-  z-index: 0;
+  z-index: 2;
   top: 50%;
   left: calc(100% - 2px);
-  width: 194px;
-  height: 54px;
+  width: var(--strand-width);
+  height: var(--strand-bend);
   pointer-events: none;
-  transform: translateY(calc(-50% + var(--strand-lift, 0px)));
-  border-top: 1px solid rgba(var(--gravity-accent-rgb), 0.58);
-  border-right: 1px solid rgba(var(--gravity-accent-rgb), 0.38);
-  border-radius: 0 999px 0 0;
-  filter: drop-shadow(0 0 7px rgba(var(--gravity-accent-rgb), 0.78));
-  opacity: 0.88;
+  transform:
+    translateY(calc(-50% + var(--strand-lift, 0px)))
+    rotate(var(--strand-tilt));
+  transform-origin: 0 50%;
+  filter: drop-shadow(0 0 8px rgba(var(--gravity-accent-rgb), 0.78));
+  opacity: 0.92;
 }
 
-.gravity-row:nth-child(2n) .gravity-strand {
-  height: 40px;
-  border-radius: 0 999px 999px 0;
-  transform: translateY(calc(-50% + var(--strand-lift, 0px))) scaleY(-1);
+.gravity-strand::before,
+.gravity-strand::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  transform: scaleY(var(--strand-sweep));
+  pointer-events: none;
+}
+
+.gravity-strand::before {
+  border: 1px solid transparent;
+  border-top-color: rgba(var(--gravity-accent-rgb), 0.72);
+  border-right-color: rgba(var(--gravity-accent-rgb), 0.48);
+  box-shadow:
+    inset -20px 20px 22px rgba(var(--gravity-accent-rgb), 0.04),
+    0 0 16px rgba(var(--gravity-accent-rgb), 0.28);
+}
+
+.gravity-strand::after {
+  inset: 7px 10px 8px 18px;
+  border: 1px dotted rgba(241, 250, 255, 0.46);
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  opacity: 0.62;
+  mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
 }
 
 .gravity-dot {
   position: absolute;
-  top: -5px;
+  z-index: 1;
+  top: 50%;
   right: -6px;
   width: 11px;
   height: 11px;
   border-radius: 50%;
+  transform: translateY(-50%);
   background: #f6fbff;
   box-shadow:
     0 0 0 4px rgba(var(--gravity-accent-rgb), 0.16),
     0 0 18px rgba(var(--gravity-accent-rgb), 1);
 }
 
+.gravity-dot::after {
+  content: "";
+  position: absolute;
+  inset: -16px;
+  border: 1px solid rgba(var(--gravity-accent-rgb), 0.2);
+  border-radius: 50%;
+}
+
 .gravity-row-focus .gravity-strand {
-  width: 214px;
-  border-top-width: 2px;
+  filter: drop-shadow(0 0 11px rgba(var(--gravity-accent-rgb), 0.92));
   opacity: 1;
+}
+
+.gravity-row-focus .gravity-strand::before {
+  border-top-width: 2px;
+  border-right-width: 2px;
 }
 
 @media (max-width: 1180px) {

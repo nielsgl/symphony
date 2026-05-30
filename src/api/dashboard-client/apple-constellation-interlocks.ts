@@ -221,10 +221,30 @@ function createTextElement(tag: string, className: string, text: string): HTMLEl
   return element;
 }
 
-function renderStep(step: InterlockStep): HTMLElement {
+function setStyleProperty(element: HTMLElement, name: string, value: string): void {
+  if (element.style && typeof element.style.setProperty === 'function') {
+    element.style.setProperty(name, value);
+    return;
+  }
+  (element.style as any)[name] = value;
+}
+
+function renderStep(step: InterlockStep, index: number): HTMLElement {
   const item = document.createElement('article');
   item.className = 'interlock-step interlock-step-' + step.tone;
   item.setAttribute('aria-label', step.number + ' ' + step.title + ' ' + step.subtitle);
+  const orbitalRoutes = [
+    { width: 178, bend: 88, lift: 10, tilt: -12, sweep: -1 },
+    { width: 210, bend: 108, lift: 4, tilt: -6, sweep: -1 },
+    { width: 208, bend: 106, lift: -4, tilt: 6, sweep: 1 },
+    { width: 176, bend: 88, lift: -10, tilt: 12, sweep: 1 }
+  ];
+  const route = orbitalRoutes[index] || orbitalRoutes[orbitalRoutes.length - 1];
+  setStyleProperty(item, '--interlock-route-width', String(route.width) + 'px');
+  setStyleProperty(item, '--interlock-route-bend', String(route.bend) + 'px');
+  setStyleProperty(item, '--interlock-route-lift', String(route.lift) + 'px');
+  setStyleProperty(item, '--interlock-route-tilt', String(route.tilt) + 'deg');
+  setStyleProperty(item, '--interlock-route-sweep', String(route.sweep));
 
   const node = createTextElement('span', 'interlock-node', step.tone === 'attention' ? '!' : 'OK');
   const body = document.createElement('div');
@@ -283,6 +303,7 @@ function evidenceNodes(model: any): EvidenceNode[] {
 function renderEvidenceNode(node: EvidenceNode): HTMLElement {
   const element = document.createElement('div');
   element.className = 'evidence-node evidence-node-' + node.tone;
+  element.title = node.label + ': ' + node.detail;
   element.append(createTextElement('span', 'evidence-node-label', node.label), createTextElement('strong', 'evidence-node-detail', node.detail));
   return element;
 }
@@ -295,15 +316,7 @@ function renderEvidence(model: any): void {
   const rail = document.createElement('div');
   rail.className = 'evidence-rail';
   rail.append(...nodes.map(renderEvidenceNode));
-
-  const pathCards = document.createElement('div');
-  pathCards.className = 'evidence-cards';
-  pathCards.append(
-    createTextElement('div', 'evidence-card evidence-card-main', transcriptPath(focusFromModel(model))),
-    createTextElement('div', 'evidence-card evidence-card-small', 'state snapshot OK')
-  );
-
-  elements.constellationEvidencePath.replaceChildren(rail, pathCards);
+  elements.constellationEvidencePath.replaceChildren(rail);
 }
 
 function renderActions(): void {

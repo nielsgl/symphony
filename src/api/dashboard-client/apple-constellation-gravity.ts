@@ -271,7 +271,20 @@ function renderRow(item: GravityItem, index: number): HTMLElement {
 
   const strand = document.createElement('span');
   strand.className = 'gravity-strand';
-  setStyleProperty(strand, '--strand-lift', String((index - 2.5) * -8) + 'px');
+  const orbitalRoutes = [
+    { width: 326, lift: 12, bend: 108, tilt: 13, sweep: -1 },
+    { width: 268, lift: 8, bend: 86, tilt: 8, sweep: -1 },
+    { width: 222, lift: 2, bend: 68, tilt: 3, sweep: -1 },
+    { width: 216, lift: -2, bend: 68, tilt: -3, sweep: 1 },
+    { width: 248, lift: -8, bend: 82, tilt: -8, sweep: 1 },
+    { width: 292, lift: -12, bend: 102, tilt: -13, sweep: 1 }
+  ];
+  const route = orbitalRoutes[index] || orbitalRoutes[orbitalRoutes.length - 1];
+  setStyleProperty(strand, '--strand-width', String(route.width) + 'px');
+  setStyleProperty(strand, '--strand-lift', String(route.lift) + 'px');
+  setStyleProperty(strand, '--strand-bend', String(route.bend) + 'px');
+  setStyleProperty(strand, '--strand-tilt', String(route.tilt) + 'deg');
+  setStyleProperty(strand, '--strand-sweep', String(route.sweep));
   strand.appendChild(createTextElement('gravity-dot', ''));
 
   row.append(glyph, copy, value, strand);

@@ -628,41 +628,54 @@ export function renderConstellationCoreStyles(): string {
   position: absolute;
   z-index: 8;
   left: 50%;
-  bottom: 42px;
+  bottom: 14px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  max-width: 70%;
-  padding: 10px 15px;
-  border: 1px solid rgba(118, 237, 143, 0.46);
-  border-radius: 24px;
+  justify-content: center;
+  gap: 16px;
+  width: min(360px, 58%);
+  height: 26px;
+  padding: 0 22px;
+  border: 1px solid rgba(118, 237, 143, 0.22);
+  border-radius: 999px;
   transform: translateX(-50%);
-  background: linear-gradient(180deg, rgba(10, 45, 31, 0.78), rgba(4, 21, 18, 0.9));
+  background:
+    repeating-linear-gradient(90deg, rgba(118, 237, 143, 0.32) 0 7px, transparent 7px 16px),
+    linear-gradient(180deg, rgba(10, 45, 31, 0.5), rgba(4, 21, 18, 0.64));
   box-shadow:
-    0 0 28px rgba(89, 230, 142, 0.24),
+    0 0 22px rgba(89, 230, 142, 0.18),
     inset 0 0 18px rgba(109, 235, 151, 0.1);
 }
 
 .lens-evidence-node {
   position: relative;
-  max-width: 150px;
-  overflow: hidden;
-  color: #c9f7d8;
-  font-size: 11px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  overflow: visible;
+  border-radius: 999px;
+  color: transparent;
+  font-size: 0;
+  background: #9dffaf;
+  box-shadow:
+    0 0 0 4px rgba(118, 237, 143, 0.1),
+    0 0 14px rgba(118, 237, 143, 0.72);
 }
 
 .lens-evidence-node + .lens-evidence-node {
-  padding-left: 18px;
+  padding-left: 0;
 }
 
 .lens-evidence-node + .lens-evidence-node::before {
-  content: ">";
+  content: "";
   position: absolute;
-  left: 3px;
-  color: #79e497;
+  right: calc(100% + 4px);
+  top: 50%;
+  width: 8px;
+  height: 1px;
+  transform: translateY(-50%);
+  background: rgba(121, 228, 151, 0.58);
+  box-shadow: 0 0 10px rgba(121, 228, 151, 0.52);
 }
 
 @keyframes lens-star-drift {

@@ -463,6 +463,9 @@ function renderEvidenceDock(lens: LensModel): HTMLElement {
   const transcript = createElement('span', 'lens-evidence-node', 'transcript');
   const snapshot = createElement('span', 'lens-evidence-node', 'state snapshot');
   const audit = createElement('span', 'lens-evidence-node', 'audit receipt');
+  for (const node of [thread, session, transcript, snapshot, audit]) {
+    node.title = node.textContent || '';
+  }
   dock.append(thread, session, transcript, snapshot, audit);
   return dock;
 }
