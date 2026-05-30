@@ -2,7 +2,7 @@ export function renderConstellationGravityStyles(): string {
   return `
 .constellation-gravity {
   position: relative;
-  padding: 22px 0 18px 8px;
+  padding: 18px 0 14px 6px;
   overflow: visible;
 }
 
@@ -30,7 +30,7 @@ export function renderConstellationGravityStyles(): string {
 .constellation-issue-list {
   position: relative;
   display: grid;
-  gap: 16px;
+  gap: 12px;
   padding-top: 2px;
   overflow: visible;
 }
@@ -39,13 +39,13 @@ export function renderConstellationGravityStyles(): string {
   --gravity-accent: #4fb7ff;
   --gravity-accent-rgb: 79, 183, 255;
   position: relative;
-  min-height: 74px;
-  width: min(100%, 302px);
+  min-height: 68px;
+  width: min(100%, 306px);
   display: grid;
-  grid-template-columns: 54px minmax(0, 1fr) 58px;
+  grid-template-columns: 50px minmax(0, 1fr) 58px;
   align-items: center;
-  gap: 10px;
-  padding: 12px 14px 12px 12px;
+  gap: 9px;
+  padding: 10px 14px 10px 11px;
   border: 1px solid rgba(var(--gravity-accent-rgb), 0.18);
   border-radius: 26px;
   color: #d9ecfb;
@@ -100,8 +100,8 @@ export function renderConstellationGravityStyles(): string {
 .gravity-glyph {
   position: relative;
   z-index: 1;
-  width: 44px;
-  height: 44px;
+  width: 42px;
+  height: 42px;
   display: grid;
   place-items: center;
   border: 1px solid rgba(var(--gravity-accent-rgb), 0.55);
@@ -143,7 +143,7 @@ export function renderConstellationGravityStyles(): string {
 
 .gravity-title {
   color: #dce9f5;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 650;
 }
 

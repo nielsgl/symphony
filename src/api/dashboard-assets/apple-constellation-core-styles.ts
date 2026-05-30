@@ -8,8 +8,8 @@ export function renderConstellationCoreStyles(): string {
 .constellation-refresh {
   position: absolute;
   z-index: 4;
-  top: 70px;
-  left: 24px;
+  top: 64px;
+  left: 18px;
   display: grid;
   gap: 4px;
   color: #9ec7ec;
@@ -167,10 +167,10 @@ export function renderConstellationCoreStyles(): string {
 .lens-current-message {
   position: absolute;
   z-index: 5;
-  top: 252px;
-  left: 13%;
-  width: min(250px, 34%);
-  padding: 16px 18px;
+  top: 224px;
+  left: 11%;
+  width: min(270px, 35%);
+  padding: 13px 16px;
   border: 1px solid rgba(82, 165, 255, 0.36);
   border-radius: 22px;
   background:
@@ -189,10 +189,10 @@ export function renderConstellationCoreStyles(): string {
 }
 
 .lens-message-body {
-  margin: 16px 0 14px;
+  margin: 12px 0 10px;
   color: #e9f6ff;
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .lens-message-time {
@@ -203,16 +203,16 @@ export function renderConstellationCoreStyles(): string {
 .lens-role-stream {
   position: absolute;
   z-index: 5;
-  left: 15%;
-  bottom: 126px;
-  width: min(245px, 36%);
+  left: 12%;
+  top: 430px;
+  width: min(255px, 37%);
 }
 
 .lens-stream-lanes {
   position: relative;
   display: grid;
-  gap: 8px;
-  margin-top: 14px;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .lens-stream-lane {
@@ -437,7 +437,7 @@ export function renderConstellationCoreStyles(): string {
   position: absolute;
   z-index: 5;
   left: 50%;
-  bottom: 76px;
+  bottom: 78px;
   width: 270px;
   text-align: center;
   transform: translateX(-50%);
@@ -454,12 +454,12 @@ export function renderConstellationCoreStyles(): string {
   --context-fill: 60%;
   display: grid;
   grid-template-columns: repeat(20, 1fr);
-  gap: 5px;
-  margin-top: 12px;
+  gap: 4px;
+  margin-top: 10px;
 }
 
 .lens-context-tick {
-  height: 18px;
+  height: 16px;
   border-radius: 999px;
   background: rgba(131, 160, 184, 0.38);
   box-shadow: inset 0 0 8px rgba(255, 255, 255, 0.08);
@@ -480,7 +480,7 @@ export function renderConstellationCoreStyles(): string {
   position: absolute;
   z-index: 6;
   left: 50%;
-  bottom: 20px;
+  bottom: 18px;
   display: flex;
   align-items: center;
   gap: 10px;

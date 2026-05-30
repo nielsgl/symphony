@@ -11,19 +11,21 @@ export function renderAppleConstellationStyles(): string {
 .apple-constellation {
   position: relative;
   z-index: 1;
-  min-height: calc(100vh - 92px);
-  padding: 28px 28px 18px;
+  min-height: calc(100svh - 92px);
+  padding: 20px 26px 14px;
   color: #eaf6ff;
   background:
+    radial-gradient(circle at 11% 9%, rgba(73, 160, 255, 0.12), transparent 0 22%, transparent 38%),
     radial-gradient(circle at 50% 40%, rgba(54, 142, 255, 0.2), transparent 32%),
     linear-gradient(180deg, #06111a 0%, #02070b 100%);
+  overflow: hidden;
 }
 
 .constellation-stage {
-  min-height: 620px;
+  min-height: min(620px, calc(100svh - 372px));
   display: grid;
-  grid-template-columns: minmax(240px, 320px) minmax(520px, 1fr) minmax(260px, 340px);
-  gap: 28px;
+  grid-template-columns: minmax(260px, 330px) minmax(560px, 1fr) minmax(300px, 350px);
+  gap: 24px;
   align-items: stretch;
 }
 
@@ -57,8 +59,8 @@ export function renderAppleConstellationStyles(): string {
 }
 
 .constellation-footer {
-  margin-top: 14px;
-  min-height: 58px;
+  margin-top: 12px;
+  min-height: 54px;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
@@ -69,7 +71,7 @@ export function renderAppleConstellationStyles(): string {
 }
 
 .constellation-footer div {
-  padding: 14px 18px;
+  padding: 11px 18px;
   color: #86a0b4;
 }
 

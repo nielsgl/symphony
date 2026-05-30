@@ -2,15 +2,15 @@ export function renderConstellationInterlockStyles(): string {
   return `
 .constellation-interlocks {
   position: relative;
-  padding: 22px 8px 18px 0;
+  padding: 18px 0 14px 0;
   overflow: visible;
 }
 
 .constellation-interlock-list {
   position: relative;
   display: grid;
-  gap: 14px;
-  padding: 12px 8px 0 0;
+  gap: 12px;
+  padding: 10px 0 0 0;
 }
 
 .constellation-interlock-list::before {
@@ -32,9 +32,9 @@ export function renderConstellationInterlockStyles(): string {
   --interlock-accent: #ffc35c;
   --interlock-accent-rgb: 255, 195, 92;
   position: relative;
-  min-height: 92px;
+  min-height: 78px;
   display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
+  grid-template-columns: 70px minmax(0, 1fr);
   align-items: center;
   color: #e5f0f8;
 }
@@ -42,9 +42,9 @@ export function renderConstellationInterlockStyles(): string {
 .interlock-step::before {
   content: "";
   position: absolute;
-  left: -100px;
+  left: -118px;
   top: 48%;
-  width: 118px;
+  width: 136px;
   height: 58px;
   border-left: 1px solid rgba(var(--interlock-accent-rgb), 0.44);
   border-top: 1px solid rgba(var(--interlock-accent-rgb), 0.62);
@@ -76,8 +76,8 @@ export function renderConstellationInterlockStyles(): string {
 .interlock-node {
   position: relative;
   z-index: 2;
-  width: 58px;
-  height: 58px;
+  width: 52px;
+  height: 52px;
   display: grid;
   place-items: center;
   justify-self: center;
@@ -101,9 +101,9 @@ export function renderConstellationInterlockStyles(): string {
 .interlock-step-body {
   position: relative;
   min-width: 0;
-  padding: 18px 18px 17px;
+  padding: 12px 16px;
   border: 1px solid rgba(var(--interlock-accent-rgb), 0.18);
-  border-radius: 20px;
+  border-radius: 18px;
   background:
     radial-gradient(circle at 8% 0%, rgba(var(--interlock-accent-rgb), 0.13), transparent 0 38%, transparent 60%),
     linear-gradient(145deg, rgba(19, 32, 40, 0.86), rgba(4, 13, 19, 0.8));
@@ -147,15 +147,15 @@ export function renderConstellationInterlockStyles(): string {
 }
 
 .interlock-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 850;
   letter-spacing: 0.13em;
 }
 
 .interlock-subtitle {
-  margin-top: 6px;
+  margin-top: 4px;
   color: #bac7d1;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .interlock-step-verified .interlock-subtitle,
@@ -167,17 +167,17 @@ export function renderConstellationInterlockStyles(): string {
   position: relative;
   z-index: 1;
   display: grid;
-  gap: 7px;
-  margin-top: 11px;
+  gap: 4px;
+  margin-top: 8px;
 }
 
 .interlock-check {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: #b8c8d3;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .interlock-check-glyph {
@@ -213,8 +213,8 @@ export function renderConstellationInterlockStyles(): string {
 }
 
 .interlock-action {
-  margin-top: 14px;
-  min-height: 44px;
+  margin-top: 10px;
+  min-height: 36px;
   width: 100%;
   border: 1px solid rgba(255, 195, 92, 0.48);
   border-radius: 12px;
@@ -231,28 +231,32 @@ export function renderConstellationInterlockStyles(): string {
 }
 
 .interlock-preview {
-  margin: 14px 0 0;
-  padding: 14px 16px;
+  margin: 10px 0 0;
+  max-height: 100px;
+  padding: 12px 14px;
   border: 1px solid rgba(255, 195, 92, 0.18);
   border-radius: 12px;
   color: #bdc8d0;
   background: rgba(2, 8, 12, 0.58);
   font-family: "SF Mono", "Menlo", monospace;
-  font-size: 11px;
-  line-height: 1.65;
+  font-size: 10px;
+  line-height: 1.45;
   white-space: pre-wrap;
+  overflow: hidden;
 }
 
 .constellation-evidence {
   position: relative;
-  margin-top: -110px;
-  padding: 0 330px 0 360px;
+  margin-top: -104px;
+  padding: 0;
   pointer-events: none;
 }
 
 .constellation-evidence-path {
   position: relative;
   min-height: 112px;
+  width: min(620px, 46vw);
+  margin: 0 auto;
 }
 
 .evidence-rail {
@@ -361,7 +365,7 @@ export function renderConstellationInterlockStyles(): string {
   display: grid;
   grid-template-columns: minmax(220px, 1.6fr) minmax(140px, 0.8fr);
   gap: 14px;
-  width: 70%;
+  width: 72%;
   margin: 10px auto 0;
 }
 
@@ -384,12 +388,12 @@ export function renderConstellationInterlockStyles(): string {
 .constellation-actions {
   position: relative;
   z-index: 2;
-  min-height: 96px;
+  min-height: 78px;
   display: grid;
-  grid-template-columns: 1.3fr 1.08fr 1.14fr 1.14fr 1.08fr 0.42fr;
-  gap: 18px;
-  margin-top: 18px;
-  padding: 12px 0 2px;
+  grid-template-columns: 1.22fr 1fr 1.08fr 1.08fr 1fr 0.42fr;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 10px 0 0;
   pointer-events: auto;
 }
 
@@ -398,12 +402,13 @@ export function renderConstellationInterlockStyles(): string {
   --action-accent-rgb: 90, 174, 255;
   position: relative;
   min-width: 0;
-  min-height: 74px;
+  min-height: 0;
+  height: 76px;
   display: grid;
-  grid-template-columns: 54px minmax(0, 1fr);
+  grid-template-columns: 50px minmax(0, 1fr);
   grid-template-rows: 1fr 1fr;
   align-items: center;
-  column-gap: 14px;
+  column-gap: 12px;
   border: 1px solid rgba(var(--action-accent-rgb), 0.28);
   border-radius: 18px;
   color: #e9f5ff;
@@ -415,7 +420,7 @@ export function renderConstellationInterlockStyles(): string {
     0 16px 40px rgba(0, 0, 0, 0.28),
     0 0 24px rgba(var(--action-accent-rgb), 0.18);
   font: inherit;
-  padding: 12px 18px;
+  padding: 10px 16px;
   text-align: left;
 }
 
@@ -446,8 +451,8 @@ export function renderConstellationInterlockStyles(): string {
 
 .constellation-action-orb {
   grid-row: 1 / 3;
-  width: 46px;
-  height: 46px;
+  width: 42px;
+  height: 42px;
   display: grid;
   place-items: center;
   border: 1px solid rgba(var(--action-accent-rgb), 0.62);
@@ -463,7 +468,7 @@ export function renderConstellationInterlockStyles(): string {
   align-self: end;
   min-width: 0;
   color: var(--action-accent);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 800;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -474,7 +479,8 @@ export function renderConstellationInterlockStyles(): string {
   align-self: start;
   min-width: 0;
   color: #9eb0bf;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -490,7 +496,15 @@ export function renderConstellationInterlockStyles(): string {
   grid-row: auto;
 }
 
-.constellation-action-neutral .constellation-action-label,
+.constellation-action-neutral .constellation-action-label {
+  display: block;
+  align-self: start;
+  max-width: 100%;
+  color: #8da3b6;
+  font-size: 11px;
+  text-align: center;
+}
+
 .constellation-action-neutral .constellation-action-detail {
   display: none;
 }
