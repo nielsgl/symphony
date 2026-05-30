@@ -405,13 +405,17 @@ function renderRoleStream(lens: LensModel): HTMLElement {
 function renderEventOrbit(lens: LensModel): HTMLElement {
   const orbit = createElement('div', 'lens-event-orbit');
   lens.events.forEach((event, index) => {
-    const node = createElement('article', 'lens-event-node lens-event-' + event.tone);
+    const isRearOrbit = index >= 2;
+    const node = createElement(
+      'article',
+      'lens-event-node lens-event-' + event.tone + (isRearOrbit ? ' lens-event-node-compact' : '')
+    );
     const path = createElement('span', 'lens-event-path');
     const body = createElement('span', 'lens-event-body');
     const angle = lens.events.length > 1 ? -130 + index * (260 / (lens.events.length - 1)) : -28;
-    const radius = 152 + (index % 3) * 48;
+    const radius = isRearOrbit ? 178 + (index % 2) * 34 : 182 + index * 48;
     const speed = 22 + index * 4;
-    const scale = index % 3 === 0 ? 0.88 : index % 3 === 1 ? 1.04 : 0.96;
+    const scale = isRearOrbit ? 0.74 : index % 3 === 0 ? 0.88 : 1.02;
     setStyleProperty(node, '--orbit-angle', String(angle) + 'deg');
     setStyleProperty(node, '--orbit-counter-angle', String(-angle) + 'deg');
     setStyleProperty(node, '--orbit-radius', String(radius) + 'px');
@@ -421,6 +425,9 @@ function renderEventOrbit(lens: LensModel): HTMLElement {
     const bead = createElement('span', 'lens-event-bead', event.label.slice(0, 1).toUpperCase());
     const copy = createElement('span', 'lens-event-copy');
     copy.append(createElement('strong', 'lens-event-label', event.label), createElement('span', 'lens-event-time', event.at));
+    if (isRearOrbit) {
+      body.title = event.label + ' - ' + event.at;
+    }
     body.append(bead, copy);
     path.appendChild(body);
     node.appendChild(path);

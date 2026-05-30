@@ -273,6 +273,7 @@ export function renderConstellationInterlockStyles(): string {
 
 .constellation-evidence {
   position: relative;
+  z-index: 8;
   margin-top: -66px;
   padding: 0;
   pointer-events: none;
@@ -287,6 +288,7 @@ export function renderConstellationInterlockStyles(): string {
 
 .evidence-rail {
   position: relative;
+  z-index: 1;
   min-height: 64px;
   display: grid;
   grid-template-columns: repeat(4, minmax(112px, 1fr));
@@ -295,12 +297,16 @@ export function renderConstellationInterlockStyles(): string {
   padding: 12px 30px;
   border: 1px solid rgba(129, 255, 149, 0.28);
   border-radius: 28px;
+  isolation: isolate;
+  overflow: hidden;
+  backdrop-filter: blur(14px) saturate(1.18);
   background:
     radial-gradient(circle at 50% -10%, rgba(129, 255, 149, 0.17), transparent 0 48%, transparent 72%),
-    linear-gradient(180deg, rgba(15, 40, 30, 0.76), rgba(3, 14, 13, 0.72));
+    linear-gradient(180deg, rgba(13, 38, 29, 0.94), rgba(3, 14, 13, 0.92));
   box-shadow:
-    0 0 26px rgba(129, 255, 149, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 0 30px rgba(129, 255, 149, 0.2),
+    0 18px 52px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .evidence-rail::before {
@@ -334,7 +340,7 @@ export function renderConstellationInterlockStyles(): string {
   --evidence-accent: #63b7ff;
   --evidence-accent-rgb: 99, 183, 255;
   position: relative;
-  z-index: 1;
+  z-index: 2;
   min-width: 0;
   display: grid;
   gap: 2px;
@@ -344,7 +350,7 @@ export function renderConstellationInterlockStyles(): string {
   border: 1px solid rgba(var(--evidence-accent-rgb), 0.15);
   border-radius: 18px;
   color: #dbeefc;
-  background: rgba(3, 14, 14, 0.78);
+  background: rgba(3, 14, 14, 0.9);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 

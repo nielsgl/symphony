@@ -279,19 +279,34 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-current-message {
   position: absolute;
-  z-index: 8;
+  z-index: 12;
   top: 224px;
   left: 11%;
   width: min(270px, 35%);
   padding: 13px 16px;
   border: 1px solid rgba(82, 165, 255, 0.36);
   border-radius: 22px;
+  isolation: isolate;
+  overflow: hidden;
+  backdrop-filter: blur(16px) saturate(1.25);
   background:
-    linear-gradient(150deg, rgba(13, 48, 86, 0.88), rgba(4, 18, 31, 0.82)),
+    linear-gradient(150deg, rgba(9, 31, 54, 0.99), rgba(2, 10, 18, 0.98)),
     radial-gradient(circle at 16% 0%, rgba(88, 183, 255, 0.24), transparent 64%);
   box-shadow:
-    0 18px 48px rgba(0, 0, 0, 0.36),
-    inset 0 0 20px rgba(92, 190, 255, 0.08);
+    0 20px 58px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(183, 228, 255, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 0 24px rgba(92, 190, 255, 0.11);
+}
+
+.lens-current-message::before {
+  content: "";
+  position: absolute;
+  inset: -28px -34px;
+  z-index: -1;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(3, 12, 21, 0.92), rgba(3, 12, 21, 0.72) 54%, transparent 74%),
+    linear-gradient(180deg, rgba(7, 23, 38, 0.66), rgba(1, 8, 14, 0.86));
 }
 
 .lens-message-role {
@@ -315,10 +330,22 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-role-stream {
   position: absolute;
-  z-index: 8;
-  left: 12%;
-  top: 430px;
-  width: min(255px, 37%);
+  z-index: 12;
+  left: 6%;
+  top: 438px;
+  width: min(198px, 31%);
+  padding: 13px 14px 14px;
+  border: 1px solid rgba(93, 185, 255, 0.18);
+  border-radius: 22px;
+  isolation: isolate;
+  overflow: hidden;
+  backdrop-filter: blur(14px) saturate(1.18);
+  background:
+    radial-gradient(circle at 8% 8%, rgba(75, 184, 255, 0.15), transparent 0 48%),
+    linear-gradient(160deg, rgba(5, 23, 38, 0.9), rgba(2, 10, 18, 0.84));
+  box-shadow:
+    0 16px 42px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .lens-stream-lanes {
@@ -344,8 +371,8 @@ export function renderConstellationCoreStyles(): string {
   position: absolute;
   left: 0;
   top: 50%;
-  width: calc(54px + var(--stream-count) * 10px);
-  max-width: 160px;
+  width: calc(36px + var(--stream-count) * 8px);
+  max-width: 112px;
   height: 2px;
   border-radius: 999px;
   transform: translateY(-50%);
@@ -356,7 +383,7 @@ export function renderConstellationCoreStyles(): string {
 .lens-stream-lane::after {
   content: "";
   position: absolute;
-  left: calc(48px + var(--stream-count) * 8px);
+  left: calc(34px + var(--stream-count) * 7px);
   top: 50%;
   width: 5px;
   height: 5px;
@@ -387,7 +414,7 @@ export function renderConstellationCoreStyles(): string {
 }
 
 .lens-stream-role {
-  margin-left: 112px;
+  margin-left: 74px;
 }
 
 .lens-stream-count {
@@ -397,7 +424,7 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-event-orbit {
   position: absolute;
-  z-index: 4;
+  z-index: 3;
   left: 50%;
   top: 52%;
   width: 1px;
@@ -447,6 +474,13 @@ export function renderConstellationCoreStyles(): string {
   transform-origin: 0 0;
 }
 
+.lens-event-node-compact .lens-event-body {
+  min-width: 44px;
+  gap: 0;
+  opacity: 0.78;
+  filter: saturate(0.92);
+}
+
 .lens-event-bead {
   flex: 0 0 auto;
   display: grid;
@@ -463,6 +497,15 @@ export function renderConstellationCoreStyles(): string {
   box-shadow:
     0 0 18px rgba(var(--event-rgb), 0.78),
     inset 0 0 16px rgba(var(--event-rgb), 0.18);
+}
+
+.lens-event-node-compact .lens-event-bead {
+  width: 34px;
+  height: 34px;
+  font-size: 11px;
+  box-shadow:
+    0 0 12px rgba(var(--event-rgb), 0.56),
+    inset 0 0 12px rgba(var(--event-rgb), 0.14);
 }
 
 .lens-event-blue {
@@ -491,6 +534,10 @@ export function renderConstellationCoreStyles(): string {
   max-width: 112px;
   gap: 2px;
   transform: translateY(1px);
+}
+
+.lens-event-node-compact .lens-event-copy {
+  display: none;
 }
 
 .lens-event-label {
@@ -562,11 +609,17 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-confidence {
   position: absolute;
-  z-index: 8;
+  z-index: 12;
   top: 126px;
   right: 8%;
   display: grid;
   gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid rgba(117, 255, 149, 0.14);
+  border-radius: 18px;
+  backdrop-filter: blur(12px);
+  background: rgba(2, 12, 16, 0.72);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
 }
 
 .lens-confidence-score {
@@ -583,12 +636,22 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-context-meter {
   position: absolute;
-  z-index: 8;
+  z-index: 12;
   left: 50%;
   bottom: 78px;
   width: 270px;
+  padding: 12px 16px 13px;
+  border: 1px solid rgba(129, 255, 149, 0.16);
+  border-radius: 24px;
   text-align: center;
   transform: translateX(-50%);
+  backdrop-filter: blur(14px) saturate(1.16);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(113, 237, 147, 0.12), transparent 0 58%),
+    linear-gradient(180deg, rgba(6, 27, 27, 0.88), rgba(2, 11, 17, 0.82));
+  box-shadow:
+    0 16px 44px rgba(0, 0, 0, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 
 .lens-context-visible {
@@ -626,7 +689,7 @@ export function renderConstellationCoreStyles(): string {
 
 .lens-evidence-dock {
   position: absolute;
-  z-index: 8;
+  z-index: 12;
   left: 50%;
   bottom: 14px;
   display: flex;
@@ -639,9 +702,10 @@ export function renderConstellationCoreStyles(): string {
   border: 1px solid rgba(118, 237, 143, 0.22);
   border-radius: 999px;
   transform: translateX(-50%);
+  backdrop-filter: blur(12px);
   background:
     repeating-linear-gradient(90deg, rgba(118, 237, 143, 0.32) 0 7px, transparent 7px 16px),
-    linear-gradient(180deg, rgba(10, 45, 31, 0.5), rgba(4, 21, 18, 0.64));
+    linear-gradient(180deg, rgba(9, 40, 30, 0.86), rgba(3, 16, 16, 0.88));
   box-shadow:
     0 0 22px rgba(89, 230, 142, 0.18),
     inset 0 0 18px rgba(109, 235, 151, 0.1);
