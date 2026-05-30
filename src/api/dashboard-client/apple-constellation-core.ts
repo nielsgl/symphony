@@ -379,7 +379,7 @@ function renderFocusPill(lens: LensModel): HTMLElement {
 function renderCurrentMessage(lens: LensModel): HTMLElement {
   const card = createElement('section', 'lens-current-message');
   card.append(
-    createElement('div', 'lens-label', 'Current Message'),
+    createElement('div', 'lens-label', 'Latest Message'),
     createElement('div', 'lens-message-role', 'role: ' + lens.latestRole),
     createElement('p', 'lens-message-body', lens.latestMessage),
     createElement('div', 'lens-message-time', lens.latestAt)
@@ -389,7 +389,7 @@ function renderCurrentMessage(lens: LensModel): HTMLElement {
 
 function renderRoleStream(lens: LensModel): HTMLElement {
   const panel = createElement('section', 'lens-role-stream');
-  panel.append(createElement('div', 'lens-label', 'Role Stream (last 12)'));
+  panel.append(createElement('div', 'lens-label', 'Recent Roles'));
   const lanes = createElement('div', 'lens-stream-lanes');
   lens.roleStream.forEach((entry, index) => {
     const lane = createElement('div', 'lens-stream-lane lens-stream-' + entry.role);
@@ -420,7 +420,7 @@ function renderEventOrbit(lens: LensModel): HTMLElement {
 function renderConfidence(lens: LensModel): HTMLElement {
   const panel = createElement('aside', 'lens-confidence');
   panel.append(
-    createElement('span', 'lens-label', 'Transcript Confidence'),
+    createElement('span', 'lens-label', 'Transcript Coverage'),
     createElement('strong', 'lens-confidence-score', lens.confidence.toFixed(2)),
     createElement('span', 'lens-confidence-label', lens.confidenceLabel)
   );
@@ -436,10 +436,10 @@ function renderContextMeter(lens: LensModel): HTMLElement {
     ticks.appendChild(createElement('span', index < filledTicks ? 'lens-context-tick lens-context-tick-filled' : 'lens-context-tick'));
   }
   panel.append(
-    createElement('div', 'lens-label', 'Bounded Window'),
+    createElement('div', 'lens-label', 'Visible Context'),
     createElement('strong', 'lens-context-visible', String(lens.contextVisible) + ' messages'),
     ticks,
-    createElement('div', 'lens-context-clip', String(lens.contextVisible) + ' visible - ' + String(lens.contextClipped) + ' clipped')
+    createElement('div', 'lens-context-clip', String(lens.contextVisible) + ' visible / ' + String(lens.contextClipped) + ' clipped')
   );
   return panel;
 }
@@ -449,8 +449,8 @@ function renderEvidenceDock(lens: LensModel): HTMLElement {
   const thread = createElement('span', 'lens-evidence-node', 'thread ' + lens.threadId);
   const session = createElement('span', 'lens-evidence-node', 'session ' + lens.sessionId);
   const transcript = createElement('span', 'lens-evidence-node', 'transcript');
-  const snapshot = createElement('span', 'lens-evidence-node', 'api snapshot');
-  const audit = createElement('span', 'lens-evidence-node', 'audit');
+  const snapshot = createElement('span', 'lens-evidence-node', 'state snapshot');
+  const audit = createElement('span', 'lens-evidence-node', 'audit receipt');
   dock.append(thread, session, transcript, snapshot, audit);
   return dock;
 }

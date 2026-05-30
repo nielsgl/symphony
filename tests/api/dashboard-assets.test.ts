@@ -510,7 +510,7 @@ afterEach(() => {
 });
 
 describe('dashboard assets', () => {
-  it('styles the Refresh Pulse button with compact constellation chrome', () => {
+  it('styles the refresh action with compact constellation chrome', () => {
     const css = renderDashboardStylesCss();
 
     expect(css).toContain('.refresh-now-button {\n  border: 1px solid rgba(122, 177, 219, 0.28);');
@@ -519,12 +519,12 @@ describe('dashboard assets', () => {
     expect(css).toContain('.refresh-now-button:focus-visible {\n  outline: 2px solid rgba(90, 174, 255, 0.76);');
   });
 
-  it('renders the Living Agent Lens status chrome', () => {
+  it('renders the operator console status chrome', () => {
     const html = renderDashboardHtml();
 
-    expect(html).toContain('Symphony Control Constellation');
-    expect(html).toContain('Living Agent Lens');
-    expect(html).toContain('Refresh Pulse');
+    expect(html).toContain('Symphony Operator Console');
+    expect(html).toContain('Agent activity and safety status');
+    expect(html).toContain('Refresh Now');
     expect(html).not.toContain('Live orchestration visibility with retry control, issue drilldown, and desktop/browser parity.');
   });
 
