@@ -521,11 +521,16 @@ describe('dashboard assets', () => {
 
   it('renders the Living Agent Lens status chrome', () => {
     const html = renderDashboardHtml();
+    const css = renderDashboardStylesCss();
 
     expect(html).toContain('Symphony Control Constellation');
     expect(html).toContain('Living Agent Lens');
     expect(html).toContain('Refresh Pulse');
     expect(html).not.toContain('Live orchestration visibility with retry control, issue drilldown, and desktop/browser parity.');
+    expect(css).toContain('.lens-depth-field');
+    expect(css).toContain('.lens-orbit-track-alpha');
+    expect(css).toContain('@keyframes lens-event-orbit');
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
   it('places rate limits below runtime overview and renders a visual container', () => {

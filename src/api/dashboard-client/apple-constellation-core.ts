@@ -406,12 +406,24 @@ function renderEventOrbit(lens: LensModel): HTMLElement {
   const orbit = createElement('div', 'lens-event-orbit');
   lens.events.forEach((event, index) => {
     const node = createElement('article', 'lens-event-node lens-event-' + event.tone);
-    const angle = lens.events.length > 1 ? -58 + index * (116 / (lens.events.length - 1)) : 0;
+    const path = createElement('span', 'lens-event-path');
+    const body = createElement('span', 'lens-event-body');
+    const angle = lens.events.length > 1 ? -130 + index * (260 / (lens.events.length - 1)) : -28;
+    const radius = 152 + (index % 3) * 48;
+    const speed = 22 + index * 4;
+    const scale = index % 3 === 0 ? 0.88 : index % 3 === 1 ? 1.04 : 0.96;
     setStyleProperty(node, '--orbit-angle', String(angle) + 'deg');
+    setStyleProperty(node, '--orbit-counter-angle', String(-angle) + 'deg');
+    setStyleProperty(node, '--orbit-radius', String(radius) + 'px');
+    setStyleProperty(node, '--orbit-speed', String(speed) + 's');
+    setStyleProperty(node, '--orbit-delay', String(-index * 3) + 's');
+    setStyleProperty(node, '--orbit-scale', String(scale));
     const bead = createElement('span', 'lens-event-bead', event.label.slice(0, 1).toUpperCase());
     const copy = createElement('span', 'lens-event-copy');
     copy.append(createElement('strong', 'lens-event-label', event.label), createElement('span', 'lens-event-time', event.at));
-    node.append(bead, copy);
+    body.append(bead, copy);
+    path.appendChild(body);
+    node.appendChild(path);
     orbit.appendChild(node);
   });
   return orbit;
@@ -465,6 +477,27 @@ function renderCoreStar(): HTMLElement {
   return core;
 }
 
+function renderDepthField(): HTMLElement {
+  const field = createElement('div', 'lens-depth-field');
+  field.append(
+    createElement('span', 'lens-depth-plane lens-depth-plane-back'),
+    createElement('span', 'lens-depth-plane lens-depth-plane-mid'),
+    createElement('span', 'lens-depth-plane lens-depth-plane-front')
+  );
+  return field;
+}
+
+function renderOrbitTracks(): HTMLElement {
+  const tracks = createElement('div', 'lens-orbit-tracks');
+  tracks.append(
+    createElement('span', 'lens-orbit-track lens-orbit-track-alpha'),
+    createElement('span', 'lens-orbit-track lens-orbit-track-beta'),
+    createElement('span', 'lens-orbit-track lens-orbit-track-gamma'),
+    createElement('span', 'lens-orbit-track lens-orbit-track-delta')
+  );
+  return tracks;
+}
+
 export function renderConstellationCore(model: any) {
   if (!elements.constellationCore) {
     return;
@@ -473,6 +506,8 @@ export function renderConstellationCore(model: any) {
   const lens = buildLensModel(model || {});
   const root = createElement('div', 'lens-system');
   root.append(
+    renderDepthField(),
+    renderOrbitTracks(),
     createElement('span', 'lens-ring lens-ring-outer'),
     createElement('span', 'lens-ring lens-ring-middle'),
     createElement('span', 'lens-ring lens-ring-inner'),
