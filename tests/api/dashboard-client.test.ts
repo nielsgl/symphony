@@ -85,6 +85,7 @@ import { state } from '../../src/api/dashboard-client/state';
 import { renderAppleConstellation } from '../../src/api/dashboard-client/apple-constellation';
 import { renderConstellationCore } from '../../src/api/dashboard-client/apple-constellation-core';
 import { renderConstellationGravity } from '../../src/api/dashboard-client/apple-constellation-gravity';
+import { renderConstellationInterlocks } from '../../src/api/dashboard-client/apple-constellation-interlocks';
 
 class FakeElement {
   textContent = '';
@@ -241,7 +242,18 @@ function makeDashboardElements() {
     eventFeedFilter: new FakeElement(),
     runtimeEventsList: new FakeElement(),
     diagnosticsOutput: new FakeElement(),
-    historyList: new FakeElement()
+    historyList: new FakeElement(),
+    constellationIssueList: new FakeElement(),
+    constellationRefreshPulse: new FakeElement(),
+    constellationCore: new FakeElement(),
+    constellationInterlockList: new FakeElement(),
+    constellationEvidencePath: new FakeElement(),
+    constellationActions: new FakeElement(),
+    constellationOperator: new FakeElement(),
+    constellationRuntimeClock: new FakeElement(),
+    constellationApiHealth: new FakeElement(),
+    constellationWorkerCount: new FakeElement(),
+    constellationQueueCount: new FakeElement()
   };
 }
 
@@ -670,6 +682,86 @@ describe('dashboard browser client modules', () => {
     expect(rendered).toContain('120 messages');
     expect(rendered).toContain('80 clipped');
     expect(collectText(constellationIssueList)).toContain('NIE-300');
+  });
+
+  it('renders constellation interlocks, evidence path, actions, and footer from sparse payloads', () => {
+    const constellationInterlockList = new FakeElement();
+    const constellationEvidencePath = new FakeElement();
+    const constellationActions = new FakeElement();
+    const constellationOperator = new FakeElement();
+    const constellationRuntimeClock = new FakeElement();
+    const constellationApiHealth = new FakeElement();
+    const constellationWorkerCount = new FakeElement();
+    const constellationQueueCount = new FakeElement();
+    setDashboardElements({
+      ...elements,
+      constellationInterlockList,
+      constellationEvidencePath,
+      constellationActions,
+      constellationOperator,
+      constellationRuntimeClock,
+      constellationApiHealth,
+      constellationWorkerCount,
+      constellationQueueCount
+    });
+
+    renderConstellationInterlocks({
+      running: [
+        {
+          issue_identifier: 'NIE-300',
+          title: 'Chatty',
+          thread_id: '01JX7',
+          session_id: 'session-chatty',
+          pending_input: { reason_code: 'clarify_direction', request_id: 'nonce-123456789' }
+        }
+      ],
+      blocked: [],
+      retry: [],
+      focus: null,
+      payload: {
+        generated_at: '2026-05-30T10:41:28.000Z',
+        counts: { running: 1, retrying: 0, blocked: 0 },
+        health: {
+          dispatch_validation: 'ok',
+          control_plane: { worst_health: 'ok' }
+        },
+        runtime_update: {
+          state: 'build_current',
+          ahead_behind: { behind: 0 }
+        },
+        worker_pool: { configured_slots: 3 },
+        operator: { name: 'niels' },
+        audit_receipt: { receipt_id: 'receipt_8f2a7c' }
+      }
+    });
+
+    const interlockText = collectText(constellationInterlockList);
+    expect(interlockText).toContain('Preconditions');
+    expect(interlockText).toContain('4 / 4 verified');
+    expect(interlockText).toContain('Workspace clean');
+    expect(interlockText).toContain('Safe Intervention');
+    expect(interlockText).toContain('Steer: Clarify direction');
+    expect(interlockText).toContain('POST /api/v1/agent/threads/01JX7/resume');
+    expect(interlockText).toContain('receipt_8f2a7c');
+
+    const evidenceText = collectText(constellationEvidencePath);
+    expect(evidenceText).toContain('thread');
+    expect(evidenceText).toContain('transcript');
+    expect(evidenceText).toContain('api snapshot');
+    expect(evidenceText).toContain('audit');
+
+    const actionText = collectText(constellationActions);
+    expect(actionText).toContain('Steer');
+    expect(actionText).toContain('Resume');
+    expect(actionText).toContain('Inspect Evidence');
+    expect(actionText).toContain('Export Forensics');
+    expect(actionText).toContain('Drain: Wait');
+    expect(actionText).toContain('More');
+
+    expect(constellationOperator.textContent).toBe('niels');
+    expect(constellationApiHealth.textContent).toBe('Healthy');
+    expect(constellationWorkerCount.textContent).toBe('1 / 3');
+    expect(constellationQueueCount.textContent).toBe('0');
   });
 
   it('renders blocked-row actions from backend advertised capabilities', () => {
