@@ -15,25 +15,41 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
 </head>
 <body>
   <div class="backdrop"></div>
-  <header class="hero">
-    <div class="hero-copy">
-      <p class="eyebrow">Symphony Runtime</p>
-      <h1>Operator Control Surface</h1>
-      <p class="hero-subtitle">Turn every run from first signal to confident handoff.</p>
+  <header class="hero" aria-label="Symphony status chrome">
+    <div class="window-controls" aria-hidden="true">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+    <div class="hero-title">
+      <p class="eyebrow">Symphony</p>
+      <h1>Symphony Control Constellation</h1>
+      <p class="hero-subtitle">Living Agent Lens</p>
     </div>
     <div class="hero-status-card" aria-label="Runtime status">
-      <div class="status-row hero-status-topline">
-        <span class="status-kicker">Runtime signal</span>
+      <div class="chrome-token chrome-token-wide">
+        <span class="status-kicker">Orchestrator</span>
+        <strong>Local</strong>
         <span id="connection-badge" class="badge badge-live">Live</span>
       </div>
-      <strong class="hero-status-title">Control surface ready</strong>
-      <p id="connection-detail" class="hero-status-detail">Live updates are connected.</p>
-      <div class="hero-status-meta">
-        <span>Snapshot</span>
-        <span id="last-updated">Waiting for first snapshot</span>
+      <div class="chrome-token">
+        <span class="status-kicker">Build</span>
+        <strong>v1.42.3</strong>
+      </div>
+      <div class="chrome-token chrome-token-readable">
+        <span class="status-kicker">Health</span>
+        <strong id="connection-detail">Live updates connected.</strong>
+      </div>
+      <div class="chrome-token chrome-token-audit">
+        <span class="status-kicker">Audit</span>
+        <strong>Recording</strong>
+      </div>
+      <div class="chrome-token chrome-token-refresh chrome-token-readable">
+        <span class="status-kicker">Freshness</span>
+        <strong id="last-updated">Waiting for first snapshot</strong>
       </div>
       <div class="hero-actions">
-        <button id="refresh-button" class="refresh-now-button" type="button">Refresh Now</button>
+        <button id="refresh-button" class="refresh-now-button" type="button">Refresh Pulse</button>
         <span id="refresh-status" aria-live="polite"></span>
       </div>
     </div>
