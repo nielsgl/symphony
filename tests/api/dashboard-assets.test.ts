@@ -522,8 +522,8 @@ describe('dashboard assets', () => {
   it('renders the operator console status chrome', () => {
     const html = renderDashboardHtml();
 
-    expect(html).toContain('Symphony Operator Console');
-    expect(html).toContain('Agent activity and safety status');
+    expect(html).toContain('Symphony Constellation Console');
+    expect(html).toContain('Live agent activity and safety');
     expect(html).toContain('Refresh Now');
     expect(html).not.toContain('Live orchestration visibility with retry control, issue drilldown, and desktop/browser parity.');
   });

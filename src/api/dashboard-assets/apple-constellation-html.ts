@@ -3,7 +3,7 @@ export function renderAppleConstellationHtml(): string {
     <section class="constellation-stage" aria-label="Agent activity and command safety">
       <aside class="constellation-gravity" aria-label="Active issue queue">
         <div class="constellation-section-label">Active Queue</div>
-        <p class="constellation-section-subtitle">Issues ordered by operator attention</p>
+        <p class="constellation-section-subtitle">Highest-priority work first</p>
         <div id="constellation-issue-list" class="constellation-issue-list"></div>
       </aside>
 

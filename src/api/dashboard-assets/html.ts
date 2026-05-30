@@ -23,8 +23,8 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
     </div>
     <div class="hero-title">
       <p class="eyebrow">Symphony</p>
-      <h1>Symphony Operator Console</h1>
-      <p class="hero-subtitle">Agent activity and safety status</p>
+      <h1>Symphony Constellation Console</h1>
+      <p class="hero-subtitle">Live agent activity and safety</p>
     </div>
     <div class="hero-status-card" aria-label="Runtime status">
       <div class="chrome-token chrome-token-wide">
