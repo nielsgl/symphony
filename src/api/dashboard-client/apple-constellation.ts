@@ -15,8 +15,5 @@ export function renderAppleConstellation(payload: any) {
 
   renderConstellationGravity({ running, blocked, retry, focus });
   renderConstellationCore({ running, blocked, retry, focus });
-  renderConstellationInterlocks({ running, blocked, retry, focus });
-  elements.constellationWorkerCount.textContent =
-    String(running.length) + ' / ' + String(running.length + blocked.length + retry.length);
-  elements.constellationQueueCount.textContent = String(blocked.length + retry.length);
+  renderConstellationInterlocks({ running, blocked, retry, focus, payload });
 }
