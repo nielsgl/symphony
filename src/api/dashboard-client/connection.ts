@@ -9,6 +9,44 @@ import { renderStoppedRunRecovery, mergeStoppedRunRecoveryPayload } from './stop
 import { loadIssue } from './issue-detail';
 import { renderProjectHistory, loadProjectHistory, projectKeyFromHistoryPayload } from './project-history';
 
+let issueDetailRefreshInFlight = false;
+let issueDetailRefreshQueued = false;
+
+function normalizeConversationRole(value: any) {
+    return value === 'system' ||
+      value === 'user' ||
+      value === 'assistant' ||
+      value === 'tool' ||
+      value === 'runtime'
+      ? value
+      : 'all';
+  }
+
+function normalizeConversationDensity(value: any) {
+    return value === 'compact' ? 'compact' : 'comfortable';
+  }
+
+export function refreshSelectedIssueDetail() {
+    if (!state.selectedIssue || !elements.issuePanel || !elements.issuePanel.open) {
+      issueDetailRefreshQueued = false;
+      return;
+    }
+    if (issueDetailRefreshInFlight) {
+      issueDetailRefreshQueued = true;
+      return;
+    }
+
+    issueDetailRefreshInFlight = true;
+    void loadIssue(state.selectedIssue, { openPanel: false }).finally(function () {
+      issueDetailRefreshInFlight = false;
+      if (!issueDetailRefreshQueued) {
+        return;
+      }
+      issueDetailRefreshQueued = false;
+      refreshSelectedIssueDetail();
+    });
+  }
+
 export function getConnectionLabel(mode: any) {
     switch (mode) {
       case 'streaming':
@@ -144,6 +182,7 @@ export function applyPayload(payload: any, source: any) {
     renderStoppedRunRecovery(payload);
     renderRuntimeEvents(payload);
     setLastUpdated(payload.generated_at || new Date().toISOString());
+    refreshSelectedIssueDetail();
     if (source === 'stream') {
       state.streamSnapshotHealthy = true;
       state.streamStatus = 'streaming';
@@ -214,7 +253,9 @@ export function scheduleStateSave() {
               selected_issue: state.selectedIssue || null,
               filters: {
                 status: state.filter.status,
-                query: state.filter.query
+                query: state.filter.query,
+                conversation_role: state.filter.conversationRole,
+                conversation_density: state.filter.conversationDensity
               },
               event_feed_filter: state.filter.eventFeedSeverity,
               panels: {
@@ -250,6 +291,8 @@ export async function loadUiState() {
       state.selectedIssue = restored.selected_issue || '';
       state.filter.query = restored.filters && restored.filters.query ? restored.filters.query : '';
       state.filter.status = restored.filters && restored.filters.status ? restored.filters.status : 'all';
+      state.filter.conversationRole = normalizeConversationRole(restored.filters && restored.filters.conversation_role);
+      state.filter.conversationDensity = normalizeConversationDensity(restored.filters && restored.filters.conversation_density);
       state.filter.eventFeedSeverity = restored.event_feed_filter || 'all';
       state.panels.throughputOpen =
         restored.panels && typeof restored.panels.throughput_open === 'boolean' ? restored.panels.throughput_open : true;
@@ -261,6 +304,8 @@ export async function loadUiState() {
       elements.issueInput.value = state.selectedIssue;
       elements.runningFilter.value = state.filter.query;
       elements.statusFilter.value = state.filter.status;
+      elements.conversationRoleFilter.value = state.filter.conversationRole;
+      elements.conversationDensity.value = state.filter.conversationDensity;
       elements.eventFeedFilter.value = state.filter.eventFeedSeverity;
       elements.throughputPanel.open = state.panels.throughputOpen;
       elements.runtimeEventsPanel.open = state.panels.runtimeEventsOpen;

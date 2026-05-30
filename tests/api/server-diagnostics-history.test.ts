@@ -418,7 +418,12 @@ describe('LocalApiServer diagnostics and history', () => {
       body: JSON.stringify({
         state: {
           selected_issue: 'ABC-2',
-          filters: { status: 'running', query: 'token=secret123' },
+          filters: {
+            status: 'running',
+            query: 'token=secret123',
+            conversation_role: 'not-a-role',
+            conversation_density: 'spacious'
+          },
           event_feed_filter: 'warn',
           panels: {
             throughput_open: false,
@@ -432,7 +437,12 @@ describe('LocalApiServer diagnostics and history', () => {
     expect(saveResponse.status).toBe(202);
     expect(setUiState).toHaveBeenCalledWith({
       selected_issue: 'ABC-2',
-      filters: { status: 'running', query: 'token=secret123' },
+      filters: {
+        status: 'running',
+        query: 'token=secret123',
+        conversation_role: 'all',
+        conversation_density: 'comfortable'
+      },
       event_feed_filter: 'warn',
       panels: {
         throughput_open: false,

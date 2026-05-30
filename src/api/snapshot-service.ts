@@ -1,6 +1,8 @@
 import type { OrchestratorState, RunningEntry } from '../orchestrator';
 import { explainOperatorRuntimeState, REASON_CODES, toOperatorExplainerHint } from '../observability';
 import { redactUnknown } from '../security/redaction';
+import type { DurableRunHistoryRecord, ExecutionGraphThreadLineage } from '../persistence';
+import { buildAgentConversationProjection } from './agent-conversation';
 import { LocalApiError } from './errors';
 import { projectMissingToolOutputRecovery } from './missing-tool-output-recovery';
 import { projectBudget } from './snapshot-service/budget';
@@ -443,7 +445,11 @@ export class SnapshotService {
     }) as ApiIssueRuntimeDiagnosticsResponse;
   }
 
-  projectIssue(state: OrchestratorState, issueIdentifier: string): ApiIssueResponse {
+  projectIssue(
+    state: OrchestratorState,
+    issueIdentifier: string,
+    options: { runHistory?: DurableRunHistoryRecord[]; lineage?: ExecutionGraphThreadLineage | null } = {}
+  ): ApiIssueResponse {
     const nowMs = this.nowMs();
     const freshness = resolveStateFreshness(state, nowMs);
     const runningEntry = Array.from(state.running.entries()).find(([, entry]) => entry.identifier === issueIdentifier);
@@ -455,6 +461,12 @@ export class SnapshotService {
         : Array.from(state.circuit_breakers.values()).find(
             (entry) => entry.breaker_active && entry.issue_identifier === issueIdentifier
           );
+    const conversation = buildAgentConversationProjection({
+      state,
+      issueIdentifier,
+      runHistory: options.runHistory,
+      lineage: options.lineage ?? null
+    });
 
     if (!runningEntry && !retryEntry && !blockedEntry && !breakerEntry) {
       throw new LocalApiError(
@@ -698,6 +710,7 @@ export class SnapshotService {
           thread_id: event.thread_id ?? null,
           session_id: event.session_id ?? null
         })),
+        conversation,
         recent_events: entry.recent_events.map(projectRunnerEventEvidence),
         stale_events: projectQuarantinedRunningEvents(entry),
         last_error: retryEntry?.error ?? state.health.last_error,
@@ -854,6 +867,7 @@ export class SnapshotService {
           thread_id: event.thread_id ?? null,
           session_id: event.session_id ?? null
         })),
+        conversation,
         recent_events: [],
         stale_events: [],
         last_error: retryOnlyEntry.error,
@@ -899,6 +913,7 @@ export class SnapshotService {
           thread_id: event.thread_id ?? null,
           session_id: event.session_id ?? null
         })),
+        conversation,
         recent_events: [],
         stale_events: [],
         last_error: state.health.last_error,
@@ -1028,6 +1043,7 @@ export class SnapshotService {
         thread_id: event.thread_id ?? null,
         session_id: event.session_id ?? null
       })),
+      conversation,
       recent_events: (blockedEntry.session_console ?? []).map(projectRunnerEventEvidence),
       stale_events: [],
       last_error: blockedEntry.stop_reason_detail ?? blockedEntry.stop_reason_code,

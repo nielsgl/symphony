@@ -527,6 +527,8 @@ export interface UiContinuityState {
   filters: {
     status: 'all' | 'running' | 'retrying' | 'blocked';
     query: string;
+    conversation_role?: 'all' | 'system' | 'user' | 'assistant' | 'tool' | 'runtime';
+    conversation_density?: 'comfortable' | 'compact';
   };
   event_feed_filter?: 'all' | 'warn' | 'error';
   panels?: {
