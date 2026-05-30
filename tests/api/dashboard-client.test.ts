@@ -82,6 +82,8 @@ import {
   recoveryStatusLabel
 } from '../../src/api/dashboard-client/stopped-runs';
 import { state } from '../../src/api/dashboard-client/state';
+import { renderAppleConstellation } from '../../src/api/dashboard-client/apple-constellation';
+import { renderConstellationCore } from '../../src/api/dashboard-client/apple-constellation-core';
 import { renderConstellationGravity } from '../../src/api/dashboard-client/apple-constellation-gravity';
 
 class FakeElement {
@@ -564,6 +566,110 @@ describe('dashboard browser client modules', () => {
     expect(rendered).toContain('0.91');
     expect(rendered).toContain('NIE-276');
     expect(constellationIssueList.children[0].className).toContain('gravity-row-focus');
+  });
+
+  it('renders the constellation core with fallback lens telemetry', () => {
+    const constellationCore = new FakeElement();
+    setDashboardElements({ ...elements, constellationCore });
+
+    renderConstellationCore({ running: [], blocked: [], retry: [] });
+
+    const rendered = collectText(constellationCore);
+    expect(rendered).toContain('NIE-300');
+    expect(rendered).toContain('Chatty');
+    expect(rendered).toContain('Applying bounded payload strategy');
+    expect(rendered).toContain('assistant');
+    expect(rendered).toContain('terminal');
+    expect(rendered).toContain('0.92');
+    expect(rendered).toContain('120 messages');
+    expect(rendered).toContain('thread_01JX7');
+  });
+
+  it('renders live Chatty agent activity in the constellation core and prefers it as focus', () => {
+    const constellationIssueList = new FakeElement();
+    const constellationCore = new FakeElement();
+    const constellationInterlockList = new FakeElement();
+    const constellationEvidencePath = new FakeElement();
+    const constellationActions = new FakeElement();
+    const constellationWorkerCount = new FakeElement();
+    const constellationQueueCount = new FakeElement();
+    setDashboardElements({
+      ...elements,
+      constellationIssueList,
+      constellationCore,
+      constellationInterlockList,
+      constellationEvidencePath,
+      constellationActions,
+      constellationWorkerCount,
+      constellationQueueCount
+    });
+
+    renderAppleConstellation({
+      running: [
+        {
+          issue_identifier: 'NIE-301',
+          title: 'Snapshot Diffing',
+          retry_attempt: 1,
+          recent_events: []
+        },
+        {
+          issue_identifier: 'NIE-300',
+          title: 'Chatty',
+          retry_attempt: 2,
+          thread_id: 'thread-live',
+          session_id: 'session-live',
+          last_message: 'latest agent thought from Chatty',
+          last_event_at: '2026-05-30T10:41:28.000Z',
+          conversation_latest: {
+            role: 'assistant',
+            summary: 'latest agent thought from conversation',
+            source: 'runtime_event',
+            at: '2026-05-30T10:41:28.000Z'
+          },
+          recent_events: [
+            {
+              at_ms: Date.parse('2026-05-30T10:41:12.000Z'),
+              event: 'codex.tool_call.started',
+              message: 'terminal command',
+              tool_name: 'exec_command'
+            },
+            {
+              at_ms: Date.parse('2026-05-30T10:41:18.000Z'),
+              event: 'linear.issue.synced',
+              message: 'Linear ticket sync'
+            },
+            {
+              at_ms: Date.parse('2026-05-30T10:41:22.000Z'),
+              event: 'assistant.turn.completed',
+              message: 'assistant completed turn'
+            }
+          ],
+          transcript_tool_call_diagnostic_summary: {
+            detailed_diagnostics_available: true,
+            total_count: 3
+          },
+          tokens: {
+            total_tokens: 120000,
+            model_context_window: 200000
+          }
+        }
+      ],
+      blocked: [],
+      retry: []
+    });
+
+    const rendered = collectText(constellationCore);
+    expect(rendered).toContain('NIE-300');
+    expect(rendered).toContain('Run Attempt #2');
+    expect(rendered).toContain('latest agent thought from conversation');
+    expect(rendered).toContain('thread-live');
+    expect(rendered).toContain('session-live');
+    expect(rendered).toContain('terminal');
+    expect(rendered).toContain('Linear');
+    expect(rendered).toContain('assistant');
+    expect(rendered).toContain('120 messages');
+    expect(rendered).toContain('80 clipped');
+    expect(collectText(constellationIssueList)).toContain('NIE-300');
   });
 
   it('renders blocked-row actions from backend advertised capabilities', () => {
