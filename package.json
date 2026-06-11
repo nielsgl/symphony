@@ -61,19 +61,19 @@
     "forensics": "npm run build --silent && node scripts/forensics.js"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.8.0",
-    "dotenv": "^17.4.1",
-    "js-yaml": "^4.1.1",
+    "@tauri-apps/api": "^2.11.0",
+    "dotenv": "^17.4.2",
+    "js-yaml": "^4.2.0",
     "liquidjs": "^10.27.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
-    "@tauri-apps/cli": "^2.8.0",
+    "@playwright/test": "^1.60.0",
+    "@tauri-apps/cli": "^2.11.2",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^22.19.17",
-    "@vitest/coverage-v8": "^4.1.5",
+    "@types/node": "^25.9.3",
+    "@vitest/coverage-v8": "^4.1.8",
     "esbuild": "^0.28.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.8"
   }
 }
