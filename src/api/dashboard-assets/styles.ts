@@ -283,6 +283,29 @@ button:hover {
   outline-offset: 2px;
 }
 
+.preview-lens-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(90, 174, 255, 0.06);
+}
+
+.preview-lens-link:hover {
+  border-color: var(--accent);
+  background: rgba(90, 174, 255, 0.12);
+}
+
+.preview-lens-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .ghost-button {
   background: transparent;
   color: var(--accent);
