@@ -7,8 +7,9 @@ import { CANONICAL_EVENT } from '../observability/events';
 import type { DurableRunHistoryRecord, ProjectHistoryTicketSummaryProjection } from '../persistence';
 import { ControlPlaneHealthRecorder, type ControlPlaneHealthState, type ControlPlaneObservation } from './control-plane-health';
 import { NodeEventLoopHealthMonitor, type EventLoopHealthMonitor, type EventLoopHealthSummary } from './event-loop-health';
-import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss } from './dashboard-assets';
+import { renderDashboardClientJs, renderDashboardHtml, renderDashboardStylesCss, renderLensClientJs, renderLensHtml, renderLensStylesCss } from './dashboard-assets';
 import { LocalApiError } from './errors';
+import { projectLivingAgentLens } from './living-agent-lens';
 import { RefreshCoalescer } from './refresh-coalescer';
 import { createApiDegradedDiagnostics } from './runtime-visibility';
 import { SnapshotService } from './snapshot-service';
@@ -361,6 +362,32 @@ export class LocalApiServer {
   private controlPlaneSummary() {
     this.summarizeEventLoopHealth();
     return this.controlPlaneHealth.summarize(this.nowMs());
+  }
+
+  /**
+   * Compose the audit-health payload consumed by the Living Agent Lens
+   * projector. Returns null when no DiagnosticsSource is wired — the lens
+   * will then degrade the Audit cell to amber with an
+   * `audit_recording_proof` missing-capability rather than asserting a
+   * recording state it cannot prove.
+   */
+  private composeAuditHealth(): { enabled: boolean; integrity_ok: boolean; recent_write_failure: { at: string | null; detail: string | null } | null; detail_endpoint?: string | null } | null {
+    if (!this.diagnosticsSource) return null;
+    try {
+      const health = this.diagnosticsSource.getPersistenceHealth();
+      const failures = health.recent_write_failures ?? [];
+      const latest = failures.length > 0 ? failures[failures.length - 1] : null;
+      return {
+        enabled: Boolean(health.enabled),
+        integrity_ok: Boolean(health.integrity_ok),
+        recent_write_failure: latest
+          ? { at: latest.recorded_at ?? null, detail: latest.detail ?? latest.reason_code ?? null }
+          : null,
+        detail_endpoint: '/api/v1/diagnostics'
+      };
+    } catch {
+      return null;
+    }
   }
 
   private controlPlaneObservationTiming(timing: RequestTiming): Pick<
@@ -1022,6 +1049,62 @@ export class LocalApiServer {
         ]
       },
       {
+        path: /^\/dashboard$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response) => {
+              setLocalDashboardAssetCacheHeaders(response);
+              sendHtml(response, 200, renderDashboardHtml(this.dashboardConfig));
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/lens$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response) => {
+              setLocalDashboardAssetCacheHeaders(response);
+              sendHtml(response, 200, renderLensHtml(this.dashboardConfig));
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/lens\/client\.js$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response) => {
+              setLocalDashboardAssetCacheHeaders(response);
+              sendScript(
+                response,
+                200,
+                `/* symphony-lens-asset-revision ${this.dashboardAssetRevision ?? 'dev'} */\n${renderLensClientJs()}`
+              );
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/lens\/styles\.css$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (_request, response) => {
+              setLocalDashboardAssetCacheHeaders(response);
+              sendCss(
+                response,
+                200,
+                `/* symphony-lens-asset-revision ${this.dashboardAssetRevision ?? 'dev'} */\n${renderLensStylesCss()}`
+              );
+            }
+          }
+        ]
+      },
+      {
         path: /^\/dashboard\/client\.js$/,
         routes: [
           {
@@ -1127,6 +1210,36 @@ export class LocalApiServer {
             method: 'GET',
             handler: async (request, response) => {
               this.registerEventStream(request, response);
+            }
+          }
+        ]
+      },
+      {
+        path: /^\/api\/v1\/living-agent-lens$/,
+        routes: [
+          {
+            method: 'GET',
+            handler: async (request, response) => {
+              const snapshot = this.buildStateSnapshotResponse();
+              const payload = snapshot.payload;
+              if ('error' in payload) {
+                sendJson(response, 503, payload);
+                return;
+              }
+              payload.health.control_plane = this.controlPlaneSummary();
+              const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+              const focusIssue = requestUrl.searchParams.get('focus_issue');
+              const transportParam = requestUrl.searchParams.get('transport');
+              const transport = transportParam === 'stream' || transportParam === 'polling' || transportParam === 'stale' || transportParam === 'offline' ? transportParam : 'polling';
+              const auditHealth = this.composeAuditHealth();
+              const lens = projectLivingAgentLens(payload, {
+                focusIssueIdentifier: focusIssue,
+                refreshTransport: transport,
+                operator: process.env.USER ?? null,
+                nowMs: this.nowMs(),
+                auditHealth
+              });
+              sendJson(response, 200, lens);
             }
           }
         ]
