@@ -4,6 +4,7 @@ export * from './agent-conversation';
 export * from './control-plane-health';
 export * from './event-loop-health';
 export * from './forensics';
+export * from './living-agent-lens-types';
 export * from './refresh-coalescer';
 export * from './server';
 export * from './snapshot-service';
