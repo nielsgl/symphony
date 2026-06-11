@@ -33,6 +33,7 @@ export function renderDashboardHtml(_config?: DashboardClientConfig): string {
       </div>
       <div class="hero-actions">
         <button id="refresh-button" class="refresh-now-button" type="button">Refresh Now</button>
+        <a id="preview-lens-link" class="preview-lens-link" href="/lens" rel="noopener">Preview Lens</a>
         <span id="refresh-status" aria-live="polite"></span>
       </div>
     </div>
