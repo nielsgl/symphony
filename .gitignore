@@ -153,7 +153,7 @@ src-tauri/resources/symphony-backend*
 # Playwright artifacts
 test-results/
 playwright-report/
-output/playwright/
+output/
 .playwright-cli/
 
 .worktrees
