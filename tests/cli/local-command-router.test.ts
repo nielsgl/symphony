@@ -889,6 +889,8 @@ describe('local symphony command router', () => {
       { encoding: 'utf8', mode: 0o755 }
     );
     await writeFakeCodexAppServer(binDir, ['commit', 'pull', 'push', 'land']);
+    await writeExecutable(path.join(binDir, 'python'));
+    await writeExecutable(path.join(binDir, 'python3'));
     const stateHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'symphony-init-clone-state-')));
     const cliEnv = {
       ...process.env,
