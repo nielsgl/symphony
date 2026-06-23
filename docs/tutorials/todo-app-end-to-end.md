@@ -21,14 +21,30 @@ npm install
 npm run build
 ```
 
-2. Export tracker credentials:
+2. Install and authenticate the Codex CLI. Symphony dispatches runs by spawning
+   `codex app-server`, so the `codex` binary must be installed and on the `PATH`
+   of the shell that launches Symphony:
+
+```bash
+npm install -g @openai/codex
+codex --version          # confirm the binary resolves
+codex login              # one-time auth (or export OPENAI_API_KEY before launch)
+```
+
+3. Export tracker credentials:
 
 ```bash
 export LINEAR_API_KEY=your_linear_api_key
 export GITHUB_TOKEN=your_github_token
 ```
 
-3. Use sample app fixture:
+`GITHUB_TOKEN` is only needed for the GitHub tracker path. The adapter uses the
+GitHub GraphQL API to read issues and to comment/close/reopen them, so the token
+needs the minimum rights **Issues: read & write** plus **Pull requests: read**
+(fine-grained token), or `public_repo`/`repo` (classic token). It does not need
+code/`Contents` access.
+
+4. Use sample app fixture:
 
 - Path: `tests/fixtures/todo-sample-app`
 
@@ -52,6 +68,22 @@ Automatically create Linear issues from seed data (dry-run first):
 export LINEAR_PROJECT_SLUG=SYMPHONY
 npm run seed:linear
 ```
+
+`LINEAR_PROJECT_SLUG` must be Linear's project **`slugId`** (e.g.
+`symphony-9f8e7d6c5b4a`), not the project's display name — `SYMPHONY` above is
+only a placeholder, and the project must already exist in your workspace. If you
+see `no Linear project found for slug '...'`, look up the real `slugId`:
+
+```bash
+curl -sS https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ projects(first:50){ nodes { name slugId } } }"}'
+```
+
+Then `export LINEAR_PROJECT_SLUG=<slugId>` and re-run. Note that `seed:linear` is
+a dry run that only prints a plan; `seed:linear:apply` is what actually creates
+the issues.
 
 Apply creation in Linear:
 

@@ -5,7 +5,7 @@ tracker:
   api_key: $LINEAR_API_KEY
   project_slug: $LINEAR_PROJECT_SLUG
   github_linking:
-    mode: required
+    mode: off
 
   active_states:
     - Todo
