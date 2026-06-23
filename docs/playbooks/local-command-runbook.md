@@ -286,6 +286,17 @@ availability, profile discovery/show output, `setup --yes`,
 `/api/v1/diagnostics`, Project Identity root/workflow matching, and clean
 dashboard shutdown.
 
+The protected internal-profile lane depends on local Symphony checkout
+prerequisites. The current `NIE-275` closure reproduction records
+`symphony-internal-profile: passed` against the checked-in Symphony
+`WORKFLOW.md`. Before counting that lane as closure evidence in another
+environment, verify the checkout command shim/profile setup matches the current
+build, setup consent is available for the Symphony project, and required Linear
+environment such as `LINEAR_API_KEY` plus project selection values is present
+when the internal workflow's doctor checks require tracker access. If those
+prerequisites are missing, the lane should be read as `blocked` with an
+`environment_prerequisite` finding rather than as a passing parent-PRD signal.
+
 The default run includes a generated generic/non-Node adoption lane. That lane
 starts from a fresh git project without Node package metadata, runs
 `symphony init --dry-run --bundle memory-generic --no-input`, verifies that the
@@ -409,3 +420,21 @@ The report classifies findings as:
   remediation.
 - `intentional_out_of_scope`: deliberately skipped evidence such as
   `--no-dashboard`.
+
+### Closure Interpretation
+
+A Local Multi-Project Trial closure run should treat `blocked` as a real
+closure result, not as a soft pass. In particular,
+`real-existing-project-missing` means no supplied real external project with a
+hand-written `WORKFLOW.md` was tested. `symphony-internal-profile: passed` means
+the protected internal profile counted in the current closure environment;
+`symphony-internal-profile: blocked` in another environment means that lane
+cannot be counted until its local checkout/profile, setup-consent, and Linear
+prerequisites are satisfied. Synthetic existing-workflow fixtures remain useful
+regression evidence, but they do not satisfy the parent trial gate.
+
+Public npm, Homebrew, standalone binary, and desktop packaging work remains
+deferred until every required lane passes, or the parent PRD owner explicitly
+accepts a documented exception. Use
+`docs/analysis/prd/PRD-007-local-multi-project-trial-closure-audit.md` as the
+current closure checklist.
