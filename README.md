@@ -530,6 +530,11 @@ Strict mode contract:
 - Log sink failures emit warning events and do not crash orchestration flow.
 - Dashboard health reflects runtime validation/error semantics from orchestrator
   state, not direct mutation from UI actions.
+- Dashboard project history reports two separate attempt fields:
+  `workflow_outcome` describes the ticket result, while `process_status`
+  describes how the worker process exited. They can differ; reaching Agent
+  Review records `workflow_outcome=handoff_reached` with
+  `process_status=cancelled`.
 
 ## Contribution Notes
 
